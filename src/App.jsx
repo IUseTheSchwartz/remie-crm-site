@@ -31,7 +31,7 @@ const PLANS = [
   },
   {
     name: "Basic",
-    blurb: "For a single producer who wants one clean place to work.",
+    blurb: "All Pro features, just for a single user.",
     monthly: 350,
     yearly: 280,
     buyUrl: {
@@ -45,12 +45,19 @@ const PLANS = [
       "Simple automations (intro text, missed-call text)",
       "Tasks & reminders so follow-ups never slip",
       "Store thousands of contacts with notes & files",
+      "Shared inbox & calendars with assignment",
+      "Power dialer & call queues for fast sessions",
+      "No-show rescue campaigns (auto text + link)",
+      "Quote & application hub (beta)",
+      "Bootcamp training + ongoing new-feature sessions",
+      "Concierge migration from spreadsheets/other CRMs",
+      "Scales to 50,000+ contacts",
     ],
     ctaNote: "Best for solo agents",
   },
   {
     name: "Pro",
-    blurb: "Unlimited team access with agency-wide tools and training.",
+    blurb: "All Basic features, but for your entire agency — unlimited team access.",
     monthly: 1500,
     yearly: 1200,
     buyUrl: {
@@ -58,15 +65,20 @@ const PLANS = [
       annual:  "https://buy.stripe.com/test_14AcN7d55fdu6NIfUJ5c401"
     },
     features: [
-      "Everything in Basic",
-      "Unlimited team member access (one price)",
+      "Lead inbox & drag-and-drop pipeline",
+      "Two-way texting & email in one place",
+      "Click-to-call dialing (no manual numbers)",
+      "Simple automations (intro text, missed-call text)",
+      "Tasks & reminders so follow-ups never slip",
+      "Store thousands of contacts with notes & files",
       "Shared inbox & calendars with assignment",
       "Power dialer & call queues for fast sessions",
       "No-show rescue campaigns (auto text + link)",
       "Quote & application hub (beta)",
       "Bootcamp training + ongoing new-feature sessions",
       "Concierge migration from spreadsheets/other CRMs",
-      "Scales to 50,000+ contacts for large agencies",
+      "Scales to 50,000+ contacts",
+      "Unlimited team member access (one price)",
     ],
     ctaNote: "For growing agencies",
     highlighted: true,
@@ -126,7 +138,7 @@ export default function App() {
               <Phone className="h-4 w-4" /> Click-to-call & power dialer
             </span>
             <span className="inline-flex items-center gap-1">
-              <Shield className="h-4 w-4" /> Ongoing bootcamp for new features (Pro)
+              <Shield className="h-4 w-4" /> Ongoing bootcamp for new features
             </span>
           </div>
         </div>
@@ -208,7 +220,7 @@ export default function App() {
         </div>
 
         <p className="mt-6 text-center text-xs text-white/50">
-          Prices in USD. Annual pricing shows per-month equivalent, billed annually. Features vary by plan.
+          Prices in USD. Annual pricing shows per-month equivalent, billed annually.
         </p>
       </section>
 
