@@ -1,15 +1,18 @@
 import { useState } from "react";
+import { Routes, Route, Link, useNavigate, useLocation, Navigate } from "react-router-dom";
 import { motion } from "framer-motion";
-import { Check, Shield, Star, Zap, Phone, CreditCard } from "lucide-react";
+import { Check, Shield, Star, Zap, Phone, CreditCard, LogOut } from "lucide-react";
+import ProtectedRoute from "./components/ProtectedRoute";
+import { AuthProvider, useAuth } from "./auth";
 
-// --- Brand config ---
+// -------- Shared brand --------
 const BRAND = {
   name: "Remie CRM",
   primary: "from-indigo-500 via-purple-500 to-fuchsia-500",
   accentRing: "ring-indigo-400/50",
 };
 
-// --- Pricing plans with Stripe buy URLs ---
+// -------- Landing pricing plans (unchanged except wrapped in LandingPage) --------
 const PLANS = [
   {
     name: "Mail List",
@@ -85,45 +88,40 @@ const PLANS = [
   },
 ];
 
-export default function App() {
+// ---------- PAGES ----------
+function LandingPage() {
   const [annual, setAnnual] = useState(true);
-
   const price = (plan) => (annual ? plan.yearly : plan.monthly);
 
   return (
     <div className="min-h-screen bg-neutral-950 text-white">
-      {/* Background glow */}
       <div className="pointer-events-none fixed inset-0 overflow-hidden">
         <div className="absolute -top-56 left-1/2 h-[36rem] w-[36rem] -translate-x-1/2 rounded-full bg-gradient-to-br from-indigo-600/20 via-fuchsia-500/10 to-rose-500/10 blur-3xl" />
       </div>
 
-      {/* Header */}
       <header className="relative z-10 border-b border-white/10 backdrop-blur">
         <nav className="mx-auto flex max-w-7xl items-center justify-between px-6 py-4">
           <div className="flex items-center gap-3">
-            <div className={`grid h-9 w-9 place-items-center rounded-2xl bg-gradient-to-br ${BRAND.primary} shadow-lg shadow-indigo-700/20 ring-1 ring-white/10`}>
+            <div className={`grid h-9 w-9 place-items-center rounded-2xl bg-gradient-to-br ${BRAND.primary} shadow-lg ring-1 ring-white/10`}>
               <Zap className="h-5 w-5" />
             </div>
             <span className="font-semibold tracking-tight">{BRAND.name}</span>
           </div>
-          <a
-            href="#pricing"
-            className={`hidden rounded-xl bg-gradient-to-r ${BRAND.primary} px-4 py-2 text-sm font-medium shadow-lg shadow-indigo-700/20 ring-1 ring-white/10 md:block`}
-          >
-            Start 14-day free trial
-          </a>
+          <div className="flex items-center gap-3">
+            <Link to="/login" className="text-sm opacity-80 hover:opacity-100">Log in</Link>
+            <a
+              href="#pricing"
+              className={`hidden rounded-xl bg-gradient-to-r ${BRAND.primary} px-4 py-2 text-sm font-medium shadow-lg ring-1 ring-white/10 md:block`}
+            >
+              Start 14-day free trial
+            </a>
+          </div>
         </nav>
       </header>
 
-      {/* Hero */}
       <section className="relative z-10 mx-auto max-w-7xl px-6 pb-10 pt-16 sm:pt-20">
         <div className="mx-auto max-w-3xl text-center">
-          <motion.h1
-            initial={{ opacity: 0, y: 10 }}
-            animate={{ opacity: 1, y: 0 }}
-            transition={{ duration: 0.5 }}
-            className="text-4xl font-semibold leading-tight sm:text-5xl"
-          >
+          <motion.h1 initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.5 }} className="text-4xl font-semibold leading-tight sm:text-5xl">
             Close more policies. Not tabs.
           </motion.h1>
           <p className="mt-4 text-lg text-white/70">
@@ -144,53 +142,30 @@ export default function App() {
         </div>
       </section>
 
-      {/* Pricing */}
       <section id="pricing" className="relative z-10 mx-auto max-w-7xl px-6 py-14">
         <div className="mx-auto max-w-2xl text-center">
           <h2 className="text-3xl font-semibold tracking-tight sm:text-4xl">Simple, transparent pricing</h2>
           <p className="mt-2 text-white/70">Switch between monthly and annual billing. Annual saves around 20%.</p>
 
           <div className="mt-6 inline-flex items-center gap-2 rounded-full border border-white/15 bg-white/5 p-1 text-sm">
-            <button
-              onClick={() => setAnnual(false)}
-              className={`rounded-full px-3 py-1 transition ${!annual ? "bg-white text-black" : "text-white/80"}`}
-            >
-              Monthly
-            </button>
-            <button
-              onClick={() => setAnnual(true)}
-              className={`rounded-full px-3 py-1 transition ${annual ? "bg-white text-black" : "text-white/80"}`}
-            >
-              Annual
-            </button>
+            <button onClick={() => setAnnual(false)} className={`rounded-full px-3 py-1 transition ${!annual ? "bg-white text-black" : "text-white/80"}`}>Monthly</button>
+            <button onClick={() => setAnnual(true)} className={`rounded-full px-3 py-1 transition ${annual ? "bg-white text-black" : "text-white/80"}`}>Annual</button>
           </div>
         </div>
 
         <div className="mt-10 grid gap-6 md:grid-cols-3">
           {PLANS.map((plan) => (
-            <motion.div
-              key={plan.name}
-              initial={{ opacity: 0, y: 10 }}
-              whileInView={{ opacity: 1, y: 0 }}
-              viewport={{ once: true }}
-              transition={{ duration: 0.4 }}
-              className={`relative rounded-3xl border ${
-                plan.highlighted ? "border-white/30 bg-white/[0.06]" : "border-white/10 bg-white/[0.04]"
-              } p-6 shadow-2xl shadow-black/30 ring-1 ${
-                plan.highlighted ? BRAND.accentRing : "ring-white/5"
-              }`}
-            >
+            <div key={plan.name} className={`relative rounded-3xl border ${plan.highlighted ? "border-white/30 bg-white/[0.06]" : "border-white/10 bg-white/[0.04]"} p-6 shadow-2xl ring-1 ${plan.highlighted ? BRAND.accentRing : "ring-white/5"}`}>
               {plan.ctaNote && (
                 <div className="absolute -top-3 left-6 rounded-full border border-white/15 bg-white/10 px-3 py-1 text-xs font-medium backdrop-blur">
                   {plan.ctaNote}
                 </div>
               )}
-
               <h3 className="text-xl font-semibold">{plan.name}</h3>
               <p className="mt-1 text-sm text-white/70">{plan.blurb}</p>
 
               <div className="mt-5 flex items-baseline gap-2">
-                <span className="text-4xl font-bold">${price(plan)}</span>
+                <span className="text-4xl font-bold">${annual ? plan.yearly : plan.monthly}</span>
                 <span className="text-white/60">/mo {annual && <span className="text-white/40">(annual)</span>}</span>
               </div>
 
@@ -209,13 +184,11 @@ export default function App() {
                 href={annual ? plan.buyUrl?.annual : plan.buyUrl?.monthly}
                 target="_blank"
                 rel="noreferrer"
-                className={`mt-6 grid w-full place-items-center rounded-2xl border border-white/15 px-4 py-3 font-medium hover:bg-white/10 ${
-                  plan.highlighted ? `bg-gradient-to-r ${BRAND.primary}` : "bg-white/5"
-                }`}
+                className={`mt-6 grid w-full place-items-center rounded-2xl border border-white/15 px-4 py-3 font-medium hover:bg-white/10 ${plan.highlighted ? `bg-gradient-to-r ${BRAND.primary}` : "bg-white/5"}`}
               >
                 <CreditCard className="mr-2 h-5 w-5" /> Buy {plan.name}
               </a>
-            </motion.div>
+            </div>
           ))}
         </div>
 
@@ -224,12 +197,183 @@ export default function App() {
         </p>
       </section>
 
-      {/* Footer */}
       <footer className="relative z-10 border-t border-white/10 bg-black/40">
         <div className="mx-auto max-w-7xl px-6 py-6 text-center text-xs text-white/60">
           © {new Date().getFullYear()} {BRAND.name}. All rights reserved.
         </div>
       </footer>
     </div>
+  );
+}
+
+// ---------- Login Page ----------
+function LoginPage() {
+  const { login } = useAuth();
+  const nav = useNavigate();
+  const loc = useLocation();
+  const from = loc.state?.from?.pathname || "/app";
+
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [err, setErr] = useState("");
+
+  const handleSubmit = async (e) => {
+    e.preventDefault();
+    setErr("");
+    try {
+      await login({ email, password });
+      nav(from, { replace: true });
+    } catch (e) {
+      setErr(e.message || "Login failed");
+    }
+  };
+
+  return (
+    <div className="min-h-screen grid place-items-center bg-neutral-950 text-white px-6">
+      <div className="w-full max-w-md rounded-3xl border border-white/10 bg-white/[0.03] p-6 ring-1 ring-white/5">
+        <div className="mb-4 flex items-center gap-3">
+          <div className={`grid h-9 w-9 place-items-center rounded-2xl bg-gradient-to-br ${BRAND.primary} ring-1 ring-white/10`}>
+            <Zap className="h-5 w-5" />
+          </div>
+          <div className="text-lg font-semibold">{BRAND.name}</div>
+        </div>
+        <h1 className="text-2xl font-semibold">Log in</h1>
+        <p className="mt-1 text-sm text-white/70">Use any email/password for now (demo).</p>
+
+        <form onSubmit={handleSubmit} className="mt-6 space-y-4">
+          <div>
+            <label className="text-sm text-white/70">Email</label>
+            <input
+              className="mt-1 w-full rounded-xl border border-white/10 bg-black/40 px-3 py-2 outline-none focus:ring-2 focus:ring-indigo-500/40"
+              type="email" value={email} onChange={(e) => setEmail(e.target.value)} placeholder="you@remiecrm.com" required
+            />
+          </div>
+          <div>
+            <label className="text-sm text-white/70">Password</label>
+            <input
+              className="mt-1 w-full rounded-xl border border-white/10 bg-black/40 px-3 py-2 outline-none focus:ring-2 focus:ring-indigo-500/40"
+              type="password" value={password} onChange={(e) => setPassword(e.target.value)} placeholder="••••••••" required
+            />
+          </div>
+          {err && <div className="text-sm text-rose-400">{err}</div>}
+          <button className="w-full rounded-xl bg-white px-4 py-2 font-medium text-black hover:bg-white/90">
+            Continue
+          </button>
+        </form>
+
+        <div className="mt-4 text-center text-sm">
+          <Link to="/" className="text-white/70 hover:text-white">← Back to site</Link>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ---------- Dashboard Layout + Pages ----------
+function AppLayout() {
+  const { user, logout } = useAuth();
+  const nav = useNavigate();
+
+  return (
+    <div className="min-h-screen bg-neutral-950 text-white grid md:grid-cols-[240px_1fr]">
+      {/* Sidebar */}
+      <aside className="hidden md:block border-r border-white/10 bg-black/30">
+        <div className="p-4 flex items-center gap-3 border-b border-white/10">
+          <div className={`grid h-9 w-9 place-items-center rounded-2xl bg-gradient-to-br ${BRAND.primary} ring-1 ring-white/10`}>
+            <Zap className="h-5 w-5" />
+          </div>
+          <div className="font-semibold">{BRAND.name}</div>
+        </div>
+        <nav className="p-3 space-y-1 text-sm">
+          <DashLink to="/app">Home</DashLink>
+          <DashLink to="/app/contacts">Contacts</DashLink>
+          <DashLink to="/app/campaigns">Campaigns</DashLink>
+          <DashLink to="/app/dialer">Dialer</DashLink>
+          <DashLink to="/app/mail-list">Mail List</DashLink>
+          <DashLink to="/app/billing">Billing</DashLink>
+          <DashLink to="/app/settings">Settings</DashLink>
+        </nav>
+      </aside>
+
+      {/* Main */}
+      <main>
+        <div className="flex items-center justify-between border-b border-white/10 bg-black/30 px-4 py-3">
+          <div className="font-medium">Welcome{user?.email ? `, ${user.email}` : ""}</div>
+          <button
+            onClick={() => { logout(); nav("/"); }}
+            className="inline-flex items-center gap-2 rounded-lg border border-white/15 px-3 py-1.5 text-sm hover:bg-white/5"
+          >
+            <LogOut className="h-4 w-4" /> Log out
+          </button>
+        </div>
+        <div className="p-4">
+          <Routes>
+            <Route index element={<DashboardHome />} />
+            <Route path="contacts" element={<Contacts />} />
+            <Route path="campaigns" element={<Campaigns />} />
+            <Route path="dialer" element={<Dialer />} />
+            <Route path="mail-list" element={<MailList />} />
+            <Route path="billing" element={<Billing />} />
+            <Route path="settings" element={<Settings />} />
+            <Route path="*" element={<Navigate to="/app" replace />} />
+          </Routes>
+        </div>
+      </main>
+    </div>
+  );
+}
+
+function DashLink({ to, children }) {
+  return (
+    <Link
+      to={to}
+      className="block rounded-lg px-3 py-2 text-white/80 hover:bg-white/5 hover:text-white"
+    >
+      {children}
+    </Link>
+  );
+}
+
+function Card({ title, children }) {
+  return (
+    <div className="rounded-2xl border border-white/10 bg-white/[0.03] p-4 ring-1 ring-white/5">
+      <div className="mb-2 text-sm font-semibold">{title}</div>
+      <div className="text-sm text-white/80">{children}</div>
+    </div>
+  );
+}
+
+function DashboardHome() {
+  return (
+    <div className="grid gap-4 md:grid-cols-2">
+      <Card title="Quick Start">
+        Import your contacts, set your first campaign, and start dialing.
+      </Card>
+      <Card title="Next Steps">
+        Connect calendars, add message templates, and invite team (Pro).
+      </Card>
+    </div>
+  );
+}
+function Contacts() { return <Card title="Contacts">Upload CSVs, manage people, add notes and files.</Card>; }
+function Campaigns() { return <Card title="Campaigns">Create intro texts, missed-call texts, and no-show rescue flows.</Card>; }
+function Dialer() { return <Card title="Dialer">Queue contacts and power through calls.</Card>; }
+function MailList() { return <Card title="Mail List">Auto-send birthdays and holiday mailings to stay top-of-mind.</Card>; }
+function Billing() { return <Card title="Billing">Your Stripe-managed subscription. Use the links on the pricing page to upgrade/downgrade.</Card>; }
+function Settings() { return <Card title="Settings">Branding, templates, calendar/email integrations.</Card>; }
+
+// ---------- App root: routes ----------
+export default function App() {
+  return (
+    <AuthProvider>
+      <Routes>
+        <Route path="/" element={<LandingPage />} />
+        <Route path="/login" element={<LoginPage />} />
+        <Route element={<ProtectedRoute />}>
+          <Route path="/app/*" element={<AppLayout />} />
+        </Route>
+        <Route path="*" element={<Navigate to="/" replace />} />
+      </Routes>
+    </AuthProvider>
   );
 }
