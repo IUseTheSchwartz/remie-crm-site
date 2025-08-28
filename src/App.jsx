@@ -9,13 +9,17 @@ const BRAND = {
   accentRing: "ring-indigo-400/50",
 };
 
-// --- Pricing plans (MAIL LIST + BASIC + PRO) ---
+// --- Pricing plans with Stripe buy URLs ---
 const PLANS = [
   {
     name: "Mail List",
     blurb: "Hands-off client touchpoints with auto birthday & holiday mailers.",
     monthly: 100,
-    yearly: 80, // discounted monthly eq., billed annually
+    yearly: 80,
+    buyUrl: {
+      monthly: "https://buy.stripe.com/test_8x24gBghhaXefke23T5c405",
+      annual:  "https://buy.stripe.com/test_28EaEZ4yz0iAfkedMB5c404"
+    },
     features: [
       "Automatic birthday letters for each contact",
       "Automatic holiday greetings to your whole book",
@@ -29,7 +33,11 @@ const PLANS = [
     name: "Basic",
     blurb: "For a single producer who wants one clean place to work.",
     monthly: 350,
-    yearly: 280, // discounted monthly eq., billed annually
+    yearly: 280,
+    buyUrl: {
+      monthly: "https://buy.stripe.com/test_8x28wR9ST7L2dc6gYN5c403",
+      annual:  "https://buy.stripe.com/test_00w5kF5CD8P67RM8sh5c402"
+    },
     features: [
       "Lead inbox & drag-and-drop pipeline",
       "Two-way texting & email in one place",
@@ -44,7 +52,11 @@ const PLANS = [
     name: "Pro",
     blurb: "Unlimited team access with agency-wide tools and training.",
     monthly: 1500,
-    yearly: 1200, // discounted monthly eq., billed annually
+    yearly: 1200,
+    buyUrl: {
+      monthly: "https://buy.stripe.com/test_00w28tc11d5m4FAaAp5c400",
+      annual:  "https://buy.stripe.com/test_14AcN7d55fdu6NIfUJ5c401"
+    },
     features: [
       "Everything in Basic",
       "Unlimited team member access (one price)",
@@ -182,7 +194,9 @@ export default function App() {
               </ul>
 
               <a
-                href="#YOUR_STRIPE_CHECKOUT_LINK"
+                href={annual ? plan.buyUrl?.annual : plan.buyUrl?.monthly}
+                target="_blank"
+                rel="noreferrer"
                 className={`mt-6 grid w-full place-items-center rounded-2xl border border-white/15 px-4 py-3 font-medium hover:bg-white/10 ${
                   plan.highlighted ? `bg-gradient-to-r ${BRAND.primary}` : "bg-white/5"
                 }`}
