@@ -6,9 +6,6 @@ import {
   Shield,
   Zap,
   Phone,
-  MessageSquare,
-  BarChart3,
-  Users,
   CreditCard,
 } from "lucide-react";
 
@@ -19,62 +16,43 @@ const BRAND = {
   accentRing: "ring-indigo-400/50",
 };
 
-// --- Pricing plans (UPDATED with new pricing + competitor features) ---
+// --- Pricing plans (BASIC + PRO only) ---
 const PLANS = [
   {
-    name: "Solo",
-    blurb: "For individual producers ready to ditch spreadsheets.",
-    monthly: 59, // updated
-    yearly: 50,  // updated
+    name: "Basic",
+    blurb: "For solo producers who want everything in one place.",
+    monthly: 350,
+    yearly: 280, // discounted monthly equivalent (billed annually)
     features: [
       "Lead inbox & visual pipeline",
-      "Manage your leads & book of business",
-      "Two-way SMS & email campaigns (starter templates)",
+      "Two-way SMS & email campaigns",
       "Basic dialing (click-to-call)",
-      "Final Expense Day-1 cadence (texts + calls)",
-      "Client payment reminders (auto tasks/texts)",
-      "TCPA/DNC tools & A2P 10DLC assistance",
-      "Up to 2,000 contacts",
-    ],
-    ctaNote: "Best for new agents",
-  },
-  {
-    name: "Team",
-    blurb: "For small teams that want shared workflows.",
-    monthly: 100, // updated
-    yearly: 89,   // updated
-    features: [
-      "Everything in Solo",
-      "Team inbox, shared calendars & round-robin",
-      "Power dialer & call queues",
-      "Automated no-show campaigns (reschedule link)",
-      "Carrier quote & application hub (beta)",
-      "Personalized landing pages for IUL, MP & FEX (add-on)",
-      "Leaderboards & role-based permissions",
+      "Automated cadences & reminders",
+      "Policy tracking & client payment alerts",
+      "TCPA/DNC compliance tools",
       "Up to 5,000 contacts",
     ],
-    seat: { monthly: 19, yearly: 15 },
-    ctaNote: "Most popular",
-    highlighted: true,
+    ctaNote: "Best for individual agents",
   },
   {
-    name: "Agency",
-    blurb: "For agencies scaling producers and overrides.",
-    monthly: 500, // updated
-    yearly: 400,  // updated
+    name: "Pro",
+    blurb: "Unlimited team members, full feature access for agencies.",
+    monthly: 1500,
+    yearly: 1200, // discounted monthly equivalent (billed annually)
     features: [
-      "Everything in Team",
-      "Multi-team workspaces",
-      "Commission & override tracking",
-      "Chargeback Guard (renewal/lapse alerts)",
+      "Everything in Basic",
+      "Unlimited team member access",
+      "Team inbox, shared calendars & round-robin",
+      "Power dialer & call queues",
+      "Automated no-show rescue campaigns",
+      "Carrier quote & application hub (beta)",
+      "Leaderboards & override/commission tracking",
       "Concierge migration + done-for-you onboarding",
       "Bootcamp training library & weekly office hours",
-      "Direct-mail campaign exports & print-ready lists",
-      "Full audit trails & one-click data export",
-      "20,000+ contacts (elastic scaling available)",
+      "Elastic scaling: 50,000+ contacts",
     ],
-    seat: { monthly: 29, yearly: 24 },
-    ctaNote: "Scale-ready",
+    ctaNote: "For serious agencies",
+    highlighted: true,
   },
 ];
 
@@ -83,8 +61,6 @@ export default function App() {
   const [checkout, setCheckout] = useState({ open: false, plan: null });
 
   const price = (plan) => (annual ? plan.yearly : plan.monthly);
-  const seat = (plan) =>
-    plan.seat ? (annual ? plan.seat.yearly : plan.seat.monthly) : null;
 
   const handleCheckout = (plan) => setCheckout({ open: true, plan });
 
@@ -107,9 +83,6 @@ export default function App() {
             <span className="font-semibold tracking-tight">{BRAND.name}</span>
           </div>
           <div className="hidden items-center gap-8 md:flex">
-            <a href="#features" className="opacity-80 hover:opacity-100">
-              Features
-            </a>
             <a href="#pricing" className="opacity-80 hover:opacity-100">
               Pricing
             </a>
@@ -138,8 +111,8 @@ export default function App() {
             Close more policies. Not tabs.
           </motion.h1>
           <p className="mt-4 text-lg text-white/70">
-            Built for life-insurance producers and agencies—automated campaigns,
-            dialer, policy tracking, commissions, and team tools in one place.
+            Choose the plan that fits your agency — whether you’re a solo
+            producer or running a nationwide team.
           </p>
           <div className="mt-6 flex items-center justify-center gap-6 text-xs text-white/60">
             <span className="inline-flex items-center gap-1">
@@ -184,7 +157,7 @@ export default function App() {
           </div>
         </div>
 
-        <div className="mt-10 grid gap-6 md:grid-cols-3">
+        <div className="mt-10 grid gap-6 md:grid-cols-2">
           {PLANS.map((plan) => (
             <motion.div
               key={plan.name}
@@ -215,11 +188,6 @@ export default function App() {
                   /mo {annual && <span className="text-white/40">(annual)</span>}
                 </span>
               </div>
-              {seat(plan) && (
-                <div className="mt-1 text-xs text-white/60">
-                  + ${seat(plan)}/seat
-                </div>
-              )}
 
               <ul className="mt-6 space-y-2 text-sm">
                 {plan.features.map((f) => (
