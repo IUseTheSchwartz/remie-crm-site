@@ -1,31 +1,36 @@
 // File: src/pages/LeadsPage.jsx
 import { useEffect, useMemo, useState } from "react";
 import Papa from "papaparse";
-import { loadLeads, saveLeads, loadClients, saveClients, normalizePerson, upsert } from "../lib/storage.js";
+import {
+  loadLeads, saveLeads,
+  loadClients, saveClients,
+  normalizePerson, upsert
+} from "../lib/storage.js";
 
-const TEMPLATE_HEADERS = ["name","phone","email"]; // minimum columns for import
+import {
+  scheduleWelcomeText,
+  schedulePolicyKickoffEmail
+} from "../lib/automation.js";
+
+const TEMPLATE_HEADERS = ["name","phone","email"]; // minimum CSV headers
 
 export default function LeadsPage() {
   const [tab, setTab] = useState("clients"); // 'clients' | 'leads' | 'sold'
   const [leads, setLeads] = useState([]);
   const [clients, setClients] = useState([]);
-  const [selected, setSelected] = useState(null); // selected client for detail/sell
+  const [selected, setSelected] = useState(null);
   const [filter, setFilter] = useState("");
 
-  // load from storage
   useEffect(() => {
     setLeads(loadLeads());
     setClients(loadClients());
   }, []);
 
-  // derived views
+  // Merge clients + leads into a deduped "clients" view
   const allClients = useMemo(() => {
-    // Clients list = distinct union of clients + leads by id
     const map = new Map();
     for (const x of clients) map.set(x.id, x);
-    for (const y of leads) {
-      if (!map.has(y.id)) map.set(y.id, y);
-    }
+    for (const y of leads) if (!map.has(y.id)) map.set(y.id, y);
     return [...map.values()];
   }, [clients, leads]);
 
@@ -54,8 +59,7 @@ export default function LeadsPage() {
             email: r.email || r.Email,
             status: "lead",
           }))
-          .filter(r => r.name || r.phone || r.email); // ignore empty
-        // Save as both leads and clients (so Clients tab shows everything)
+          .filter(r => r.name || r.phone || r.email);
         const newLeads = [...normalized, ...leads];
         const newClients = [...normalized, ...clients];
         saveLeads(newLeads);
@@ -79,12 +83,10 @@ export default function LeadsPage() {
     URL.revokeObjectURL(url);
   }
 
-  function openAsSold(person) {
-    setSelected(person);
-  }
+  function openAsSold(person) { setSelected(person); }
 
   function saveSoldInfo(id, soldPayload) {
-    // Update the person as SOLD (by selecting from client list OR typed manually)
+    // Update / upsert record and mark as SOLD
     let list = [...allClients];
     const idx = list.findIndex(x => x.id === id);
     const base = idx >= 0 ? list[idx] : normalizePerson({ id });
@@ -101,20 +103,47 @@ export default function LeadsPage() {
         name: soldPayload.name || base.name || "",
         phone: soldPayload.phone || base.phone || "",
         email: soldPayload.email || base.email || "",
+        address: {
+          street: soldPayload.street || "",
+          city: soldPayload.city || "",
+          state: soldPayload.state || "",
+          zip: soldPayload.zip || "",
+        }
       },
-      // also reflect core identity in top-level fields
       name: soldPayload.name || base.name || "",
       phone: soldPayload.phone || base.phone || "",
       email: soldPayload.email || base.email || "",
     };
 
-    // Write back into clients and leads stores
+    // Persist
     const nextClients = upsert(clients, updated);
     const nextLeads   = upsert(leads, updated);
     saveClients(nextClients);
     saveLeads(nextLeads);
     setClients(nextClients);
     setLeads(nextLeads);
+
+    // OPTIONAL: queue automations when toggled
+    if (soldPayload.sendWelcomeText) {
+      scheduleWelcomeText({
+        name: updated.name,
+        phone: updated.phone,
+        carrier: updated.sold?.carrier,
+        startDate: updated.sold?.startDate,
+      });
+    }
+    if (soldPayload.sendPolicyEmailOrMail) {
+      schedulePolicyKickoffEmail({
+        name: updated.name,
+        email: updated.email,
+        carrier: updated.sold?.carrier,
+        faceAmount: updated.sold?.faceAmount,
+        monthlyPayment: updated.sold?.monthlyPayment,
+        startDate: updated.sold?.startDate,
+        address: updated.sold?.address,
+      });
+    }
+
     setSelected(null);
     setTab("sold");
   }
@@ -185,7 +214,7 @@ export default function LeadsPage() {
 
       {/* Table */}
       <div className="overflow-x-auto rounded-2xl border border-white/10">
-        <table className="min-w-[720px] w-full border-collapse text-sm">
+        <table className="min-w-[920px] w-full border-collapse text-sm">
           <thead className="bg-white/[0.04] text-white/70">
             <tr>
               <Th>Name</Th>
@@ -239,7 +268,7 @@ export default function LeadsPage() {
         </table>
       </div>
 
-      {/* Mark-as-Sold Drawer */}
+      {/* Drawer for SOLD */}
       {selected && (
         <SoldDrawer
           initial={selected}
@@ -252,17 +281,9 @@ export default function LeadsPage() {
   );
 }
 
-function Th({ children }) {
-  return <th className="px-3 py-2 text-left font-medium">{children}</th>;
-}
-function Td({ children }) {
-  return <td className="px-3 py-2">{children}</td>;
-}
+function Th({ children }) { return <th className="px-3 py-2 text-left font-medium">{children}</th>; }
+function Td({ children }) { return <td className="px-3 py-2">{children}</td>; }
 
-/** Drawer/modal to mark as SOLD, with two ways:
- *  - Pick an existing client to prefill
- *  - Or type everything manually
- */
 function SoldDrawer({ initial, allClients, onClose, onSave }) {
   const [form, setForm] = useState({
     id: initial?.id || crypto.randomUUID(),
@@ -274,6 +295,14 @@ function SoldDrawer({ initial, allClients, onClose, onSave }) {
     premium: initial?.sold?.premium || "",
     monthlyPayment: initial?.sold?.monthlyPayment || "",
     startDate: initial?.sold?.startDate || "",
+    // NEW address fields
+    street: initial?.sold?.address?.street || "",
+    city: initial?.sold?.address?.city || "",
+    state: initial?.sold?.address?.state || "",
+    zip: initial?.sold?.address?.zip || "",
+    // NEW automation toggles
+    sendWelcomeText: true,
+    sendPolicyEmailOrMail: true,
   });
 
   function pickClient(id) {
@@ -295,7 +324,7 @@ function SoldDrawer({ initial, allClients, onClose, onSave }) {
 
   return (
     <div className="fixed inset-0 z-50 grid bg-black/60 p-4">
-      <div className="relative m-auto w-full max-w-2xl rounded-2xl border border-white/15 bg-neutral-950 p-5">
+      <div className="relative m-auto w-full max-w-3xl rounded-2xl border border-white/15 bg-neutral-950 p-5">
         <div className="mb-3 text-lg font-semibold">Mark as SOLD</div>
 
         {/* Select existing client to pre-fill */}
@@ -352,6 +381,47 @@ function SoldDrawer({ initial, allClients, onClose, onSave }) {
             <input type="date" value={form.startDate} onChange={(e)=>setForm({...form, startDate:e.target.value})}
                    className="inp" />
           </Field>
+
+          {/* Address (NEW) */}
+          <Field label="Street">
+            <input value={form.street} onChange={(e)=>setForm({...form, street:e.target.value})}
+                   className="inp" placeholder="123 Main St" />
+          </Field>
+          <Field label="City">
+            <input value={form.city} onChange={(e)=>setForm({...form, city:e.target.value})}
+                   className="inp" placeholder="Austin" />
+          </Field>
+          <Field label="State">
+            <input value={form.state} onChange={(e)=>setForm({...form, state:e.target.value})}
+                   className="inp" placeholder="TX" />
+          </Field>
+          <Field label="ZIP">
+            <input value={form.zip} onChange={(e)=>setForm({...form, zip:e.target.value})}
+                   className="inp" placeholder="78701" />
+          </Field>
+
+          {/* Automations (NEW) */}
+          <div className="sm:col-span-2 mt-1 grid gap-2">
+            <label className="inline-flex items-center gap-2 text-sm">
+              <input
+                type="checkbox"
+                checked={form.sendWelcomeText}
+                onChange={(e)=>setForm({...form, sendWelcomeText:e.target.checked})}
+              />
+              Send welcome text after saving
+            </label>
+            <label className="inline-flex items-center gap-2 text-sm">
+              <input
+                type="checkbox"
+                checked={form.sendPolicyEmailOrMail}
+                onChange={(e)=>setForm({...form, sendPolicyEmailOrMail:e.target.checked})}
+              />
+              Send policy kickoff email / printable letter after saving
+            </label>
+            <div className="text-xs text-white/50">
+              (Emails require an email address. Printable letters use the mailing address.)
+            </div>
+          </div>
 
           <div className="sm:col-span-2 mt-2 flex items-center justify-end gap-2">
             <button type="button" onClick={onClose}
