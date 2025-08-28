@@ -17,6 +17,11 @@ import { AuthProvider, useAuth } from "./auth.jsx";
 import LoginPage from "./pages/LoginPage.jsx";
 import SignupPage from "./pages/SignupPage.jsx";
 
+// NEW: Dashboard stats & components
+import NumberCard from "./components/NumberCard.jsx";
+import { dashboardSnapshot } from "./lib/stats.js";
+import ReportsPage from "./pages/ReportsPage.jsx";
+
 // -------- Shared brand --------
 const BRAND = {
   name: "Remie CRM",
@@ -181,7 +186,7 @@ function LandingPage() {
             Switch between monthly and annual billing. Annual saves around 20%.
           </p>
 
-          <div className="mt-6 inline-flex items-center gap-2 rounded-full border border-white/15 bg-white/5 p-1 text-sm">
+        <div className="mt-6 inline-flex items-center gap-2 rounded-full border border-white/15 bg-white/5 p-1 text-sm">
             <button
               onClick={() => setAnnual(false)}
               className={`rounded-full px-3 py-1 transition ${
@@ -294,6 +299,7 @@ function AppLayout() {
           <DashLink to="/app/campaigns">Campaigns</DashLink>
           <DashLink to="/app/dialer">Dialer</DashLink>
           <DashLink to="/app/mail-list">Mail List</DashLink>
+          <DashLink to="/app/reports">Reports</DashLink>{/* NEW */}
           <DashLink to="/app/billing">Billing</DashLink>
           <DashLink to="/app/settings">Settings</DashLink>
         </nav>
@@ -322,6 +328,7 @@ function AppLayout() {
             <Route path="campaigns" element={<Campaigns />} />
             <Route path="dialer" element={<Dialer />} />
             <Route path="mail-list" element={<MailList />} />
+            <Route path="reports" element={<ReportsPage />} /> {/* NEW */}
             <Route path="billing" element={<Billing />} />
             <Route path="settings" element={<Settings />} />
             <Route path="*" element={<Navigate to="/app" replace />} />
@@ -352,18 +359,75 @@ function Card({ title, children }) {
   );
 }
 
+// NEW: Replaced dashboard with KPI cards using stats helpers
 function DashboardHome() {
+  const snap = dashboardSnapshot();
+
+  const kpi = [
+    {
+      label: "Closed (today)",
+      value: snap.today.closed,
+      sub: `This month: ${snap.thisMonth.closed}`,
+    },
+    {
+      label: "Clients (today)",
+      value: snap.today.clients,
+      sub: `This month: ${snap.thisMonth.clients}`,
+    },
+    {
+      label: "Leads (today)",
+      value: snap.today.leads,
+      sub: `This week: ${snap.thisWeek.leads}`,
+    },
+    {
+      label: "Appointments (today)",
+      value: snap.today.appointments,
+      sub: `This week: ${snap.thisWeek.appointments}`,
+    },
+  ];
+
   return (
-    <div className="grid gap-4 md:grid-cols-2">
-      <Card title="Quick Start">
-        Import your contacts, set your first campaign, and start dialing.
-      </Card>
+    <div className="space-y-6">
+      <div className="grid gap-4 md:grid-cols-4">
+        {kpi.map((x) => (
+          <NumberCard
+            key={x.label}
+            label={x.label}
+            value={x.value}
+            sublabel={x.sub}
+          />
+        ))}
+      </div>
+
+      <div className="grid gap-4 md:grid-cols-2">
+        <div className="rounded-2xl border border-white/10 bg-white/[0.03] p-4 ring-1 ring-white/5">
+          <div className="mb-2 text-sm font-semibold">This Week</div>
+          <div className="grid grid-cols-4 gap-3 text-sm">
+            <NumberCard label="Closed" value={snap.thisWeek.closed} />
+            <NumberCard label="Clients" value={snap.thisWeek.clients} />
+            <NumberCard label="Leads" value={snap.thisWeek.leads} />
+            <NumberCard label="Appts" value={snap.thisWeek.appointments} />
+          </div>
+        </div>
+
+        <div className="rounded-2xl border border-white/10 bg-white/[0.03] p-4 ring-1 ring-white/5">
+          <div className="mb-2 text-sm font-semibold">This Month</div>
+          <div className="grid grid-cols-4 gap-3 text-sm">
+            <NumberCard label="Closed" value={snap.thisMonth.closed} />
+            <NumberCard label="Clients" value={snap.thisMonth.clients} />
+            <NumberCard label="Leads" value={snap.thisMonth.leads} />
+            <NumberCard label="Appts" value={snap.thisMonth.appointments} />
+          </div>
+        </div>
+      </div>
+
       <Card title="Next Steps">
         Connect calendars, add message templates, and invite team (Pro).
       </Card>
     </div>
   );
 }
+
 function Contacts() {
   return (
     <Card title="Contacts">
