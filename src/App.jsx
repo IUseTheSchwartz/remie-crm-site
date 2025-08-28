@@ -1,13 +1,6 @@
 import { useState } from "react";
 import { motion } from "framer-motion";
-import {
-  Check,
-  Star,
-  Shield,
-  Zap,
-  Phone,
-  CreditCard,
-} from "lucide-react";
+import { Check, Shield, Star, Zap, Phone, CreditCard } from "lucide-react";
 
 // --- Brand config ---
 const BRAND = {
@@ -16,57 +9,66 @@ const BRAND = {
   accentRing: "ring-indigo-400/50",
 };
 
-// --- Pricing plans (BASIC + PRO only) ---
+// --- Pricing plans (MAIL LIST + BASIC + PRO) ---
 const PLANS = [
   {
-    name: "Basic",
-    blurb: "For solo producers who want everything in one place.",
-    monthly: 350,
-    yearly: 280, // discounted monthly equivalent (billed annually)
+    name: "Mail List",
+    blurb: "Hands-off client touchpoints with auto birthday & holiday mailers.",
+    monthly: 100,
+    yearly: 80, // discounted monthly eq., billed annually
     features: [
-      "Lead inbox & visual pipeline",
-      "Two-way SMS & email campaigns",
-      "Basic dialing (click-to-call)",
-      "Automated cadences & reminders",
-      "Policy tracking & client payment alerts",
-      "TCPA/DNC compliance tools",
-      "Up to 5,000 contacts",
+      "Automatic birthday letters for each contact",
+      "Automatic holiday greetings to your whole book",
+      "Upload CSV and set-it-and-forget-it",
+      "Custom message templates & sender info",
+      "Activity log so you know what went out",
     ],
-    ctaNote: "Best for individual agents",
+    ctaNote: "Stay top-of-mind",
+  },
+  {
+    name: "Basic",
+    blurb: "For a single producer who wants one clean place to work.",
+    monthly: 350,
+    yearly: 280, // discounted monthly eq., billed annually
+    features: [
+      "Lead inbox & drag-and-drop pipeline",
+      "Two-way texting & email in one place",
+      "Click-to-call dialing (no manual numbers)",
+      "Simple automations (intro text, missed-call text)",
+      "Tasks & reminders so follow-ups never slip",
+      "Store thousands of contacts with notes & files",
+    ],
+    ctaNote: "Best for solo agents",
   },
   {
     name: "Pro",
-    blurb: "Unlimited team members, full feature access for agencies.",
+    blurb: "Unlimited team access with agency-wide tools and training.",
     monthly: 1500,
-    yearly: 1200, // discounted monthly equivalent (billed annually)
+    yearly: 1200, // discounted monthly eq., billed annually
     features: [
       "Everything in Basic",
-      "Unlimited team member access",
-      "Team inbox, shared calendars & round-robin",
-      "Power dialer & call queues",
-      "Automated no-show rescue campaigns",
-      "Carrier quote & application hub (beta)",
-      "Leaderboards & override/commission tracking",
-      "Concierge migration + done-for-you onboarding",
-      "Bootcamp training library & weekly office hours",
-      "Elastic scaling: 50,000+ contacts",
+      "Unlimited team member access (one price)",
+      "Shared inbox & calendars with assignment",
+      "Power dialer & call queues for fast sessions",
+      "No-show rescue campaigns (auto text + link)",
+      "Quote & application hub (beta)",
+      "Bootcamp training + ongoing new-feature sessions",
+      "Concierge migration from spreadsheets/other CRMs",
+      "Scales to 50,000+ contacts for large agencies",
     ],
-    ctaNote: "For serious agencies",
+    ctaNote: "For growing agencies",
     highlighted: true,
   },
 ];
 
 export default function App() {
   const [annual, setAnnual] = useState(true);
-  const [checkout, setCheckout] = useState({ open: false, plan: null });
 
   const price = (plan) => (annual ? plan.yearly : plan.monthly);
 
-  const handleCheckout = (plan) => setCheckout({ open: true, plan });
-
   return (
     <div className="min-h-screen bg-neutral-950 text-white">
-      {/* Glow */}
+      {/* Background glow */}
       <div className="pointer-events-none fixed inset-0 overflow-hidden">
         <div className="absolute -top-56 left-1/2 h-[36rem] w-[36rem] -translate-x-1/2 rounded-full bg-gradient-to-br from-indigo-600/20 via-fuchsia-500/10 to-rose-500/10 blur-3xl" />
       </div>
@@ -75,20 +77,10 @@ export default function App() {
       <header className="relative z-10 border-b border-white/10 backdrop-blur">
         <nav className="mx-auto flex max-w-7xl items-center justify-between px-6 py-4">
           <div className="flex items-center gap-3">
-            <div
-              className={`grid h-9 w-9 place-items-center rounded-2xl bg-gradient-to-br ${BRAND.primary} shadow-lg shadow-indigo-700/20 ring-1 ring-white/10`}
-            >
+            <div className={`grid h-9 w-9 place-items-center rounded-2xl bg-gradient-to-br ${BRAND.primary} shadow-lg shadow-indigo-700/20 ring-1 ring-white/10`}>
               <Zap className="h-5 w-5" />
             </div>
             <span className="font-semibold tracking-tight">{BRAND.name}</span>
-          </div>
-          <div className="hidden items-center gap-8 md:flex">
-            <a href="#pricing" className="opacity-80 hover:opacity-100">
-              Pricing
-            </a>
-            <a href="#faq" className="opacity-80 hover:opacity-100">
-              Compliance
-            </a>
           </div>
           <a
             href="#pricing"
@@ -111,18 +103,18 @@ export default function App() {
             Close more policies. Not tabs.
           </motion.h1>
           <p className="mt-4 text-lg text-white/70">
-            Choose the plan that fits your agency — whether you’re a solo
-            producer or running a nationwide team.
+            Choose the plan that fits your workflow—stay in touch automatically, run a clean solo pipeline, or plug your whole team into one system.
           </p>
+
           <div className="mt-6 flex items-center justify-center gap-6 text-xs text-white/60">
             <span className="inline-flex items-center gap-1">
-              <Shield className="h-4 w-4" /> TCPA/DNC tools & A2P 10DLC assist
+              <Star className="h-4 w-4" /> Concierge migration included (Pro)
             </span>
             <span className="inline-flex items-center gap-1">
-              <Star className="h-4 w-4" /> Concierge migration included
+              <Phone className="h-4 w-4" /> Click-to-call & power dialer
             </span>
             <span className="inline-flex items-center gap-1">
-              <Phone className="h-4 w-4" /> Local presence* available
+              <Shield className="h-4 w-4" /> Ongoing bootcamp for new features (Pro)
             </span>
           </div>
         </div>
@@ -131,33 +123,26 @@ export default function App() {
       {/* Pricing */}
       <section id="pricing" className="relative z-10 mx-auto max-w-7xl px-6 py-14">
         <div className="mx-auto max-w-2xl text-center">
-          <h2 className="text-3xl font-semibold tracking-tight sm:text-4xl">
-            Simple, transparent pricing
-          </h2>
-          <p className="mt-2 text-white/70">
-            Switch between monthly and annual billing. Annual saves ~20%.
-          </p>
+          <h2 className="text-3xl font-semibold tracking-tight sm:text-4xl">Simple, transparent pricing</h2>
+          <p className="mt-2 text-white/70">Switch between monthly and annual billing. Annual saves around 20%.</p>
+
           <div className="mt-6 inline-flex items-center gap-2 rounded-full border border-white/15 bg-white/5 p-1 text-sm">
             <button
               onClick={() => setAnnual(false)}
-              className={`rounded-full px-3 py-1 transition ${
-                !annual ? "bg-white text-black" : "text-white/80"
-              }`}
+              className={`rounded-full px-3 py-1 transition ${!annual ? "bg-white text-black" : "text-white/80"}`}
             >
               Monthly
             </button>
             <button
               onClick={() => setAnnual(true)}
-              className={`rounded-full px-3 py-1 transition ${
-                annual ? "bg-white text-black" : "text-white/80"
-              }`}
+              className={`rounded-full px-3 py-1 transition ${annual ? "bg-white text-black" : "text-white/80"}`}
             >
               Annual
             </button>
           </div>
         </div>
 
-        <div className="mt-10 grid gap-6 md:grid-cols-2">
+        <div className="mt-10 grid gap-6 md:grid-cols-3">
           {PLANS.map((plan) => (
             <motion.div
               key={plan.name}
@@ -166,9 +151,7 @@ export default function App() {
               viewport={{ once: true }}
               transition={{ duration: 0.4 }}
               className={`relative rounded-3xl border ${
-                plan.highlighted
-                  ? "border-white/30 bg-white/[0.06]"
-                  : "border-white/10 bg-white/[0.04]"
+                plan.highlighted ? "border-white/30 bg-white/[0.06]" : "border-white/10 bg-white/[0.04]"
               } p-6 shadow-2xl shadow-black/30 ring-1 ${
                 plan.highlighted ? BRAND.accentRing : "ring-white/5"
               }`}
@@ -184,9 +167,7 @@ export default function App() {
 
               <div className="mt-5 flex items-baseline gap-2">
                 <span className="text-4xl font-bold">${price(plan)}</span>
-                <span className="text-white/60">
-                  /mo {annual && <span className="text-white/40">(annual)</span>}
-                </span>
+                <span className="text-white/60">/mo {annual && <span className="text-white/40">(annual)</span>}</span>
               </div>
 
               <ul className="mt-6 space-y-2 text-sm">
@@ -200,22 +181,20 @@ export default function App() {
                 ))}
               </ul>
 
-              <button
-                onClick={() => handleCheckout(plan)}
-                className={`mt-6 w-full rounded-2xl border border-white/15 px-4 py-3 font-medium hover:bg-white/10 ${
-                  plan.highlighted
-                    ? `bg-gradient-to-r ${BRAND.primary}`
-                    : "bg-white/5"
+              <a
+                href="#YOUR_STRIPE_CHECKOUT_LINK"
+                className={`mt-6 grid w-full place-items-center rounded-2xl border border-white/15 px-4 py-3 font-medium hover:bg-white/10 ${
+                  plan.highlighted ? `bg-gradient-to-r ${BRAND.primary}` : "bg-white/5"
                 }`}
               >
-                Buy {plan.name}
-              </button>
+                <CreditCard className="mr-2 h-5 w-5" /> Buy {plan.name}
+              </a>
             </motion.div>
           ))}
         </div>
 
         <p className="mt-6 text-center text-xs text-white/50">
-          *Local presence availability varies by region and carrier rules. Prices USD; taxes may apply.
+          Prices in USD. Annual pricing shows per-month equivalent, billed annually. Features vary by plan.
         </p>
       </section>
 
