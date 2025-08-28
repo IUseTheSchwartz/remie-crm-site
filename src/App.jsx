@@ -1,9 +1,21 @@
+// File: src/App.jsx
 import { useState } from "react";
-import { Routes, Route, Link, useNavigate, useLocation, Navigate } from "react-router-dom";
+import { Routes, Route, Link, Navigate, useNavigate } from "react-router-dom";
 import { motion } from "framer-motion";
-import { Check, Shield, Star, Zap, Phone, CreditCard, LogOut } from "lucide-react";
-import ProtectedRoute from "./components/ProtectedRoute";
-import { AuthProvider, useAuth } from "./auth";
+import {
+  Check,
+  Shield,
+  Star,
+  Zap,
+  Phone,
+  CreditCard,
+  LogOut,
+} from "lucide-react";
+
+import ProtectedRoute from "./components/ProtectedRoute.jsx";
+import { AuthProvider, useAuth } from "./auth.jsx";
+import LoginPage from "./pages/LoginPage.jsx";
+import SignupPage from "./pages/SignupPage.jsx";
 
 // -------- Shared brand --------
 const BRAND = {
@@ -12,7 +24,7 @@ const BRAND = {
   accentRing: "ring-indigo-400/50",
 };
 
-// -------- Landing pricing plans (unchanged except wrapped in LandingPage) --------
+// -------- Landing pricing plans (with Stripe links) --------
 const PLANS = [
   {
     name: "Mail List",
@@ -21,7 +33,7 @@ const PLANS = [
     yearly: 80,
     buyUrl: {
       monthly: "https://buy.stripe.com/test_8x24gBghhaXefke23T5c405",
-      annual:  "https://buy.stripe.com/test_28EaEZ4yz0iAfkedMB5c404"
+      annual: "https://buy.stripe.com/test_28EaEZ4yz0iAfkedMB5c404",
     },
     features: [
       "Automatic birthday letters for each contact",
@@ -39,7 +51,7 @@ const PLANS = [
     yearly: 280,
     buyUrl: {
       monthly: "https://buy.stripe.com/test_8x28wR9ST7L2dc6gYN5c403",
-      annual:  "https://buy.stripe.com/test_00w5kF5CD8P67RM8sh5c402"
+      annual: "https://buy.stripe.com/test_00w5kF5CD8P67RM8sh5c402",
     },
     features: [
       "Lead inbox & drag-and-drop pipeline",
@@ -60,12 +72,13 @@ const PLANS = [
   },
   {
     name: "Pro",
-    blurb: "All Basic features, but for your entire agency — unlimited team access.",
+    blurb:
+      "All Basic features, but for your entire agency — unlimited team access.",
     monthly: 1500,
     yearly: 1200,
     buyUrl: {
       monthly: "https://buy.stripe.com/test_00w28tc11d5m4FAaAp5c400",
-      annual:  "https://buy.stripe.com/test_14AcN7d55fdu6NIfUJ5c401"
+      annual: "https://buy.stripe.com/test_14AcN7d55fdu6NIfUJ5c401",
     },
     features: [
       "Lead inbox & drag-and-drop pipeline",
@@ -88,44 +101,57 @@ const PLANS = [
   },
 ];
 
-// ---------- PAGES ----------
+// ---------- Landing Page ----------
 function LandingPage() {
   const [annual, setAnnual] = useState(true);
   const price = (plan) => (annual ? plan.yearly : plan.monthly);
 
   return (
     <div className="min-h-screen bg-neutral-950 text-white">
+      {/* Glow */}
       <div className="pointer-events-none fixed inset-0 overflow-hidden">
         <div className="absolute -top-56 left-1/2 h-[36rem] w-[36rem] -translate-x-1/2 rounded-full bg-gradient-to-br from-indigo-600/20 via-fuchsia-500/10 to-rose-500/10 blur-3xl" />
       </div>
 
+      {/* Header */}
       <header className="relative z-10 border-b border-white/10 backdrop-blur">
         <nav className="mx-auto flex max-w-7xl items-center justify-between px-6 py-4">
           <div className="flex items-center gap-3">
-            <div className={`grid h-9 w-9 place-items-center rounded-2xl bg-gradient-to-br ${BRAND.primary} shadow-lg ring-1 ring-white/10`}>
+            <div
+              className={`grid h-9 w-9 place-items-center rounded-2xl bg-gradient-to-br ${BRAND.primary} shadow-lg ring-1 ring-white/10`}
+            >
               <Zap className="h-5 w-5" />
             </div>
             <span className="font-semibold tracking-tight">{BRAND.name}</span>
           </div>
           <div className="flex items-center gap-3">
-            <Link to="/login" className="text-sm opacity-80 hover:opacity-100">Log in</Link>
-            <a
-              href="#pricing"
+            <Link to="/login" className="text-sm opacity-80 hover:opacity-100">
+              Log in
+            </Link>
+            <Link
+              to="/signup"
               className={`hidden rounded-xl bg-gradient-to-r ${BRAND.primary} px-4 py-2 text-sm font-medium shadow-lg ring-1 ring-white/10 md:block`}
             >
               Start 14-day free trial
-            </a>
+            </Link>
           </div>
         </nav>
       </header>
 
+      {/* Hero */}
       <section className="relative z-10 mx-auto max-w-7xl px-6 pb-10 pt-16 sm:pt-20">
         <div className="mx-auto max-w-3xl text-center">
-          <motion.h1 initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.5 }} className="text-4xl font-semibold leading-tight sm:text-5xl">
+          <motion.h1
+            initial={{ opacity: 0, y: 10 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ duration: 0.5 }}
+            className="text-4xl font-semibold leading-tight sm:text-5xl"
+          >
             Close more policies. Not tabs.
           </motion.h1>
           <p className="mt-4 text-lg text-white/70">
-            Choose the plan that fits your workflow—stay in touch automatically, run a clean solo pipeline, or plug your whole team into one system.
+            Choose the plan that fits your workflow—stay in touch automatically,
+            run a clean solo pipeline, or plug your whole team into one system.
           </p>
 
           <div className="mt-6 flex items-center justify-center gap-6 text-xs text-white/60">
@@ -142,20 +168,51 @@ function LandingPage() {
         </div>
       </section>
 
-      <section id="pricing" className="relative z-10 mx-auto max-w-7xl px-6 py-14">
+      {/* Pricing */}
+      <section
+        id="pricing"
+        className="relative z-10 mx-auto max-w-7xl px-6 py-14"
+      >
         <div className="mx-auto max-w-2xl text-center">
-          <h2 className="text-3xl font-semibold tracking-tight sm:text-4xl">Simple, transparent pricing</h2>
-          <p className="mt-2 text-white/70">Switch between monthly and annual billing. Annual saves around 20%.</p>
+          <h2 className="text-3xl font-semibold tracking-tight sm:text-4xl">
+            Simple, transparent pricing
+          </h2>
+          <p className="mt-2 text-white/70">
+            Switch between monthly and annual billing. Annual saves around 20%.
+          </p>
 
           <div className="mt-6 inline-flex items-center gap-2 rounded-full border border-white/15 bg-white/5 p-1 text-sm">
-            <button onClick={() => setAnnual(false)} className={`rounded-full px-3 py-1 transition ${!annual ? "bg-white text-black" : "text-white/80"}`}>Monthly</button>
-            <button onClick={() => setAnnual(true)} className={`rounded-full px-3 py-1 transition ${annual ? "bg-white text-black" : "text-white/80"}`}>Annual</button>
+            <button
+              onClick={() => setAnnual(false)}
+              className={`rounded-full px-3 py-1 transition ${
+                !annual ? "bg-white text-black" : "text-white/80"
+              }`}
+            >
+              Monthly
+            </button>
+            <button
+              onClick={() => setAnnual(true)}
+              className={`rounded-full px-3 py-1 transition ${
+                annual ? "bg-white text-black" : "text-white/80"
+              }`}
+            >
+              Annual
+            </button>
           </div>
         </div>
 
         <div className="mt-10 grid gap-6 md:grid-cols-3">
           {PLANS.map((plan) => (
-            <div key={plan.name} className={`relative rounded-3xl border ${plan.highlighted ? "border-white/30 bg-white/[0.06]" : "border-white/10 bg-white/[0.04]"} p-6 shadow-2xl ring-1 ${plan.highlighted ? BRAND.accentRing : "ring-white/5"}`}>
+            <div
+              key={plan.name}
+              className={`relative rounded-3xl border ${
+                plan.highlighted
+                  ? "border-white/30 bg-white/[0.06]"
+                  : "border-white/10 bg-white/[0.04]"
+              } p-6 shadow-2xl ring-1 ${
+                plan.highlighted ? BRAND.accentRing : "ring-white/5"
+              }`}
+            >
               {plan.ctaNote && (
                 <div className="absolute -top-3 left-6 rounded-full border border-white/15 bg-white/10 px-3 py-1 text-xs font-medium backdrop-blur">
                   {plan.ctaNote}
@@ -165,8 +222,10 @@ function LandingPage() {
               <p className="mt-1 text-sm text-white/70">{plan.blurb}</p>
 
               <div className="mt-5 flex items-baseline gap-2">
-                <span className="text-4xl font-bold">${annual ? plan.yearly : plan.monthly}</span>
-                <span className="text-white/60">/mo {annual && <span className="text-white/40">(annual)</span>}</span>
+                <span className="text-4xl font-bold">${price(plan)}</span>
+                <span className="text-white/60">
+                  /mo {annual && <span className="text-white/40">(annual)</span>}
+                </span>
               </div>
 
               <ul className="mt-6 space-y-2 text-sm">
@@ -184,7 +243,11 @@ function LandingPage() {
                 href={annual ? plan.buyUrl?.annual : plan.buyUrl?.monthly}
                 target="_blank"
                 rel="noreferrer"
-                className={`mt-6 grid w-full place-items-center rounded-2xl border border-white/15 px-4 py-3 font-medium hover:bg-white/10 ${plan.highlighted ? `bg-gradient-to-r ${BRAND.primary}` : "bg-white/5"}`}
+                className={`mt-6 grid w-full place-items-center rounded-2xl border border-white/15 px-4 py-3 font-medium hover:bg-white/10 ${
+                  plan.highlighted
+                    ? `bg-gradient-to-r ${BRAND.primary}`
+                    : "bg-white/5"
+                }`}
               >
                 <CreditCard className="mr-2 h-5 w-5" /> Buy {plan.name}
               </a>
@@ -193,10 +256,12 @@ function LandingPage() {
         </div>
 
         <p className="mt-6 text-center text-xs text-white/50">
-          Prices in USD. Annual pricing shows per-month equivalent, billed annually.
+          Prices in USD. Annual pricing shows per-month equivalent, billed
+          annually.
         </p>
       </section>
 
+      {/* Footer */}
       <footer className="relative z-10 border-t border-white/10 bg-black/40">
         <div className="mx-auto max-w-7xl px-6 py-6 text-center text-xs text-white/60">
           © {new Date().getFullYear()} {BRAND.name}. All rights reserved.
@@ -206,70 +271,7 @@ function LandingPage() {
   );
 }
 
-// ---------- Login Page ----------
-function LoginPage() {
-  const { login } = useAuth();
-  const nav = useNavigate();
-  const loc = useLocation();
-  const from = loc.state?.from?.pathname || "/app";
-
-  const [email, setEmail] = useState("");
-  const [password, setPassword] = useState("");
-  const [err, setErr] = useState("");
-
-  const handleSubmit = async (e) => {
-    e.preventDefault();
-    setErr("");
-    try {
-      await login({ email, password });
-      nav(from, { replace: true });
-    } catch (e) {
-      setErr(e.message || "Login failed");
-    }
-  };
-
-  return (
-    <div className="min-h-screen grid place-items-center bg-neutral-950 text-white px-6">
-      <div className="w-full max-w-md rounded-3xl border border-white/10 bg-white/[0.03] p-6 ring-1 ring-white/5">
-        <div className="mb-4 flex items-center gap-3">
-          <div className={`grid h-9 w-9 place-items-center rounded-2xl bg-gradient-to-br ${BRAND.primary} ring-1 ring-white/10`}>
-            <Zap className="h-5 w-5" />
-          </div>
-          <div className="text-lg font-semibold">{BRAND.name}</div>
-        </div>
-        <h1 className="text-2xl font-semibold">Log in</h1>
-        <p className="mt-1 text-sm text-white/70">Use any email/password for now (demo).</p>
-
-        <form onSubmit={handleSubmit} className="mt-6 space-y-4">
-          <div>
-            <label className="text-sm text-white/70">Email</label>
-            <input
-              className="mt-1 w-full rounded-xl border border-white/10 bg-black/40 px-3 py-2 outline-none focus:ring-2 focus:ring-indigo-500/40"
-              type="email" value={email} onChange={(e) => setEmail(e.target.value)} placeholder="you@remiecrm.com" required
-            />
-          </div>
-          <div>
-            <label className="text-sm text-white/70">Password</label>
-            <input
-              className="mt-1 w-full rounded-xl border border-white/10 bg-black/40 px-3 py-2 outline-none focus:ring-2 focus:ring-indigo-500/40"
-              type="password" value={password} onChange={(e) => setPassword(e.target.value)} placeholder="••••••••" required
-            />
-          </div>
-          {err && <div className="text-sm text-rose-400">{err}</div>}
-          <button className="w-full rounded-xl bg-white px-4 py-2 font-medium text-black hover:bg-white/90">
-            Continue
-          </button>
-        </form>
-
-        <div className="mt-4 text-center text-sm">
-          <Link to="/" className="text-white/70 hover:text-white">← Back to site</Link>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-// ---------- Dashboard Layout + Pages ----------
+// ---------- Dashboard Layout + Pages (Protected) ----------
 function AppLayout() {
   const { user, logout } = useAuth();
   const nav = useNavigate();
@@ -279,7 +281,9 @@ function AppLayout() {
       {/* Sidebar */}
       <aside className="hidden md:block border-r border-white/10 bg-black/30">
         <div className="p-4 flex items-center gap-3 border-b border-white/10">
-          <div className={`grid h-9 w-9 place-items-center rounded-2xl bg-gradient-to-br ${BRAND.primary} ring-1 ring-white/10`}>
+          <div
+            className={`grid h-9 w-9 place-items-center rounded-2xl bg-gradient-to-br ${BRAND.primary} ring-1 ring-white/10`}
+          >
             <Zap className="h-5 w-5" />
           </div>
           <div className="font-semibold">{BRAND.name}</div>
@@ -298,9 +302,14 @@ function AppLayout() {
       {/* Main */}
       <main>
         <div className="flex items-center justify-between border-b border-white/10 bg-black/30 px-4 py-3">
-          <div className="font-medium">Welcome{user?.email ? `, ${user.email}` : ""}</div>
+          <div className="font-medium">
+            Welcome{user?.email ? `, ${user.email}` : ""}
+          </div>
           <button
-            onClick={() => { logout(); nav("/"); }}
+            onClick={async () => {
+              await logout();
+              nav("/");
+            }}
             className="inline-flex items-center gap-2 rounded-lg border border-white/15 px-3 py-1.5 text-sm hover:bg-white/5"
           >
             <LogOut className="h-4 w-4" /> Log out
@@ -355,12 +364,44 @@ function DashboardHome() {
     </div>
   );
 }
-function Contacts() { return <Card title="Contacts">Upload CSVs, manage people, add notes and files.</Card>; }
-function Campaigns() { return <Card title="Campaigns">Create intro texts, missed-call texts, and no-show rescue flows.</Card>; }
-function Dialer() { return <Card title="Dialer">Queue contacts and power through calls.</Card>; }
-function MailList() { return <Card title="Mail List">Auto-send birthdays and holiday mailings to stay top-of-mind.</Card>; }
-function Billing() { return <Card title="Billing">Your Stripe-managed subscription. Use the links on the pricing page to upgrade/downgrade.</Card>; }
-function Settings() { return <Card title="Settings">Branding, templates, calendar/email integrations.</Card>; }
+function Contacts() {
+  return (
+    <Card title="Contacts">
+      Upload CSVs, manage people, add notes and files.
+    </Card>
+  );
+}
+function Campaigns() {
+  return (
+    <Card title="Campaigns">
+      Create intro texts, missed-call texts, and no-show rescue flows.
+    </Card>
+  );
+}
+function Dialer() {
+  return <Card title="Dialer">Queue contacts and power through calls.</Card>;
+}
+function MailList() {
+  return (
+    <Card title="Mail List">
+      Auto-send birthdays and holiday mailings to stay top-of-mind.
+    </Card>
+  );
+}
+function Billing() {
+  return (
+    <Card title="Billing">
+      Your Stripe-managed subscription. Use the pricing page to upgrade.
+    </Card>
+  );
+}
+function Settings() {
+  return (
+    <Card title="Settings">
+      Branding, templates, and integrations. (Coming soon)
+    </Card>
+  );
+}
 
 // ---------- App root: routes ----------
 export default function App() {
@@ -369,6 +410,7 @@ export default function App() {
       <Routes>
         <Route path="/" element={<LandingPage />} />
         <Route path="/login" element={<LoginPage />} />
+        <Route path="/signup" element={<SignupPage />} />
         <Route element={<ProtectedRoute />}>
           <Route path="/app/*" element={<AppLayout />} />
         </Route>
