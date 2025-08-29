@@ -13,8 +13,6 @@ import SignupPage from "./pages/SignupPage.jsx";
 import LeadsPage from "./pages/LeadsPage.jsx";
 import ReportsPage from "./pages/ReportsPage.jsx";
 import SettingsPage from "./pages/SettingsPage.jsx";
-
-// ✅ Agent pages (you already have these)
 import AgentShowcase from "./pages/AgentShowcase.jsx";
 import AgentPublic from "./pages/AgentPublic.jsx";
 
@@ -25,7 +23,7 @@ import { dashboardSnapshot } from "./lib/stats.js";
 // Subscription gate
 import SubscriptionGate from "./components/SubscriptionGate.jsx";
 
-// ✅ Supabase for fetching the slug/publish status
+// Supabase
 import { supabase } from "./lib/supabaseClient.js";
 
 // Brand / theme
@@ -35,7 +33,7 @@ const BRAND = {
   accentRing: "ring-indigo-400/50",
 };
 
-// Pricing plans (still using static Stripe checkout links — can swap to startCheckout later)
+// Pricing plans (Stripe Checkout links)
 const PLANS = [
   {
     name: "Mail List",
@@ -201,7 +199,7 @@ function LandingPage() {
   );
 }
 
-// ---------- Small helper to render a sidebar link ----------
+// ---------- Sidebar Link ----------
 function DashLink({ to, children }) {
   return (
     <Link to={to} className="block rounded-lg px-3 py-2 text-white/80 hover:bg-white/5 hover:text-white">
@@ -210,38 +208,68 @@ function DashLink({ to, children }) {
   );
 }
 
-// ✅ NEW: Fetches your slug + published flag and shows a link
+// ---------- UPDATED: ViewAgentSiteLink (live, resilient) ----------
 function ViewAgentSiteLink() {
-  const { user } = useAuth();
   const [slug, setSlug] = useState("");
   const [published, setPublished] = useState(false);
   const [loading, setLoading] = useState(true);
 
-  useEffect(() => {
-    let mounted = true;
-    (async () => {
-      try {
-        if (!user) return;
-        const { data, error } = await supabase
-          .from("agent_profiles")
-          .select("slug, published")
-          .eq("user_id", user.id)
-          .maybeSingle();
-        if (!mounted) return;
-        if (!error && data) {
-          setSlug(data.slug || "");
-          setPublished(!!data.published);
-        }
-      } finally {
-        if (mounted) setLoading(false);
+  async function fetchProfile() {
+    try {
+      const { data: auth } = await supabase.auth.getUser();
+      const uid = auth?.user?.id;
+      if (!uid) {
+        setSlug("");
+        setPublished(false);
+        return;
       }
+      const { data, error } = await supabase
+        .from("agent_profiles")
+        .select("slug, published")
+        .eq("user_id", uid)
+        .maybeSingle();
+
+      if (!error && data) {
+        setSlug(data.slug || "");
+        setPublished(!!data.published);
+      } else {
+        setSlug("");
+        setPublished(false);
+      }
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  useEffect(() => {
+    let isMounted = true;
+    (async () => {
+      await fetchProfile();
+
+      // Realtime subscription to reflect Save/Publish instantly
+      const channel = supabase
+        .channel("agent_profiles_self")
+        .on(
+          "postgres_changes",
+          {
+            event: "*",
+            schema: "public",
+            table: "agent_profiles",
+          },
+          async () => {
+            if (!isMounted) return;
+            await fetchProfile();
+          }
+        )
+        .subscribe();
+
+      return () => {
+        isMounted = false;
+        try { supabase.removeChannel?.(channel); } catch {}
+      };
     })();
-    return () => { mounted = false; };
-  }, [user]);
+  }, []);
 
-  const href = slug ? `/a/${slug}` : "#";
-
-  // Disabled state if no slug yet
   if (loading) {
     return (
       <div className="block rounded-lg px-3 py-2 text-white/40 cursor-default">
@@ -251,20 +279,27 @@ function ViewAgentSiteLink() {
   }
 
   if (!slug) {
+    // If no slug yet, guide them to finish setup
     return (
-      <div className="block rounded-lg px-3 py-2 text-white/50 cursor-not-allowed">
-        View My Agent Site (set up first)
-      </div>
+      <Link
+        to="/app/agent/showcase"
+        className="flex items-center gap-2 rounded-lg px-3 py-2 text-amber-300/90 hover:bg-white/5"
+        title="Finish setup to generate your public link"
+      >
+        <ExternalLink className="h-4 w-4" />
+        <span>Finish Agent Site Setup</span>
+      </Link>
     );
   }
 
+  const href = `/a/${slug}`;
   return (
     <a
       href={href}
       target="_blank"
       rel="noreferrer"
       className="flex items-center gap-2 rounded-lg px-3 py-2 text-white/80 hover:bg-white/5 hover:text-white"
-      title={published ? "Open your public agent page" : "Opens preview (publish in the wizard)"}
+      title={published ? "Open your public agent page" : "Open preview (publish in the wizard)"}
     >
       <ExternalLink className="h-4 w-4" />
       <span>{published ? "View My Agent Site" : "Preview My Agent Site"}</span>
@@ -346,11 +381,11 @@ function AppLayout() {
           <DashLink to="/app/reports">Reports</DashLink>
           <DashLink to="/app/settings">Settings</DashLink>
 
-          {/* ✅ New: View/Preview Agent Site */}
           <div className="pt-2 mt-2 border-t border-white/10" />
+          {/* Live “View/Preview” link */}
           <ViewAgentSiteLink />
 
-          {/* Optional: quick entry to the wizard */}
+          {/* Quick link back to edit */}
           <DashLink to="/app/agent/showcase">Edit Agent Site</DashLink>
         </nav>
       </aside>
@@ -374,8 +409,18 @@ function AppLayout() {
             {/* Settings always visible */}
             <Route path="settings" element={<SettingsPage />} />
 
-            {/* Agent wizard/private and public viewer */}
+            {/* Agent wizard/private */}
             <Route path="agent/showcase" element={<AgentShowcase />} />
+
+            {/* Gate any additional routes if needed with SubscriptionGate, e.g.:
+            <Route
+              path="leads"
+              element={
+                <SubscriptionGate>
+                  <LeadsPage />
+                </SubscriptionGate>
+              }
+            /> */}
           </Routes>
         </div>
       </main>
