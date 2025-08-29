@@ -18,6 +18,9 @@ import SettingsPage from "./pages/SettingsPage.jsx";
 import NumberCard from "./components/NumberCard.jsx";
 import { dashboardSnapshot } from "./lib/stats.js";
 
+// Subscription gate
+import SubscriptionGate from "./components/SubscriptionGate.jsx";
+
 // Brand / theme
 const BRAND = {
   name: "Remie CRM",
@@ -25,7 +28,7 @@ const BRAND = {
   accentRing: "ring-indigo-400/50",
 };
 
-// Pricing plans
+// Pricing plans (still using static Stripe checkout links — can swap to startCheckout later)
 const PLANS = [
   {
     name: "Mail List",
@@ -226,11 +229,34 @@ function AppLayout() {
 
         <div className="p-4">
           <Routes>
-            <Route index element={<DashboardHome />} />
-            <Route path="leads" element={<LeadsPage />} />
-            <Route path="reports" element={<ReportsPage />} />
-            {/* ⇩ Settings now points to the real page */}
+            {/* Settings always visible */}
             <Route path="settings" element={<SettingsPage />} />
+
+            {/* Gate the rest */}
+            <Route
+              index
+              element={
+                <SubscriptionGate>
+                  <DashboardHome />
+                </SubscriptionGate>
+              }
+            />
+            <Route
+              path="leads"
+              element={
+                <SubscriptionGate>
+                  <LeadsPage />
+                </SubscriptionGate>
+              }
+            />
+            <Route
+              path="reports"
+              element={
+                <SubscriptionGate>
+                  <ReportsPage />
+                </SubscriptionGate>
+              }
+            />
             <Route path="*" element={<Navigate to="/app" replace />} />
           </Routes>
         </div>
