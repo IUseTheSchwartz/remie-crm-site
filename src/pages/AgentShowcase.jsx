@@ -30,7 +30,7 @@ const slugify = (s) =>
     .replace(/[^a-z0-9]+/g, "-")
     .replace(/(^-|-$)+/g, "");
 
-/* ---------- Simple UI helpers ---------- */
+/* ---------- Small UI helper ---------- */
 function Field({ label, children, full }) {
   return (
     <label className={`block ${full ? "md:col-span-2" : ""}`}>
@@ -218,7 +218,7 @@ export default function AgentShowcase() {
     });
   }
 
-  /* ---------- Step 3: Save (diff-based with uploads) ---------- */
+  /* ---------- Step 3: Save (diff-based with uploads; accepts PDF) ---------- */
   async function saveStates() {
     setSavingStates(true);
     try {
@@ -226,7 +226,7 @@ export default function AgentShowcase() {
       const uid = auth?.user?.id;
       if (!uid) throw new Error("Please log in");
 
-      // Validate: each selected state must have a license number AND a license image (either existing URL or a file to upload)
+      // Validate: each selected state must have a license number AND a license image (existing URL or a file to upload)
       const selectedCodes = Object.keys(stateMap).filter((c) => stateMap[c]?.selected);
       for (const code of selectedCodes) {
         const item = stateMap[code];
@@ -234,7 +234,7 @@ export default function AgentShowcase() {
           throw new Error(`Please enter a license number for ${code}.`);
         }
         if (!item.license_image_url && !item.file) {
-          throw new Error(`Please upload a license image for ${code}.`);
+          throw new Error(`Please upload a license image/PDF for ${code}.`);
         }
       }
 
@@ -257,7 +257,7 @@ export default function AgentShowcase() {
       for (const code of selectedCodes) {
         let license_image_url = stateMap[code].license_image_url || "";
 
-        // Upload if a new file is attached
+        // Upload if a new file is attached (image or PDF)
         if (stateMap[code].file) {
           const file = stateMap[code].file;
           const ext = (file.name.split(".").pop() || "jpg").toLowerCase();
@@ -265,7 +265,7 @@ export default function AgentShowcase() {
 
           const { error: upErr } = await bucket.upload(key, file, {
             upsert: true,
-            contentType: file.type || "image/jpeg",
+            contentType: file.type || (ext === "pdf" ? "application/pdf" : "image/jpeg"),
             cacheControl: "3600",
           });
           if (upErr) throw upErr;
@@ -464,7 +464,7 @@ export default function AgentShowcase() {
       {step === 3 && (
         <div className="mt-6 space-y-4 rounded-2xl border border-white/10 bg-white/[0.03] p-5">
           <p className="text-sm text-white/80">
-            Select your licensed states, add the license number for each, and upload a clear image of the license (jpg/png).
+            Select your licensed states, add the license number for each, and upload a clear image <em>or PDF</em> of the license.
           </p>
 
           <div className="space-y-3">
@@ -499,23 +499,34 @@ export default function AgentShowcase() {
                       </div>
 
                       <div className="md:col-span-1">
-                        <div className="text-xs text-white/70 mb-1">Upload License Image</div>
+                        <div className="text-xs text-white/70 mb-1">Upload License (image or PDF)</div>
                         <input
                           type="file"
-                          accept="image/*"
+                          accept="image/*,.pdf"
                           onChange={(e) => setLicenseFile(s.code, e.target.files?.[0] || null)}
                           className="block text-sm"
                         />
                       </div>
 
                       <div className="md:col-span-1">
-                        <div className="text-xs text-white/70 mb-1">Current Image</div>
+                        <div className="text-xs text-white/70 mb-1">Current File</div>
                         {entry.license_image_url ? (
-                          <img
-                            src={entry.license_image_url}
-                            alt={`${s.code} license`}
-                            className="h-20 w-32 rounded-lg border border-white/10 object-cover"
-                          />
+                          entry.license_image_url.toLowerCase().includes(".pdf") ? (
+                            <a
+                              href={entry.license_image_url}
+                              target="_blank"
+                              rel="noreferrer"
+                              className="text-xs text-indigo-300 underline"
+                            >
+                              View PDF
+                            </a>
+                          ) : (
+                            <img
+                              src={entry.license_image_url}
+                              alt={`${s.code} license`}
+                              className="h-20 w-32 rounded-lg border border-white/10 object-cover"
+                            />
+                          )
                         ) : (
                           <div className="grid h-20 w-32 place-items-center rounded-lg border border-dashed border-white/15 text-xs text-white/50">
                             None uploaded
@@ -554,8 +565,8 @@ export default function AgentShowcase() {
         <div className="mt-6 space-y-4 rounded-2xl border border-white/10 bg-white/[0.03] p-5">
           <div className="space-y-2">
             <div className="text-sm">Public page:</div>
-            <a href={publicUrl} target="_blank" rel="noreferrer" className="text-indigo-300 underline">
-              {publicUrl}
+            <a href={`${window.location.origin}/a/${slug}`} target="_blank" rel="noreferrer" className="text-indigo-300 underline">
+              {`${window.location.origin}/a/${slug}`}
             </a>
           </div>
 
