@@ -1,185 +1,212 @@
-// File: src/pages/SettingsPage.jsx
+// File: src/pages/Settings.jsx
 import { useEffect, useState } from "react";
-import { useAuth } from "../auth.jsx";
-import { supabase } from "../supabaseClient"; // make sure this exists
+import { supabase } from "../supabaseClient"; // make sure this path matches your project
 
-function Card({ title, children }) {
-  return (
-    <div className="rounded-2xl border border-white/10 bg-white/[0.03] p-4 ring-1 ring-white/5">
-      <div className="mb-2 text-sm font-semibold">{title}</div>
-      <div className="text-sm text-white/80">{children}</div>
-    </div>
-  );
-}
-
-function Field({ label, hint, children }) {
-  return (
-    <label className="block">
-      <div className="mb-1 text-sm text-white/70">{label}</div>
-      {children}
-      {hint && <div className="mt-1 text-xs text-white/50">{hint}</div>}
-    </label>
-  );
-}
-
-export default function SettingsPage() {
-  const { user } = useAuth();
+export default function Settings() {
+  const [user, setUser] = useState(null);
   const [sub, setSub] = useState(null);
   const [loadingSub, setLoadingSub] = useState(true);
 
-  // Change password state
-  const [pwd, setPwd] = useState("");
+  const [pw, setPw] = useState("");
+  const [pw2, setPw2] = useState("");
+  const [pwMsg, setPwMsg] = useState("");
   const [busy, setBusy] = useState(false);
-  const [msg, setMsg] = useState("");
+  const [cancelMsg, setCancelMsg] = useState("");
 
-  // Load subscription row for this user (if table exists)
   useEffect(() => {
-    let alive = true;
-    (async () => {
-      try {
-        const { data: u } = await supabase.auth.getUser();
-        const userId = u?.user?.id;
-        if (!userId) {
-          if (alive) setLoadingSub(false);
-          return;
-        }
-        const { data, error } = await supabase
+    let ignore = false;
+
+    async function load() {
+      const { data, error } = await supabase.auth.getUser();
+      if (error) {
+        console.error(error);
+        return;
+      }
+      if (ignore) return;
+      setUser(data.user || null);
+
+      if (data.user?.id) {
+        setLoadingSub(true);
+        const { data: subData, error: subErr } = await supabase
           .from("subscriptions")
           .select("*")
-          .eq("user_id", userId)
+          .eq("user_id", data.user.id)
           .maybeSingle();
-        if (alive) {
-          if (!error) setSub(data || null);
+
+        if (!ignore) {
+          if (subErr) {
+            console.error(subErr);
+          }
+          setSub(subData || null);
           setLoadingSub(false);
         }
-      } catch {
-        if (alive) setLoadingSub(false);
+      } else {
+        setLoadingSub(false);
       }
-    })();
+    }
+
+    load();
     return () => {
-      alive = false;
+      ignore = true;
     };
   }, []);
 
-  async function changePassword(e) {
+  const onChangePassword = async (e) => {
     e.preventDefault();
-    setMsg("");
+    setPwMsg("");
+    if (!pw || pw.length < 8) {
+      setPwMsg("Password must be at least 8 characters.");
+      return;
+    }
+    if (pw !== pw2) {
+      setPwMsg("Passwords do not match.");
+      return;
+    }
     setBusy(true);
-    const { error } = await supabase.auth.updateUser({ password: pwd });
+    const { error } = await supabase.auth.updateUser({ password: pw });
     setBusy(false);
-    setPwd("");
-    setMsg(error ? error.message : "Password updated.");
-  }
+    if (error) {
+      setPwMsg(error.message || "Failed to update password.");
+    } else {
+      setPw("");
+      setPw2("");
+      setPwMsg("Password updated.");
+    }
+  };
 
-  return (
-    <div className="grid gap-6 md:grid-cols-2">
-      {/* Account */}
-      <Card title="Account">
-        <div className="space-y-3">
-          <Field label="Login email">
-            <input
-              readOnly
-              value={user?.email || ""}
-              className="w-full rounded-xl border border-white/10 bg-black/40 px-3 py-2 text-sm opacity-80"
-            />
-          </Field>
-
-          {/* For security, we never show the current password */}
-          <form onSubmit={changePassword} className="space-y-2">
-            <Field label="New password" hint="8+ characters. This will log out other sessions.">
-              <input
-                type="password"
-                minLength={8}
-                required
-                value={pwd}
-                onChange={(e) => setPwd(e.target.value)}
-                className="w-full rounded-xl border border-white/10 bg-black/40 px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-indigo-500/40"
-              />
-            </Field>
-            <button
-              disabled={busy}
-              className="rounded-xl bg-white px-4 py-2 text-sm font-medium text-black hover:bg-white/90 disabled:opacity-50"
-            >
-              {busy ? "Updating…" : "Change password"}
-            </button>
-            {msg && <div className="text-xs text-white/70">{msg}</div>}
-          </form>
-        </div>
-      </Card>
-
-      {/* Subscription */}
-      <Card title="Subscription">
-        {loadingSub ? (
-          <div className="text-sm text-white/60">Loading…</div>
-        ) : sub ? (
-          <div className="space-y-2">
-            <div>
-              <span className="text-white/60">Plan:</span> {sub.plan || "Unknown"}
-            </div>
-            <div>
-              <span className="text-white/60">Status:</span> {sub.status || "unknown"}
-            </div>
-            {sub.current_period_end && (
-              <div>
-                <span className="text-white/60">Renews:</span>{" "}
-                {new Date(sub.current_period_end).toLocaleString()}
-              </div>
-            )}
-            <div className="text-xs text-white/50">
-              To change/cancel, use the billing portal (we can add that button next).
-            </div>
-          </div>
-        ) : (
-          <div className="space-y-2">
-            <div className="text-sm">No active subscription found.</div>
-            <a href="/" className="inline-block rounded-xl bg-white px-3 py-2 text-sm font-medium text-black">
-              Choose a plan
-            </a>
-          </div>
-        )}
-      </Card>
-    </div>
-  );
-}
-
-import { useState } from "react";
-import { useAuth } from "../auth"; // assuming you have auth context
-
-function Settings() {
-  const { user } = useAuth();
-  const [loading, setLoading] = useState(false);
-
-  const handleCancel = async () => {
-    setLoading(true);
+  const onCancelSubscription = async () => {
+    if (!user?.id) return;
+    if (!sub?.stripe_subscription_id) {
+      setCancelMsg("No active subscription found.");
+      return;
+    }
+    if (!confirm("Cancel at period end? You will keep access until the end of the current billing period.")) {
+      return;
+    }
+    setBusy(true);
+    setCancelMsg("");
     try {
       const res = await fetch("/.netlify/functions/cancel-subscription", {
         method: "POST",
+        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ user_id: user.id }),
       });
-
-      if (res.ok) {
-        alert("Your subscription will be canceled at the end of the billing period.");
-      } else {
-        const err = await res.text();
-        alert("Error: " + err);
-      }
-    } catch (e) {
-      alert("Request failed: " + e.message);
+      const text = await res.text();
+      if (!res.ok) throw new Error(text || "Cancel failed");
+      setCancelMsg("Your subscription will be canceled at the period end.");
+      // Refresh subscription row
+      const { data: subData } = await supabase
+        .from("subscriptions")
+        .select("*")
+        .eq("user_id", user.id)
+        .maybeSingle();
+      setSub(subData || null);
+    } catch (err) {
+      setCancelMsg(err.message || "Cancel failed.");
     } finally {
-      setLoading(false);
+      setBusy(false);
+    }
+  };
+
+  const fmtDate = (iso) => {
+    if (!iso) return "—";
+    try {
+      return new Date(iso).toLocaleString();
+    } catch {
+      return iso;
     }
   };
 
   return (
-    <div>
-      <h2>Settings</h2>
-      <p>Email: {user?.email}</p>
-      <button onClick={handleCancel} disabled={loading}>
-        {loading ? "Cancelling..." : "Cancel Subscription"}
-      </button>
+    <div className="max-w-3xl mx-auto p-6">
+      <h1 className="text-2xl font-semibold mb-6">Settings</h1>
+
+      {/* Account */}
+      <section className="mb-10 rounded-2xl border p-5">
+        <h2 className="text-lg font-medium mb-3">Account</h2>
+        <div className="space-y-2">
+          <div>
+            <div className="text-sm text-gray-500">Email</div>
+            <div className="font-medium">{user?.email || "—"}</div>
+          </div>
+        </div>
+      </section>
+
+      {/* Change Password */}
+      <section className="mb-10 rounded-2xl border p-5">
+        <h2 className="text-lg font-medium mb-3">Change password</h2>
+        <form onSubmit={onChangePassword} className="space-y-3">
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+            <input
+              type="password"
+              className="border rounded-xl px-3 py-2"
+              placeholder="New password"
+              value={pw}
+              onChange={(e) => setPw(e.target.value)}
+              minLength={8}
+              required
+            />
+            <input
+              type="password"
+              className="border rounded-xl px-3 py-2"
+              placeholder="Confirm new password"
+              value={pw2}
+              onChange={(e) => setPw2(e.target.value)}
+              minLength={8}
+              required
+            />
+          </div>
+          <div className="flex items-center gap-3">
+            <button
+              type="submit"
+              disabled={busy}
+              className="rounded-xl px-4 py-2 bg-black text-white disabled:opacity-50"
+            >
+              {busy ? "Saving..." : "Update password"}
+            </button>
+            {pwMsg && <div className="text-sm">{pwMsg}</div>}
+          </div>
+        </form>
+      </section>
+
+      {/* Subscription */}
+      <section className="mb-10 rounded-2xl border p-5">
+        <h2 className="text-lg font-medium mb-3">Subscription</h2>
+
+        {loadingSub ? (
+          <div>Loading subscription…</div>
+        ) : sub ? (
+          <div className="space-y-2">
+            <div className="flex flex-wrap gap-4">
+              <Info label="Plan" value={sub.plan || "—"} />
+              <Info label="Status" value={sub.status || "—"} />
+              <Info label="Renews / ends" value={fmtDate(sub.current_period_end)} />
+            </div>
+
+            <div className="mt-4 flex flex-wrap gap-3">
+              <button
+                onClick={onCancelSubscription}
+                disabled={busy}
+                className="rounded-xl px-4 py-2 border hover:bg-gray-50 disabled:opacity-50"
+              >
+                {busy ? "Working…" : "Cancel subscription"}
+              </button>
+              {cancelMsg && <div className="text-sm">{cancelMsg}</div>}
+            </div>
+          </div>
+        ) : (
+          <div>No active subscription found.</div>
+        )}
+      </section>
     </div>
   );
 }
 
-export default Settings;
-
+function Info({ label, value }) {
+  return (
+    <div>
+      <div className="text-sm text-gray-500">{label}</div>
+      <div className="font-medium">{value}</div>
+    </div>
+  );
+}
