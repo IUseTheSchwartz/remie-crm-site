@@ -1,10 +1,10 @@
-// src/pages/AgentShowcase.jsx
+// File: src/pages/AgentShowcase.jsx
 import { useEffect, useMemo, useState } from "react";
-import { useNavigate } from "react-router-dom";
 import { supabase } from "../lib/supabaseClient";
-import { useAuth } from "../auth";
+import { useAuth } from "../auth.jsx";
+import { motion } from "framer-motion";
 
-// ---- State list (code -> name) ----
+// ---------- STATE LIST & NAME MAP ----------
 const US_STATES = [
   { code: "AL", name: "Alabama" }, { code: "AK", name: "Alaska" },
   { code: "AZ", name: "Arizona" }, { code: "AR", name: "Arkansas" },
@@ -34,47 +34,49 @@ const US_STATES = [
 ];
 const STATE_NAME = Object.fromEntries(US_STATES.map(s => [s.code, s.name]));
 
-// ---- Storage config (your bucket/folders) ----
-const PUBLIC_BUCKET = "agent_public_v2";
-const HEADSHOT_FOLDER = "profile-pictures";       // in agent_public_v2
-const LICENSE_FOLDER = "licenses";                // in agent_private_v2 (if you want private) or public if you set so
-// If licenses are private use: const PRIVATE_BUCKET = "agent_private_v2";
+// ---------- UTIL ----------
+const slugify = (s) =>
+  (s || "")
+    .toString()
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/(^-|-$)+/g, "");
 
-// Simple UI bits
-const Section = ({ title, children }) => (
-  <div className="rounded-2xl border border-white/10 bg-white/[0.03] p-4 ring-1 ring-white/5">
-    <div className="mb-3 text-sm font-semibold">{title}</div>
-    {children}
-  </div>
-);
-
+// ---------- PAGE ----------
 export default function AgentShowcase() {
   const { user } = useAuth();
-  const nav = useNavigate();
   const [step, setStep] = useState(1);
+  const [saving, setSaving] = useState(false);
 
-  // Step 1 profile
+  // Step 1 (agent_profiles)
   const [fullName, setFullName] = useState("");
   const [email, setEmail] = useState("");
   const [phone, setPhone] = useState("");
-  const [npn, setNpn] = useState("");
   const [shortBio, setShortBio] = useState("");
-
-  // Step 2 headshot
+  const [npn, setNpn] = useState("");
   const [headshotUrl, setHeadshotUrl] = useState("");
-  const [uploadingHeadshot, setUploadingHeadshot] = useState(false);
 
-  // Step 3 licensing
-  const [selectedStates, setSelectedStates] = useState([]);          // array of codes
-  const [licenseNumbers, setLicenseNumbers] = useState({});          // { CA: "123", ... }
-  const [licenseFiles, setLicenseFiles] = useState({});              // { CA: File, ... }
-  const [licenseUrls, setLicenseUrls] = useState({});                // { CA: "public url or signed url", ... }
-  const [saving, setSaving] = useState(false);
+  // Step 2 (upload headshot)
+  const [headshotFile, setHeadshotFile] = useState(null);
 
+  // Step 3 (states & licenses)
+  const [selectedStates, setSelectedStates] = useState([]);           // ['CA','AZ']
+  const [licenseNumbers, setLicenseNumbers] = useState({});           // { CA:'123', AZ:'...' }
+  const [licenseFiles, setLicenseFiles] = useState({});               // { CA:File, AZ:File }
+  const [licenseUrls, setLicenseUrls] = useState({});                 // { CA:'https...', AZ:'...' }
+
+  // prefill email from session
   useEffect(() => {
-    if (!user) return;
-    // Load profile + states (if any) so user can edit
+    if (user?.email) setEmail(user.email);
+  }, [user]);
+
+  // load existing profile + states
+  useEffect(() => {
     (async () => {
+      if (!user) return;
+
+      // agent_profiles
       const { data: prof } = await supabase
         .from("agent_profiles")
         .select("*")
@@ -85,23 +87,25 @@ export default function AgentShowcase() {
         setFullName(prof.full_name || "");
         setEmail(prof.email || user.email || "");
         setPhone(prof.phone || "");
-        setNpn(prof.npn || "");
         setShortBio(prof.short_bio || "");
+        setNpn(prof.npn || "");
         setHeadshotUrl(prof.headshot_url || "");
       }
 
+      // agent_states
       const { data: states } = await supabase
         .from("agent_states")
-        .select("*")
+        .select("state_code, state_name, license_number, license_image_url")
         .eq("user_id", user.id);
 
       if (states?.length) {
-        setSelectedStates(states.map(s => s.state_code));
+        const codes = states.map(s => s.state_code);
+        setSelectedStates(codes);
         const nums = {};
         const urls = {};
         states.forEach(s => {
-          if (s.license_number) nums[s.state_code] = s.license_number;
-          if (s.license_image_url) urls[s.state_code] = s.license_image_url;
+          nums[s.state_code] = s.license_number || "";
+          urls[s.state_code] = s.license_image_url || "";
         });
         setLicenseNumbers(nums);
         setLicenseUrls(urls);
@@ -109,131 +113,173 @@ export default function AgentShowcase() {
     })();
   }, [user]);
 
-  // ---------- Step 1: Save profile ----------
+  const canNext1 = fullName.trim() && email.trim();
+  const showStates = useMemo(() => US_STATES, []);
+
+  // ---------- STEP 1 SAVE (back to your working behavior) ----------
   async function saveProfileAndNext() {
     if (!user) return;
+    if (!canNext1) {
+      alert("Name and email are required");
+      return;
+    }
     setSaving(true);
     try {
-      const slug = (fullName || user.email || user.id)
-        .toLowerCase()
-        .replace(/[^a-z0-9]+/g, "-")
-        .replace(/(^-|-$)/g, "");
+      // keep slug stable (derive from name)
+      const slug = slugify(fullName);
 
-      const row = {
-        user_id: user.id,
-        slug,
-        full_name: fullName || null,
-        email: email || user.email || null,
-        phone: phone || null,
-        npn: npn || null,
-        short_bio: shortBio || null,
-        headshot_url: headshotUrl || null,
-        published: false,
-      };
-
+      // upsert on user_id (your table has user_id PK or unique)
       const { error } = await supabase
         .from("agent_profiles")
-        .upsert(row, { onConflict: "user_id" });
+        .upsert({
+          user_id: user.id,
+          slug,
+          full_name: fullName,
+          email,
+          phone,
+          short_bio: shortBio,
+          npn,
+          published: false,
+          headshot_url: headshotUrl || null,
+        }, { onConflict: "user_id" });
 
       if (error) throw error;
 
       setStep(2);
     } catch (e) {
-      alert(`Save failed: ${e.message}`);
+      alert(e.message || "Save failed");
     } finally {
       setSaving(false);
     }
   }
 
-  // ---------- Step 2: Upload headshot ----------
-  async function uploadHeadshot(file) {
-    if (!user || !file) return;
-
-    setUploadingHeadshot(true);
+  // ---------- STEP 2: HEADSHOT ----------
+  async function uploadHeadshot() {
+    if (!user || !headshotFile) return;
+    setSaving(true);
     try {
-      const ext = file.name.split(".").pop();
-      const path = `${HEADSHOT_FOLDER}/${user.id}.${ext}`;
+      // bucket + folder MUST match your storage: agent_public_v2/profile-pictures
+      const bucket = "agent_public_v2";
+      const fileName = `${user.id}-${Date.now()}-${headshotFile.name}`.replace(/\s+/g, "_");
+      const storagePath = `profile-pictures/${fileName}`;
 
-      // upload to public bucket
       const { error: upErr } = await supabase.storage
-        .from(PUBLIC_BUCKET)
-        .upload(path, file, { upsert: true, cacheControl: "3600" });
+        .from(bucket)
+        .upload(storagePath, headshotFile, {
+          cacheControl: "3600",
+          upsert: false,
+          contentType: headshotFile.type || "application/octet-stream",
+        });
 
       if (upErr) throw upErr;
 
-      const { data: pub } = await supabase.storage
-        .from(PUBLIC_BUCKET)
-        .getPublicUrl(path);
+      const { data: publicUrlData } = supabase
+        .storage
+        .from(bucket)
+        .getPublicUrl(storagePath);
 
-      const publicUrl = pub?.publicUrl;
-      setHeadshotUrl(publicUrl || "");
+      const publicUrl = publicUrlData?.publicUrl;
+      if (!publicUrl) throw new Error("Could not get public URL for headshot");
 
-      // persist to profile
-      await supabase.from("agent_profiles")
-        .update({ headshot_url: publicUrl })
-        .eq("user_id", user.id);
+      // save URL to profile
+      const { error: upsertErr } = await supabase
+        .from("agent_profiles")
+        .upsert({
+          user_id: user.id,
+          headshot_url: publicUrl,
+        }, { onConflict: "user_id" });
 
-      alert("Headshot uploaded");
+      if (upsertErr) throw upsertErr;
+
+      setHeadshotUrl(publicUrl);
+      alert("Headshot uploaded.");
     } catch (e) {
       alert(`Headshot upload failed: ${e.message}`);
     } finally {
-      setUploadingHeadshot(false);
+      setSaving(false);
     }
   }
 
-  // ---------- Step 3: Save states + license files ----------
+  // ---------- STEP 3: STATES & LICENSES ----------
+  function toggleState(code) {
+    setSelectedStates(prev => prev.includes(code)
+      ? prev.filter(c => c !== code)
+      : [...prev, code]
+    );
+  }
+
+  function setLicenseNumber(code, val) {
+    setLicenseNumbers(p => ({ ...p, [code]: val }));
+  }
+
+  function setLicenseFile(code, file) {
+    setLicenseFiles(p => ({ ...p, [code]: file }));
+  }
+
+  async function uploadLicenseFile(code) {
+    if (!user) return null;
+    const f = licenseFiles[code];
+    if (!f) return null;
+
+    const bucket = "agent_public_v2";
+    const safe = `${user.id}-${code}-${Date.now()}-${f.name}`.replace(/\s+/g, "_");
+    // store in the public bucket under showcase/licenses
+    const storagePath = `showcase/licenses/${safe}`;
+
+    const { error: upErr } = await supabase.storage
+      .from(bucket)
+      .upload(storagePath, f, {
+        upsert: false,
+        cacheControl: "3600",
+        contentType: f.type || "application/octet-stream",
+      });
+
+    if (upErr) throw upErr;
+
+    const { data: u } = supabase.storage.from(bucket).getPublicUrl(storagePath);
+    const url = u?.publicUrl || null;
+    if (url) {
+      setLicenseUrls(prev => ({ ...prev, [code]: url }));
+    }
+    return url;
+  }
+
+  // ✅ Fixed: this will always set state_name, and it won’t get stuck if the UNIQUE isn’t present
   async function saveStatesAndNext() {
     if (!user) return;
     setSaving(true);
     try {
-      // 1) Upload any new/changed license files for selected states
-      const newUrls = { ...licenseUrls };
-
-      // Accept pdf/jpg/png
-      const allowed = ["application/pdf", "image/jpeg", "image/png"];
-
+      // upload files first (pdf or image)
       for (const code of selectedStates) {
-        const f = licenseFiles[code];
-        if (f) {
-          if (!allowed.includes(f.type)) {
-            throw new Error(`License for ${code} must be PDF or JPG/PNG`);
-          }
-          // Decide which bucket to use for licenses. If you created a PRIVATE bucket, replace PUBLIC_BUCKET
-          const licPath = `${LICENSE_FOLDER}/${user.id}/${code}.${f.name.split(".").pop()}`;
-
-          const { error: upErr } = await supabase.storage
-            .from(PUBLIC_BUCKET) // or your private bucket if you set one and its RLS
-            .upload(licPath, f, { upsert: true, cacheControl: "3600" });
-
-          if (upErr) throw upErr;
-
-          const { data: pub } = await supabase.storage
-            .from(PUBLIC_BUCKET)
-            .getPublicUrl(licPath);
-
-          newUrls[code] = pub.publicUrl;
+        if (licenseFiles[code]) {
+          await uploadLicenseFile(code);
         }
       }
 
-      setLicenseUrls(newUrls);
-
-      // 2) Upsert rows (must include state_name to satisfy NOT NULL)
-      const rows = selectedStates.map((code) => ({
+      // build rows and ALWAYS include state_name
+      const rows = selectedStates.map(code => ({
         user_id: user.id,
         state_code: code,
-        state_name: STATE_NAME[code] || null,             // <— IMPORTANT
+        state_name: STATE_NAME[code] || code, // never null
         license_number: licenseNumbers[code] || null,
-        license_image_url: newUrls[code] || null,
+        license_image_url: licenseUrls[code] || null,
       }));
 
-      const { error } = await supabase
+      // try upsert if you have UNIQUE(user_id, state_code)
+      let { error } = await supabase
         .from("agent_states")
-        .upsert(rows, { onConflict: "user_id,state_code" }); // requires unique constraint in DB
+        .upsert(rows, { onConflict: "user_id,state_code" });
 
+      // if the constraint doesn't exist, fall back to delete+insert
+      if (error && /on conflict|conflict/i.test(error.message)) {
+        await supabase.from("agent_states").delete().eq("user_id", user.id);
+        const ins = await supabase.from("agent_states").insert(rows);
+        error = ins.error || null;
+      }
       if (error) throw error;
 
-      alert("States saved");
-      setStep(4); // continue
+      alert("States saved.");
+      setStep(4);
     } catch (e) {
       alert(`Save failed: ${e.message}`);
     } finally {
@@ -241,201 +287,175 @@ export default function AgentShowcase() {
     }
   }
 
-  // ---- UI helpers ----
-  function toggleState(code) {
-    setSelectedStates((curr) =>
-      curr.includes(code) ? curr.filter((c) => c !== code) : [...curr, code]
-    );
-  }
-
-  const chosenStates = useMemo(
-    () => US_STATES.filter((s) => selectedStates.includes(s.code)),
-    [selectedStates]
-  );
-
-  if (!user) return <div className="p-6 text-white/80">Log in first.</div>;
-
+  // ---------- RENDER ----------
   return (
-    <div className="p-4 text-white">
-      <div className="mb-4 text-xl font-semibold">Agent Showcase</div>
+    <div className="min-h-screen bg-neutral-950 text-white">
+      <div className="mx-auto max-w-4xl px-4 py-8">
+        <h1 className="text-2xl font-semibold mb-2">Agent Showcase</h1>
+        <p className="text-white/70 mb-6">
+          Fill these steps to generate your personal “Agent Showcase” page.
+        </p>
 
-      {/* Step indicator */}
-      <div className="mb-6 flex gap-2 text-xs">
-        {[1, 2, 3, 4].map((i) => (
-          <span
-            key={i}
-            className={`rounded-full px-2 py-1 ${
-              step === i ? "bg-white text-black" : "bg-white/10 text-white/70"
-            }`}
-          >
-            Step {i}
-          </span>
-        ))}
-      </div>
+        {/* Stepper */}
+        <div className="flex gap-2 mb-6 text-xs">
+          {[1,2,3,4].map(n => (
+            <span key={n}
+              className={`rounded-full px-3 py-1 border ${step===n ? "bg-white text-black" : "border-white/20 text-white/70"}`}>
+              Step {n}
+            </span>
+          ))}
+        </div>
 
-      {step === 1 && (
-        <Section title="Profile">
-          <div className="grid gap-3 md:grid-cols-2">
-            <label className="text-sm">
-              <div className="mb-1 text-white/70">Full name</div>
-              <input className="w-full rounded-lg bg-white/5 p-2"
-                     value={fullName} onChange={(e) => setFullName(e.target.value)} />
-            </label>
-            <label className="text-sm">
-              <div className="mb-1 text-white/70">Email</div>
-              <input className="w-full rounded-lg bg-white/5 p-2"
-                     value={email} onChange={(e) => setEmail(e.target.value)} />
-            </label>
-            <label className="text-sm">
-              <div className="mb-1 text-white/70">Phone</div>
-              <input className="w-full rounded-lg bg-white/5 p-2"
-                     value={phone} onChange={(e) => setPhone(e.target.value)} />
-            </label>
-            <label className="text-sm">
-              <div className="mb-1 text-white/70">NPN</div>
-              <input className="w-full rounded-lg bg-white/5 p-2"
-                     value={npn} onChange={(e) => setNpn(e.target.value)} />
-            </label>
-          </div>
+        {step === 1 && (
+          <motion.div
+            initial={{opacity:0,y:8}} animate={{opacity:1,y:0}} className="rounded-2xl border border-white/10 bg-white/[0.03] p-4 ring-1 ring-white/5">
+            <h2 className="font-semibold mb-4">Profile</h2>
 
-          <label className="mt-4 block text-sm">
-            <div className="mb-1 text-white/70">Short bio</div>
-            <textarea className="w-full rounded-lg bg-white/5 p-2"
-                      rows={5} value={shortBio}
-                      onChange={(e) => setShortBio(e.target.value)} />
-          </label>
-
-          <div className="mt-4 flex gap-2">
-            <button
-              onClick={saveProfileAndNext}
-              disabled={saving}
-              className="rounded-lg bg-white px-4 py-2 text-black"
-            >
-              {saving ? "Saving..." : "Save & Next"}
-            </button>
-          </div>
-        </Section>
-      )}
-
-      {step === 2 && (
-        <Section title="Headshot">
-          <div className="flex items-center gap-4">
-            {headshotUrl ? (
-              <img
-                src={headshotUrl}
-                alt="headshot"
-                className="h-24 w-24 rounded-xl object-cover"
-              />
-            ) : (
-              <div className="grid h-24 w-24 place-items-center rounded-xl bg-white/10 text-xs text-white/60">
-                No photo
+            <div className="grid md:grid-cols-2 gap-4">
+              <div>
+                <label className="text-sm text-white/70">Full Name</label>
+                <input value={fullName} onChange={e=>setFullName(e.target.value)}
+                  className="mt-1 w-full rounded-lg bg-black/40 border border-white/10 px-3 py-2" />
               </div>
-            )}
 
-            <label className="text-sm">
-              <div className="mb-1 text-white/70">Upload (jpg/png)</div>
+              <div>
+                <label className="text-sm text-white/70">Email</label>
+                <input value={email} onChange={e=>setEmail(e.target.value)}
+                  className="mt-1 w-full rounded-lg bg-black/40 border border-white/10 px-3 py-2" />
+              </div>
+
+              <div>
+                <label className="text-sm text-white/70">Phone</label>
+                <input value={phone} onChange={e=>setPhone(e.target.value)}
+                  className="mt-1 w-full rounded-lg bg-black/40 border border-white/10 px-3 py-2" />
+              </div>
+
+              <div>
+                <label className="text-sm text-white/70">NPN</label>
+                <input value={npn} onChange={e=>setNpn(e.target.value)}
+                  className="mt-1 w-full rounded-lg bg-black/40 border border-white/10 px-3 py-2" />
+              </div>
+
+              <div className="md:col-span-2">
+                <label className="text-sm text-white/70">Short Bio</label>
+                <textarea value={shortBio} onChange={e=>setShortBio(e.target.value)} rows={4}
+                  className="mt-1 w-full rounded-lg bg-black/40 border border-white/10 px-3 py-2" />
+              </div>
+            </div>
+
+            <div className="mt-4 flex items-center gap-3">
+              <button disabled={!canNext1 || saving}
+                onClick={saveProfileAndNext}
+                className="rounded-xl bg-white text-black px-4 py-2 text-sm font-medium disabled:opacity-50">
+                {saving ? "Saving..." : "Save & Next"}
+              </button>
+            </div>
+          </motion.div>
+        )}
+
+        {step === 2 && (
+          <motion.div
+            initial={{opacity:0,y:8}} animate={{opacity:1,y:0}} className="rounded-2xl border border-white/10 bg-white/[0.03] p-4 ring-1 ring-white/5">
+            <h2 className="font-semibold mb-4">Headshot</h2>
+
+            <div className="flex items-center gap-4">
               <input
                 type="file"
                 accept="image/*"
-                onChange={(e) => uploadHeadshot(e.target.files?.[0])}
+                onChange={(e) => setHeadshotFile(e.target.files?.[0] || null)}
+                className="text-sm"
               />
-            </label>
-          </div>
-
-          <div className="mt-4 flex gap-2">
-            <button onClick={() => setStep(1)} className="rounded-lg border border-white/20 px-4 py-2">
-              Back
-            </button>
-            <button onClick={() => setStep(3)} className="rounded-lg bg-white px-4 py-2 text-black">
-              Next
-            </button>
-          </div>
-        </Section>
-      )}
-
-      {step === 3 && (
-        <Section title="Licensing">
-          <div className="grid grid-cols-2 gap-2 sm:grid-cols-4 md:grid-cols-6">
-            {US_STATES.map((s) => (
               <button
-                key={s.code}
-                type="button"
-                onClick={() => toggleState(s.code)}
-                className={`rounded-md px-2 py-1 text-xs ${
-                  selectedStates.includes(s.code)
-                    ? "bg-white text-black"
-                    : "bg-white/10 text-white/70"
-                }`}
+                disabled={!headshotFile || saving}
+                onClick={uploadHeadshot}
+                className="rounded-xl bg-white text-black px-4 py-2 text-sm font-medium disabled:opacity-50"
               >
-                {s.code}
+                {saving ? "Uploading..." : "Upload"}
               </button>
-            ))}
-          </div>
-
-          {chosenStates.length > 0 && (
-            <div className="mt-5 space-y-4">
-              {chosenStates.map((s) => (
-                <div key={s.code} className="rounded-lg border border-white/10 p-3">
-                  <div className="mb-2 text-sm font-medium">{s.name} ({s.code})</div>
-                  <div className="grid gap-3 md:grid-cols-2">
-                    <label className="text-sm">
-                      <div className="mb-1 text-white/70">License #</div>
-                      <input
-                        className="w-full rounded-lg bg-white/5 p-2"
-                        value={licenseNumbers[s.code] || ""}
-                        onChange={(e) =>
-                          setLicenseNumbers((m) => ({ ...m, [s.code]: e.target.value }))
-                        }
-                      />
-                    </label>
-                    <label className="text-sm">
-                      <div className="mb-1 text-white/70">Upload license (PDF/JPG/PNG)</div>
-                      <input
-                        type="file"
-                        accept="application/pdf,image/*"
-                        onChange={(e) =>
-                          setLicenseFiles((m) => ({ ...m, [s.code]: e.target.files?.[0] }))
-                        }
-                      />
-                      {licenseUrls[s.code] && (
-                        <div className="mt-1 text-xs text-white/60">
-                          Saved: <a className="underline" href={licenseUrls[s.code]} target="_blank" rel="noreferrer">view</a>
-                        </div>
-                      )}
-                    </label>
-                  </div>
-                </div>
-              ))}
             </div>
-          )}
 
-          <div className="mt-5 flex gap-2">
-            <button onClick={() => setStep(2)} className="rounded-lg border border-white/20 px-4 py-2">
-              Back
-            </button>
-            <button
-              onClick={saveStatesAndNext}
-              disabled={saving}
-              className="rounded-lg bg-white px-4 py-2 text-black"
-            >
-              {saving ? "Saving..." : "Save & Next"}
-            </button>
-          </div>
-        </Section>
-      )}
+            {headshotUrl && (
+              <div className="mt-4">
+                <img src={headshotUrl} alt="Headshot" className="h-28 w-28 rounded-xl object-cover border border-white/10" />
+              </div>
+            )}
 
-      {step === 4 && (
-        <Section title="All set">
-          <p className="text-white/80">
-            Your Agent Showcase is saved. You can now publish or preview the public page.
-          </p>
-          <div className="mt-4 flex gap-2">
-            <button onClick={() => nav("/app")} className="rounded-lg bg-white px-4 py-2 text-black">
-              Finish
-            </button>
-          </div>
-        </Section>
-      )}
+            <div className="mt-6">
+              <button
+                onClick={() => setStep(3)}
+                className="rounded-xl bg-white text-black px-4 py-2 text-sm font-medium"
+              >
+                Next
+              </button>
+            </div>
+          </motion.div>
+        )}
+
+        {step === 3 && (
+          <motion.div
+            initial={{opacity:0,y:8}} animate={{opacity:1,y:0}} className="rounded-2xl border border-white/10 bg-white/[0.03] p-4 ring-1 ring-white/5">
+            <h2 className="font-semibold mb-4">Licensed States</h2>
+
+            <div className="grid md:grid-cols-3 gap-3">
+              {showStates.map((s) => {
+                const checked = selectedStates.includes(s.code);
+                return (
+                  <div key={s.code} className="rounded-lg border border-white/10 p-3">
+                    <label className="flex items-center gap-2">
+                      <input
+                        type="checkbox"
+                        checked={checked}
+                        onChange={() => toggleState(s.code)}
+                      />
+                      <span>{s.name} ({s.code})</span>
+                    </label>
+
+                    {checked && (
+                      <div className="mt-3 space-y-2">
+                        <input
+                          placeholder="License number"
+                          value={licenseNumbers[s.code] || ""}
+                          onChange={(e) => setLicenseNumber(s.code, e.target.value)}
+                          className="w-full rounded-lg bg-black/40 border border-white/10 px-3 py-2 text-sm"
+                        />
+                        <input
+                          type="file"
+                          accept="application/pdf,image/*"
+                          onChange={(e) => setLicenseFile(s.code, e.target.files?.[0] || null)}
+                          className="block w-full text-sm"
+                        />
+                        {licenseUrls[s.code] && (
+                          <a className="text-xs underline" href={licenseUrls[s.code]} target="_blank" rel="noreferrer">
+                            View uploaded file
+                          </a>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+
+            <div className="mt-4 flex items-center gap-3">
+              <button disabled={saving}
+                onClick={saveStatesAndNext}
+                className="rounded-xl bg-white text-black px-4 py-2 text-sm font-medium disabled:opacity-50">
+                {saving ? "Saving..." : "Save & Next"}
+              </button>
+            </div>
+          </motion.div>
+        )}
+
+        {step === 4 && (
+          <motion.div
+            initial={{opacity:0,y:8}} animate={{opacity:1,y:0}} className="rounded-2xl border border-white/10 bg-white/[0.03] p-4 ring-1 ring-white/5">
+            <h2 className="font-semibold mb-2">Done</h2>
+            <p className="text-white/70">
+              Your info is saved. When you’re ready, publish on the Settings page or wherever you control visibility.
+            </p>
+          </motion.div>
+        )}
+      </div>
     </div>
   );
 }
