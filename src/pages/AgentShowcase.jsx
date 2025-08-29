@@ -1,461 +1,596 @@
 // File: src/pages/AgentShowcase.jsx
 import { useEffect, useMemo, useState } from "react";
 import { supabase } from "../lib/supabaseClient";
-import { useAuth } from "../auth.jsx";
-import { motion } from "framer-motion";
+import { useNavigate } from "react-router-dom";
 
-// ---------- STATE LIST & NAME MAP ----------
-const US_STATES = [
-  { code: "AL", name: "Alabama" }, { code: "AK", name: "Alaska" },
-  { code: "AZ", name: "Arizona" }, { code: "AR", name: "Arkansas" },
-  { code: "CA", name: "California" }, { code: "CO", name: "Colorado" },
-  { code: "CT", name: "Connecticut" }, { code: "DE", name: "Delaware" },
-  { code: "FL", name: "Florida" }, { code: "GA", name: "Georgia" },
-  { code: "HI", name: "Hawaii" }, { code: "ID", name: "Idaho" },
-  { code: "IL", name: "Illinois" }, { code: "IN", name: "Indiana" },
-  { code: "IA", name: "Iowa" }, { code: "KS", name: "Kansas" },
-  { code: "KY", name: "Kentucky" }, { code: "LA", name: "Louisiana" },
-  { code: "ME", name: "Maine" }, { code: "MD", name: "Maryland" },
-  { code: "MA", name: "Massachusetts" }, { code: "MI", name: "Michigan" },
-  { code: "MN", name: "Minnesota" }, { code: "MS", name: "Mississippi" },
-  { code: "MO", name: "Missouri" }, { code: "MT", name: "Montana" },
-  { code: "NE", name: "Nebraska" }, { code: "NV", name: "Nevada" },
-  { code: "NH", name: "New Hampshire" }, { code: "NJ", name: "New Jersey" },
-  { code: "NM", name: "New Mexico" }, { code: "NY", name: "New York" },
-  { code: "NC", name: "North Carolina" }, { code: "ND", name: "North Dakota" },
-  { code: "OH", name: "Ohio" }, { code: "OK", name: "Oklahoma" },
-  { code: "OR", name: "Oregon" }, { code: "PA", name: "Pennsylvania" },
-  { code: "RI", name: "Rhode Island" }, { code: "SC", name: "South Carolina" },
-  { code: "SD", name: "South Dakota" }, { code: "TN", name: "Tennessee" },
-  { code: "TX", name: "Texas" }, { code: "UT", name: "Utah" },
-  { code: "VT", name: "Vermont" }, { code: "VA", name: "Virginia" },
-  { code: "WA", name: "Washington" }, { code: "WV", name: "West Virginia" },
+/* ---------- Helpers ---------- */
+const STATES = [
+  { code: "AL", name: "Alabama" }, { code: "AK", name: "Alaska" }, { code: "AZ", name: "Arizona" },
+  { code: "AR", name: "Arkansas" }, { code: "CA", name: "California" }, { code: "CO", name: "Colorado" },
+  { code: "CT", name: "Connecticut" }, { code: "DE", name: "Delaware" }, { code: "FL", name: "Florida" },
+  { code: "GA", name: "Georgia" }, { code: "HI", name: "Hawaii" }, { code: "ID", name: "Idaho" },
+  { code: "IL", name: "Illinois" }, { code: "IN", name: "Indiana" }, { code: "IA", name: "Iowa" },
+  { code: "KS", name: "Kansas" }, { code: "KY", name: "Kentucky" }, { code: "LA", name: "Louisiana" },
+  { code: "ME", name: "Maine" }, { code: "MD", name: "Maryland" }, { code: "MA", name: "Massachusetts" },
+  { code: "MI", name: "Michigan" }, { code: "MN", name: "Minnesota" }, { code: "MS", name: "Mississippi" },
+  { code: "MO", name: "Missouri" }, { code: "MT", name: "Montana" }, { code: "NE", name: "Nebraska" },
+  { code: "NV", name: "Nevada" }, { code: "NH", name: "New Hampshire" }, { code: "NJ", name: "New Jersey" },
+  { code: "NM", name: "New Mexico" }, { code: "NY", name: "New York" }, { code: "NC", name: "North Carolina" },
+  { code: "ND", name: "North Dakota" }, { code: "OH", name: "Ohio" }, { code: "OK", name: "Oklahoma" },
+  { code: "OR", name: "Oregon" }, { code: "PA", name: "Pennsylvania" }, { code: "RI", name: "Rhode Island" },
+  { code: "SC", name: "South Carolina" }, { code: "SD", name: "South Dakota" }, { code: "TN", name: "Tennessee" },
+  { code: "TX", name: "Texas" }, { code: "UT", name: "Utah" }, { code: "VT", name: "Vermont" },
+  { code: "VA", name: "Virginia" }, { code: "WA", name: "Washington" }, { code: "WV", name: "West Virginia" },
   { code: "WI", name: "Wisconsin" }, { code: "WY", name: "Wyoming" },
 ];
-const STATE_NAME = Object.fromEntries(US_STATES.map(s => [s.code, s.name]));
 
-// ---------- UTIL ----------
+// quick lookup for state name -> guarantees we never write NULL into state_name
+const STATE_NAME = Object.fromEntries(STATES.map(s => [s.code, s.name]));
+
 const slugify = (s) =>
   (s || "")
-    .toString()
-    .trim()
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, "-")
     .replace(/(^-|-$)+/g, "");
 
-// ---------- PAGE ----------
-export default function AgentShowcase() {
-  const { user } = useAuth();
-  const [step, setStep] = useState(1);
-  const [saving, setSaving] = useState(false);
+/* ---------- Small UI helper ---------- */
+function Field({ label, children, full }) {
+  return (
+    <label className={`block ${full ? "md:col-span-2" : ""}`}>
+      <div className="mb-1 text-xs font-medium text-white/70">{label}</div>
+      {children}
+    </label>
+  );
+}
 
-  // Step 1 (agent_profiles)
+/* ---------- Page ---------- */
+export default function AgentShowcase() {
+  const nav = useNavigate();
+
+  // wizard step
+  const [step, setStep] = useState(1);
+
+  // Step 1 profile
   const [fullName, setFullName] = useState("");
   const [email, setEmail] = useState("");
   const [phone, setPhone] = useState("");
   const [shortBio, setShortBio] = useState("");
   const [npn, setNpn] = useState("");
+  const slug = useMemo(() => slugify(fullName) || "my-profile", [fullName]);
+
+  // Step 2 headshot
+  const [headshotFile, setHeadshotFile] = useState(null);
   const [headshotUrl, setHeadshotUrl] = useState("");
 
-  // Step 2 (upload headshot)
-  const [headshotFile, setHeadshotFile] = useState(null);
+  // Step 3 states
+  // stateMap: { [state_code]: { selected: bool, license_number: string, license_image_url: string, file?: File } }
+  const [stateMap, setStateMap] = useState({});
+  const [savingStates, setSavingStates] = useState(false);
 
-  // Step 3 (states & licenses)
-  const [selectedStates, setSelectedStates] = useState([]);           // ['CA','AZ']
-  const [licenseNumbers, setLicenseNumbers] = useState({});           // { CA:'123', AZ:'...' }
-  const [licenseFiles, setLicenseFiles] = useState({});               // { CA:File, AZ:File }
-  const [licenseUrls, setLicenseUrls] = useState({});                 // { CA:'https...', AZ:'...' }
+  // publish
+  const [published, setPublished] = useState(false);
 
-  // prefill email from session
-  useEffect(() => {
-    if (user?.email) setEmail(user.email);
-  }, [user]);
+  const [loading, setLoading] = useState(false);
 
-  // load existing profile + states
+  /* ---------- Load existing ---------- */
   useEffect(() => {
     (async () => {
-      if (!user) return;
+      const { data: auth } = await supabase.auth.getUser();
+      const uid = auth?.user?.id;
+      if (!uid) return;
 
-      // agent_profiles
+      // profile
       const { data: prof } = await supabase
         .from("agent_profiles")
         .select("*")
-        .eq("user_id", user.id)
+        .eq("user_id", uid)
         .maybeSingle();
-
       if (prof) {
         setFullName(prof.full_name || "");
-        setEmail(prof.email || user.email || "");
+        setEmail(prof.email || auth.user.email || "");
         setPhone(prof.phone || "");
         setShortBio(prof.short_bio || "");
         setNpn(prof.npn || "");
+        setPublished(!!prof.published);
         setHeadshotUrl(prof.headshot_url || "");
+      } else {
+        setEmail(auth.user?.email || "");
       }
 
-      // agent_states
-      const { data: states } = await supabase
+      // states
+      const { data: st } = await supabase
         .from("agent_states")
-        .select("state_code, state_name, license_number, license_image_url")
-        .eq("user_id", user.id);
+        .select("state_code, license_number, license_image_url")
+        .eq("user_id", uid);
 
-      if (states?.length) {
-        const codes = states.map(s => s.state_code);
-        setSelectedStates(codes);
-        const nums = {};
-        const urls = {};
-        states.forEach(s => {
-          nums[s.state_code] = s.license_number || "";
-          urls[s.state_code] = s.license_image_url || "";
-        });
-        setLicenseNumbers(nums);
-        setLicenseUrls(urls);
+      if (st?.length) {
+        const next = {};
+        for (const r of st) {
+          next[r.state_code] = {
+            selected: true,
+            license_number: r.license_number || "",
+            license_image_url: r.license_image_url || "",
+          };
+        }
+        setStateMap(next);
       }
     })();
-  }, [user]);
+  }, []);
 
-  const canNext1 = fullName.trim() && email.trim();
-  const showStates = useMemo(() => US_STATES, []);
-
-  // ---------- STEP 1 SAVE (back to your working behavior) ----------
-  async function saveProfileAndNext() {
-    if (!user) return;
-    if (!canNext1) {
-      alert("Name and email are required");
-      return;
-    }
-    setSaving(true);
+  /* ---------- Step 1: Save profile ---------- */
+  async function saveProfile() {
+    setLoading(true);
     try {
-      // keep slug stable (derive from name)
-      const slug = slugify(fullName);
+      const { data: auth } = await supabase.auth.getUser();
+      const uid = auth?.user?.id;
+      if (!uid) throw new Error("Please log in");
 
-      // upsert on user_id (your table has user_id PK or unique)
-      const { error } = await supabase
-        .from("agent_profiles")
-        .upsert({
-          user_id: user.id,
+      const { error } = await supabase.from("agent_profiles").upsert(
+        {
+          user_id: uid,
           slug,
           full_name: fullName,
           email,
           phone,
           short_bio: shortBio,
           npn,
-          published: false,
+          published,
           headshot_url: headshotUrl || null,
-        }, { onConflict: "user_id" });
-
+          updated_at: new Date().toISOString(),
+        },
+        { onConflict: "user_id" }
+      );
       if (error) throw error;
 
       setStep(2);
     } catch (e) {
-      alert(e.message || "Save failed");
+      console.error(e);
+      alert(e.message);
     } finally {
-      setSaving(false);
+      setLoading(false);
     }
   }
 
-  // ---------- STEP 2: HEADSHOT ----------
+  /* ---------- Step 2: Upload headshot ---------- */
   async function uploadHeadshot() {
-    if (!user || !headshotFile) return;
-    setSaving(true);
+    if (!headshotFile) {
+      alert("Choose an image first");
+      return;
+    }
+    setLoading(true);
     try {
-      // bucket + folder MUST match your storage: agent_public_v2/profile-pictures
-      const bucket = "agent_public_v2";
-      const fileName = `${user.id}-${Date.now()}-${headshotFile.name}`.replace(/\s+/g, "_");
-      const storagePath = `profile-pictures/${fileName}`;
+      const { data: auth } = await supabase.auth.getUser();
+      const uid = auth?.user?.id;
+      if (!uid) throw new Error("Please log in");
 
-      const { error: upErr } = await supabase.storage
-        .from(bucket)
-        .upload(storagePath, headshotFile, {
-          cacheControl: "3600",
-          upsert: false,
-          contentType: headshotFile.type || "application/octet-stream",
-        });
+      const ext = (headshotFile.name.split(".").pop() || "jpg").toLowerCase();
+      const key = `profile-pictures/${uid}/${Date.now()}.${ext}`;
+      const bucket = supabase.storage.from("agent_public_v2");
 
+      const { error: upErr } = await bucket.upload(key, headshotFile, {
+        upsert: true,
+        contentType: headshotFile.type || "image/jpeg",
+        cacheControl: "3600",
+      });
       if (upErr) throw upErr;
 
-      const { data: publicUrlData } = supabase
-        .storage
-        .from(bucket)
-        .getPublicUrl(storagePath);
-
-      const publicUrl = publicUrlData?.publicUrl;
-      if (!publicUrl) throw new Error("Could not get public URL for headshot");
-
-      // save URL to profile
-      const { error: upsertErr } = await supabase
-        .from("agent_profiles")
-        .upsert({
-          user_id: user.id,
-          headshot_url: publicUrl,
-        }, { onConflict: "user_id" });
-
-      if (upsertErr) throw upsertErr;
+      const { data: pub } = bucket.getPublicUrl(key);
+      const publicUrl = pub?.publicUrl;
+      if (!publicUrl) throw new Error("Could not get public URL");
 
       setHeadshotUrl(publicUrl);
-      alert("Headshot uploaded.");
+
+      const { error: updErr } = await supabase
+        .from("agent_profiles")
+        .update({ headshot_url: publicUrl })
+        .eq("user_id", uid);
+      if (updErr) throw updErr;
+
+      setStep(3);
     } catch (e) {
+      console.error(e);
       alert(`Headshot upload failed: ${e.message}`);
     } finally {
-      setSaving(false);
+      setLoading(false);
     }
   }
 
-  // ---------- STEP 3: STATES & LICENSES ----------
+  /* ---------- Step 3: per-state UI helpers ---------- */
+  const isSelected = (code) => !!stateMap[code]?.selected;
+
   function toggleState(code) {
-    setSelectedStates(prev => prev.includes(code)
-      ? prev.filter(c => c !== code)
-      : [...prev, code]
-    );
+    setStateMap((prev) => {
+      const next = { ...prev };
+      const cur = next[code] || { selected: false, license_number: "", license_image_url: "" };
+      next[code] = { ...cur, selected: !cur.selected };
+      return next;
+    });
   }
 
-  function setLicenseNumber(code, val) {
-    setLicenseNumbers(p => ({ ...p, [code]: val }));
+  function setLicenseNumber(code, value) {
+    setStateMap((prev) => {
+      const cur = prev[code] || { selected: true, license_number: "", license_image_url: "" };
+      return { ...prev, [code]: { ...cur, license_number: value } };
+    });
   }
 
   function setLicenseFile(code, file) {
-    setLicenseFiles(p => ({ ...p, [code]: file }));
+    setStateMap((prev) => {
+      const cur = prev[code] || { selected: true, license_number: "", license_image_url: "" };
+      return { ...prev, [code]: { ...cur, file } };
+    });
   }
 
-  async function uploadLicenseFile(code) {
-    if (!user) return null;
-    const f = licenseFiles[code];
-    if (!f) return null;
-
-    const bucket = "agent_public_v2";
-    const safe = `${user.id}-${code}-${Date.now()}-${f.name}`.replace(/\s+/g, "_");
-    // store in the public bucket under showcase/licenses
-    const storagePath = `showcase/licenses/${safe}`;
-
-    const { error: upErr } = await supabase.storage
-      .from(bucket)
-      .upload(storagePath, f, {
-        upsert: false,
-        cacheControl: "3600",
-        contentType: f.type || "application/octet-stream",
-      });
-
-    if (upErr) throw upErr;
-
-    const { data: u } = supabase.storage.from(bucket).getPublicUrl(storagePath);
-    const url = u?.publicUrl || null;
-    if (url) {
-      setLicenseUrls(prev => ({ ...prev, [code]: url }));
-    }
-    return url;
-  }
-
-  // ✅ Fixed: this will always set state_name, and it won’t get stuck if the UNIQUE isn’t present
-  async function saveStatesAndNext() {
-    if (!user) return;
-    setSaving(true);
+  /* ---------- Step 3: Save (diff-based with uploads; image or PDF) ---------- */
+  async function saveStates() {
+    setSavingStates(true);
     try {
-      // upload files first (pdf or image)
-      for (const code of selectedStates) {
-        if (licenseFiles[code]) {
-          await uploadLicenseFile(code);
+      const { data: auth } = await supabase.auth.getUser();
+      const uid = auth?.user?.id;
+      if (!uid) throw new Error("Please log in");
+
+      const selectedCodes = Object.keys(stateMap).filter((c) => stateMap[c]?.selected);
+
+      // simple validation
+      for (const code of selectedCodes) {
+        const item = stateMap[code];
+        if (!item.license_number?.trim()) {
+          throw new Error(`Please enter a license number for ${code}.`);
+        }
+        if (!item.license_image_url && !item.file) {
+          throw new Error(`Please upload a license image or PDF for ${code}.`);
         }
       }
 
-      // build rows and ALWAYS include state_name
-      const rows = selectedStates.map(code => ({
-        user_id: user.id,
-        state_code: code,
-        state_name: STATE_NAME[code] || code, // never null
-        license_number: licenseNumbers[code] || null,
-        license_image_url: licenseUrls[code] || null,
-      }));
-
-      // try upsert if you have UNIQUE(user_id, state_code)
-      let { error } = await supabase
+      // Existing rows
+      const { data: existingRows, error: selErr } = await supabase
         .from("agent_states")
-        .upsert(rows, { onConflict: "user_id,state_code" });
+        .select("state_code")
+        .eq("user_id", uid);
+      if (selErr) throw selErr;
 
-      // if the constraint doesn't exist, fall back to delete+insert
-      if (error && /on conflict|conflict/i.test(error.message)) {
-        await supabase.from("agent_states").delete().eq("user_id", user.id);
-        const ins = await supabase.from("agent_states").insert(rows);
-        error = ins.error || null;
+      const existing = new Set((existingRows || []).map((r) => r.state_code));
+      const desired = new Set(selectedCodes);
+      const toDelete = [...existing].filter((c) => !desired.has(c));
+
+      // Upload any pending files and collect rows to upsert
+      const rowsToUpsert = [];
+      const bucket = supabase.storage.from("agent_public_v2");
+
+      for (const code of selectedCodes) {
+        let license_image_url = stateMap[code].license_image_url || "";
+
+        if (stateMap[code].file) {
+          const file = stateMap[code].file;
+          const ext = (file.name.split(".").pop() || "jpg").toLowerCase();
+          const key = `licenses/${uid}/${code}-${Date.now()}.${ext}`;
+          const { error: upErr } = await bucket.upload(key, file, {
+            upsert: true,
+            contentType: file.type || (ext === "pdf" ? "application/pdf" : "image/jpeg"),
+            cacheControl: "3600",
+          });
+          if (upErr) throw upErr;
+
+          const { data: pub } = bucket.getPublicUrl(key);
+          license_image_url = pub?.publicUrl || "";
+        }
+
+        // ✅ include state_name to satisfy NOT NULL constraint
+        rowsToUpsert.push({
+          user_id: uid,
+          state_code: code,
+          state_name: STATE_NAME[code] || code, // never null
+          license_number: stateMap[code].license_number || null,
+          license_image_url: license_image_url || null,
+          updated_at: new Date().toISOString(),
+        });
       }
-      if (error) throw error;
 
-      alert("States saved.");
+      // Upsert selected rows (uses composite conflict on user_id,state_code if present)
+      if (rowsToUpsert.length) {
+        const { error: upErr } = await supabase
+          .from("agent_states")
+          .upsert(rowsToUpsert, { onConflict: "user_id,state_code" });
+        if (upErr) throw upErr;
+      }
+
+      // Delete unselected rows
+      if (toDelete.length) {
+        const { error: delErr } = await supabase
+          .from("agent_states")
+          .delete()
+          .eq("user_id", uid)
+          .in("state_code", toDelete);
+        if (delErr) throw delErr;
+      }
+
       setStep(4);
     } catch (e) {
+      console.error(e);
       alert(`Save failed: ${e.message}`);
     } finally {
-      setSaving(false);
+      setSavingStates(false);
     }
   }
 
-  // ---------- RENDER ----------
+  /* ---------- Step 4: Publish ---------- */
+  const publicUrl = `${window.location.origin}/a/${slug}`;
+
+  async function setPublish(val) {
+    try {
+      const { data: auth } = await supabase.auth.getUser();
+      const uid = auth?.user?.id;
+      if (!uid) throw new Error("Please log in");
+
+      const { error } = await supabase
+        .from("agent_profiles")
+        .update({ published: val })
+        .eq("user_id", uid);
+      if (error) throw error;
+
+      setPublished(val);
+      if (val) alert("Published! Your page is live.");
+    } catch (e) {
+      console.error(e);
+      alert(e.message);
+    }
+  }
+
+  /* ---------- Render ---------- */
   return (
-    <div className="min-h-screen bg-neutral-950 text-white">
-      <div className="mx-auto max-w-4xl px-4 py-8">
-        <h1 className="text-2xl font-semibold mb-2">Agent Showcase</h1>
-        <p className="text-white/70 mb-6">
-          Fill these steps to generate your personal “Agent Showcase” page.
-        </p>
+    <div className="mx-auto max-w-4xl px-4 py-8 text-white">
+      <h1 className="text-2xl font-semibold">Agent Showcase</h1>
+      <p className="mt-1 text-sm text-white/70">Create your public mini-site to share with clients.</p>
 
-        {/* Stepper */}
-        <div className="flex gap-2 mb-6 text-xs">
-          {[1,2,3,4].map(n => (
-            <span key={n}
-              className={`rounded-full px-3 py-1 border ${step===n ? "bg-white text-black" : "border-white/20 text-white/70"}`}>
-              Step {n}
-            </span>
-          ))}
-        </div>
+      <ol className="mt-6 grid grid-cols-4 gap-2 text-xs text-white/60">
+        {[1, 2, 3, 4].map((s) => (
+          <li
+            key={s}
+            className={`rounded-lg border px-3 py-2 text-center ${
+              step === s ? "border-white/40 bg-white/10" : "border-white/10 bg-white/[0.04]"
+            }`}
+          >
+            Step {s}
+          </li>
+        ))}
+      </ol>
 
-        {step === 1 && (
-          <motion.div
-            initial={{opacity:0,y:8}} animate={{opacity:1,y:0}} className="rounded-2xl border border-white/10 bg-white/[0.03] p-4 ring-1 ring-white/5">
-            <h2 className="font-semibold mb-4">Profile</h2>
-
-            <div className="grid md:grid-cols-2 gap-4">
-              <div>
-                <label className="text-sm text-white/70">Full Name</label>
-                <input value={fullName} onChange={e=>setFullName(e.target.value)}
-                  className="mt-1 w-full rounded-lg bg-black/40 border border-white/10 px-3 py-2" />
-              </div>
-
-              <div>
-                <label className="text-sm text-white/70">Email</label>
-                <input value={email} onChange={e=>setEmail(e.target.value)}
-                  className="mt-1 w-full rounded-lg bg-black/40 border border-white/10 px-3 py-2" />
-              </div>
-
-              <div>
-                <label className="text-sm text-white/70">Phone</label>
-                <input value={phone} onChange={e=>setPhone(e.target.value)}
-                  className="mt-1 w-full rounded-lg bg-black/40 border border-white/10 px-3 py-2" />
-              </div>
-
-              <div>
-                <label className="text-sm text-white/70">NPN</label>
-                <input value={npn} onChange={e=>setNpn(e.target.value)}
-                  className="mt-1 w-full rounded-lg bg-black/40 border border-white/10 px-3 py-2" />
-              </div>
-
-              <div className="md:col-span-2">
-                <label className="text-sm text-white/70">Short Bio</label>
-                <textarea value={shortBio} onChange={e=>setShortBio(e.target.value)} rows={4}
-                  className="mt-1 w-full rounded-lg bg-black/40 border border-white/10 px-3 py-2" />
-              </div>
-            </div>
-
-            <div className="mt-4 flex items-center gap-3">
-              <button disabled={!canNext1 || saving}
-                onClick={saveProfileAndNext}
-                className="rounded-xl bg-white text-black px-4 py-2 text-sm font-medium disabled:opacity-50">
-                {saving ? "Saving..." : "Save & Next"}
-              </button>
-            </div>
-          </motion.div>
-        )}
-
-        {step === 2 && (
-          <motion.div
-            initial={{opacity:0,y:8}} animate={{opacity:1,y:0}} className="rounded-2xl border border-white/10 bg-white/[0.03] p-4 ring-1 ring-white/5">
-            <h2 className="font-semibold mb-4">Headshot</h2>
-
-            <div className="flex items-center gap-4">
+      {/* STEP 1 */}
+      {step === 1 && (
+        <div className="mt-6 space-y-4 rounded-2xl border border-white/10 bg-white/[0.03] p-5">
+          <div className="grid gap-4 md:grid-cols-2">
+            <Field label="Full Name">
               <input
-                type="file"
-                accept="image/*"
-                onChange={(e) => setHeadshotFile(e.target.files?.[0] || null)}
-                className="text-sm"
+                value={fullName}
+                onChange={(e) => setFullName(e.target.value)}
+                className="w-full rounded-lg border border-white/10 bg-black/30 px-3 py-2 outline-none"
+                placeholder="First Last"
               />
-              <button
-                disabled={!headshotFile || saving}
-                onClick={uploadHeadshot}
-                className="rounded-xl bg-white text-black px-4 py-2 text-sm font-medium disabled:opacity-50"
-              >
-                {saving ? "Uploading..." : "Upload"}
-              </button>
-            </div>
+            </Field>
+            <Field label="Email">
+              <input
+                value={email}
+                onChange={(e) => setEmail(e.target.value)}
+                className="w-full rounded-lg border border-white/10 bg-black/30 px-3 py-2 outline-none"
+                placeholder="you@email.com"
+              />
+            </Field>
+            <Field label="Phone">
+              <input
+                value={phone}
+                onChange={(e) => setPhone(e.target.value)}
+                className="w-full rounded-lg border border-white/10 bg-black/30 px-3 py-2 outline-none"
+                placeholder="(555) 555-5555"
+              />
+            </Field>
+            <Field label="NPN">
+              <input
+                value={npn}
+                onChange={(e) => setNpn(e.target.value)}
+                className="w-full rounded-lg border border-white/10 bg-black/30 px-3 py-2 outline-none"
+                placeholder="National Producer Number"
+              />
+            </Field>
+            <Field label="Short Bio" full>
+              <textarea
+                value={shortBio}
+                onChange={(e) => setShortBio(e.target.value)}
+                className="min-h-[110px] w-full rounded-lg border border-white/10 bg-black/30 px-3 py-2 outline-none"
+                placeholder="One–two sentences about your practice…"
+              />
+            </Field>
+          </div>
 
-            {headshotUrl && (
-              <div className="mt-4">
-                <img src={headshotUrl} alt="Headshot" className="h-28 w-28 rounded-xl object-cover border border-white/10" />
-              </div>
-            )}
+          <div className="mt-4 text-xs text-white/50">URL preview: /a/{slug}</div>
 
-            <div className="mt-6">
-              <button
-                onClick={() => setStep(3)}
-                className="rounded-xl bg-white text-black px-4 py-2 text-sm font-medium"
-              >
-                Next
-              </button>
-            </div>
-          </motion.div>
-        )}
+          <div className="mt-4 flex items-center justify-end gap-3">
+            <button
+              onClick={() => nav("/app")}
+              className="rounded-lg border border-white/15 px-4 py-2 text-sm hover:bg-white/5"
+            >
+              Cancel
+            </button>
+            <button
+              onClick={saveProfile}
+              disabled={loading}
+              className={`rounded-lg bg-white px-4 py-2 text-sm font-medium text-black ${
+                loading ? "opacity-50 cursor-not-allowed" : "hover:bg-neutral-200"
+              }`}
+            >
+              {loading ? "Saving…" : "Save & Continue"}
+            </button>
+          </div>
+        </div>
+      )}
 
-        {step === 3 && (
-          <motion.div
-            initial={{opacity:0,y:8}} animate={{opacity:1,y:0}} className="rounded-2xl border border-white/10 bg-white/[0.03] p-4 ring-1 ring-white/5">
-            <h2 className="font-semibold mb-4">Licensed States</h2>
+      {/* STEP 2 */}
+      {step === 2 && (
+        <div className="mt-6 space-y-4 rounded-2xl border border-white/10 bg-white/[0.03] p-5">
+          <Field label="Headshot">
+            <input
+              type="file"
+              accept="image/*"
+              onChange={(e) => setHeadshotFile(e.target.files?.[0] || null)}
+              className="block text-sm"
+            />
+          </Field>
 
-            <div className="grid md:grid-cols-3 gap-3">
-              {showStates.map((s) => {
-                const checked = selectedStates.includes(s.code);
-                return (
-                  <div key={s.code} className="rounded-lg border border-white/10 p-3">
-                    <label className="flex items-center gap-2">
+          {headshotUrl && (
+            <img
+              src={headshotUrl}
+              alt="Headshot"
+              className="mt-2 h-32 w-32 rounded-xl border border-white/10 object-cover"
+            />
+          )}
+
+          <div className="mt-4 flex items-center justify-end gap-3">
+            <button
+              onClick={() => setStep(1)}
+              className="rounded-lg border border-white/15 px-4 py-2 text-sm hover:bg-white/5"
+            >
+              Back
+            </button>
+            <button
+              onClick={uploadHeadshot}
+              disabled={loading}
+              className={`rounded-lg bg-white px-4 py-2 text-sm font-medium text-black ${
+                loading ? "opacity-50 cursor-not-allowed" : "hover:bg-neutral-200"
+              }`}
+            >
+              {loading ? "Uploading…" : "Upload & Continue"}
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* STEP 3 */}
+      {step === 3 && (
+        <div className="mt-6 space-y-4 rounded-2xl border border-white/10 bg-white/[0.03] p-5">
+          <p className="text-sm text-white/80">
+            Select your licensed states, add the license number for each, and upload a clear image
+            <em> or PDF</em> of the license.
+          </p>
+
+          <div className="space-y-3">
+            {STATES.map((s) => {
+              const entry = stateMap[s.code] || { selected: false, license_number: "", license_image_url: "" };
+              const selected = !!entry.selected;
+
+              return (
+                <div key={s.code} className="rounded-xl border border-white/10 bg-white/[0.04] p-3">
+                  <div className="flex items-center justify-between">
+                    <label className="flex items-center gap-2 text-sm">
                       <input
                         type="checkbox"
-                        checked={checked}
+                        checked={selected}
                         onChange={() => toggleState(s.code)}
                       />
-                      <span>{s.name} ({s.code})</span>
+                      <span className="font-medium">{s.name}</span>
+                      <span className="text-white/50">({s.code})</span>
                     </label>
+                  </div>
 
-                    {checked && (
-                      <div className="mt-3 space-y-2">
+                  {selected && (
+                    <div className="mt-3 grid gap-3 md:grid-cols-3">
+                      <div className="md:col-span-1">
+                        <div className="text-xs text-white/70 mb-1">License Number</div>
                         <input
-                          placeholder="License number"
-                          value={licenseNumbers[s.code] || ""}
+                          className="w-full rounded-lg border border-white/10 bg-black/30 px-3 py-2 outline-none"
+                          value={entry.license_number || ""}
                           onChange={(e) => setLicenseNumber(s.code, e.target.value)}
-                          className="w-full rounded-lg bg-black/40 border border-white/10 px-3 py-2 text-sm"
+                          placeholder="e.g. 1234567"
                         />
+                      </div>
+
+                      <div className="md:col-span-1">
+                        <div className="text-xs text-white/70 mb-1">Upload License (image or PDF)</div>
                         <input
                           type="file"
-                          accept="application/pdf,image/*"
+                          accept="image/*,.pdf"
                           onChange={(e) => setLicenseFile(s.code, e.target.files?.[0] || null)}
-                          className="block w-full text-sm"
+                          className="block text-sm"
                         />
-                        {licenseUrls[s.code] && (
-                          <a className="text-xs underline" href={licenseUrls[s.code]} target="_blank" rel="noreferrer">
-                            View uploaded file
-                          </a>
+                      </div>
+
+                      <div className="md:col-span-1">
+                        <div className="text-xs text-white/70 mb-1">Current File</div>
+                        {entry.license_image_url ? (
+                          entry.license_image_url.toLowerCase().includes(".pdf") ? (
+                            <a
+                              href={entry.license_image_url}
+                              target="_blank"
+                              rel="noreferrer"
+                              className="text-xs text-indigo-300 underline"
+                            >
+                              View PDF
+                            </a>
+                          ) : (
+                            <img
+                              src={entry.license_image_url}
+                              alt={`${s.code} license`}
+                              className="h-20 w-32 rounded-lg border border-white/10 object-cover"
+                            />
+                          )
+                        ) : (
+                          <div className="grid h-20 w-32 place-items-center rounded-lg border border-dashed border-white/15 text-xs text-white/50">
+                            None uploaded
+                          </div>
                         )}
                       </div>
-                    )}
-                  </div>
-                );
-              })}
-            </div>
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
 
-            <div className="mt-4 flex items-center gap-3">
-              <button disabled={saving}
-                onClick={saveStatesAndNext}
-                className="rounded-xl bg-white text-black px-4 py-2 text-sm font-medium disabled:opacity-50">
-                {saving ? "Saving..." : "Save & Next"}
-              </button>
-            </div>
-          </motion.div>
-        )}
+          <div className="mt-4 flex items-center justify-end gap-3">
+            <button
+              onClick={() => setStep(2)}
+              className="rounded-lg border border-white/15 px-4 py-2 text-sm hover:bg-white/5"
+            >
+              Back
+            </button>
+            <button
+              onClick={saveStates}
+              disabled={savingStates}
+              className={`rounded-lg bg-white px-4 py-2 text-sm font-medium text-black ${
+                savingStates ? "opacity-50 cursor-not-allowed" : "hover:bg-neutral-200"
+              }`}
+            >
+              {savingStates ? "Saving…" : "Save & Continue"}
+            </button>
+          </div>
+        </div>
+      )}
 
-        {step === 4 && (
-          <motion.div
-            initial={{opacity:0,y:8}} animate={{opacity:1,y:0}} className="rounded-2xl border border-white/10 bg-white/[0.03] p-4 ring-1 ring-white/5">
-            <h2 className="font-semibold mb-2">Done</h2>
-            <p className="text-white/70">
-              Your info is saved. When you’re ready, publish on the Settings page or wherever you control visibility.
-            </p>
-          </motion.div>
-        )}
-      </div>
+      {/* STEP 4 */}
+      {step === 4 && (
+        <div className="mt-6 space-y-4 rounded-2xl border border-white/10 bg-white/[0.03] p-5">
+          <div className="space-y-2">
+            <div className="text-sm">Public page:</div>
+            <a href={publicUrl} target="_blank" rel="noreferrer" className="text-indigo-300 underline">
+              {publicUrl}
+            </a>
+          </div>
+
+          <div className="flex items-center gap-3">
+            <label className="inline-flex items-center gap-2 text-sm">
+              <input type="checkbox" checked={published} onChange={(e) => setPublish(e.target.checked)} />
+              <span>Publish my page</span>
+            </label>
+          </div>
+
+          <div className="mt-4 flex items-center justify-end">
+            <button
+              onClick={() => nav("/app")}
+              className="rounded-lg bg-white px-4 py-2 text-sm font-medium text-black hover:bg-neutral-200"
+            >
+              Done
+            </button>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
