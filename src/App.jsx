@@ -352,7 +352,11 @@ function Card({ title, children }) {
   );
 }
 
-// KPI dashboard (same look as before)
+// In: src/App.jsx
+import NumberCard from "./components/NumberCard.jsx";
+import { dashboardSnapshot } from "./lib/stats.js";
+
+// KPI dashboard (adds premium weekly/monthly)
 function DashboardHome() {
   const snap = dashboardSnapshot();
 
@@ -379,6 +383,9 @@ function DashboardHome() {
     },
   ];
 
+  const money = (n) =>
+    Intl.NumberFormat(undefined, { style: "currency", currency: "USD", maximumFractionDigits: 0 }).format(n || 0);
+
   return (
     <div className="space-y-6">
       <div className="grid gap-4 md:grid-cols-4">
@@ -393,27 +400,28 @@ function DashboardHome() {
       </div>
 
       <div className="grid gap-4 md:grid-cols-2">
-        <Card title="This Week">
-          <div className="grid grid-cols-4 gap-3 text-sm">
+        <div className="rounded-2xl border border-white/10 bg-white/[0.03] p-4 ring-1 ring-white/5">
+          <div className="mb-2 text-sm font-semibold">This Week</div>
+          <div className="grid grid-cols-5 gap-3 text-sm">
             <NumberCard label="Closed" value={snap.thisWeek.closed} />
             <NumberCard label="Clients" value={snap.thisWeek.clients} />
             <NumberCard label="Leads" value={snap.thisWeek.leads} />
             <NumberCard label="Appts" value={snap.thisWeek.appointments} />
+            <NumberCard label="Premium" value={money(snap.thisWeek.premium)} />
           </div>
-        </Card>
-        <Card title="This Month">
-          <div className="grid grid-cols-4 gap-3 text-sm">
+        </div>
+
+        <div className="rounded-2xl border border-white/10 bg-white/[0.03] p-4 ring-1 ring-white/5">
+          <div className="mb-2 text-sm font-semibold">This Month</div>
+          <div className="grid grid-cols-5 gap-3 text-sm">
             <NumberCard label="Closed" value={snap.thisMonth.closed} />
             <NumberCard label="Clients" value={snap.thisMonth.clients} />
             <NumberCard label="Leads" value={snap.thisMonth.leads} />
             <NumberCard label="Appts" value={snap.thisMonth.appointments} />
+            <NumberCard label="Premium" value={money(snap.thisMonth.premium)} />
           </div>
-        </Card>
+        </div>
       </div>
-
-      <Card title="Next Steps">
-        Connect calendars, add message templates, and invite team (Pro).
-      </Card>
     </div>
   );
 }
