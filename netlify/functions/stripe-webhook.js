@@ -1,47 +1,39 @@
-// File: netlify/functions/stripe-webhook.js
-import Stripe from "stripe";
-import { createClient } from "@supabase/supabase-js";
+// File: netlify/functions/stripe-webhook.js (CommonJS)
+const Stripe = require("stripe");
+const { createClient } = require("@supabase/supabase-js");
 
-export const config = { path: "/.netlify/functions/stripe-webhook" };
+exports.config = { path: "/.netlify/functions/stripe-webhook" };
 
 function priceToPlanName(price) {
-  return price?.nickname || price?.product || "Unknown";
+  return (price && (price.nickname || price.product)) || "Unknown";
 }
 const epochToISO = (s) => (s ? new Date(s * 1000).toISOString() : null);
 
-/**
- * Try to resolve a Supabase user id by either:
- *  1) Stripe customer.metadata.user_id (best)
- *  2) Stripe customer email (fallback: paginate Admin API until found)
- */
 async function resolveSupabaseUserId({ supabase, metadataUserId, email }) {
   if (metadataUserId) return metadataUserId;
   if (!email) return null;
 
-  // Paginate through users to find matching email (case-insensitive).
-  // 100 per page, up to 10 pages = 1000 users scanned (adjust if you need more).
   const MAX_PAGES = 10;
   for (let page = 1; page <= MAX_PAGES; page++) {
     const { data, error } = await supabase.auth.admin.listUsers({ page, perPage: 100 });
     if (error) throw error;
 
-    const match = data?.users?.find(
-      (u) => u.email && u.email.toLowerCase() === email.toLowerCase()
-    );
+    const match =
+      data &&
+      data.users &&
+      data.users.find((u) => u.email && u.email.toLowerCase() === email.toLowerCase());
     if (match) return match.id;
 
-    // Stop if we got fewer than perPage users (no more pages)
     if (!data?.users?.length || data.users.length < 100) break;
   }
   return null;
 }
 
-export async function handler(event) {
-  // Init
+exports.handler = async (event) => {
   const stripe = new Stripe(process.env.STRIPE_SECRET_KEY);
   const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_ROLE);
 
-  // Verify signature
+  // Verify Stripe signature
   const sig = event.headers["stripe-signature"];
   let evt;
   try {
@@ -87,7 +79,6 @@ export async function handler(event) {
         customerEmail = customerEmail || customer?.email || null;
       }
     } else {
-      // customer.subscription.* events
       subscription = evt.data.object;
       subscriptionId = subscription.id;
       customerId = subscription.customer;
@@ -110,12 +101,7 @@ export async function handler(event) {
     });
 
     if (!userId) {
-      console.log("⚠️ Could not map Stripe customer to Supabase user", {
-        customerId,
-        customerEmail,
-        metadataUserId,
-      });
-      // Return 200 so Stripe doesn't retry forever; check logs to fix mapping.
+      console.log("⚠️ No user mapped", { customerId, customerEmail, metadataUserId });
       return { statusCode: 200, body: "no user mapped" };
     }
 
@@ -136,4 +122,4 @@ export async function handler(event) {
     console.error("stripe-webhook error:", err);
     return { statusCode: 500, body: err.message || "Server error" };
   }
-}
+};
