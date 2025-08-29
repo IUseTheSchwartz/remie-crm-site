@@ -24,9 +24,6 @@ const STATES = [
   { code: "WI", name: "Wisconsin" }, { code: "WY", name: "Wyoming" },
 ];
 
-// quick lookup for state name -> guarantees we never write NULL into state_name
-const STATE_NAME = Object.fromEntries(STATES.map(s => [s.code, s.name]));
-
 const slugify = (s) =>
   (s || "")
     .toLowerCase()
@@ -62,7 +59,7 @@ export default function AgentShowcase() {
   const [headshotFile, setHeadshotFile] = useState(null);
   const [headshotUrl, setHeadshotUrl] = useState("");
 
-  // Step 3 states
+  // Step 3 states (rich)
   // stateMap: { [state_code]: { selected: bool, license_number: string, license_image_url: string, file?: File } }
   const [stateMap, setStateMap] = useState({});
   const [savingStates, setSavingStates] = useState(false);
@@ -221,7 +218,7 @@ export default function AgentShowcase() {
     });
   }
 
-  /* ---------- Step 3: Save (diff-based with uploads; image or PDF) ---------- */
+  /* ---------- Step 3: Save (diff-based with uploads; accepts PDF) ---------- */
   async function saveStates() {
     setSavingStates(true);
     try {
@@ -229,17 +226,12 @@ export default function AgentShowcase() {
       const uid = auth?.user?.id;
       if (!uid) throw new Error("Please log in");
 
+      // Validate selected states have both license number and file/url
       const selectedCodes = Object.keys(stateMap).filter((c) => stateMap[c]?.selected);
-
-      // simple validation
       for (const code of selectedCodes) {
         const item = stateMap[code];
-        if (!item.license_number?.trim()) {
-          throw new Error(`Please enter a license number for ${code}.`);
-        }
-        if (!item.license_image_url && !item.file) {
-          throw new Error(`Please upload a license image or PDF for ${code}.`);
-        }
+        if (!item.license_number?.trim()) throw new Error(`Please enter a license number for ${code}.`);
+        if (!item.license_image_url && !item.file) throw new Error(`Please upload a license image/PDF for ${code}.`);
       }
 
       // Existing rows
@@ -259,11 +251,11 @@ export default function AgentShowcase() {
 
       for (const code of selectedCodes) {
         let license_image_url = stateMap[code].license_image_url || "";
-
         if (stateMap[code].file) {
           const file = stateMap[code].file;
           const ext = (file.name.split(".").pop() || "jpg").toLowerCase();
           const key = `licenses/${uid}/${code}-${Date.now()}.${ext}`;
+
           const { error: upErr } = await bucket.upload(key, file, {
             upsert: true,
             contentType: file.type || (ext === "pdf" ? "application/pdf" : "image/jpeg"),
@@ -275,18 +267,16 @@ export default function AgentShowcase() {
           license_image_url = pub?.publicUrl || "";
         }
 
-        // ✅ include state_name to satisfy NOT NULL constraint
         rowsToUpsert.push({
           user_id: uid,
           state_code: code,
-          state_name: STATE_NAME[code] || code, // never null
           license_number: stateMap[code].license_number || null,
           license_image_url: license_image_url || null,
           updated_at: new Date().toISOString(),
         });
       }
 
-      // Upsert selected rows (uses composite conflict on user_id,state_code if present)
+      // Upsert selected rows (uses composite conflict on user_id,state_code)
       if (rowsToUpsert.length) {
         const { error: upErr } = await supabase
           .from("agent_states")
@@ -467,8 +457,7 @@ export default function AgentShowcase() {
       {step === 3 && (
         <div className="mt-6 space-y-4 rounded-2xl border border-white/10 bg-white/[0.03] p-5">
           <p className="text-sm text-white/80">
-            Select your licensed states, add the license number for each, and upload a clear image
-            <em> or PDF</em> of the license.
+            Select your licensed states, add the license number for each, and upload a clear image <em>or PDF</em> of the license.
           </p>
 
           <div className="space-y-3">
@@ -583,10 +572,15 @@ export default function AgentShowcase() {
 
           <div className="mt-4 flex items-center justify-end">
             <button
-              onClick={() => nav("/app")}
+              onClick={() => {
+                // Signal sidebar to refresh its link state immediately
+                window.localStorage.setItem("agent_profile_refresh", Date.now().toString());
+                // Send user back to the app home where the sidebar lives
+                nav("/app");
+              }}
               className="rounded-lg bg-white px-4 py-2 text-sm font-medium text-black hover:bg-neutral-200"
             >
-              Done
+              Done — View My Agent Site
             </button>
           </div>
         </div>
