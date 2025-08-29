@@ -1,20 +1,29 @@
-import { useEffect, useMemo, useState, createContext, useContext } from "react";
-import { BrowserRouter, Routes, Route, Navigate, Link, useLocation } from "react-router-dom";
+// File: src/App.jsx
+import React, { useEffect, useMemo, useState, createContext, useContext } from "react";
+import {
+  BrowserRouter,
+  Routes,
+  Route,
+  Navigate,
+  Link,
+  useLocation,
+} from "react-router-dom";
 import { supabase } from "./supabaseClient";
 
-// PAGES
+/* =========================
+   Pages (adjust names if needed)
+   ========================= */
 import LoginPage from "./pages/LoginPage";
 import SignupPage from "./pages/SignupPage";
-import Leads from "./pages/Leads";
-import Reports from "./pages/Reports";
-import Settings from "./pages/Settings";
+import LeadsPage from "./pages/LeadsPage";
+import ReportsPage from "./pages/ReportsPage";
+import SettingsPage from "./pages/SettingsPage";
 import AgentShowcase from "./pages/AgentShowcase";
 import AgentPublic from "./pages/AgentPublic";
 
-/** ---------------------------
- *  Auth Context
- *  ---------------------------
- */
+/* =========================
+   Auth Context (Supabase)
+   ========================= */
 const AuthContext = createContext(null);
 export const useAuth = () => useContext(AuthContext);
 
@@ -47,7 +56,9 @@ function AuthProvider({ children }) {
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
 }
 
-/** ProtectedRoute – must be logged in */
+/* =========================
+   Route Guards
+   ========================= */
 function ProtectedRoute({ children }) {
   const { authReady, user } = useAuth();
   const location = useLocation();
@@ -57,15 +68,19 @@ function ProtectedRoute({ children }) {
   return children;
 }
 
-/** SubscriptionGate – must have an active subscription */
+/** Requires an active subscription in public.subscriptions
+ *  Allowed statuses: active | trialing | past_due  */
 function SubscriptionGate({ children }) {
   const { user } = useAuth();
   const [ok, setOk] = useState(null);
 
   useEffect(() => {
     let ignore = false;
-    async function load() {
-      if (!user?.id) return setOk(false);
+    async function check() {
+      if (!user?.id) {
+        setOk(false);
+        return;
+      }
       const { data, error } = await supabase
         .from("subscriptions")
         .select("status")
@@ -84,10 +99,8 @@ function SubscriptionGate({ children }) {
       const allowed = ["active", "trialing", "past_due"];
       setOk(allowed.includes(status));
     }
-    load();
-    return () => {
-      ignore = true;
-    };
+    check();
+    return () => { ignore = true; };
   }, [user?.id]);
 
   if (ok === null) return <ScreenCenter>Checking subscription…</ScreenCenter>;
@@ -96,9 +109,9 @@ function SubscriptionGate({ children }) {
       <ScreenCenter>
         <div className="text-center space-y-3">
           <div className="text-xl font-semibold">Subscription required</div>
-          <p className="text-gray-600 max-w-md">
-            Your account doesn’t have an active plan. Please subscribe from the pricing page, or
-            update your billing in <Link className="underline" to="/settings">Settings</Link>.
+          <p className="text-gray-600 max-w-md mx-auto">
+            Your account doesn’t have an active plan. Please subscribe or update billing in{" "}
+            <Link className="underline" to="/settings">Settings</Link>.
           </p>
           <Link className="inline-block px-4 py-2 rounded-xl bg-black text-white" to="/login">
             Go to Login
@@ -110,17 +123,21 @@ function SubscriptionGate({ children }) {
   return children;
 }
 
-/** Sidebar Layout */
+/* =========================
+   App Layout (sidebar)
+   ========================= */
 function AppLayout({ children }) {
   const { user } = useAuth();
   const location = useLocation();
 
-  const link = (to, label) => {
+  const NavItem = ({ to, children: label }) => {
     const active = location.pathname === to || location.pathname.startsWith(to + "/");
     return (
       <Link
         to={to}
-        className={`block px-3 py-2 rounded-xl ${active ? "bg-gray-900 text-white" : "hover:bg-gray-100"}`}
+        className={`block px-3 py-2 rounded-xl ${
+          active ? "bg-gray-900 text-white" : "hover:bg-gray-100"
+        }`}
       >
         {label}
       </Link>
@@ -131,10 +148,11 @@ function AppLayout({ children }) {
     <div className="min-h-screen flex">
       <aside className="w-56 border-r px-3 py-4 space-y-2">
         <div className="text-lg font-semibold mb-2">Remie CRM</div>
-        {link("/leads", "Leads")}
-        {link("/reports", "Reports")}
-        {link("/agent-showcase", "Agent Showcase")}
-        {link("/settings", "Settings")}
+        <NavItem to="/leads">Leads</NavItem>
+        <NavItem to="/reports">Reports</NavItem>
+        <NavItem to="/agent-showcase">Agent Showcase</NavItem>
+        <NavItem to="/settings">Settings</NavItem>
+
         <div className="mt-6 pt-3 border-t text-sm text-gray-500">
           {user?.email || "—"}
         </div>
@@ -151,16 +169,15 @@ function AppLayout({ children }) {
   );
 }
 
-/** ---------------------------
- *  App Routes
- *  ---------------------------
- */
+/* =========================
+   App Routes
+   ========================= */
 export default function App() {
   return (
     <BrowserRouter>
       <AuthProvider>
         <Routes>
-          {/* Root goes to Login */}
+          {/* Root → Login */}
           <Route path="/" element={<Navigate to="/login" replace />} />
           <Route path="/login" element={<AuthShell><LoginPage /></AuthShell>} />
           <Route path="/signup" element={<AuthShell><SignupPage /></AuthShell>} />
@@ -168,13 +185,13 @@ export default function App() {
           {/* Public agent profile */}
           <Route path="/agent/:slug" element={<AgentPublic />} />
 
-          {/* Protected */}
+          {/* Private app pages (auth + subscription) */}
           <Route
             path="/leads"
             element={
               <ProtectedRoute>
                 <SubscriptionGate>
-                  <AppLayout><Leads /></AppLayout>
+                  <AppLayout><LeadsPage /></AppLayout>
                 </SubscriptionGate>
               </ProtectedRoute>
             }
@@ -184,7 +201,7 @@ export default function App() {
             element={
               <ProtectedRoute>
                 <SubscriptionGate>
-                  <AppLayout><Reports /></AppLayout>
+                  <AppLayout><ReportsPage /></AppLayout>
                 </SubscriptionGate>
               </ProtectedRoute>
             }
@@ -194,7 +211,7 @@ export default function App() {
             element={
               <ProtectedRoute>
                 <SubscriptionGate>
-                  <AppLayout><Settings /></AppLayout>
+                  <AppLayout><SettingsPage /></AppLayout>
                 </SubscriptionGate>
               </ProtectedRoute>
             }
@@ -210,26 +227,17 @@ export default function App() {
             }
           />
 
-          {/* Fallback */}
-          <Route path="*" element={<NotFound />} />
+          {/* Catch-all → Login */}
+          <Route path="*" element={<Navigate to="/login" replace />} />
         </Routes>
       </AuthProvider>
     </BrowserRouter>
   );
 }
 
-/** Helpers */
-function NotFound() {
-  return (
-    <ScreenCenter>
-      <div className="text-center space-y-3">
-        <div className="text-xl font-semibold">Page not found</div>
-        <Link className="underline" to="/login">Go to Login</Link>
-      </div>
-    </ScreenCenter>
-  );
-}
-
+/* =========================
+   Small helpers
+   ========================= */
 function ScreenCenter({ children }) {
   return (
     <div className="min-h-[60vh] flex items-center justify-center p-6">
