@@ -1,88 +1,109 @@
-// File: src/pages/AgentPublic.jsx
 import { useEffect, useState } from "react";
-import { useParams, Link } from "react-router-dom";
-import { supabase } from "../supabaseClient";
-
-function Badge({ children }) {
-  return <span className="px-2 py-1 rounded-full border text-sm">{children}</span>;
-}
+import { useParams } from "react-router-dom";
+import supabase from "../lib/supabaseClient";
 
 export default function AgentPublic() {
   const { slug } = useParams();
-  const [profile, setProfile] = useState(null);
-  const [states, setStates] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [agent, setAgent] = useState(null);
+  const [states, setStates] = useState([]);
 
   useEffect(() => {
     (async () => {
       setLoading(true);
-      const { data, error } = await supabase
-        .from("agent_profiles")
-        .select("*")
-        .eq("slug", slug)
-        .eq("published", true)
-        .maybeSingle();
+      try {
+        const { data: prof, error } = await supabase
+          .from("agent_profiles")
+          .select(
+            "user_id, slug, full_name, email, phone, short_bio, npn, published, headshot_url"
+          )
+          .eq("slug", slug)
+          .eq("published", true)
+          .maybeSingle();
 
-      if (!error && data) {
-        setProfile(data);
-        const { data: st } = await supabase
-          .from("agent_states")
-          .select("state_code")
-          .eq("user_id", data.user_id);
-        setStates(st?.map((r) => r.state_code) || []);
+        if (error) throw error;
+        setAgent(prof || null);
+
+        if (prof?.user_id) {
+          const { data: sts, error: se } = await supabase
+            .from("agent_states")
+            .select("state_code")
+            .eq("user_id", prof.user_id);
+          if (se) throw se;
+          setStates(sts?.map((r) => r.state_code) || []);
+        }
+      } catch (err) {
+        console.error(err);
+      } finally {
+        setLoading(false);
       }
-      setLoading(false);
     })();
   }, [slug]);
 
   if (loading) {
     return (
-      <div className="min-h-screen flex items-center justify-center text-white">
-        Loading…
+      <div className="min-h-screen bg-neutral-950 text-white grid place-items-center">
+        <p>Loading…</p>
       </div>
     );
   }
 
-  if (!profile) {
+  if (!agent) {
     return (
-      <div className="max-w-3xl mx-auto p-6 text-white">
-        <h1 className="text-xl font-semibold mb-2">Profile not found</h1>
-        <p className="text-white/70">This page may be unpublished or does not exist.</p>
-        <Link className="text-indigo-300 underline" to="/">Back home</Link>
+      <div className="min-h-screen bg-neutral-950 text-white grid place-items-center">
+        <div className="text-center space-y-2">
+          <h1 className="text-xl font-semibold">Agent not found</h1>
+          <p className="opacity-70">This profile may be unpublished or the link is incorrect.</p>
+        </div>
       </div>
     );
   }
 
   return (
-    <div className="max-w-4xl mx-auto p-6 text-white">
-      <div className="flex gap-6 items-start">
-        {profile.headshot_url ? (
+    <div className="min-h-screen bg-neutral-950 text-white">
+      <div className="mx-auto max-w-4xl px-6 py-10">
+        <div className="flex flex-col md:flex-row gap-6 items-start">
           <img
-            src={profile.headshot_url}
-            alt={profile.full_name}
-            className="w-32 h-32 rounded-xl object-cover"
+            src={agent.headshot_url || ""}
+            alt={agent.full_name}
+            className="h-40 w-40 rounded-2xl object-cover border border-white/10"
           />
-        ) : (
-          <div className="w-32 h-32 rounded-xl bg-white/10" />
-        )}
-        <div className="flex-1">
-          <h1 className="text-2xl font-semibold">{profile.full_name}</h1>
-          {profile.npn && <div className="text-white/70">NPN: {profile.npn}</div>}
-          <p className="mt-3">{profile.short_bio || ""}</p>
-          <div className="mt-4 flex flex-wrap gap-3 text-sm">
-            {profile.email && <Badge>{profile.email}</Badge>}
-            {profile.phone && <Badge>{profile.phone}</Badge>}
-          </div>
-          {!!states.length && (
-            <div className="mt-5">
-              <div className="text-sm text-white/70 mb-1">Licensed states</div>
-              <div className="flex flex-wrap gap-2">
-                {states.map((s) => (
-                  <Badge key={s}>{s}</Badge>
-                ))}
-              </div>
+          <div className="flex-1">
+            <h1 className="text-3xl font-semibold">{agent.full_name}</h1>
+            <p className="mt-1 text-white/70">{agent.short_bio}</p>
+
+            <div className="mt-4 grid gap-1 text-sm">
+              {agent.phone && (
+                <a className="underline opacity-90" href={`tel:${agent.phone}`}>
+                  {agent.phone}
+                </a>
+              )}
+              {agent.email && (
+                <a className="underline opacity-90" href={`mailto:${agent.email}`}>
+                  {agent.email}
+                </a>
+              )}
+              {agent.npn && (
+                <div className="opacity-70">NPN: {agent.npn}</div>
+              )}
             </div>
-          )}
+
+            {!!states.length && (
+              <div className="mt-6">
+                <div className="text-sm mb-2 opacity-80">Licensed in</div>
+                <div className="flex flex-wrap gap-2">
+                  {states.map((c) => (
+                    <span
+                      key={c}
+                      className="text-xs rounded-full border border-white/15 px-2 py-1 bg-white/5"
+                    >
+                      {c}
+                    </span>
+                  ))}
+                </div>
+              </div>
+            )}
+          </div>
         </div>
       </div>
     </div>
