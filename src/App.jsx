@@ -1,8 +1,8 @@
 // File: src/App.jsx
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { Routes, Route, Link, Navigate, useNavigate } from "react-router-dom";
 import { motion } from "framer-motion";
-import { Check, Zap, LogOut, Phone, Shield, Star, CreditCard } from "lucide-react";
+import { Check, Zap, LogOut, Phone, Shield, Star, CreditCard, ExternalLink } from "lucide-react";
 
 import ProtectedRoute from "./components/ProtectedRoute.jsx";
 import { AuthProvider, useAuth } from "./auth.jsx";
@@ -14,9 +14,9 @@ import LeadsPage from "./pages/LeadsPage.jsx";
 import ReportsPage from "./pages/ReportsPage.jsx";
 import SettingsPage from "./pages/SettingsPage.jsx";
 
-// ✅ Agent Showcase pages (import ONCE)
-import AgentShowcase from "./pages/AgentShowcase.jsx"; // private wizard
-import AgentPublic from "./pages/AgentPublic.jsx";     // public profile
+// ✅ Agent pages (you already have these)
+import AgentShowcase from "./pages/AgentShowcase.jsx";
+import AgentPublic from "./pages/AgentPublic.jsx";
 
 // KPI helpers
 import NumberCard from "./components/NumberCard.jsx";
@@ -25,6 +25,9 @@ import { dashboardSnapshot } from "./lib/stats.js";
 // Subscription gate
 import SubscriptionGate from "./components/SubscriptionGate.jsx";
 
+// ✅ Supabase for fetching the slug/publish status
+import { supabase } from "./lib/supabaseClient.js";
+
 // Brand / theme
 const BRAND = {
   name: "Remie CRM",
@@ -32,7 +35,7 @@ const BRAND = {
   accentRing: "ring-indigo-400/50",
 };
 
-// Pricing plans
+// Pricing plans (still using static Stripe checkout links — can swap to startCheckout later)
 const PLANS = [
   {
     name: "Mail List",
@@ -86,7 +89,12 @@ const PLANS = [
       monthly: "https://buy.stripe.com/test_00w28tc11d5m4FAaAp5c400",
       annual: "https://buy.stripe.com/test_14AcN7d55fdu6NIfUJ5c401",
     },
-    features: ["Everything in Basic", "Unlimited team access", "Concierge migration", "Shared inbox & calendars"],
+    features: [
+      "Everything in Basic",
+      "Unlimited team access",
+      "Concierge migration",
+      "Shared inbox & calendars",
+    ],
     ctaNote: "For growing agencies",
     highlighted: true,
   },
@@ -193,89 +201,7 @@ function LandingPage() {
   );
 }
 
-// ---------- App Layout (sidebar + routes) ----------
-function AppLayout() {
-  const { user, logout } = useAuth();
-  const nav = useNavigate();
-
-  return (
-    <div className="min-h-screen bg-neutral-950 text-white grid md:grid-cols-[240px_1fr]">
-      <aside className="hidden md:block border-r border-white/10 bg-black/30">
-        <div className="p-4 flex items-center gap-3 border-b border-white/10">
-          <div className={`grid h-9 w-9 place-items-center rounded-2xl bg-gradient-to-br ${BRAND.primary} ring-1 ring-white/10`}>
-            <Zap className="h-5 w-5" />
-          </div>
-          <div className="font-semibold">{BRAND.name}</div>
-        </div>
-        <nav className="p-3 space-y-1 text-sm">
-          <DashLink to="/app">Home</DashLink>
-          <DashLink to="/app/leads">Leads</DashLink>
-          <DashLink to="/app/reports">Reports</DashLink>
-          <DashLink to="/app/settings">Settings</DashLink>
-          {/* New: Agent Showcase wizard link (optional add to sidebar) */}
-          <DashLink to="/app/agent-showcase">Agent Showcase</DashLink>
-        </nav>
-      </aside>
-
-      <main>
-        <div className="flex items-center justify-between border-b border-white/10 bg-black/30 px-4 py-3">
-          <div className="font-medium">Welcome{user?.email ? `, ${user.email}` : ""}</div>
-          <button
-            onClick={async () => { await logout(); nav("/"); }}
-            className="inline-flex items-center gap-2 rounded-lg border border-white/15 px-3 py-1.5 text-sm hover:bg-white/5"
-          >
-            <LogOut className="h-4 w-4" /> Log out
-          </button>
-        </div>
-
-        <div className="p-4">
-          <Routes>
-            {/* Keep Settings always visible (no subscription gate) */}
-            <Route path="settings" element={<SettingsPage />} />
-
-            {/* Subscription-gated pages */}
-            <Route
-              index
-              element={
-                <SubscriptionGate>
-                  <DashboardHome />
-                </SubscriptionGate>
-              }
-            />
-            <Route
-              path="leads"
-              element={
-                <SubscriptionGate>
-                  <LeadsPage />
-                </SubscriptionGate>
-              }
-            />
-            <Route
-              path="reports"
-              element={
-                <SubscriptionGate>
-                  <ReportsPage />
-                </SubscriptionGate>
-              }
-            />
-            {/* New: Agent Showcase wizard (private) */}
-            <Route
-              path="agent-showcase"
-              element={
-                <SubscriptionGate>
-                  <AgentShowcase />
-                </SubscriptionGate>
-              }
-            />
-
-            <Route path="*" element={<Navigate to="/app" replace />} />
-          </Routes>
-        </div>
-      </main>
-    </div>
-  );
-}
-
+// ---------- Small helper to render a sidebar link ----------
 function DashLink({ to, children }) {
   return (
     <Link to={to} className="block rounded-lg px-3 py-2 text-white/80 hover:bg-white/5 hover:text-white">
@@ -284,6 +210,69 @@ function DashLink({ to, children }) {
   );
 }
 
+// ✅ NEW: Fetches your slug + published flag and shows a link
+function ViewAgentSiteLink() {
+  const { user } = useAuth();
+  const [slug, setSlug] = useState("");
+  const [published, setPublished] = useState(false);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    let mounted = true;
+    (async () => {
+      try {
+        if (!user) return;
+        const { data, error } = await supabase
+          .from("agent_profiles")
+          .select("slug, published")
+          .eq("user_id", user.id)
+          .maybeSingle();
+        if (!mounted) return;
+        if (!error && data) {
+          setSlug(data.slug || "");
+          setPublished(!!data.published);
+        }
+      } finally {
+        if (mounted) setLoading(false);
+      }
+    })();
+    return () => { mounted = false; };
+  }, [user]);
+
+  const href = slug ? `/a/${slug}` : "#";
+
+  // Disabled state if no slug yet
+  if (loading) {
+    return (
+      <div className="block rounded-lg px-3 py-2 text-white/40 cursor-default">
+        View My Agent Site…
+      </div>
+    );
+  }
+
+  if (!slug) {
+    return (
+      <div className="block rounded-lg px-3 py-2 text-white/50 cursor-not-allowed">
+        View My Agent Site (set up first)
+      </div>
+    );
+  }
+
+  return (
+    <a
+      href={href}
+      target="_blank"
+      rel="noreferrer"
+      className="flex items-center gap-2 rounded-lg px-3 py-2 text-white/80 hover:bg-white/5 hover:text-white"
+      title={published ? "Open your public agent page" : "Opens preview (publish in the wizard)"}
+    >
+      <ExternalLink className="h-4 w-4" />
+      <span>{published ? "View My Agent Site" : "Preview My Agent Site"}</span>
+    </a>
+  );
+}
+
+// ---------- Dashboard ----------
 function Card({ title, children }) {
   return (
     <div className="rounded-2xl border border-white/10 bg-white/[0.03] p-4 ring-1 ring-white/5">
@@ -293,7 +282,6 @@ function Card({ title, children }) {
   );
 }
 
-// ---------- Dashboard ----------
 function DashboardHome() {
   const snap = dashboardSnapshot();
   const money = (n) =>
@@ -338,19 +326,75 @@ function DashboardHome() {
   );
 }
 
+// ---------- App Layout (sidebar + routes) ----------
+function AppLayout() {
+  const { user, logout } = useAuth();
+  const nav = useNavigate();
+
+  return (
+    <div className="min-h-screen bg-neutral-950 text-white grid md:grid-cols-[240px_1fr]">
+      <aside className="hidden md:block border-r border-white/10 bg-black/30">
+        <div className="p-4 flex items-center gap-3 border-b border-white/10">
+          <div className={`grid h-9 w-9 place-items-center rounded-2xl bg-gradient-to-br ${BRAND.primary} ring-1 ring-white/10`}>
+            <Zap className="h-5 w-5" />
+          </div>
+          <div className="font-semibold">{BRAND.name}</div>
+        </div>
+        <nav className="p-3 space-y-1 text-sm">
+          <DashLink to="/app">Home</DashLink>
+          <DashLink to="/app/leads">Leads</DashLink>
+          <DashLink to="/app/reports">Reports</DashLink>
+          <DashLink to="/app/settings">Settings</DashLink>
+
+          {/* ✅ New: View/Preview Agent Site */}
+          <div className="pt-2 mt-2 border-t border-white/10" />
+          <ViewAgentSiteLink />
+
+          {/* Optional: quick entry to the wizard */}
+          <DashLink to="/app/agent/showcase">Edit Agent Site</DashLink>
+        </nav>
+      </aside>
+
+      <main>
+        <div className="flex items-center justify-between border-b border-white/10 bg-black/30 px-4 py-3">
+          <div className="font-medium">Welcome{user?.email ? `, ${user.email}` : ""}</div>
+          <button
+            onClick={async () => { await logout(); nav("/"); }}
+            className="inline-flex items-center gap-2 rounded-lg border border-white/15 px-3 py-1.5 text-sm hover:bg-white/5"
+          >
+            <LogOut className="h-4 w-4" /> Log out
+          </button>
+        </div>
+
+        <div className="p-4">
+          <Routes>
+            <Route index element={<DashboardHome />} />
+            <Route path="leads" element={<LeadsPage />} />
+            <Route path="reports" element={<ReportsPage />} />
+            {/* Settings always visible */}
+            <Route path="settings" element={<SettingsPage />} />
+
+            {/* Agent wizard/private and public viewer */}
+            <Route path="agent/showcase" element={<AgentShowcase />} />
+          </Routes>
+        </div>
+      </main>
+    </div>
+  );
+}
+
 // ---------- App root ----------
 export default function App() {
   return (
     <AuthProvider>
       <Routes>
-        {/* Public pages */}
         <Route path="/" element={<LandingPage />} />
         <Route path="/login" element={<LoginPage />} />
         <Route path="/signup" element={<SignupPage />} />
-        {/* New: public agent profile */}
-        <Route path="/agent/:slug" element={<AgentPublic />} />
 
-        {/* Private app */}
+        {/* public agent page */}
+        <Route path="/a/:slug" element={<AgentPublic />} />
+
         <Route element={<ProtectedRoute />}>
           <Route path="/app/*" element={<AppLayout />} />
         </Route>
