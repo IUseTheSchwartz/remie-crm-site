@@ -230,6 +230,7 @@ function AppLayout() {
             <Route path="leads" element={<LeadsPage />} />
             <Route path="reports" element={<ReportsPage />} />
             <Route path="settings" element={<Settings />} />
+            <Route path="settings" element={<SettingsPage />} />
             <Route path="*" element={<Navigate to="/app" replace />} />
           </Routes>
         </div>
