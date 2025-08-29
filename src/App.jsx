@@ -20,7 +20,7 @@ import AgentPublic from "./pages/AgentPublic.jsx";
 import NumberCard from "./components/NumberCard.jsx";
 import { dashboardSnapshot } from "./lib/stats.js";
 
-// Subscription gate
+// Subscription gate (you can re-apply around gated routes if needed)
 import SubscriptionGate from "./components/SubscriptionGate.jsx";
 
 // Supabase
@@ -208,7 +208,7 @@ function DashLink({ to, children }) {
   );
 }
 
-// ---------- UPDATED: ViewAgentSiteLink (live, resilient) ----------
+// ---------- UPDATED: ViewAgentSiteLink (live, resilient, listens for storage refresh) ----------
 function ViewAgentSiteLink() {
   const [slug, setSlug] = useState("");
   const [published, setPublished] = useState(false);
@@ -251,11 +251,7 @@ function ViewAgentSiteLink() {
         .channel("agent_profiles_self")
         .on(
           "postgres_changes",
-          {
-            event: "*",
-            schema: "public",
-            table: "agent_profiles",
-          },
+          { event: "*", schema: "public", table: "agent_profiles" },
           async () => {
             if (!isMounted) return;
             await fetchProfile();
@@ -263,9 +259,18 @@ function ViewAgentSiteLink() {
         )
         .subscribe();
 
+      // Respond to "Done" in wizard (localStorage signal)
+      const onStorage = (e) => {
+        if (e.key === "agent_profile_refresh") {
+          fetchProfile();
+        }
+      };
+      window.addEventListener("storage", onStorage);
+
       return () => {
         isMounted = false;
         try { supabase.removeChannel?.(channel); } catch {}
+        window.removeEventListener("storage", onStorage);
       };
     })();
   }, []);
@@ -408,19 +413,8 @@ function AppLayout() {
             <Route path="reports" element={<ReportsPage />} />
             {/* Settings always visible */}
             <Route path="settings" element={<SettingsPage />} />
-
             {/* Agent wizard/private */}
             <Route path="agent/showcase" element={<AgentShowcase />} />
-
-            {/* Gate any additional routes if needed with SubscriptionGate, e.g.:
-            <Route
-              path="leads"
-              element={
-                <SubscriptionGate>
-                  <LeadsPage />
-                </SubscriptionGate>
-              }
-            /> */}
           </Routes>
         </div>
       </main>
