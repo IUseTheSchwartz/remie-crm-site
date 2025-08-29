@@ -5,56 +5,66 @@ import { createClient } from "@supabase/supabase-js";
 export const config = { path: "/.netlify/functions/stripe-webhook" };
 
 function priceToPlanName(price) {
-  // Prefer nickname; otherwise product id as fallback
   return price?.nickname || price?.product || "Unknown";
 }
+const epochToISO = (s) => (s ? new Date(s * 1000).toISOString() : null);
 
-function epochToISO(s) {
-  return s ? new Date(s * 1000).toISOString() : null;
-}
-
-async function findUserId({ supabase, email, metadataUserId }) {
-  // 1) If Stripe customer had metadata.user_id (best case), use it
+/**
+ * Try to resolve a Supabase user id by either:
+ *  1) Stripe customer.metadata.user_id (best)
+ *  2) Stripe customer email (fallback: paginate Admin API until found)
+ */
+async function resolveSupabaseUserId({ supabase, metadataUserId, email }) {
   if (metadataUserId) return metadataUserId;
-
-  // 2) Fallback by email (works for hosted payment links)
   if (!email) return null;
-  const { data, error } = await supabase.auth.admin.listUsers({ page: 1, perPage: 1, email });
-  if (error) return null;
-  const match = data?.users?.find((u) => u.email?.toLowerCase() === email.toLowerCase());
-  return match?.id || null;
+
+  // Paginate through users to find matching email (case-insensitive).
+  // 100 per page, up to 10 pages = 1000 users scanned (adjust if you need more).
+  const MAX_PAGES = 10;
+  for (let page = 1; page <= MAX_PAGES; page++) {
+    const { data, error } = await supabase.auth.admin.listUsers({ page, perPage: 100 });
+    if (error) throw error;
+
+    const match = data?.users?.find(
+      (u) => u.email && u.email.toLowerCase() === email.toLowerCase()
+    );
+    if (match) return match.id;
+
+    // Stop if we got fewer than perPage users (no more pages)
+    if (!data?.users?.length || data.users.length < 100) break;
+  }
+  return null;
 }
 
 export async function handler(event) {
-  // --- Init SDKs
+  // Init
   const stripe = new Stripe(process.env.STRIPE_SECRET_KEY);
   const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_ROLE);
 
-  // --- Verify signature
+  // Verify signature
   const sig = event.headers["stripe-signature"];
   let evt;
   try {
     evt = stripe.webhooks.constructEvent(event.body, sig, process.env.STRIPE_WEBHOOK_SECRET);
   } catch (err) {
-    return { statusCode: 400, body: `Webhook signature verification failed: ${err.message}` };
+    return { statusCode: 400, body: `Bad signature: ${err.message}` };
   }
 
   try {
-    // We'll handle these events
-    const interesting =
-      evt.type === "checkout.session.completed" ||
-      evt.type === "customer.subscription.created" ||
-      evt.type === "customer.subscription.updated" ||
-      evt.type === "customer.subscription.deleted";
-
-    if (!interesting) return { statusCode: 200, body: "ignored" };
+    const handled = new Set([
+      "checkout.session.completed",
+      "customer.subscription.created",
+      "customer.subscription.updated",
+      "customer.subscription.deleted",
+    ]);
+    if (!handled.has(evt.type)) return { statusCode: 200, body: "ignored" };
 
     let subscription;
     let customerId;
     let subscriptionId;
-    let planName = "Unknown";
     let status = "unknown";
     let currentPeriodEnd = null;
+    let planName = "Unknown";
     let customerEmail = null;
     let metadataUserId = null;
 
@@ -71,12 +81,13 @@ export async function handler(event) {
         const item = subscription?.items?.data?.[0];
         planName = priceToPlanName(item?.price);
       }
-
-      // fetch customer to read metadata.user_id
-      const customer = await stripe.customers.retrieve(customerId);
-      metadataUserId = customer?.metadata?.user_id || null;
+      if (customerId) {
+        const customer = await stripe.customers.retrieve(customerId);
+        metadataUserId = customer?.metadata?.user_id || null;
+        customerEmail = customerEmail || customer?.email || null;
+      }
     } else {
-      // subscription.* event
+      // customer.subscription.* events
       subscription = evt.data.object;
       subscriptionId = subscription.id;
       customerId = subscription.customer;
@@ -85,39 +96,44 @@ export async function handler(event) {
       const item = subscription?.items?.data?.[0];
       planName = priceToPlanName(item?.price);
 
-      // get customer for email + metadata
-      const customer = await stripe.customers.retrieve(customerId);
-      customerEmail = customer?.email || null;
-      metadataUserId = customer?.metadata?.user_id || null;
+      if (customerId) {
+        const customer = await stripe.customers.retrieve(customerId);
+        metadataUserId = customer?.metadata?.user_id || null;
+        customerEmail = customer?.email || null;
+      }
     }
 
-    // Find Supabase user id
-    const userId = await findUserId({ supabase, email: customerEmail, metadataUserId });
+    const userId = await resolveSupabaseUserId({
+      supabase,
+      metadataUserId,
+      email: customerEmail,
+    });
+
     if (!userId) {
-      // We couldn't map this subscription to a Supabase user.
-      // It's okay to return 200 to avoid retries; you can inspect logs in Netlify to see the email/customerId.
-      console.log("No user_id resolved for customer:", { customerId, customerEmail, metadataUserId });
+      console.log("⚠️ Could not map Stripe customer to Supabase user", {
+        customerId,
+        customerEmail,
+        metadataUserId,
+      });
+      // Return 200 so Stripe doesn't retry forever; check logs to fix mapping.
       return { statusCode: 200, body: "no user mapped" };
     }
 
-    // Upsert into public.subscriptions
-    const { error } = await supabase
-      .from("subscriptions")
-      .upsert({
-        user_id: userId,
-        plan: planName,
-        status,
-        stripe_customer_id: customerId,
-        stripe_subscription_id: subscriptionId,
-        current_period_end: currentPeriodEnd,
-        updated_at: new Date().toISOString(),
-      });
+    const { error } = await supabase.from("subscriptions").upsert({
+      user_id: userId,
+      plan: planName,
+      status,
+      stripe_customer_id: customerId || null,
+      stripe_subscription_id: subscriptionId || null,
+      current_period_end: currentPeriodEnd,
+      updated_at: new Date().toISOString(),
+    });
 
     if (error) throw error;
 
     return { statusCode: 200, body: "ok" };
   } catch (err) {
-    console.error("Webhook handler error:", err);
+    console.error("stripe-webhook error:", err);
     return { statusCode: 500, body: err.message || "Server error" };
   }
 }
