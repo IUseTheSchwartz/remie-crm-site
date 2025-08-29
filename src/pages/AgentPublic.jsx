@@ -4,7 +4,6 @@ import { useParams } from "react-router-dom";
 import { supabase } from "../lib/supabaseClient";
 import { ExternalLink, Phone, Mail, Shield } from "lucide-react";
 
-/** Hardcoded state names (safer than Intl.DisplayNames for older browsers) */
 const STATE_NAMES = {
   AL: "Alabama", AK: "Alaska", AZ: "Arizona", AR: "Arkansas", CA: "California", CO: "Colorado",
   CT: "Connecticut", DE: "Delaware", FL: "Florida", GA: "Georgia", HI: "Hawaii", ID: "Idaho",
@@ -18,12 +17,10 @@ const STATE_NAMES = {
   WA: "Washington", WV: "West Virginia", WI: "Wisconsin", WY: "Wyoming",
 };
 
-/** Optional: regulator links (you can expand later) */
 const REGULATOR_LINKS = {
   FL: "https://licenseesearch.fldfs.com/",
   TX: "https://txapps.texas.gov/NASApp/tdi/TdiARManager",
   CA: "https://www.insurance.ca.gov/0200-industry/0008-education-provider/producer-licensing.cfm",
-  // ...add others as needed
 };
 
 export default function AgentPublic() {
@@ -39,10 +36,9 @@ export default function AgentPublic() {
       setLoading(true);
       setLoadError("");
       try {
-        // 1) Get profile by slug; include user_id for states lookup
         const { data: prof, error: e1 } = await supabase
           .from("agent_profiles")
-          .select("user_id, full_name, email, phone, short_bio, headshot_url, published, slug")
+          .select("user_id, full_name, email, phone, short_bio, headshot_url, npn, published, slug")
           .eq("slug", slug)
           .maybeSingle();
 
@@ -53,14 +49,12 @@ export default function AgentPublic() {
         }
         if (mounted) setProfile(prof);
 
-        // 2) Try to fetch licenses (if RLS blocks, we still render the profile)
         const { data: st, error: e2 } = await supabase
           .from("agent_states")
           .select("state_code, license_number, license_image_url")
           .eq("user_id", prof.user_id);
 
         if (e2) {
-          // Don’t crash the page if RLS blocks anonymous select; show profile without states
           console.warn("agent_states select blocked or failed:", e2);
           if (mounted) setStates([]);
         } else if (mounted) {
@@ -142,8 +136,17 @@ export default function AgentPublic() {
           </div>
 
           <div className="space-y-3">
+            {/* Name, Broker, NPN, Phone */}
             <h1 className="text-3xl font-semibold tracking-tight">{profile.full_name}</h1>
+            <div className="text-white/70">
+              Licensed Broker {profile.npn ? <>· NPN: <span className="text-white">{profile.npn}</span></> : null}
+            </div>
+            {profile.phone && <div className="text-white/70">Phone: <span className="text-white">{profile.phone}</span></div>}
+
+            {/* Bio */}
             {profile.short_bio && <p className="text-white/70 max-w-2xl">{profile.short_bio}</p>}
+
+            {/* Contact Buttons */}
             <div className="flex flex-wrap gap-3 pt-2">
               {callHref && (
                 <a href={callHref} className="inline-flex items-center gap-2 rounded-xl border border-white/15 bg-white/5 px-3 py-2 text-sm hover:bg-white/10">
@@ -222,7 +225,7 @@ export default function AgentPublic() {
                         </div>
                       )
                     ) : (
-                      <div className="mt-3 grid h-24 place-items-center rounded-lg border border-dashed border-white/15 text-xs text-white/50">
+                      <div className="mt-3 grid h-24 w-32 place-items-center rounded-lg border border-dashed border-white/15 text-xs text-white/50">
                         No document uploaded
                       </div>
                     )}
