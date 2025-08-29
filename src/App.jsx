@@ -25,7 +25,6 @@ const BRAND = {
 };
 
 // ===== NEW (kept, but styled like before)
-import NumberCard from "./components/NumberCard.jsx";
 import { dashboardSnapshot } from "./lib/stats.js";
 import ReportsPage from "./pages/ReportsPage.jsx";
 import LeadsPage from "./pages/LeadsPage.jsx";
