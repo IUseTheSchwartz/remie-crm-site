@@ -8,13 +8,13 @@ import ProtectedRoute from "./components/ProtectedRoute.jsx";
 import { AuthProvider, useAuth } from "./auth.jsx";
 import LoginPage from "./pages/LoginPage.jsx";
 import SignupPage from "./pages/SignupPage.jsx";
-import SettingsPage from "./pages/SettingsPage.jsx";
 
-// Pages we added
+// Pages
 import LeadsPage from "./pages/LeadsPage.jsx";
 import ReportsPage from "./pages/ReportsPage.jsx";
+import SettingsPage from "./pages/SettingsPage.jsx";
 
-// KPI helpers (ONLY ONCE)
+// KPI helpers
 import NumberCard from "./components/NumberCard.jsx";
 import { dashboardSnapshot } from "./lib/stats.js";
 
@@ -37,7 +37,7 @@ const PLANS = [
       annual: "https://buy.stripe.com/test_28EaEZ4yz0iAfkedMB5c404",
     },
     features: [
-      "Automatic birthday letters",
+      "Automatic birthday letters for each contact",
       "Automatic holiday greetings",
       "Upload CSV and set-it-and-forget-it",
       "Custom message templates",
@@ -55,7 +55,7 @@ const PLANS = [
       annual: "https://buy.stripe.com/test_00w5kF5CD8P67RM8sh5c402",
     },
     features: [
-      "Lead inbox & pipeline",
+      "Lead inbox & drag-and-drop pipeline",
       "Two-way texting & email",
       "Click-to-call dialing",
       "Simple automations",
@@ -229,7 +229,7 @@ function AppLayout() {
             <Route index element={<DashboardHome />} />
             <Route path="leads" element={<LeadsPage />} />
             <Route path="reports" element={<ReportsPage />} />
-            <Route path="settings" element={<Settings />} />
+            {/* ⇩ Settings now points to the real page */}
             <Route path="settings" element={<SettingsPage />} />
             <Route path="*" element={<Navigate to="/app" replace />} />
           </Routes>
@@ -256,7 +256,7 @@ function Card({ title, children }) {
   );
 }
 
-// ---------- Dashboard (single definition) ----------
+// ---------- Dashboard ----------
 function DashboardHome() {
   const snap = dashboardSnapshot();
   const money = (n) =>
@@ -299,10 +299,6 @@ function DashboardHome() {
       </div>
     </div>
   );
-}
-
-function Settings() {
-  return <Card title="Settings">Billing & advanced settings coming soon…</Card>;
 }
 
 // ---------- App root ----------
