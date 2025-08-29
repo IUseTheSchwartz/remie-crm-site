@@ -13,6 +13,9 @@ import SignupPage from "./pages/SignupPage.jsx";
 import LeadsPage from "./pages/LeadsPage.jsx";
 import ReportsPage from "./pages/ReportsPage.jsx";
 import SettingsPage from "./pages/SettingsPage.jsx";
+import AgentShowcase from "./pages/AgentShowcase.jsx";
+import AgentPublic from "./pages/AgentPublic.jsx";
+
 
 // ✅ NEW: Agent Showcase pages
 import AgentShowcase from "./pages/AgentShowcase.jsx";   // wizard (private)
