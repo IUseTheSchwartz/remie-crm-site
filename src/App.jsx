@@ -13,13 +13,10 @@ import SignupPage from "./pages/SignupPage.jsx";
 import LeadsPage from "./pages/LeadsPage.jsx";
 import ReportsPage from "./pages/ReportsPage.jsx";
 import SettingsPage from "./pages/SettingsPage.jsx";
-import AgentShowcase from "./pages/AgentShowcase.jsx";
-import AgentPublic from "./pages/AgentPublic.jsx";
 
-
-// ✅ NEW: Agent Showcase pages
-import AgentShowcase from "./pages/AgentShowcase.jsx";   // wizard (private)
-import AgentPublic from "./pages/AgentPublic.jsx";       // public profile
+// ✅ Agent Showcase pages (import ONCE)
+import AgentShowcase from "./pages/AgentShowcase.jsx"; // private wizard
+import AgentPublic from "./pages/AgentPublic.jsx";     // public profile
 
 // KPI helpers
 import NumberCard from "./components/NumberCard.jsx";
@@ -35,7 +32,7 @@ const BRAND = {
   accentRing: "ring-indigo-400/50",
 };
 
-// Pricing plans (still using static Stripe checkout links — can swap to startCheckout later)
+// Pricing plans
 const PLANS = [
   {
     name: "Mail List",
@@ -89,12 +86,7 @@ const PLANS = [
       monthly: "https://buy.stripe.com/test_00w28tc11d5m4FAaAp5c400",
       annual: "https://buy.stripe.com/test_14AcN7d55fdu6NIfUJ5c401",
     },
-    features: [
-      "Everything in Basic",
-      "Unlimited team access",
-      "Concierge migration",
-      "Shared inbox & calendars",
-    ],
+    features: ["Everything in Basic", "Unlimited team access", "Concierge migration", "Shared inbox & calendars"],
     ctaNote: "For growing agencies",
     highlighted: true,
   },
@@ -219,9 +211,9 @@ function AppLayout() {
           <DashLink to="/app">Home</DashLink>
           <DashLink to="/app/leads">Leads</DashLink>
           <DashLink to="/app/reports">Reports</DashLink>
-          {/* ✅ NEW: sidebar link */}
-          <DashLink to="/app/agent-showcase">Agent Showcase</DashLink>
           <DashLink to="/app/settings">Settings</DashLink>
+          {/* New: Agent Showcase wizard link (optional add to sidebar) */}
+          <DashLink to="/app/agent-showcase">Agent Showcase</DashLink>
         </nav>
       </aside>
 
@@ -238,22 +230,10 @@ function AppLayout() {
 
         <div className="p-4">
           <Routes>
-            <Route index element={<DashboardHome />} />
-            <Route path="leads" element={<LeadsPage />} />
-            <Route path="reports" element={<ReportsPage />} />
+            {/* Keep Settings always visible (no subscription gate) */}
             <Route path="settings" element={<SettingsPage />} />
 
-            {/* ✅ NEW: Agent Showcase (gate it behind subscription like other tools) */}
-            <Route
-              path="agent-showcase"
-              element={
-                <SubscriptionGate>
-                  <AgentShowcase />
-                </SubscriptionGate>
-              }
-            />
-
-            {/* Existing gated duplicates */}
+            {/* Subscription-gated pages */}
             <Route
               index
               element={
@@ -278,6 +258,16 @@ function AppLayout() {
                 </SubscriptionGate>
               }
             />
+            {/* New: Agent Showcase wizard (private) */}
+            <Route
+              path="agent-showcase"
+              element={
+                <SubscriptionGate>
+                  <AgentShowcase />
+                </SubscriptionGate>
+              }
+            />
+
             <Route path="*" element={<Navigate to="/app" replace />} />
           </Routes>
         </div>
@@ -353,16 +343,18 @@ export default function App() {
   return (
     <AuthProvider>
       <Routes>
+        {/* Public pages */}
         <Route path="/" element={<LandingPage />} />
         <Route path="/login" element={<LoginPage />} />
         <Route path="/signup" element={<SignupPage />} />
-
-        {/* ✅ NEW: Public agent profile (no auth) */}
+        {/* New: public agent profile */}
         <Route path="/agent/:slug" element={<AgentPublic />} />
 
+        {/* Private app */}
         <Route element={<ProtectedRoute />}>
           <Route path="/app/*" element={<AppLayout />} />
         </Route>
+
         <Route path="*" element={<Navigate to="/" replace />} />
       </Routes>
     </AuthProvider>
