@@ -141,3 +141,45 @@ export default function SettingsPage() {
     </div>
   );
 }
+
+import { useState } from "react";
+import { useAuth } from "../auth"; // assuming you have auth context
+
+function Settings() {
+  const { user } = useAuth();
+  const [loading, setLoading] = useState(false);
+
+  const handleCancel = async () => {
+    setLoading(true);
+    try {
+      const res = await fetch("/.netlify/functions/cancel-subscription", {
+        method: "POST",
+        body: JSON.stringify({ user_id: user.id }),
+      });
+
+      if (res.ok) {
+        alert("Your subscription will be canceled at the end of the billing period.");
+      } else {
+        const err = await res.text();
+        alert("Error: " + err);
+      }
+    } catch (e) {
+      alert("Request failed: " + e.message);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  return (
+    <div>
+      <h2>Settings</h2>
+      <p>Email: {user?.email}</p>
+      <button onClick={handleCancel} disabled={loading}>
+        {loading ? "Cancelling..." : "Cancel Subscription"}
+      </button>
+    </div>
+  );
+}
+
+export default Settings;
+
