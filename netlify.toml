@@ -6,3 +6,9 @@
   directory = "netlify/functions"
   node_bundler = "esbuild"
   included_files = ["netlify/functions/**"]
+
+[[redirects]]
+  from = "/*"
+  to = "/index.html"
+  status = 200
+
