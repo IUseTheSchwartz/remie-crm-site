@@ -8,6 +8,7 @@ import ProtectedRoute from "./components/ProtectedRoute.jsx";
 import { AuthProvider, useAuth } from "./auth.jsx";
 import LoginPage from "./pages/LoginPage.jsx";
 import SignupPage from "./pages/SignupPage.jsx";
+import SettingsPage from "./pages/SettingsPage.jsx";
 
 // Pages we added
 import LeadsPage from "./pages/LeadsPage.jsx";
