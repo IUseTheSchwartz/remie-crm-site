@@ -1,4 +1,4 @@
-// File: netlify/functions/stripe-webhook.js (CommonJS)
+// File: netlify/functions/stripe-webhook.js
 const Stripe = require("stripe");
 const { createClient } = require("@supabase/supabase-js");
 
@@ -9,6 +9,7 @@ function priceToPlanName(price) {
 }
 const epochToISO = (s) => (s ? new Date(s * 1000).toISOString() : null);
 
+// Try to find the Supabase user by metadata.user_id first, then by email.
 async function resolveSupabaseUserId({ supabase, metadataUserId, email }) {
   if (metadataUserId) return metadataUserId;
   if (!email) return null;
@@ -17,13 +18,8 @@ async function resolveSupabaseUserId({ supabase, metadataUserId, email }) {
   for (let page = 1; page <= MAX_PAGES; page++) {
     const { data, error } = await supabase.auth.admin.listUsers({ page, perPage: 100 });
     if (error) throw error;
-
-    const match =
-      data &&
-      data.users &&
-      data.users.find((u) => u.email && u.email.toLowerCase() === email.toLowerCase());
+    const match = data?.users?.find((u) => u.email && u.email.toLowerCase() === email.toLowerCase());
     if (match) return match.id;
-
     if (!data?.users?.length || data.users.length < 100) break;
   }
   return null;
@@ -51,9 +47,7 @@ exports.handler = async (event) => {
     ]);
     if (!handled.has(evt.type)) return { statusCode: 200, body: "ignored" };
 
-    let subscription;
-    let customerId;
-    let subscriptionId;
+    let subscription, customerId, subscriptionId;
     let status = "unknown";
     let currentPeriodEnd = null;
     let planName = "Unknown";
@@ -94,12 +88,7 @@ exports.handler = async (event) => {
       }
     }
 
-    const userId = await resolveSupabaseUserId({
-      supabase,
-      metadataUserId,
-      email: customerEmail,
-    });
-
+    const userId = await resolveSupabaseUserId({ supabase, metadataUserId, email: customerEmail });
     if (!userId) {
       console.log("⚠️ No user mapped", { customerId, customerEmail, metadataUserId });
       return { statusCode: 200, body: "no user mapped" };
@@ -114,7 +103,6 @@ exports.handler = async (event) => {
       current_period_end: currentPeriodEnd,
       updated_at: new Date().toISOString(),
     });
-
     if (error) throw error;
 
     return { statusCode: 200, body: "ok" };
