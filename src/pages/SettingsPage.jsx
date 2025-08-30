@@ -1,12 +1,23 @@
 // File: src/pages/SettingsPage.jsx
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { supabase } from "../supabaseClient";
+
+// ---------- Small helpers ----------
+function Info({ label, value }) {
+  return (
+    <div>
+      <div className="text-sm text-gray-500">{label}</div>
+      <div className="font-medium">{value}</div>
+    </div>
+  );
+}
 
 export default function SettingsPage() {
   const [user, setUser] = useState(null);
   const [sub, setSub] = useState(null);
   const [loadingSub, setLoadingSub] = useState(true);
 
+  // Password
   const [pw, setPw] = useState("");
   const [pw2, setPw2] = useState("");
   const [pwMsg, setPwMsg] = useState("");
@@ -14,47 +25,90 @@ export default function SettingsPage() {
   const [cancelMsg, setCancelMsg] = useState("");
 
   // Calendly
-  const calendlyClientId = import.meta.env.VITE_CALENDLY_CLIENT_ID;
-  const redirectUri = `${window.location.origin}/.netlify/functions/calendly-auth-callback`;
+  const [calToken, setCalToken] = useState(null);
+  const [calMsg, setCalMsg] = useState("");
+  const clientId = import.meta.env.VITE_CALENDLY_CLIENT_ID;
+  const siteUrl = window.location.origin;
+  const redirectUri = `${siteUrl}/.netlify/functions/calendly-auth-callback`;
+
+  // These scopes are fine for reading the user and events
+  const calendlyScopes = useMemo(
+    () =>
+      [
+        "users:read",
+        "scheduled_events:read",
+        "event_types:read",
+        "organization:read",
+      ].join(" "),
+    []
+  );
 
   useEffect(() => {
     let ignore = false;
 
-    async function load() {
+    (async () => {
+      // Auth user
       const { data, error } = await supabase.auth.getUser();
-      if (error) {
-        console.error(error);
-        return;
-      }
-      if (ignore) return;
-      setUser(data.user || null);
+      if (!error) setUser(data.user || null);
 
       if (data.user?.id) {
+        // Subscription
         setLoadingSub(true);
-        const { data: subData, error: subErr } = await supabase
+        const { data: subRow } = await supabase
           .from("subscriptions")
           .select("*")
           .eq("user_id", data.user.id)
           .maybeSingle();
-
-        if (!ignore) {
-          if (subErr) {
-            console.error(subErr);
-          }
-          setSub(subData || null);
-          setLoadingSub(false);
-        }
-      } else {
+        setSub(subRow || null);
         setLoadingSub(false);
-      }
-    }
 
-    load();
+        // Calendly token (if stored)
+        const { data: tokenRow } = await supabase
+          .from("calendly_tokens")
+          .select("access_token")
+          .eq("user_id", data.user.id)
+          .maybeSingle();
+        setCalToken(tokenRow?.access_token || null);
+      }
+
+      // Handle OAuth callback (token in URL hash)
+      const hash = window.location.hash || "";
+      if (hash.startsWith("#calendly_oauth=")) {
+        const parts = Object.fromEntries(
+          hash
+            .slice(1)
+            .split("&")
+            .map((kv) => kv.split("=").map(decodeURIComponent))
+        );
+        if (parts.calendly_oauth === "success" && parts.access_token) {
+          if (!ignore && data.user?.id) {
+            await supabase
+              .from("calendly_tokens")
+              .upsert({
+                user_id: data.user.id,
+                access_token: parts.access_token,
+                // Optional: store refresh_token & expires_in if you plan to refresh
+                refresh_token: parts.refresh_token || null,
+              })
+              .eq("user_id", data.user.id);
+            setCalToken(parts.access_token);
+            setCalMsg("Calendly connected.");
+            // Clean up hash
+            history.replaceState(null, "", window.location.pathname);
+          }
+        } else if (parts.calendly_oauth) {
+          setCalMsg("Calendly authorization failed.");
+          history.replaceState(null, "", window.location.pathname);
+        }
+      }
+    })();
+
     return () => {
       ignore = true;
     };
   }, []);
 
+  // ---------- Password ----------
   const onChangePassword = async (e) => {
     e.preventDefault();
     setPwMsg("");
@@ -69,13 +123,16 @@ export default function SettingsPage() {
     setBusy(true);
     const { error } = await supabase.auth.updateUser({ password: pw });
     setBusy(false);
-    if (error) {
-      setPwMsg(error.message || "Failed to update password.");
-    } else {
-      setPw("");
-      setPw2("");
-      setPwMsg("Password updated.");
+    if (error) setPwMsg(error.message || "Failed to update password.");
+    else {
+      setPw(""); setPw2(""); setPwMsg("Password updated.");
     }
+  };
+
+  // ---------- Subscription ----------
+  const fmtDate = (iso) => {
+    if (!iso) return "—";
+    try { return new Date(iso).toLocaleString(); } catch { return iso; }
   };
 
   const onCancelSubscription = async () => {
@@ -84,9 +141,8 @@ export default function SettingsPage() {
       setCancelMsg("No active subscription found.");
       return;
     }
-    if (!confirm("Cancel at period end? You will keep access until the end of the current billing period.")) {
-      return;
-    }
+    if (!confirm("Cancel at period end?")) return;
+
     setBusy(true);
     setCancelMsg("");
     try {
@@ -98,12 +154,10 @@ export default function SettingsPage() {
       const text = await res.text();
       if (!res.ok) throw new Error(text || "Cancel failed");
       setCancelMsg("Your subscription will be canceled at the period end.");
-      const { data: subData } = await supabase
+      const { data: subRow } = await supabase
         .from("subscriptions")
-        .select("*")
-        .eq("user_id", user.id)
-        .maybeSingle();
-      setSub(subData || null);
+        .select("*").eq("user_id", user.id).maybeSingle();
+      setSub(subRow || null);
     } catch (err) {
       setCancelMsg(err.message || "Cancel failed.");
     } finally {
@@ -111,32 +165,26 @@ export default function SettingsPage() {
     }
   };
 
-  const fmtDate = (iso) => {
-    if (!iso) return "—";
-    try {
-      return new Date(iso).toLocaleString();
-    } catch {
-      return iso;
-    }
-  };
-
-  // --- Calendly authorize helper (NO scope param) ---
-  function getCalendlyAuthorizeUrl(clientId, redirectUri) {
-    const base = "https://calendly.com/oauth/authorize";
-    const qs = new URLSearchParams({
-      client_id: clientId,
-      response_type: "code",
-      redirect_uri: redirectUri,
-    });
-    return `${base}?${qs.toString()}`;
-  }
-
-  const handleConnectCalendly = () => {
-    if (!calendlyClientId) {
-      alert("Missing VITE_CALENDLY_CLIENT_ID env var");
+  // ---------- Calendly ----------
+  const connectCalendly = () => {
+    if (!clientId) {
+      alert("Missing VITE_CALENDLY_CLIENT_ID env var.");
       return;
     }
-    window.location.href = getCalendlyAuthorizeUrl(calendlyClientId, redirectUri);
+    // Build authorize URL exactly as Calendly expects
+    const url = new URL("https://calendly.com/oauth/authorize");
+    url.searchParams.set("client_id", clientId);
+    url.searchParams.set("response_type", "code");
+    url.searchParams.set("redirect_uri", redirectUri);
+    url.searchParams.set("scope", calendlyScopes);
+    window.location.assign(url.toString());
+  };
+
+  const disconnectCalendly = async () => {
+    if (!user?.id) return;
+    await supabase.from("calendly_tokens").delete().eq("user_id", user.id);
+    setCalToken(null);
+    setCalMsg("Calendly disconnected.");
   };
 
   return (
@@ -159,31 +207,16 @@ export default function SettingsPage() {
         <h2 className="text-lg font-medium mb-3">Change password</h2>
         <form onSubmit={onChangePassword} className="space-y-3">
           <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-            <input
-              type="password"
-              className="border rounded-xl px-3 py-2"
-              placeholder="New password"
-              value={pw}
-              onChange={(e) => setPw(e.target.value)}
-              minLength={8}
-              required
-            />
-            <input
-              type="password"
-              className="border rounded-xl px-3 py-2"
-              placeholder="Confirm new password"
-              value={pw2}
-              onChange={(e) => setPw2(e.target.value)}
-              minLength={8}
-              required
-            />
+            <input type="password" className="border rounded-xl px-3 py-2"
+              placeholder="New password" value={pw}
+              onChange={(e) => setPw(e.target.value)} minLength={8} required />
+            <input type="password" className="border rounded-xl px-3 py-2"
+              placeholder="Confirm new password" value={pw2}
+              onChange={(e) => setPw2(e.target.value)} minLength={8} required />
           </div>
           <div className="flex items-center gap-3">
-            <button
-              type="submit"
-              disabled={busy}
-              className="rounded-xl px-4 py-2 bg-black text-white disabled:opacity-50"
-            >
+            <button type="submit" disabled={busy}
+              className="rounded-xl px-4 py-2 bg-black text-white disabled:opacity-50">
               {busy ? "Saving..." : "Update password"}
             </button>
             {pwMsg && <div className="text-sm">{pwMsg}</div>}
@@ -204,11 +237,8 @@ export default function SettingsPage() {
               <Info label="Renews / ends" value={fmtDate(sub.current_period_end)} />
             </div>
             <div className="mt-4 flex flex-wrap gap-3">
-              <button
-                onClick={onCancelSubscription}
-                disabled={busy}
-                className="rounded-xl px-4 py-2 border hover:bg-gray-50 disabled:opacity-50"
-              >
+              <button onClick={onCancelSubscription} disabled={busy}
+                className="rounded-xl px-4 py-2 border hover:bg-gray-50 disabled:opacity-50">
                 {busy ? "Working…" : "Cancel subscription"}
               </button>
               {cancelMsg && <div className="text-sm">{cancelMsg}</div>}
@@ -219,25 +249,28 @@ export default function SettingsPage() {
         )}
       </section>
 
-      {/* Calendly connect */}
+      {/* Calendly */}
       <section className="mb-10 rounded-2xl border p-5">
         <h2 className="text-lg font-medium mb-3">Calendly</h2>
-        <button
-          onClick={handleConnectCalendly}
-          className="rounded-xl px-4 py-2 bg-indigo-600 text-white hover:bg-indigo-700"
-        >
-          Connect Calendly
-        </button>
+        <p className="text-sm text-gray-600 mb-3">
+          Connect your Calendly to show meetings in the CRM.
+        </p>
+        {calToken ? (
+          <div className="flex items-center gap-3">
+            <span className="text-green-600 text-sm">Connected</span>
+            <button onClick={disconnectCalendly}
+              className="rounded-xl px-4 py-2 border hover:bg-gray-50">
+              Disconnect
+            </button>
+          </div>
+        ) : (
+          <button onClick={connectCalendly}
+            className="rounded-xl px-4 py-2 bg-black text-white">
+            Connect Calendly
+          </button>
+        )}
+        {calMsg && <div className="mt-2 text-sm">{calMsg}</div>}
       </section>
-    </div>
-  );
-}
-
-function Info({ label, value }) {
-  return (
-    <div>
-      <div className="text-sm text-gray-500">{label}</div>
-      <div className="font-medium">{value}</div>
     </div>
   );
 }
