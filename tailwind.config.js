@@ -3,13 +3,13 @@
 export default {
   content: [
     "./index.html",
-    "./src/**/*.{js,jsx,ts,tsx}", // scan all React files
+    "./src/**/*.{js,jsx,ts,tsx}",
   ],
   theme: {
     extend: {
       colors: {
         brand: {
-          DEFAULT: "#6366f1", // your Indigo-500 (example, you can swap)
+          DEFAULT: "#6366f1",
           light: "#818cf8",
           dark: "#4f46e5",
         },
