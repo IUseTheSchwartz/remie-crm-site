@@ -14,7 +14,6 @@ import {
 } from "lucide-react";
 
 import ProtectedRoute from "./components/ProtectedRoute.jsx";
-import SubscriptionGate from "./components/SubscriptionGate.jsx"; // <-- NEW
 import { AuthProvider, useAuth } from "./auth.jsx";
 import LoginPage from "./pages/LoginPage.jsx";
 import SignupPage from "./pages/SignupPage.jsx";
@@ -25,8 +24,7 @@ import ReportsPage from "./pages/ReportsPage.jsx";
 import SettingsPage from "./pages/SettingsPage.jsx";
 import AgentShowcase from "./pages/AgentShowcase.jsx";
 import AgentPublic from "./pages/AgentPublic.jsx";
-import CalendarPage from "./pages/CalendarPage.jsx"; // NEW
-import SubscribePage from "./pages/SubscribePage.jsx"; // <-- NEW
+import CalendarPage from "./pages/CalendarPage.jsx"; // keep calendar page
 
 // KPI helpers
 import NumberCard from "./components/NumberCard.jsx";
@@ -42,7 +40,7 @@ const BRAND = {
   accentRing: "ring-indigo-400/50",
 };
 
-// ---------- Pricing cards data (unchanged) ----------
+// ---------- Pricing cards data ----------
 const PLANS = [
   {
     name: "Mail List",
@@ -390,7 +388,7 @@ function AppLayout() {
           <DashLink to="/app">Home</DashLink>
           <DashLink to="/app/leads">Leads</DashLink>
           <DashLink to="/app/reports">Reports</DashLink>
-          <DashLink to="/app/calendar">Calendar</DashLink> {/* NEW in sidebar */}
+          <DashLink to="/app/calendar">Calendar</DashLink>
           <DashLink to="/app/settings">Settings</DashLink>
 
           <div className="pt-2 mt-2 border-t border-white/10" />
@@ -415,7 +413,7 @@ function AppLayout() {
             <Route index element={<DashboardHome />} />
             <Route path="leads" element={<LeadsPage />} />
             <Route path="reports" element={<ReportsPage />} />
-            <Route path="calendar" element={<CalendarPage />} /> {/* NEW route */}
+            <Route path="calendar" element={<CalendarPage />} />
             <Route path="settings" element={<SettingsPage />} />
             <Route path="agent/showcase" element={<AgentShowcase />} />
           </Routes>
@@ -437,19 +435,8 @@ export default function App() {
         {/* public agent page */}
         <Route path="/a/:slug" element={<AgentPublic />} />
 
-        {/* public subscribe/paywall page */}
-        <Route path="/subscribe" element={<SubscribePage />} /> {/* NEW */}
-
-        {/* protected + subscription-gated app */}
         <Route element={<ProtectedRoute />}>
-          <Route
-            path="/app/*"
-            element={
-              <SubscriptionGate>
-                <AppLayout />
-              </SubscriptionGate>
-            }
-          />
+          <Route path="/app/*" element={<AppLayout />} />
         </Route>
 
         <Route path="*" element={<Navigate to="/" replace />} />
