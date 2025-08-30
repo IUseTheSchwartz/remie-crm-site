@@ -1,69 +1,120 @@
+// File: src/pages/CalendarPage.jsx
 import { useEffect, useState } from "react";
-import { supabase } from "../lib/supabaseClient";
-
-function pretty(iso) {
-  try {
-    return new Date(iso).toLocaleString(undefined, {
-      weekday: "short", month: "short", day: "numeric", hour: "numeric", minute: "2-digit",
-    });
-  } catch { return iso; }
-}
+import { supabase } from "../supabaseClient";
 
 export default function CalendarPage() {
-  const [events, setEvents] = useState([]);
+  const [userId, setUserId] = useState(null);
   const [loading, setLoading] = useState(true);
+  const [events, setEvents] = useState([]);
   const [err, setErr] = useState("");
-  const [connected, setConnected] = useState(true);
 
   useEffect(() => {
-    (async () => {
-      setLoading(true); setErr("");
+    let cancel = false;
+
+    async function run() {
+      setLoading(true);
+      setErr("");
+      setEvents([]);
+
+      // 1) who am I?
+      const { data, error } = await supabase.auth.getUser();
+      if (error) {
+        if (!cancel) {
+          setErr(error.message || "Not authenticated");
+          setLoading(false);
+        }
+        return;
+      }
+      const uid = data?.user?.id;
+      if (!uid) {
+        if (!cancel) {
+          setErr("Not authenticated");
+          setLoading(false);
+        }
+        return;
+      }
+      setUserId(uid);
+
+      // 2) hit our Netlify function
       try {
-        const session = (await supabase.auth.getSession()).data.session;
-        if (!session) { setConnected(false); setLoading(false); return; }
-        const res = await fetch("/.netlify/functions/calendly-events", {
-          headers: { Authorization: `Bearer ${session.access_token}` },
-        });
-        const json = await res.json();
-        if (json?.error === "not_connected") { setConnected(false); setEvents([]); }
-        else { setConnected(true); setEvents(json?.events?.collection || []); }
-      } catch (e) { console.error(e); setErr("Could not load events."); }
-      finally { setLoading(false); }
-    })();
+        const res = await fetch(
+          `/.netlify/functions/calendly-events?uid=${encodeURIComponent(uid)}&count=50`
+        );
+        if (!res.ok) {
+          const t = await res.text();
+          throw new Error(t || `HTTP ${res.status}`);
+        }
+        const payload = await res.json();
+
+        // Calendly returns { collection: [ ...events ], pagination: {...} }
+        const list = Array.isArray(payload?.collection) ? payload.collection : [];
+        if (!cancel) setEvents(list);
+      } catch (e) {
+        if (!cancel) setErr(e.message || "Failed to load events");
+      } finally {
+        if (!cancel) setLoading(false);
+      }
+    }
+
+    run();
+    return () => { cancel = true; };
   }, []);
+
+  const prettyDate = (iso) => {
+    if (!iso) return "—";
+    try {
+      return new Date(iso).toLocaleString();
+    } catch {
+      return iso;
+    }
+  };
 
   return (
     <div className="space-y-4">
-      {!connected && (
-        <div className="rounded-lg border border-amber-400/30 bg-amber-500/10 px-3 py-2 text-sm text-amber-200">
-          Calendly is not connected. Go to <span className="font-medium">Settings → Calendly</span> and click
-          <span className="font-medium"> Connect Calendly</span>.
+      <h1 className="text-xl font-semibold">Upcoming meetings</h1>
+
+      {loading && (
+        <div className="rounded-2xl border p-4">Loading…</div>
+      )}
+
+      {!loading && err && (
+        <div className="rounded-2xl border p-4 text-red-500">
+          Could not load events. {err}
         </div>
       )}
 
-      <div className="rounded-2xl border border-white/10 bg-white/[0.03] p-4">
-        <div className="mb-3 text-sm font-semibold">Upcoming meetings</div>
+      {!loading && !err && events.length === 0 && (
+        <div className="rounded-2xl border p-4 text-gray-400">
+          No upcoming meetings.
+        </div>
+      )}
 
-        {loading && <div className="text-sm text-white/60">Loading…</div>}
-        {!loading && err && <div className="text-sm text-rose-300">{err}</div>}
-        {!loading && !err && events.length === 0 && <div className="text-sm text-white/60">No upcoming meetings.</div>}
+      {!loading && !err && events.length > 0 && (
+        <div className="rounded-2xl border divide-y">
+          {events.map((ev) => {
+            const start = ev.start_time;
+            const end = ev.end_time;
+            const title = ev.name || "Meeting";
+            const location = ev.location?.type === "physical"
+              ? ev.location?.location
+              : ev.location?.type === "zoom"
+                ? "Zoom"
+                : ev.location?.type || "—";
 
-        {!loading && !err && events.length > 0 && (
-          <div className="divide-y divide-white/10">
-            {events.map((ev) => (
-              <div key={ev.uri} className="py-3">
-                <div className="text-sm font-medium text-white">{ev.name || "Scheduled event"}</div>
-                <div className="text-xs text-white/70">{pretty(ev.start_time)} – {pretty(ev.end_time)}</div>
-                {ev.location?.join_url && (
-                  <a href={ev.location.join_url} target="_blank" rel="noreferrer" className="mt-1 inline-block text-xs text-indigo-300 underline">
-                    Join link
-                  </a>
+            return (
+              <div key={ev.uri} className="p-4">
+                <div className="font-medium">{title}</div>
+                <div className="text-sm text-gray-500">
+                  {prettyDate(start)} – {prettyDate(end)}
+                </div>
+                {location && (
+                  <div className="text-sm text-gray-500 mt-1">Location: {location}</div>
                 )}
               </div>
-            ))}
-          </div>
-        )}
-      </div>
+            );
+          })}
+        </div>
+      )}
     </div>
   );
 }
