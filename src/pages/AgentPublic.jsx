@@ -38,7 +38,7 @@ export default function AgentPublic() {
       try {
         const { data: prof, error: e1 } = await supabase
           .from("agent_profiles")
-          .select("user_id, full_name, email, phone, short_bio, headshot_url, npn, published, slug, calendly_url")
+          .select("user_id, full_name, email, phone, short_bio, headshot_url, npn, published, slug")
           .eq("slug", slug)
           .maybeSingle();
 
@@ -49,9 +49,10 @@ export default function AgentPublic() {
         }
         if (mounted) setProfile(prof);
 
+        // NOTE: selecting state_name and licence_image_url (your schema)
         const { data: st, error: e2 } = await supabase
           .from("agent_states")
-          .select("state_code, license_number, license_image_url")
+          .select("state_code, state_name, license_number, licence_image_url")
           .eq("user_id", prof.user_id);
 
         if (e2) {
@@ -101,14 +102,6 @@ export default function AgentPublic() {
 
   const callHref = profile.phone ? `tel:${profile.phone.replace(/[^\d+]/g, "")}` : null;
   const mailHref = profile.email ? `mailto:${profile.email}` : null;
-
-  const normalizeUrl = (u) => {
-    if (!u) return "";
-    let v = u.trim();
-    if (!/^https?:\/\//i.test(v)) v = `https://${v}`;
-    return v;
-  };
-  const bookHref = normalizeUrl(profile.calendly_url);
 
   return (
     <div className="min-h-screen bg-neutral-950 text-white">
@@ -166,16 +159,6 @@ export default function AgentPublic() {
                   <Mail className="h-4 w-4" /> Email
                 </a>
               )}
-              {bookHref && (
-                <a
-                  href={bookHref}
-                  target="_blank"
-                  rel="noreferrer"
-                  className="inline-flex items-center gap-2 rounded-xl bg-indigo-600 px-3 py-2 text-sm text-white hover:bg-indigo-500"
-                >
-                  Book now
-                </a>
-              )}
             </div>
           </div>
         </div>
@@ -199,15 +182,16 @@ export default function AgentPublic() {
               .sort((a, b) => a.state_code.localeCompare(b.state_code))
               .map((s) => {
                 const code = s.state_code;
-                const name = STATE_NAMES[code] || code;
-                const isPdf = (s.license_image_url || "").toLowerCase().endsWith(".pdf");
+                const displayName = s.state_name || STATE_NAMES[code] || code;
+                const url = s.licence_image_url || "";
+                const isPdf = url.toLowerCase().endsWith(".pdf");
                 const verifyHref = REGULATOR_LINKS[code];
 
                 return (
                   <div key={code} className="rounded-2xl border border-white/10 bg-white/[0.03] p-4 ring-1 ring-white/5">
                     <div className="flex items-center justify-between">
                       <div className="text-sm font-medium">
-                        {name} <span className="text-white/50">({code})</span>
+                        {displayName} <span className="text-white/50">({code})</span>
                       </div>
                       {verifyHref && (
                         <a
@@ -226,10 +210,10 @@ export default function AgentPublic() {
                       License #: <span className="text-white">{s.license_number || "—"}</span>
                     </div>
 
-                    {s.license_image_url ? (
+                    {url ? (
                       isPdf ? (
                         <a
-                          href={s.license_image_url}
+                          href={url}
                           target="_blank"
                           rel="noreferrer"
                           className="mt-3 inline-flex items-center gap-2 rounded-lg border border-white/15 bg-white/5 px-3 py-2 text-xs hover:bg-white/10"
@@ -238,7 +222,7 @@ export default function AgentPublic() {
                         </a>
                       ) : (
                         <div className="mt-3 overflow-hidden rounded-lg border border-white/10 bg-black/20">
-                          <img src={s.license_image_url} alt={`${code} license`} className="h-36 w-full object-cover" />
+                          <img src={url} alt={`${code} license`} className="h-36 w-full object-cover" />
                           <div className="p-2 text-[11px] text-white/60">License image</div>
                         </div>
                       )
@@ -271,16 +255,6 @@ export default function AgentPublic() {
               {mailHref && (
                 <a href={mailHref} className="inline-flex items-center gap-2 rounded-xl border border-white/15 bg-white/5 px-3 py-2 text-sm hover:bg-white/10">
                   <Mail className="h-4 w-4" /> Email
-                </a>
-              )}
-              {bookHref && (
-                <a
-                  href={bookHref}
-                  target="_blank"
-                  rel="noreferrer"
-                  className="inline-flex items-center gap-2 rounded-xl bg-indigo-600 px-3 py-2 text-sm text-white hover:bg-indigo-500"
-                >
-                  Book now
                 </a>
               )}
             </div>
