@@ -209,7 +209,7 @@ function DashLink({ to, children }) {
   );
 }
 
-// ---------- ViewAgentSiteLink (unchanged) ----------
+// ---------- UPDATED: ViewAgentSiteLink (kept) ----------
 function ViewAgentSiteLink() {
   const [slug, setSlug] = useState("");
   const [published, setPublished] = useState(false);
@@ -391,4 +391,52 @@ function AppLayout() {
       </aside>
 
       <main>
-        <div className="
+        <div className="flex items-center justify-between border-b border-white/10 bg-black/30 px-4 py-3">
+          <div className="font-medium">Welcome{user?.email ? `, ${user.email}` : ""}</div>
+          <button
+            onClick={async () => { await logout(); nav("/"); }}
+            className="inline-flex items-center gap-2 rounded-lg border border-white/15 px-3 py-1.5 text-sm hover:bg-white/5"
+          >
+            <LogOut className="h-4 w-4" /> Log out
+          </button>
+        </div>
+
+        <div className="p-4">
+          <Routes>
+            <Route index element={<DashboardHome />} />
+            <Route path="leads" element={<LeadsPage />} />
+            <Route path="reports" element={<ReportsPage />} />
+            {/* Settings always visible */}
+            <Route path="settings" element={<SettingsPage />} />
+            {/* Agent wizard/private */}
+            <Route path="agent/showcase" element={<AgentShowcase />} />
+            {/* ✅ Calendar route */}
+            <Route path="calendar" element={<CalendarPage />} />
+          </Routes>
+        </div>
+      </main>
+    </div>
+  );
+}
+
+// ---------- App root ----------
+export default function App() {
+  return (
+    <AuthProvider>
+      <Routes>
+        <Route path="/" element={<LandingPage />} />
+        <Route path="/login" element={<LoginPage />} />
+        <Route path="/signup" element={<SignupPage />} />
+
+        {/* public agent page */}
+        <Route path="/a/:slug" element={<AgentPublic />} />
+
+        <Route element={<ProtectedRoute />}>
+          <Route path="/app/*" element={<AppLayout />} />
+        </Route>
+
+        <Route path="*" element={<Navigate to="/" replace />} />
+      </Routes>
+    </AuthProvider>
+  );
+}
