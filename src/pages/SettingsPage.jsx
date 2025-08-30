@@ -1,22 +1,24 @@
 // File: src/pages/SettingsPage.jsx
 import { useEffect, useState } from "react";
-import { supabase } from "../supabaseClient"; // adjust path if needed
+import { supabase } from "../lib/supabaseClient"; // adjust if your path differs
 
 export default function SettingsPage() {
   const [user, setUser] = useState(null);
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState("");
+  const [hasCalendly, setHasCalendly] = useState(false);
+
+  // ---- Your existing account/subscription states (keep yours if you have them) ----
   const [sub, setSub] = useState(null);
   const [loadingSub, setLoadingSub] = useState(true);
-
   const [pw, setPw] = useState("");
   const [pw2, setPw2] = useState("");
   const [pwMsg, setPwMsg] = useState("");
-  const [busy, setBusy] = useState(false);
   const [cancelMsg, setCancelMsg] = useState("");
 
   useEffect(() => {
     let ignore = false;
-
-    async function load() {
+    (async () => {
       const { data, error } = await supabase.auth.getUser();
       if (error) {
         console.error(error);
@@ -25,6 +27,20 @@ export default function SettingsPage() {
       if (ignore) return;
       setUser(data.user || null);
 
+      // check if user already has a Calendly token saved
+      if (data.user?.id) {
+        const { data: token, error: tErr } = await supabase
+          .from("calendly_tokens")
+          .select("id")
+          .eq("user_id", data.user.id)
+          .maybeSingle();
+        if (!ignore) {
+          if (tErr) console.error(tErr);
+          setHasCalendly(!!token);
+        }
+      }
+
+      // (Optional) load your subscription UI like you had before
       if (data.user?.id) {
         setLoadingSub(true);
         const { data: subData, error: subErr } = await supabase
@@ -32,7 +48,6 @@ export default function SettingsPage() {
           .select("*")
           .eq("user_id", data.user.id)
           .maybeSingle();
-
         if (!ignore) {
           if (subErr) console.error(subErr);
           setSub(subData || null);
@@ -41,14 +56,60 @@ export default function SettingsPage() {
       } else {
         setLoadingSub(false);
       }
-    }
-
-    load();
+    })();
     return () => {
       ignore = true;
     };
   }, []);
 
+  const VITE_CLIENT_ID = import.meta.env.VITE_CALENDLY_CLIENT_ID;
+  const SITE_URL = import.meta.env.VITE_SITE_URL || window.location.origin;
+  const REDIRECT_URI = `${SITE_URL}/.netlify/functions/calendly-auth-callback`;
+
+  const connectCalendly = () => {
+    setMsg("");
+    if (!VITE_CLIENT_ID) {
+      setMsg("Missing VITE_CALENDLY_CLIENT_ID env var.");
+      return;
+    }
+
+    // Use Calendly's auth server + valid scopes
+    const scopes = [
+      "users:read",
+      "scheduled_events:read",
+      "event_types:read",
+      "organization:read",
+    ].join(" ");
+
+    const authorizeUrl = new URL("https://auth.calendly.com/oauth/authorize");
+    authorizeUrl.searchParams.set("client_id", VITE_CLIENT_ID);
+    authorizeUrl.searchParams.set("response_type", "code");
+    authorizeUrl.searchParams.set("redirect_uri", REDIRECT_URI);
+    authorizeUrl.searchParams.set("scope", scopes);
+
+    window.location.href = authorizeUrl.toString();
+  };
+
+  const disconnectCalendly = async () => {
+    if (!user?.id) return;
+    setBusy(true);
+    setMsg("");
+    try {
+      const { error } = await supabase
+        .from("calendly_tokens")
+        .delete()
+        .eq("user_id", user.id);
+      if (error) throw error;
+      setHasCalendly(false);
+      setMsg("Calendly disconnected.");
+    } catch (err) {
+      setMsg(err.message || "Failed to disconnect Calendly.");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  // ----- Your existing handlers (password, cancel subscription) -----
   const onChangePassword = async (e) => {
     e.preventDefault();
     setPwMsg("");
@@ -78,13 +139,7 @@ export default function SettingsPage() {
       setCancelMsg("No active subscription found.");
       return;
     }
-    if (
-      !confirm(
-        "Cancel at period end? You will keep access until the end of the current billing period."
-      )
-    ) {
-      return;
-    }
+    if (!confirm("Cancel at period end?")) return;
     setBusy(true);
     setCancelMsg("");
     try {
@@ -96,7 +151,6 @@ export default function SettingsPage() {
       const text = await res.text();
       if (!res.ok) throw new Error(text || "Cancel failed");
       setCancelMsg("Your subscription will be canceled at the period end.");
-      // Refresh subscription row
       const { data: subData } = await supabase
         .from("subscriptions")
         .select("*")
@@ -112,44 +166,42 @@ export default function SettingsPage() {
 
   const fmtDate = (iso) => {
     if (!iso) return "—";
-    try {
-      return new Date(iso).toLocaleString();
-    } catch {
-      return iso;
-    }
-  };
-
-  // ---------- Calendly Connect ----------
-  const onConnectCalendly = () => {
-    const clientId = import.meta.env.VITE_CALENDLY_CLIENT_ID;
-    if (!clientId) {
-      alert("Missing VITE_CALENDLY_CLIENT_ID env var");
-      return;
-    }
-
-    const redirect = `${window.location.origin}/.netlify/functions/calendly-auth-callback`;
-
-    // ✅ FIXED: Calendly scopes use COLONS, not dots
-    const scopes = [
-      "users:read",
-      "scheduled_events:read",
-      "event_types:read",
-      "organization:read",
-    ].join(" ");
-
-    const authorizeUrl =
-      `https://calendly.com/oauth/authorize` +
-      `?client_id=${encodeURIComponent(clientId)}` +
-      `&response_type=code` +
-      `&redirect_uri=${encodeURIComponent(redirect)}` +
-      `&scope=${encodeURIComponent(scopes)}`;
-
-    window.location.href = authorizeUrl;
+    try { return new Date(iso).toLocaleString(); } catch { return iso; }
   };
 
   return (
     <div className="max-w-3xl mx-auto p-6">
       <h1 className="text-2xl font-semibold mb-6">Settings</h1>
+
+      {/* Calendly */}
+      <section className="mb-10 rounded-2xl border p-5">
+        <h2 className="text-lg font-medium mb-3">Calendly</h2>
+        <p className="text-sm text-gray-500 mb-3">
+          Connect your Calendly account to show your meetings inside the CRM.
+        </p>
+        <div className="flex items-center gap-3">
+          {!hasCalendly ? (
+            <button
+              onClick={connectCalendly}
+              className="rounded-xl px-4 py-2 bg-black text-white"
+            >
+              Connect Calendly
+            </button>
+          ) : (
+            <button
+              onClick={disconnectCalendly}
+              disabled={busy}
+              className="rounded-xl px-4 py-2 border hover:bg-gray-50 disabled:opacity-50"
+            >
+              {busy ? "Working…" : "Disconnect Calendly"}
+            </button>
+          )}
+          {msg && <div className="text-sm">{msg}</div>}
+        </div>
+        <div className="mt-2 text-xs text-gray-500">
+          Redirect URI: <code>{REDIRECT_URI}</code>
+        </div>
+      </section>
 
       {/* Account */}
       <section className="mb-10 rounded-2xl border p-5">
@@ -202,7 +254,6 @@ export default function SettingsPage() {
       {/* Subscription */}
       <section className="mb-10 rounded-2xl border p-5">
         <h2 className="text-lg font-medium mb-3">Subscription</h2>
-
         {loadingSub ? (
           <div>Loading subscription…</div>
         ) : sub ? (
@@ -210,12 +261,8 @@ export default function SettingsPage() {
             <div className="flex flex-wrap gap-4">
               <Info label="Plan" value={sub.plan || "—"} />
               <Info label="Status" value={sub.status || "—"} />
-              <Info
-                label="Renews / ends"
-                value={fmtDate(sub.current_period_end)}
-              />
+              <Info label="Renews / ends" value={fmtDate(sub.current_period_end)} />
             </div>
-
             <div className="mt-4 flex flex-wrap gap-3">
               <button
                 onClick={onCancelSubscription}
@@ -230,20 +277,6 @@ export default function SettingsPage() {
         ) : (
           <div>No active subscription found.</div>
         )}
-      </section>
-
-      {/* Calendly */}
-      <section className="mb-10 rounded-2xl border p-5">
-        <h2 className="text-lg font-medium mb-3">Calendly</h2>
-        <p className="text-sm text-gray-600 mb-4">
-          Connect your Calendly account to sync your meetings.
-        </p>
-        <button
-          onClick={onConnectCalendly}
-          className="rounded-xl px-4 py-2 bg-indigo-600 text-white hover:bg-indigo-700"
-        >
-          Connect Calendly
-        </button>
       </section>
     </div>
   );
