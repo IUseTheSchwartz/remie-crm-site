@@ -1,467 +1,594 @@
 // File: src/pages/AgentShowcase.jsx
 import { useEffect, useMemo, useState } from "react";
 import { supabase } from "../lib/supabaseClient";
+import { useNavigate } from "react-router-dom";
 
-// ===== configure your bucket names here =====
-const PUBLIC_BUCKET  = "agent_public_v2";   // public files (headshot, public site assets)
-const PRIVATE_BUCKET = "agent_private_v2";  // private files (license images, docs)
-
-// simple list used for the "licensed states" UI
-const US_STATES = [
-  "AL","AK","AZ","AR","CA","CO","CT","DE","FL","GA","HI","ID","IL","IN","IA",
-  "KS","KY","LA","ME","MD","MA","MI","MN","MS","MO","MT","NE","NV","NH","NJ",
-  "NM","NY","NC","ND","OH","OK","OR","PA","RI","SC","SD","TN","TX","UT","VT",
-  "VA","WA","WV","WI","WY",
+/* ---------- Helpers ---------- */
+const STATES = [
+  { code: "AL", name: "Alabama" }, { code: "AK", name: "Alaska" }, { code: "AZ", name: "Arizona" },
+  { code: "AR", name: "Arkansas" }, { code: "CA", name: "California" }, { code: "CO", name: "Colorado" },
+  { code: "CT", name: "Connecticut" }, { code: "DE", name: "Delaware" }, { code: "FL", name: "Florida" },
+  { code: "GA", name: "Georgia" }, { code: "HI", name: "Hawaii" }, { code: "ID", name: "Idaho" },
+  { code: "IL", name: "Illinois" }, { code: "IN", name: "Indiana" }, { code: "IA", name: "Iowa" },
+  { code: "KS", name: "Kansas" }, { code: "KY", name: "Kentucky" }, { code: "LA", name: "Louisiana" },
+  { code: "ME", name: "Maine" }, { code: "MD", name: "Maryland" }, { code: "MA", name: "Massachusetts" },
+  { code: "MI", name: "Michigan" }, { code: "MN", name: "Minnesota" }, { code: "MS", name: "Mississippi" },
+  { code: "MO", name: "Missouri" }, { code: "MT", name: "Montana" }, { code: "NE", name: "Nebraska" },
+  { code: "NV", name: "Nevada" }, { code: "NH", name: "New Hampshire" }, { code: "NJ", name: "New Jersey" },
+  { code: "NM", name: "New Mexico" }, { code: "NY", name: "New York" }, { code: "NC", name: "North Carolina" },
+  { code: "ND", name: "North Dakota" }, { code: "OH", name: "Ohio" }, { code: "OK", name: "Oklahoma" },
+  { code: "OR", name: "Oregon" }, { code: "PA", name: "Pennsylvania" }, { code: "RI", name: "Rhode Island" },
+  { code: "SC", name: "South Carolina" }, { code: "SD", name: "South Dakota" }, { code: "TN", name: "Tennessee" },
+  { code: "TX", name: "Texas" }, { code: "UT", name: "Utah" }, { code: "VT", name: "Vermont" },
+  { code: "VA", name: "Virginia" }, { code: "WA", name: "Washington" }, { code: "WV", name: "West Virginia" },
+  { code: "WI", name: "Wisconsin" }, { code: "WY", name: "Wyoming" },
 ];
 
+// 👇 map for DB upsert so state_name satisfies NOT NULL constraint
+const STATE_NAME_BY_CODE = Object.fromEntries(STATES.map((s) => [s.code, s.name]));
+
+const slugify = (s) =>
+  (s || "")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/(^-|-$)+/g, "");
+
+/* ---------- Small UI helper ---------- */
+function Field({ label, children, full }) {
+  return (
+    <label className={`block ${full ? "md:col-span-2" : ""}`}>
+      <div className="mb-1 text-xs font-medium text-white/70">{label}</div>
+      {children}
+    </label>
+  );
+}
+
+/* ---------- Page ---------- */
 export default function AgentShowcase() {
+  const nav = useNavigate();
+
+  // wizard step
   const [step, setStep] = useState(1);
 
-  // profile (step 1)
+  // Step 1 profile
   const [fullName, setFullName] = useState("");
-  const [email, setEmail]       = useState("");
-  const [phone, setPhone]       = useState("");
-  const [bio, setBio]           = useState("");
+  const [email, setEmail] = useState("");
+  const [phone, setPhone] = useState("");
+  const [shortBio, setShortBio] = useState("");
+  const [npn, setNpn] = useState("");
+  const slug = useMemo(() => slugify(fullName) || "my-profile", [fullName]);
+
+  // Step 2 headshot
+  const [headshotFile, setHeadshotFile] = useState(null);
   const [headshotUrl, setHeadshotUrl] = useState("");
-  const [saving1, setSaving1] = useState(false);
 
-  // states (step 2)
-  const [licensedStates, setLicensedStates] = useState([]); // array of "TX","CA" etc.
-  const [licenseFile, setLicenseFile] = useState(null);
-  const [licenseUploading, setLicenseUploading] = useState(false);
-  const [saving2, setSaving2] = useState(false);
+  // Step 3 states (rich)
+  // stateMap: { [state_code]: { selected: bool, license_number: string, license_image_url: string, file?: File } }
+  const [stateMap, setStateMap] = useState({});
+  const [savingStates, setSavingStates] = useState(false);
 
-  // publish (step 3)
+  // publish
   const [published, setPublished] = useState(false);
-  const [saving3, setSaving3] = useState(false);
 
-  const showcaseUrl = useMemo(() => {
-    // You can change this to your public route for agent profiles if you have one.
-    // Example: /a/:username or /agent/:id — for now we just show a placeholder.
-    return headshotUrl ? headshotUrl : "";
-  }, [headshotUrl]);
+  const [loading, setLoading] = useState(false);
 
-  // ===== helpers =====
-
-  async function getUser() {
-    const { data, error } = await supabase.auth.getUser();
-    if (error || !data.user) throw new Error("You must be signed in");
-    return data.user;
-  }
-
-  // load existing profile data (Step 1), states (Step 2), and publish flag
+  /* ---------- Load existing ---------- */
   useEffect(() => {
     (async () => {
-      try {
-        const user = await getUser();
+      const { data: auth } = await supabase.auth.getUser();
+      const uid = auth?.user?.id;
+      if (!uid) return;
 
-        // load profile row
-        const { data: prof, error: pErr } = await supabase
-          .from("agent_profiles")
-          .select("*")
-          .eq("user_id", user.id)
-          .maybeSingle();
+      // profile
+      const { data: prof } = await supabase
+        .from("agent_profiles")
+        .select("*")
+        .eq("user_id", uid)
+        .maybeSingle();
+      if (prof) {
+        setFullName(prof.full_name || "");
+        setEmail(prof.email || auth.user.email || "");
+        setPhone(prof.phone || "");
+        setShortBio(prof.short_bio || "");
+        setNpn(prof.npn || "");
+        setPublished(!!prof.published);
+        setHeadshotUrl(prof.headshot_url || "");
+      } else {
+        setEmail(auth.user?.email || "");
+      }
 
-        if (pErr) console.error(pErr);
+      // states
+      const { data: st } = await supabase
+        .from("agent_states")
+        .select("state_code, license_number, license_image_url")
+        .eq("user_id", uid);
 
-        if (prof) {
-          setFullName(prof.full_name || "");
-          setEmail(prof.email || "");
-          setPhone(prof.phone || "");
-          setBio(prof.bio || "");
-          setHeadshotUrl(prof.headshot_url || "");
-          setPublished(!!prof.published);
+      if (st?.length) {
+        const next = {};
+        for (const r of st) {
+          next[r.state_code] = {
+            selected: true,
+            license_number: r.license_number || "",
+            license_image_url: r.license_image_url || "",
+          };
         }
-
-        // load states
-        const { data: states, error: sErr } = await supabase
-          .from("agent_states")
-          .select("state_code")
-          .eq("user_id", user.id);
-
-        if (!sErr && states?.length) {
-          setLicensedStates(states.map((r) => r.state_code));
-        }
-      } catch (e) {
-        console.error("load error", e);
+        setStateMap(next);
       }
     })();
   }, []);
 
-  // upload a file to a bucket & return the public URL (for public bucket)
-  async function uploadToPublic(file, prefix = "profile-pictures") {
-    if (!file) return null;
-    const user = await getUser();
-
-    const ext = file.name.split(".").pop();
-    const path = `${prefix}/${user.id}-${Date.now()}.${ext}`;
-
-    const { error: upErr } = await supabase.storage
-      .from(PUBLIC_BUCKET)
-      .upload(path, file, { upsert: true });
-
-    if (upErr) throw upErr;
-
-    const { data } = supabase.storage.from(PUBLIC_BUCKET).getPublicUrl(path);
-    return data.publicUrl;
-  }
-
-  // upload to private bucket (returns the storage path, NOT a public url)
-  async function uploadToPrivate(file, prefix = "licenses") {
-    if (!file) return null;
-    const user = await getUser();
-
-    const ext = file.name.split(".").pop();
-    const path = `${prefix}/${user.id}-${Date.now()}.${ext}`;
-
-    const { error: upErr } = await supabase.storage
-      .from(PRIVATE_BUCKET)
-      .upload(path, file, { upsert: true });
-
-    if (upErr) throw upErr;
-    return path; // keep path; access via signed URL or server if needed
-  }
-
-  // ===== Step 1: save profile with user_id (RLS requirement) =====
-  async function handleSaveStep1() {
-    setSaving1(true);
+  /* ---------- Step 1: Save profile ---------- */
+  async function saveProfile() {
+    setLoading(true);
     try {
-      const user = await getUser();
+      const { data: auth } = await supabase.auth.getUser();
+      const uid = auth?.user?.id;
+      if (!uid) throw new Error("Please log in");
 
-      // upsert agent_profiles row; user_id is required by RLS!
-      const { error } = await supabase
-        .from("agent_profiles")
-        .upsert(
-          {
-            user_id: user.id,
-            full_name: fullName,
-            email,
-            phone,
-            bio,
-            headshot_url: headshotUrl || null,
-            published: false, // do not publish until step 3
-          },
-          { onConflict: "user_id" } // requires a unique index on user_id (see instructions)
-        );
-
+      const { error } = await supabase.from("agent_profiles").upsert(
+        {
+          user_id: uid,
+          slug,
+          full_name: fullName,
+          email,
+          phone,
+          short_bio: shortBio,
+          npn,
+          published,
+          headshot_url: headshotUrl || null,
+          updated_at: new Date().toISOString(),
+        },
+        { onConflict: "user_id" }
+      );
       if (error) throw error;
 
       setStep(2);
     } catch (e) {
-      console.error("Step 1 save error:", e);
-      alert(e?.message || "Failed to save profile");
+      console.error(e);
+      alert(e.message);
     } finally {
-      setSaving1(false);
+      setLoading(false);
     }
   }
 
-  // ===== Step 2: save licensed states + optional license upload =====
-  async function handleSaveStep2() {
-    setSaving2(true);
+  /* ---------- Step 2: Upload headshot ---------- */
+  async function uploadHeadshot() {
+    if (!headshotFile) {
+      alert("Choose an image first");
+      return;
+    }
+    setLoading(true);
     try {
-      const user = await getUser();
+      const { data: auth } = await supabase.auth.getUser();
+      const uid = auth?.user?.id;
+      if (!uid) throw new Error("Please log in");
 
-      // OPTIONAL upload license / doc to private bucket
-      if (licenseFile) {
-        setLicenseUploading(true);
-        const storagePath = await uploadToPrivate(licenseFile, "licenses");
-        setLicenseUploading(false);
+      const ext = (headshotFile.name.split(".").pop() || "jpg").toLowerCase();
+      const key = `profile-pictures/${uid}/${Date.now()}.${ext}`;
+      const bucket = supabase.storage.from("agent_public_v2");
 
-        // store a row in agent_documents to track the uploaded license
-        const { error: dErr } = await supabase
-          .from("agent_documents")
-          .insert({
-            user_id: user.id,
-            doc_type: "license",
-            storage_path: storagePath,
-          });
-        if (dErr) throw dErr;
-      }
+      const { error: upErr } = await bucket.upload(key, headshotFile, {
+        upsert: true,
+        contentType: headshotFile.type || "image/jpeg",
+        cacheControl: "3600",
+      });
+      if (upErr) throw upErr;
 
-      // replace existing states with the selected list
-      // delete existing
-      const { error: delErr } = await supabase
-        .from("agent_states")
-        .delete()
-        .eq("user_id", user.id);
-      if (delErr) throw delErr;
+      const { data: pub } = bucket.getPublicUrl(key);
+      const publicUrl = pub?.publicUrl;
+      if (!publicUrl) throw new Error("Could not get public URL");
 
-      // insert new
-      if (licensedStates.length) {
-        const rows = licensedStates.map((sc) => ({
-          user_id: user.id,
-          state_code: sc,
-        }));
-        const { error: insErr } = await supabase.from("agent_states").insert(rows);
-        if (insErr) throw insErr;
-      }
+      setHeadshotUrl(publicUrl);
+
+      const { error: updErr } = await supabase
+        .from("agent_profiles")
+        .update({ headshot_url: publicUrl })
+        .eq("user_id", uid);
+      if (updErr) throw updErr;
 
       setStep(3);
     } catch (e) {
-      console.error("Step 2 save error:", e);
-      alert(e?.message || "Failed to save licensed states");
+      console.error(e);
+      alert(`Headshot upload failed: ${e.message}`);
     } finally {
-      setSaving2(false);
+      setLoading(false);
     }
   }
 
-  // ===== Step 3: publish toggle =====
-  async function handlePublishToggle(next) {
-    setSaving3(true);
+  /* ---------- Step 3: per-state UI helpers ---------- */
+  const isSelected = (code) => !!stateMap[code]?.selected;
+
+  function toggleState(code) {
+    setStateMap((prev) => {
+      const next = { ...prev };
+      const cur = next[code] || { selected: false, license_number: "", license_image_url: "" };
+      next[code] = { ...cur, selected: !cur.selected };
+      return next;
+    });
+  }
+
+  function setLicenseNumber(code, value) {
+    setStateMap((prev) => {
+      const cur = prev[code] || { selected: true, license_number: "", license_image_url: "" };
+      return { ...prev, [code]: { ...cur, license_number: value } };
+    });
+  }
+
+  function setLicenseFile(code, file) {
+    setStateMap((prev) => {
+      const cur = prev[code] || { selected: true, license_number: "", license_image_url: "" };
+      return { ...prev, [code]: { ...cur, file } };
+    });
+  }
+
+  /* ---------- Step 3: Save (diff-based with uploads; accepts PDF) ---------- */
+  async function saveStates() {
+    setSavingStates(true);
     try {
-      const user = await getUser();
+      const { data: auth } = await supabase.auth.getUser();
+      const uid = auth?.user?.id;
+      if (!uid) throw new Error("Please log in");
+
+      // Validate selected states have both license number and file/url
+      const selectedCodes = Object.keys(stateMap).filter((c) => stateMap[c]?.selected);
+      for (const code of selectedCodes) {
+        const item = stateMap[code];
+        if (!item.license_number?.trim()) throw new Error(`Please enter a license number for ${code}.`);
+        if (!item.license_image_url && !item.file) throw new Error(`Please upload a license image/PDF for ${code}.`);
+      }
+
+      // Existing rows
+      const { data: existingRows, error: selErr } = await supabase
+        .from("agent_states")
+        .select("state_code")
+        .eq("user_id", uid);
+      if (selErr) throw selErr;
+
+      const existing = new Set((existingRows || []).map((r) => r.state_code));
+      const desired = new Set(selectedCodes);
+      const toDelete = [...existing].filter((c) => !desired.has(c));
+
+      // Upload any pending files and collect rows to upsert
+      const rowsToUpsert = [];
+      const bucket = supabase.storage.from("agent_public_v2");
+
+      for (const code of selectedCodes) {
+        let license_image_url = stateMap[code].license_image_url || "";
+        if (stateMap[code].file) {
+          const file = stateMap[code].file;
+          const ext = (file.name.split(".").pop() || "jpg").toLowerCase();
+          const key = `licenses/${uid}/${code}-${Date.now()}.${ext}`;
+
+          const { error: upErr } = await bucket.upload(key, file, {
+            upsert: true,
+            contentType: file.type || (ext === "pdf" ? "application/pdf" : "image/jpeg"),
+            cacheControl: "3600",
+          });
+          if (upErr) throw upErr;
+
+          const { data: pub } = bucket.getPublicUrl(key);
+          license_image_url = pub?.publicUrl || "";
+        }
+
+        rowsToUpsert.push({
+          user_id: uid,
+          state_code: code,
+          state_name: STATE_NAME_BY_CODE[code] || code, // ✅ satisfy NOT NULL
+          license_number: stateMap[code].license_number || null,
+          license_image_url: license_image_url || null,
+          updated_at: new Date().toISOString(),
+        });
+      }
+
+      // Upsert selected rows (uses composite conflict on user_id,state_code)
+      if (rowsToUpsert.length) {
+        const { error: upErr } = await supabase
+          .from("agent_states")
+          .upsert(rowsToUpsert, { onConflict: "user_id,state_code" });
+        if (upErr) throw upErr;
+      }
+
+      // Delete unselected rows
+      if (toDelete.length) {
+        const { error: delErr } = await supabase
+          .from("agent_states")
+          .delete()
+          .eq("user_id", uid)
+          .in("state_code", toDelete);
+        if (delErr) throw delErr;
+      }
+
+      setStep(4);
+    } catch (e) {
+      console.error(e);
+      alert(`Save failed: ${e.message}`);
+    } finally {
+      setSavingStates(false);
+    }
+  }
+
+  /* ---------- Step 4: Publish ---------- */
+  const publicUrl = `${window.location.origin}/a/${slug}`;
+
+  async function setPublish(val) {
+    try {
+      const { data: auth } = await supabase.auth.getUser();
+      const uid = auth?.user?.id;
+      if (!uid) throw new Error("Please log in");
+
       const { error } = await supabase
         .from("agent_profiles")
-        .update({ published: next })
-        .eq("user_id", user.id);
+        .update({ published: val })
+        .eq("user_id", uid);
       if (error) throw error;
 
-      setPublished(next);
+      setPublished(val);
+      if (val) alert("Published! Your page is live.");
     } catch (e) {
-      console.error("Publish error:", e);
-      alert(e?.message || "Failed to update publish status");
-    } finally {
-      setSaving3(false);
+      console.error(e);
+      alert(e.message);
     }
   }
 
-  // ===== UI helpers =====
-
-  function StateChip({ code }) {
-    const active = licensedStates.includes(code);
-    return (
-      <button
-        type="button"
-        onClick={() =>
-          setLicensedStates((cur) =>
-            cur.includes(code) ? cur.filter((x) => x !== code) : [...cur, code]
-          )
-        }
-        className={`px-3 py-1 rounded-full border text-xs mr-2 mb-2 ${
-          active ? "bg-white/10 border-white/30" : "bg-transparent border-white/15"
-        }`}
-      >
-        {code}
-      </button>
-    );
-  }
-
-  // ===== view =====
+  /* ---------- Render ---------- */
   return (
-    <div className="min-h-screen bg-neutral-950 text-white p-4">
-      <div className="mx-auto max-w-4xl space-y-6">
-        <div className="flex items-center gap-3">
-          <div className="text-sm opacity-70">Step</div>
-          <StepDot n={1} cur={step} label="Profile" />
-          <StepDot n={2} cur={step} label="States & License" />
-          <StepDot n={3} cur={step} label="Publish" />
-        </div>
+    <div className="mx-auto max-w-4xl px-4 py-8 text-white">
+      <h1 className="text-2xl font-semibold">Agent Showcase</h1>
+      <p className="mt-1 text-sm text-white/70">Create your public mini-site to share with clients.</p>
 
-        {step === 1 && (
-          <section className="rounded-2xl border border-white/10 p-4">
-            <h2 className="text-lg font-semibold mb-4">Agent Profile</h2>
+      <ol className="mt-6 grid grid-cols-4 gap-2 text-xs text-white/60">
+        {[1, 2, 3, 4].map((s) => (
+          <li
+            key={s}
+            className={`rounded-lg border px-3 py-2 text-center ${
+              step === s ? "border-white/40 bg-white/10" : "border-white/10 bg-white/[0.04]"
+            }`}
+          >
+            Step {s}
+          </li>
+        ))}
+      </ol>
 
-            <div className="grid gap-4 md:grid-cols-2">
-              <label className="text-sm">
-                Agent Name
-                <input
-                  value={fullName}
-                  onChange={(e) => setFullName(e.target.value)}
-                  className="mt-1 w-full rounded-lg bg-white/5 px-3 py-2 outline-none ring-1 ring-white/10"
-                  placeholder="Jane Agent"
-                />
-              </label>
-
-              <label className="text-sm">
-                Email
-                <input
-                  value={email}
-                  onChange={(e) => setEmail(e.target.value)}
-                  className="mt-1 w-full rounded-lg bg-white/5 px-3 py-2 outline-none ring-1 ring-white/10"
-                  placeholder="agent@email.com"
-                />
-              </label>
-
-              <label className="text-sm">
-                Phone
-                <input
-                  value={phone}
-                  onChange={(e) => setPhone(e.target.value)}
-                  className="mt-1 w-full rounded-lg bg-white/5 px-3 py-2 outline-none ring-1 ring-white/10"
-                  placeholder="(555) 555-5555"
-                />
-              </label>
-
-              <label className="text-sm md:col-span-2">
-                Short Bio
-                <textarea
-                  value={bio}
-                  onChange={(e) => setBio(e.target.value)}
-                  rows={4}
-                  className="mt-1 w-full rounded-lg bg-white/5 px-3 py-2 outline-none ring-1 ring-white/10"
-                  placeholder="A few lines about you, your experience, and how you help clients."
-                />
-              </label>
-
-              <div className="md:col-span-2">
-                <div className="text-sm mb-2">Headshot</div>
-                {headshotUrl ? (
-                  <div className="flex items-center gap-4">
-                    <img
-                      src={headshotUrl}
-                      alt="headshot"
-                      className="h-20 w-20 rounded-lg object-cover border border-white/10"
-                      onError={() => setHeadshotUrl("")}
-                    />
-                    <button
-                      className="rounded-lg border border-white/15 px-3 py-2 text-sm hover:bg-white/5"
-                      onClick={() => setHeadshotUrl("")}
-                    >
-                      Remove
-                    </button>
-                  </div>
-                ) : (
-                  <input
-                    type="file"
-                    accept="image/*"
-                    onChange={async (e) => {
-                      const f = e.target.files?.[0];
-                      if (!f) return;
-                      try {
-                        const url = await uploadToPublic(f, "profile-pictures");
-                        setHeadshotUrl(url);
-                      } catch (err) {
-                        console.error(err);
-                        alert("Failed to upload headshot");
-                      }
-                    }}
-                    className="block"
-                  />
-                )}
-              </div>
-            </div>
-
-            <div className="mt-6 flex justify-end">
-              <button
-                onClick={handleSaveStep1}
-                disabled={saving1}
-                className="rounded-xl border border-white/15 px-4 py-2 text-sm hover:bg-white/5 disabled:opacity-50"
-              >
-                {saving1 ? "Saving…" : "Next"}
-              </button>
-            </div>
-          </section>
-        )}
-
-        {step === 2 && (
-          <section className="rounded-2xl border border-white/10 p-4">
-            <h2 className="text-lg font-semibold mb-2">Licensed States & License</h2>
-            <p className="text-sm text-white/70 mb-3">
-              Select all states you’re licensed in. Optionally upload your license image (kept private).
-            </p>
-
-            <div className="mb-4">
-              {US_STATES.map((code) => (
-                <StateChip key={code} code={code} />
-              ))}
-            </div>
-
-            <div className="mt-4">
-              <div className="text-sm mb-1">Upload License (private)</div>
+      {/* STEP 1 */}
+      {step === 1 && (
+        <div className="mt-6 space-y-4 rounded-2xl border border-white/10 bg-white/[0.03] p-5">
+          <div className="grid gap-4 md:grid-cols-2">
+            <Field label="Full Name">
               <input
-                type="file"
-                accept="image/*,application/pdf"
-                onChange={(e) => setLicenseFile(e.target.files?.[0] || null)}
+                value={fullName}
+                onChange={(e) => setFullName(e.target.value)}
+                className="w-full rounded-lg border border-white/10 bg-black/30 px-3 py-2 outline-none"
+                placeholder="First Last"
               />
-              {licenseUploading && <div className="text-xs mt-1 opacity-70">Uploading…</div>}
-            </div>
+            </Field>
+            <Field label="Email">
+              <input
+                value={email}
+                onChange={(e) => setEmail(e.target.value)}
+                className="w-full rounded-lg border border-white/10 bg-black/30 px-3 py-2 outline-none"
+                placeholder="you@email.com"
+              />
+            </Field>
+            <Field label="Phone">
+              <input
+                value={phone}
+                onChange={(e) => setPhone(e.target.value)}
+                className="w-full rounded-lg border border-white/10 bg-black/30 px-3 py-2 outline-none"
+                placeholder="(555) 555-5555"
+              />
+            </Field>
+            <Field label="NPN">
+              <input
+                value={npn}
+                onChange={(e) => setNpn(e.target.value)}
+                className="w-full rounded-lg border border-white/10 bg-black/30 px-3 py-2 outline-none"
+                placeholder="National Producer Number"
+              />
+            </Field>
+            <Field label="Short Bio" full>
+              <textarea
+                value={shortBio}
+                onChange={(e) => setShortBio(e.target.value)}
+                className="min-h-[110px] w-full rounded-lg border border-white/10 bg-black/30 px-3 py-2 outline-none"
+                placeholder="One–two sentences about your practice…"
+              />
+            </Field>
+          </div>
 
-            <div className="mt-6 flex justify-between">
-              <button
-                onClick={() => setStep(1)}
-                className="rounded-xl border border-white/15 px-4 py-2 text-sm hover:bg-white/5"
-              >
-                Back
-              </button>
-              <button
-                onClick={handleSaveStep2}
-                disabled={saving2}
-                className="rounded-xl border border-white/15 px-4 py-2 text-sm hover:bg-white/5 disabled:opacity-50"
-              >
-                {saving2 ? "Saving…" : "Next"}
-              </button>
-            </div>
-          </section>
-        )}
+          <div className="mt-4 text-xs text-white/50">URL preview: /a/{slug}</div>
 
-        {step === 3 && (
-          <section className="rounded-2xl border border-white/10 p-4">
-            <h2 className="text-lg font-semibold mb-2">Publish</h2>
-            <p className="text-sm text-white/70">
-              Turn this on to make your public Agent Showcase page visible.
-            </p>
+          <div className="mt-4 flex items-center justify-end gap-3">
+            <button
+              onClick={() => nav("/app")}
+              className="rounded-lg border border-white/15 px-4 py-2 text-sm hover:bg-white/5"
+            >
+              Cancel
+            </button>
+            <button
+              onClick={saveProfile}
+              disabled={loading}
+              className={`rounded-lg bg-white px-4 py-2 text-sm font-medium text-black ${
+                loading ? "opacity-50 cursor-not-allowed" : "hover:bg-neutral-200"
+              }`}
+            >
+              {loading ? "Saving…" : "Save & Continue"}
+            </button>
+          </div>
+        </div>
+      )}
 
-            <div className="mt-4 flex items-center gap-3">
-              <label className="inline-flex items-center gap-2 text-sm">
-                <input
-                  type="checkbox"
-                  checked={published}
-                  onChange={(e) => handlePublishToggle(e.target.checked)}
-                />
-                <span>Published</span>
-              </label>
-              {saving3 && <span className="text-xs opacity-70">Saving…</span>}
-            </div>
+      {/* STEP 2 */}
+      {step === 2 && (
+        <div className="mt-6 space-y-4 rounded-2xl border border-white/10 bg-white/[0.03] p-5">
+          <Field label="Headshot">
+            <input
+              type="file"
+              accept="image/*"
+              onChange={(e) => setHeadshotFile(e.target.files?.[0] || null)}
+              className="block text-sm"
+            />
+          </Field>
 
-            {published && (
-              <div className="mt-4 text-sm">
-                <div className="opacity-70 mb-1">Preview (headshot URL for now):</div>
-                <a
-                  href={showcaseUrl}
-                  target="_blank"
-                  rel="noreferrer"
-                  className="underline text-indigo-300 break-all"
-                >
-                  {showcaseUrl || "(no headshot uploaded yet)"}
-                </a>
-              </div>
-            )}
+          {headshotUrl && (
+            <img
+              src={headshotUrl}
+              alt="Headshot"
+              className="mt-2 h-32 w-32 rounded-xl border border-white/10 object-cover"
+            />
+          )}
 
-            <div className="mt-6 flex justify-between">
-              <button
-                onClick={() => setStep(2)}
-                className="rounded-xl border border-white/15 px-4 py-2 text-sm hover:bg-white/5"
-              >
-                Back
-              </button>
-              <button
-                onClick={() => alert("All set!")}
-                className="rounded-xl border border-white/15 px-4 py-2 text-sm hover:bg-white/5"
-              >
-                Done
-              </button>
-            </div>
-          </section>
-        )}
-      </div>
-    </div>
-  );
-}
+          <div className="mt-4 flex items-center justify-end gap-3">
+            <button
+              onClick={() => setStep(1)}
+              className="rounded-lg border border-white/15 px-4 py-2 text-sm hover:bg-white/5"
+            >
+              Back
+            </button>
+            <button
+              onClick={uploadHeadshot}
+              disabled={loading}
+              className={`rounded-lg bg-white px-4 py-2 text-sm font-medium text-black ${
+                loading ? "opacity-50 cursor-not-allowed" : "hover:bg-neutral-200"
+              }`}
+            >
+              {loading ? "Uploading…" : "Upload & Continue"}
+            </button>
+          </div>
+        </div>
+      )}
 
-function StepDot({ n, cur, label }) {
-  const active = cur === n;
-  const done = cur > n;
-  return (
-    <div className="flex items-center gap-2">
-      <div
-        className={`grid h-6 w-6 place-items-center rounded-full text-xs ${
-          active ? "bg-white text-black" : done ? "bg-white/40 text-black" : "bg-white/10 text-white"
-        }`}
-      >
-        {n}
-      </div>
-      <div className={`text-sm ${active ? "opacity-100" : "opacity-60"}`}>{label}</div>
-      {n < 3 && <div className="mx-3 h-px w-10 bg-white/10" />}
+      {/* STEP 3 */}
+      {step === 3 && (
+        <div className="mt-6 space-y-4 rounded-2xl border border-white/10 bg-white/[0.03] p-5">
+          <p className="text-sm text-white/80">
+            Select your licensed states, add the license number for each, and upload a clear image <em>or PDF</em> of the license.
+          </p>
+
+          <div className="space-y-3">
+            {STATES.map((s) => {
+              const entry = stateMap[s.code] || { selected: false, license_number: "", license_image_url: "" };
+              const selected = !!entry.selected;
+
+              return (
+                <div key={s.code} className="rounded-xl border border-white/10 bg-white/[0.04] p-3">
+                  <div className="flex items-center justify-between">
+                    <label className="flex items-center gap-2 text-sm">
+                      <input
+                        type="checkbox"
+                        checked={selected}
+                        onChange={() => toggleState(s.code)}
+                      />
+                      <span className="font-medium">{s.name}</span>
+                      <span className="text-white/50">({s.code})</span>
+                    </label>
+                  </div>
+
+                  {selected && (
+                    <div className="mt-3 grid gap-3 md:grid-cols-3">
+                      <div className="md:col-span-1">
+                        <div className="text-xs text-white/70 mb-1">License Number</div>
+                        <input
+                          className="w-full rounded-lg border border-white/10 bg-black/30 px-3 py-2 outline-none"
+                          value={entry.license_number || ""}
+                          onChange={(e) => setLicenseNumber(s.code, e.target.value)}
+                          placeholder="e.g. 1234567"
+                        />
+                      </div>
+
+                      <div className="md:col-span-1">
+                        <div className="text-xs text-white/70 mb-1">Upload License (image or PDF)</div>
+                        <input
+                          type="file"
+                          accept="image/*,.pdf"
+                          onChange={(e) => setLicenseFile(s.code, e.target.files?.[0] || null)}
+                          className="block text-sm"
+                        />
+                      </div>
+
+                      <div className="md:col-span-1">
+                        <div className="text-xs text-white/70 mb-1">Current File</div>
+                        {entry.license_image_url ? (
+                          entry.license_image_url.toLowerCase().includes(".pdf") ? (
+                            <a
+                              href={entry.license_image_url}
+                              target="_blank"
+                              rel="noreferrer"
+                              className="text-xs text-indigo-300 underline"
+                            >
+                              View PDF
+                            </a>
+                          ) : (
+                            <img
+                              src={entry.license_image_url}
+                              alt={`${s.code} license`}
+                              className="h-20 w-32 rounded-lg border border-white/10 object-cover"
+                            />
+                          )
+                        ) : (
+                          <div className="grid h-20 w-32 place-items-center rounded-lg border border-dashed border-white/15 text-xs text-white/50">
+                            None uploaded
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+
+          <div className="mt-4 flex items-center justify-end gap-3">
+            <button
+              onClick={() => setStep(2)}
+              className="rounded-lg border border-white/15 px-4 py-2 text-sm hover:bg-white/5"
+            >
+              Back
+            </button>
+            <button
+              onClick={saveStates}
+              disabled={savingStates}
+              className={`rounded-lg bg-white px-4 py-2 text-sm font-medium text-black ${
+                savingStates ? "opacity-50 cursor-not-allowed" : "hover:bg-neutral-200"
+              }`}
+            >
+              {savingStates ? "Saving…" : "Save & Continue"}
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* STEP 4 */}
+      {step === 4 && (
+        <div className="mt-6 space-y-4 rounded-2xl border border-white/10 bg-white/[0.03] p-5">
+          <div className="space-y-2">
+            <div className="text-sm">Public page:</div>
+            <a href={publicUrl} target="_blank" rel="noreferrer" className="text-indigo-300 underline">
+              {publicUrl}
+            </a>
+          </div>
+
+          <div className="flex items-center gap-3">
+            <label className="inline-flex items-center gap-2 text-sm">
+              <input type="checkbox" checked={published} onChange={(e) => setPublish(e.target.checked)} />
+              <span>Publish my page</span>
+            </label>
+          </div>
+
+          <div className="mt-4 flex items-center justify-end">
+            <button
+              onClick={() => {
+                // keep sidebar refresh signal
+                window.localStorage.setItem("agent_profile_refresh", Date.now().toString());
+                // go straight to the public agent site
+                nav(`/a/${slug}`);
+              }}
+              className="rounded-lg bg-white px-4 py-2 text-sm font-medium text-black hover:bg-neutral-200"
+            >
+              Done — View My Agent Site
+            </button>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
