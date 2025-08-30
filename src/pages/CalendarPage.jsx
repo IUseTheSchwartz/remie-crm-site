@@ -1,134 +1,66 @@
-import { useEffect, useState, useMemo } from "react";
-import { InlineWidget } from "react-calendly";
+import { useEffect, useState } from "react";
 import { supabase } from "../lib/supabaseClient";
 
-// Small list item
-function Row({ label, value }) {
-  return (
-    <div className="flex justify-between items-center py-2 border-b border-white/10 text-sm">
-      <div className="text-white/80">{label}</div>
-      <div className="text-white/60">{value}</div>
-    </div>
-  );
+function pretty(iso) {
+  try {
+    return new Date(iso).toLocaleString(undefined, {
+      weekday: "short", month: "short", day: "numeric", hour: "numeric", minute: "2-digit",
+    });
+  } catch { return iso; }
 }
 
 export default function CalendarPage() {
-  const [calendlyUrl, setCalendlyUrl] = useState("");     // from Supabase user profile
-  const [loadingProfile, setLoadingProfile] = useState(true);
-
   const [events, setEvents] = useState([]);
-  const [loadingEvents, setLoadingEvents] = useState(true);
+  const [loading, setLoading] = useState(true);
   const [err, setErr] = useState("");
+  const [connected, setConnected] = useState(true);
 
-  // 1) Load the user's calendly_url from your agent_profiles table
   useEffect(() => {
     (async () => {
+      setLoading(true); setErr("");
       try {
-        const { data: auth } = await supabase.auth.getUser();
-        const uid = auth?.user?.id;
-        if (!uid) return;
-
-        const { data, error } = await supabase
-          .from("agent_profiles")
-          .select("calendly_url")
-          .eq("user_id", uid)
-          .maybeSingle();
-
-        if (!error && data?.calendly_url) setCalendlyUrl(data.calendly_url);
-      } catch (e) {
-        console.error(e);
-      } finally {
-        setLoadingProfile(false);
-      }
-    })();
-  }, []);
-
-  // 2) Fetch upcoming meetings (from our Netlify function)
-  useEffect(() => {
-    (async () => {
-      setLoadingEvents(true);
-      setErr("");
-      try {
-        const res = await fetch("/.netlify/functions/calendly-events");
-        if (!res.ok) throw new Error(await res.text());
+        const session = (await supabase.auth.getSession()).data.session;
+        if (!session) { setConnected(false); setLoading(false); return; }
+        const res = await fetch("/.netlify/functions/calendly-events", {
+          headers: { Authorization: `Bearer ${session.access_token}` },
+        });
         const json = await res.json();
-        const list = json?.events?.collection || [];
-        setEvents(list);
-      } catch (e) {
-        console.error(e);
-        setErr("Could not load events.");
-      } finally {
-        setLoadingEvents(false);
-      }
+        if (json?.error === "not_connected") { setConnected(false); setEvents([]); }
+        else { setConnected(true); setEvents(json?.events?.collection || []); }
+      } catch (e) { console.error(e); setErr("Could not load events."); }
+      finally { setLoading(false); }
     })();
   }, []);
-
-  const pretty = (iso) =>
-    new Date(iso).toLocaleString(undefined, {
-      weekday: "short",
-      month: "short",
-      day: "numeric",
-      hour: "numeric",
-      minute: "2-digit",
-    });
 
   return (
-    <div className="grid gap-6 md:grid-cols-2">
-      {/* Left: Upcoming meetings */}
+    <div className="space-y-4">
+      {!connected && (
+        <div className="rounded-lg border border-amber-400/30 bg-amber-500/10 px-3 py-2 text-sm text-amber-200">
+          Calendly is not connected. Go to <span className="font-medium">Settings → Calendly</span> and click
+          <span className="font-medium"> Connect Calendly</span>.
+        </div>
+      )}
+
       <div className="rounded-2xl border border-white/10 bg-white/[0.03] p-4">
-        <div className="mb-2 text-sm font-semibold">Upcoming meetings</div>
-        {loadingEvents ? (
-          <div className="text-white/60 text-sm">Loading…</div>
-        ) : err ? (
-          <div className="text-rose-300 text-sm">{err}</div>
-        ) : events.length === 0 ? (
-          <div className="text-white/60 text-sm">No upcoming meetings.</div>
-        ) : (
+        <div className="mb-3 text-sm font-semibold">Upcoming meetings</div>
+
+        {loading && <div className="text-sm text-white/60">Loading…</div>}
+        {!loading && err && <div className="text-sm text-rose-300">{err}</div>}
+        {!loading && !err && events.length === 0 && <div className="text-sm text-white/60">No upcoming meetings.</div>}
+
+        {!loading && !err && events.length > 0 && (
           <div className="divide-y divide-white/10">
             {events.map((ev) => (
               <div key={ev.uri} className="py-3">
-                <div className="text-white font-medium text-sm">
-                  {ev.name || "Scheduled event"}
-                </div>
-                <div className="text-white/70 text-xs">
-                  {pretty(ev.start_time)} – {pretty(ev.end_time)}
-                </div>
+                <div className="text-sm font-medium text-white">{ev.name || "Scheduled event"}</div>
+                <div className="text-xs text-white/70">{pretty(ev.start_time)} – {pretty(ev.end_time)}</div>
                 {ev.location?.join_url && (
-                  <a
-                    href={ev.location.join_url}
-                    target="_blank"
-                    rel="noreferrer"
-                    className="mt-1 inline-block text-xs text-indigo-300 underline"
-                  >
+                  <a href={ev.location.join_url} target="_blank" rel="noreferrer" className="mt-1 inline-block text-xs text-indigo-300 underline">
                     Join link
                   </a>
                 )}
               </div>
             ))}
-          </div>
-        )}
-      </div>
-
-      {/* Right: Book new meetings */}
-      <div className="rounded-2xl border border-white/10 bg-white/[0.03] p-4">
-        <div className="mb-2 text-sm font-semibold">Book a new meeting</div>
-        {loadingProfile ? (
-          <div className="text-white/60 text-sm">Loading…</div>
-        ) : calendlyUrl ? (
-          <div className="h-[720px] rounded-lg overflow-hidden">
-            <InlineWidget
-              url={calendlyUrl}
-              styles={{ height: "100%" }}
-              pageSettings={{
-                backgroundColor: "0b0b0b",
-                textColor: "ffffff",
-                primaryColor: "6366f1",
-              }}
-            />
-          </div>
-        ) : (
-          <div className="text-sm text-white/70">
-            Add your Calendly link in <span className="font-medium">Settings</span> to enable booking here.
           </div>
         )}
       </div>
