@@ -3,12 +3,13 @@ import { useEffect, useState } from "react";
 import { supabase } from "../supabaseClient";
 
 // --- Calendly OAuth constants ---
-const CALENDLY_AUTH_HOST = "https://auth.calendly.com"; // <-- must be auth.calendly.com
+const CALENDLY_AUTH_HOST = "https://auth.calendly.com"; // correct host
+// IMPORTANT: Calendly uses COLONS in scopes (users:read), not dots (users.read)
 const CALENDLY_SCOPES = [
-  "users.read",
-  "scheduled_events.read",
-  "event_types.read",
-  "organization.read",
+  "users:read",
+  "scheduled_events:read",
+  "event_types:read",
+  "organization:read",
 ];
 
 export default function Settings() {
@@ -133,6 +134,9 @@ export default function Settings() {
     url.searchParams.set("redirect_uri", redirectUri);
     url.searchParams.set("scope", CALENDLY_SCOPES.join(" ")); // space-separated
 
+    // Optional: console to verify what we send
+    // console.log("Auth URL:", url.toString());
+
     window.location.assign(url.toString());
   };
 
@@ -207,10 +211,7 @@ export default function Settings() {
             <div className="flex flex-wrap gap-4">
               <Info label="Plan" value={sub.plan || "—"} />
               <Info label="Status" value={sub.status || "—"} />
-              <Info
-                label="Renews / ends"
-                value={fmtDate(sub.current_period_end)}
-              />
+              <Info label="Renews / ends" value={fmtDate(sub.current_period_end)} />
             </div>
             <div className="mt-4 flex flex-wrap gap-3">
               <button
