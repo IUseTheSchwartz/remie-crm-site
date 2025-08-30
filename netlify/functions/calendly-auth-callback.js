@@ -1,87 +1,91 @@
-// File: netlify/functions/calendly-auth-callback.js
-import fetch from "node-fetch";
-import { createClient } from "@supabase/supabase-js";
+// netlify/functions/calendly-auth-callback.js
+// Uses Node's global `fetch` (no node-fetch dependency)
 
-export const handler = async (event) => {
+const { createClient } = require("@supabase/supabase-js");
+
+// Env vars you must have in Netlify:
+//  - SITE_URL  (e.g. https://remiecrm.com)
+//  - SUPABASE_URL
+//  - SUPABASE_SERVICE_ROLE
+//  - CALENDLY_CLIENT_ID
+//  - CALENDLY_CLIENT_SECRET
+const supabase = createClient(
+  process.env.SUPABASE_URL,
+  process.env.SUPABASE_SERVICE_ROLE
+);
+
+exports.handler = async (event) => {
   try {
     const url = new URL(event.rawUrl);
     const code = url.searchParams.get("code");
+    const state = url.searchParams.get("state"); // we pass user_id here from the client (optional but recommended)
+
     if (!code) {
-      return {
-        statusCode: 400,
-        body: "Missing ?code",
-      };
+      return { statusCode: 400, body: "Missing ?code param from Calendly" };
     }
-
-    const SUPABASE_URL = process.env.SUPABASE_URL;
-    const SUPABASE_SERVICE_ROLE = process.env.SUPABASE_SERVICE_ROLE;
-    const CALENDLY_CLIENT_ID = process.env.CALENDLY_CLIENT_ID;
-    const CALENDLY_CLIENT_SECRET = process.env.CALENDLY_CLIENT_SECRET;
-    const SITE_URL = process.env.SITE_URL || url.origin;
-
-    if (!SUPABASE_URL || !SUPABASE_SERVICE_ROLE) {
-      return { statusCode: 500, body: "Missing Supabase env vars" };
-    }
-    if (!CALENDLY_CLIENT_ID || !CALENDLY_CLIENT_SECRET) {
-      return { statusCode: 500, body: "Missing Calendly env vars" };
-    }
-
-    // Get the current user via a Supabase cookie (Netlify + Supabase)
-    const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE);
-    const { data: auth } = await supabase.auth.getUser();
-    const uid = auth?.user?.id;
-    if (!uid) {
-      // If your auth cookie isn't available in the function runtime,
-      // you can pass user_id in state or set up a signed redirect.
-      return { statusCode: 401, body: "Not authenticated." };
-    }
-
-    const redirectUri = `${SITE_URL}/.netlify/functions/calendly-auth-callback`;
 
     // Exchange code for tokens
-    const tokenResp = await fetch("https://auth.calendly.com/oauth/token", {
+    const tokenRes = await fetch("https://auth.calendly.com/oauth/token", {
       method: "POST",
       headers: { "Content-Type": "application/x-www-form-urlencoded" },
       body: new URLSearchParams({
         grant_type: "authorization_code",
         code,
-        redirect_uri: redirectUri,
-        client_id: CALENDLY_CLIENT_ID,
-        client_secret: CALENDLY_CLIENT_SECRET,
+        redirect_uri: `${process.env.SITE_URL}/.netlify/functions/calendly-auth-callback`,
+        client_id: process.env.CALENDLY_CLIENT_ID,
+        client_secret: process.env.CALENDLY_CLIENT_SECRET,
       }),
     });
 
-    if (!tokenResp.ok) {
-      const txt = await tokenResp.text();
-      return { statusCode: 500, body: `Token exchange failed: ${txt}` };
+    const tokenJson = await tokenRes.json();
+    if (!tokenRes.ok || !tokenJson.access_token) {
+      return {
+        statusCode: 400,
+        body: `Token exchange failed: ${JSON.stringify(tokenJson)}`,
+      };
     }
 
-    const tokens = await tokenResp.json();
-    const { access_token, refresh_token, expires_in, token_type } = tokens;
+    const now = Date.now();
+    const expiresAt = new Date(now + tokenJson.expires_in * 1000).toISOString();
 
-    // Store in Supabase
+    // You should tie this to the current user. We pass user_id in ?state= from the client.
+    const user_id = state || null;
+
+    if (!user_id) {
+      // If you didn't pass state, you won't know who to save the tokens for.
+      // You can still redirect, but tokens won't be saved to a user row.
+      return {
+        statusCode: 302,
+        headers: {
+          Location: `${process.env.SITE_URL}/app/calendar?connected=0&reason=missing_state`,
+        },
+        body: "",
+      };
+    }
+
+    // Save / upsert tokens
     const { error } = await supabase.from("calendly_tokens").upsert(
       {
-        user_id: uid,
-        access_token,
-        refresh_token,
-        token_type: token_type || "Bearer",
-        expires_at: new Date(Date.now() + (expires_in || 3600) * 1000).toISOString(),
-        updated_at: new Date().toISOString(),
+        user_id,
+        access_token: tokenJson.access_token,
+        refresh_token: tokenJson.refresh_token || null,
+        token_type: tokenJson.token_type || "Bearer",
+        expires_at: expiresAt,
       },
       { onConflict: "user_id" }
     );
+
     if (error) {
-      return { statusCode: 500, body: `DB error: ${error.message}` };
+      return { statusCode: 500, body: `Supabase error: ${error.message}` };
     }
 
-    // Send user back to settings page
+    // Bounce back to the app
     return {
       statusCode: 302,
-      headers: { Location: `${SITE_URL}/app/settings?calendly=connected` },
+      headers: { Location: `${process.env.SITE_URL}/app/calendar?connected=1` },
       body: "",
     };
   } catch (err) {
-    return { statusCode: 500, body: err.message || "Unexpected error" };
+    return { statusCode: 500, body: err.stack || String(err) };
   }
 };
