@@ -1,79 +1,112 @@
-import { getUserFromRequest, getServiceClient } from "./_supabase.js";
+// netlify/functions/calendly-events.js
+const SUPABASE_URL = process.env.SUPABASE_URL;
+const SUPABASE_SERVICE_ROLE = process.env.SUPABASE_SERVICE_ROLE;
+const CAL_CLIENT_ID = process.env.CALENDLY_CLIENT_ID;
+const CAL_CLIENT_SECRET = process.env.CALENDLY_CLIENT_SECRET;
 
-async function refreshToken(row) {
-  const res = await fetch("https://auth.calendly.com/oauth/token", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      grant_type: "refresh_token",
-      client_id: process.env.CALENDLY_CLIENT_ID,
-      client_secret: process.env.CALENDLY_CLIENT_SECRET,
-      refresh_token: row.refresh_token,
-    }),
-  });
-  if (!res.ok) throw new Error(`Calendly refresh failed: ${await res.text()}`);
-  const tok = await res.json();
-  const expiresAt = new Date(Date.now() + (tok.expires_in - 60) * 1000).toISOString();
-  return { access_token: tok.access_token, refresh_token: tok.refresh_token || row.refresh_token, expires_at: expiresAt };
-}
+exports.handler = async (event) => {
+  try {
+    const url = new URL(event.rawUrl);
+    const uid = url.searchParams.get("uid");
+    const count = Math.max(1, Math.min(100, Number(url.searchParams.get("count") || 50)));
+    const DEBUG = url.searchParams.get("debug") === "1";
+    if (!uid) return j(400, { error: "Missing uid" });
 
-export default async (req) => {
-  const user = await getUserFromRequest(req);
-  if (!user) return new Response("Unauthorized", { status: 401 });
+    // 1) read tokens
+    const tRes = await fetch(
+      `${SUPABASE_URL}/rest/v1/calendly_tokens?user_id=eq.${encodeURIComponent(uid)}&select=access_token,refresh_token,expires_at`,
+      {
+        headers: {
+          apikey: SUPABASE_SERVICE_ROLE,
+          Authorization: `Bearer ${SUPABASE_SERVICE_ROLE}`,
+        },
+      }
+    );
+    if (!tRes.ok) return j(500, { error: await tRes.text() });
+    const [row] = await tRes.json();
+    if (!row) return j(404, { error: "No Calendly token for user" });
 
-  const supa = getServiceClient();
-  const { data: row, error } = await supa
-    .from("calendly_tokens")
-    .select("*")
-    .eq("user_id", user.id)
-    .maybeSingle();
-  if (error) return new Response(`DB error: ${error.message}`, { status: 500 });
+    let { access_token, refresh_token, expires_at } = row;
 
-  if (!row) {
-    return new Response(JSON.stringify({ error: "not_connected" }), {
-      status: 200, headers: { "Content-Type": "application/json" },
+    // 2) refresh if expired
+    const expMs = new Date(expires_at).getTime();
+    if (!Number.isNaN(expMs) && expMs < Date.now() + 30_000) {
+      const refreshed = await refresh(refresh_token);
+      if (!refreshed.ok) return j(401, { error: refreshed.error });
+      ({ access_token, refresh_token, expires_at } = refreshed);
+      // persist
+      await fetch(`${SUPABASE_URL}/rest/v1/calendly_tokens`, {
+        method: "POST",
+        headers: {
+          apikey: SUPABASE_SERVICE_ROLE,
+          Authorization: `Bearer ${SUPABASE_SERVICE_ROLE}`,
+          "Content-Type": "application/json",
+          Prefer: "resolution=merge-duplicates",
+        },
+        body: JSON.stringify([{ user_id: uid, access_token, refresh_token, expires_at }]),
+      });
+    }
+
+    // 3) get user URI
+    const meRes = await fetch("https://api.calendly.com/users/me", {
+      headers: { Authorization: `Bearer ${access_token}` },
     });
-  }
+    const meJson = await meRes.json().catch(() => ({}));
+    if (!meRes.ok) return j(500, DEBUG ? { error: "users/me failed", body: meJson } : { error: "users/me failed" });
+    const userUri = meJson?.resource?.uri;
+    if (!userUri) return j(500, { error: "Missing user uri from Calendly" });
 
-  let { access_token, refresh_token, expires_at } = row;
-  if (new Date(expires_at).getTime() <= Date.now()) {
-    const refreshed = await refreshToken(row);
-    access_token = refreshed.access_token;
-    refresh_token = refreshed.refresh_token;
-    expires_at = refreshed.expires_at;
-    await supa.from("calendly_tokens")
-      .update({ access_token, refresh_token, expires_at, updated_at: new Date().toISOString() })
-      .eq("user_id", user.id);
-  }
-
-  const meRes = await fetch("https://api.calendly.com/users/me", {
-    headers: { Authorization: `Bearer ${access_token}` },
-  });
-  if (!meRes.ok) {
-    return new Response(JSON.stringify({ error: "users_me_failed", detail: await meRes.text() }), {
-      status: 500, headers: { "Content-Type": "application/json" },
+    // 4) upcoming events
+    const qs = new URLSearchParams({
+      user: userUri,
+      status: "active",
+      sort: "start_time:asc",
+      min_start_time: new Date().toISOString(),
+      count: String(count),
     });
-  }
-  const me = await meRes.json();
-  const userUri = me?.resource?.uri;
-
-  const url = new URL("https://api.calendly.com/scheduled_events");
-  url.searchParams.set("user", userUri);
-  url.searchParams.set("status", "active");
-  url.searchParams.set("min_start_time", new Date().toISOString());
-  url.searchParams.set("sort", "start_time:asc");
-  url.searchParams.set("count", "25");
-
-  const evRes = await fetch(url, { headers: { Authorization: `Bearer ${access_token}` } });
-  if (!evRes.ok) {
-    return new Response(JSON.stringify({ error: "events_failed", detail: await evRes.text() }), {
-      status: 500, headers: { "Content-Type": "application/json" },
+    const evRes = await fetch(`https://api.calendly.com/scheduled_events?${qs.toString()}`, {
+      headers: { Authorization: `Bearer ${access_token}` },
     });
-  }
-  const events = await evRes.json();
+    const evJson = await evRes.json().catch(() => ({}));
+    if (!evRes.ok) return j(evRes.status, DEBUG ? { error: "scheduled_events failed", body: evJson } : { error: "scheduled_events failed" });
 
-  return new Response(JSON.stringify({ events }), {
-    status: 200,
-    headers: { "Content-Type": "application/json", "Cache-Control": "no-store" },
-  });
+    return j(200, evJson);
+  } catch (err) {
+    return j(500, { error: err.message || String(err) });
+  }
+
+  async function refresh(refresh_token) {
+    try {
+      const res = await fetch("https://auth.calendly.com/oauth/token", {
+        method: "POST",
+        headers: { "Content-Type": "application/x-www-form-urlencoded" },
+        body: new URLSearchParams({
+          grant_type: "refresh_token",
+          refresh_token,
+          client_id: CAL_CLIENT_ID,
+          client_secret: CAL_CLIENT_SECRET,
+        }),
+      });
+      const jn = await res.json().catch(() => ({}));
+      if (!res.ok) return { ok: false, error: jn.error || res.statusText };
+      const base = jn.created_at ? Number(jn.created_at) : Math.floor(Date.now() / 1000);
+      const exp = base + Number(jn.expires_in || 0) - 30;
+      return {
+        ok: true,
+        access_token: jn.access_token,
+        refresh_token: jn.refresh_token || refresh_token,
+        expires_at: new Date(exp * 1000).toISOString(),
+      };
+    } catch (e) {
+      return { ok: false, error: e.message || String(e) };
+    }
+  }
+
+  function j(statusCode, body) {
+    return {
+      statusCode,
+      headers: { "Content-Type": "application/json", "Cache-Control": "no-store" },
+      body: JSON.stringify(body),
+    };
+  }
 };
