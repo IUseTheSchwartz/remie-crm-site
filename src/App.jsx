@@ -15,6 +15,7 @@ import ReportsPage from "./pages/ReportsPage.jsx";
 import SettingsPage from "./pages/SettingsPage.jsx";
 import AgentShowcase from "./pages/AgentShowcase.jsx";
 import AgentPublic from "./pages/AgentPublic.jsx";
+import CalendarPage from "./pages/CalendarPage.jsx"; // ✅ NEW
 
 // KPI helpers
 import NumberCard from "./components/NumberCard.jsx";
@@ -208,7 +209,7 @@ function DashLink({ to, children }) {
   );
 }
 
-// ---------- UPDATED: ViewAgentSiteLink (kept) ----------
+// ---------- ViewAgentSiteLink (unchanged) ----------
 function ViewAgentSiteLink() {
   const [slug, setSlug] = useState("");
   const [published, setPublished] = useState(false);
@@ -382,6 +383,7 @@ function AppLayout() {
           <DashLink to="/app/leads">Leads</DashLink>
           <DashLink to="/app/reports">Reports</DashLink>
           <DashLink to="/app/settings">Settings</DashLink>
+          <DashLink to="/app/calendar">Calendar</DashLink> {/* ✅ NEW */}
           <div className="pt-2 mt-2 border-t border-white/10" />
           <ViewAgentSiteLink />
           <DashLink to="/app/agent/showcase">Edit Agent Site</DashLink>
@@ -389,50 +391,4 @@ function AppLayout() {
       </aside>
 
       <main>
-        <div className="flex items-center justify-between border-b border-white/10 bg-black/30 px-4 py-3">
-          <div className="font-medium">Welcome{user?.email ? `, ${user.email}` : ""}</div>
-          <button
-            onClick={async () => { await logout(); nav("/"); }}
-            className="inline-flex items-center gap-2 rounded-lg border border-white/15 px-3 py-1.5 text-sm hover:bg-white/5"
-          >
-            <LogOut className="h-4 w-4" /> Log out
-          </button>
-        </div>
-
-        <div className="p-4">
-          <Routes>
-            <Route index element={<DashboardHome />} />
-            <Route path="leads" element={<LeadsPage />} />
-            <Route path="reports" element={<ReportsPage />} />
-            {/* Settings always visible */}
-            <Route path="settings" element={<SettingsPage />} />
-            {/* Agent wizard/private */}
-            <Route path="agent/showcase" element={<AgentShowcase />} />
-          </Routes>
-        </div>
-      </main>
-    </div>
-  );
-}
-
-// ---------- App root ----------
-export default function App() {
-  return (
-    <AuthProvider>
-      <Routes>
-        <Route path="/" element={<LandingPage />} />
-        <Route path="/login" element={<LoginPage />} />
-        <Route path="/signup" element={<SignupPage />} />
-
-        {/* public agent page */}
-        <Route path="/a/:slug" element={<AgentPublic />} />
-
-        <Route element={<ProtectedRoute />}>
-          <Route path="/app/*" element={<AppLayout />} />
-        </Route>
-
-        <Route path="*" element={<Navigate to="/" replace />} />
-      </Routes>
-    </AuthProvider>
-  );
-}
+        <div className="
