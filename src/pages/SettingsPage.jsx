@@ -2,6 +2,15 @@
 import { useEffect, useState } from "react";
 import { supabase } from "../supabaseClient";
 
+// --- Calendly OAuth constants ---
+const CALENDLY_AUTH_HOST = "https://auth.calendly.com"; // <-- must be auth.calendly.com
+const CALENDLY_SCOPES = [
+  "users.read",
+  "scheduled_events.read",
+  "event_types.read",
+  "organization.read",
+];
+
 export default function Settings() {
   const [user, setUser] = useState(null);
   const [sub, setSub] = useState(null);
@@ -13,7 +22,7 @@ export default function Settings() {
   const [busy, setBusy] = useState(false);
   const [cancelMsg, setCancelMsg] = useState("");
 
-  // Calendly (reverted to calendly.com host)
+  // Calendly
   const clientId = import.meta.env.VITE_CALENDLY_CLIENT_ID;
   const redirectUri = `${window.location.origin}/.netlify/functions/calendly-auth-callback`;
 
@@ -113,6 +122,20 @@ export default function Settings() {
     }
   };
 
+  const connectCalendly = () => {
+    if (!clientId) {
+      alert("Missing VITE_CALENDLY_CLIENT_ID env var.");
+      return;
+    }
+    const url = new URL("/oauth/authorize", CALENDLY_AUTH_HOST);
+    url.searchParams.set("client_id", clientId);
+    url.searchParams.set("response_type", "code");
+    url.searchParams.set("redirect_uri", redirectUri);
+    url.searchParams.set("scope", CALENDLY_SCOPES.join(" ")); // space-separated
+
+    window.location.assign(url.toString());
+  };
+
   const fmtDate = (iso) => {
     if (!iso) return "—";
     try {
@@ -120,31 +143,6 @@ export default function Settings() {
     } catch {
       return iso;
     }
-  };
-
-  // Reverted link: calendly.com/oauth/authorize
-  const connectCalendly = () => {
-    if (!clientId) {
-      alert("Missing VITE_CALENDLY_CLIENT_ID env var.");
-      return;
-    }
-
-    const url = new URL("https://calendly.com/oauth/authorize");
-    url.searchParams.set("client_id", clientId);
-    url.searchParams.set("response_type", "code");
-    url.searchParams.set("redirect_uri", redirectUri);
-    // join with spaces; URLSearchParams will encode properly
-    url.searchParams.set(
-      "scope",
-      [
-        "users:read",
-        "scheduled_events:read",
-        "event_types:read",
-        "organization:read",
-      ].join(" ")
-    );
-
-    window.location.assign(url.toString());
   };
 
   return (
@@ -214,7 +212,6 @@ export default function Settings() {
                 value={fmtDate(sub.current_period_end)}
               />
             </div>
-
             <div className="mt-4 flex flex-wrap gap-3">
               <button
                 onClick={onCancelSubscription}
@@ -234,12 +231,12 @@ export default function Settings() {
       {/* Calendly */}
       <section className="mb-10 rounded-2xl border p-5">
         <h2 className="text-lg font-medium mb-3">Calendly</h2>
-        <p className="text-sm text-gray-500 mb-3">
+        <p className="text-sm text-gray-600 mb-3">
           Connect your Calendly account to sync meetings.
         </p>
         <button
           onClick={connectCalendly}
-          className="rounded-xl px-4 py-2 bg-indigo-600 text-white hover:bg-indigo-700"
+          className="rounded-xl px-4 py-2 bg-blue-600 text-white"
         >
           Connect Calendly
         </button>
