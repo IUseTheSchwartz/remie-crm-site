@@ -275,6 +275,7 @@ function AppLayout() {
         </div>
         <nav className="p-3 space-y-1 text-sm">
           <DashLink to="/app">Home</DashLink>
+          <DashLink to="/app/calendar">Calendar</DashLink>
           <DashLink to="/app/leads">Leads</DashLink>
           <DashLink to="/app/reports">Reports</DashLink>
           <DashLink to="/app/settings">Settings</DashLink>
@@ -299,6 +300,7 @@ function AppLayout() {
         <div className="p-4">
           <Routes>
             <Route index element={<DashboardHome />} />
+            <Route path="calendar" element={<CalendarPage />} />
             <Route path="leads" element={<LeadsPage />} />
             <Route path="reports" element={<ReportsPage />} />
             {/* Settings always visible */}
