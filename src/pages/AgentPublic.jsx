@@ -38,7 +38,7 @@ export default function AgentPublic() {
       try {
         const { data: prof, error: e1 } = await supabase
           .from("agent_profiles")
-          .select("user_id, full_name, email, phone, short_bio, headshot_url, npn, published, slug")
+          .select("user_id, full_name, email, phone, short_bio, headshot_url, npn, published, slug, calendly_url")
           .eq("slug", slug)
           .maybeSingle();
 
@@ -102,6 +102,14 @@ export default function AgentPublic() {
   const callHref = profile.phone ? `tel:${profile.phone.replace(/[^\d+]/g, "")}` : null;
   const mailHref = profile.email ? `mailto:${profile.email}` : null;
 
+  const normalizeUrl = (u) => {
+    if (!u) return "";
+    let v = u.trim();
+    if (!/^https?:\/\//i.test(v)) v = `https://${v}`;
+    return v;
+  };
+  const bookHref = normalizeUrl(profile.calendly_url);
+
   return (
     <div className="min-h-screen bg-neutral-950 text-white">
       {/* Top bar */}
@@ -156,6 +164,16 @@ export default function AgentPublic() {
               {mailHref && (
                 <a href={mailHref} className="inline-flex items-center gap-2 rounded-xl border border-white/15 bg-white/5 px-3 py-2 text-sm hover:bg-white/10">
                   <Mail className="h-4 w-4" /> Email
+                </a>
+              )}
+              {bookHref && (
+                <a
+                  href={bookHref}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="inline-flex items-center gap-2 rounded-xl bg-indigo-600 px-3 py-2 text-sm text-white hover:bg-indigo-500"
+                >
+                  Book now
                 </a>
               )}
             </div>
@@ -253,6 +271,16 @@ export default function AgentPublic() {
               {mailHref && (
                 <a href={mailHref} className="inline-flex items-center gap-2 rounded-xl border border-white/15 bg-white/5 px-3 py-2 text-sm hover:bg-white/10">
                   <Mail className="h-4 w-4" /> Email
+                </a>
+              )}
+              {bookHref && (
+                <a
+                  href={bookHref}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="inline-flex items-center gap-2 rounded-xl bg-indigo-600 px-3 py-2 text-sm text-white hover:bg-indigo-500"
+                >
+                  Book now
                 </a>
               )}
             </div>
