@@ -1,91 +1,99 @@
-// netlify/functions/calendly-auth-callback.js
-// Uses Node's global `fetch` (no node-fetch dependency)
+// File: netlify/functions/calendly-auth-callback.js
+// Node 18+ on Netlify has global fetch—do NOT import "node-fetch".
 
-const { createClient } = require("@supabase/supabase-js");
+/**
+ * Environment variables required (set in Netlify > Site settings > Build & deploy > Environment):
+ * - CALENDLY_CLIENT_SECRET         (server-only – keep secret)
+ * - VITE_CALENDLY_CLIENT_ID        (also used on the client)
+ * - CALENDLY_REDIRECT_URI          (must exactly match the Redirect URI in Calendly Dev Console)
+ *
+ * Example CALENDLY_REDIRECT_URI:
+ *   https://YOURDOMAIN.com/.netlify/functions/calendly-auth-callback
+ */
 
-// Env vars you must have in Netlify:
-//  - SITE_URL  (e.g. https://remiecrm.com)
-//  - SUPABASE_URL
-//  - SUPABASE_SERVICE_ROLE
-//  - CALENDLY_CLIENT_ID
-//  - CALENDLY_CLIENT_SECRET
-const supabase = createClient(
-  process.env.SUPABASE_URL,
-  process.env.SUPABASE_SERVICE_ROLE
-);
+const TOKEN_URL = 'https://auth.calendly.com/oauth/token';
+const CURRENT_USER_URL = 'https://api.calendly.com/users/me';
 
 exports.handler = async (event) => {
   try {
-    const url = new URL(event.rawUrl);
-    const code = url.searchParams.get("code");
-    const state = url.searchParams.get("state"); // we pass user_id here from the client (optional but recommended)
-
-    if (!code) {
-      return { statusCode: 400, body: "Missing ?code param from Calendly" };
+    if (event.httpMethod !== 'GET') {
+      return { statusCode: 405, body: 'Method Not Allowed' };
     }
 
-    // Exchange code for tokens
-    const tokenRes = await fetch("https://auth.calendly.com/oauth/token", {
-      method: "POST",
-      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    const params = new URLSearchParams(event.rawQuery || event.queryStringParameters || {});
+    const code = params.get('code');
+
+    if (!code) {
+      return { statusCode: 400, body: 'Missing ?code in callback URL' };
+    }
+
+    const clientId = process.env.VITE_CALENDLY_CLIENT_ID;
+    const clientSecret = process.env.CALENDLY_CLIENT_SECRET;
+    const redirectUri = process.env.CALENDLY_REDIRECT_URI;
+
+    if (!clientId || !clientSecret || !redirectUri) {
+      return {
+        statusCode: 500,
+        body: 'Server missing env vars VITE_CALENDLY_CLIENT_ID / CALENDLY_CLIENT_SECRET / CALENDLY_REDIRECT_URI',
+      };
+    }
+
+    // 1) Exchange authorization code for access token
+    const tokenRes = await fetch(TOKEN_URL, {
+      method: 'POST',
+      headers: {
+        // Calendly expects Basic auth with base64(client_id:client_secret)
+        Authorization:
+          'Basic ' + Buffer.from(`${clientId}:${clientSecret}`, 'utf8').toString('base64'),
+        'Content-Type': 'application/x-www-form-urlencoded',
+      },
       body: new URLSearchParams({
-        grant_type: "authorization_code",
+        grant_type: 'authorization_code',
         code,
-        redirect_uri: `${process.env.SITE_URL}/.netlify/functions/calendly-auth-callback`,
-        client_id: process.env.CALENDLY_CLIENT_ID,
-        client_secret: process.env.CALENDLY_CLIENT_SECRET,
+        redirect_uri: redirectUri, // MUST match what Calendly has on your OAuth app
       }),
     });
 
     const tokenJson = await tokenRes.json();
-    if (!tokenRes.ok || !tokenJson.access_token) {
+
+    if (!tokenRes.ok) {
       return {
-        statusCode: 400,
+        statusCode: tokenRes.status,
         body: `Token exchange failed: ${JSON.stringify(tokenJson)}`,
       };
     }
 
-    const now = Date.now();
-    const expiresAt = new Date(now + tokenJson.expires_in * 1000).toISOString();
+    const { access_token, refresh_token, expires_in, token_type } = tokenJson;
 
-    // You should tie this to the current user. We pass user_id in ?state= from the client.
-    const user_id = state || null;
-
-    if (!user_id) {
-      // If you didn't pass state, you won't know who to save the tokens for.
-      // You can still redirect, but tokens won't be saved to a user row.
+    // (Optional) confirm the token belongs to the expected user
+    const meRes = await fetch(CURRENT_USER_URL, {
+      headers: { Authorization: `Bearer ${access_token}` },
+    });
+    const meJson = await meRes.json();
+    if (!meRes.ok) {
       return {
-        statusCode: 302,
-        headers: {
-          Location: `${process.env.SITE_URL}/app/calendar?connected=0&reason=missing_state`,
-        },
-        body: "",
+        statusCode: meRes.status,
+        body: `Failed to fetch /users/me: ${JSON.stringify(meJson)}`,
       };
     }
 
-    // Save / upsert tokens
-    const { error } = await supabase.from("calendly_tokens").upsert(
-      {
-        user_id,
-        access_token: tokenJson.access_token,
-        refresh_token: tokenJson.refresh_token || null,
-        token_type: tokenJson.token_type || "Bearer",
-        expires_at: expiresAt,
-      },
-      { onConflict: "user_id" }
-    );
+    // We’ll pass the token back to the front-end through a small redirect with a fragment
+    // so it doesn’t hit logs or browser history querystrings.
+    const frontUrl = new URL(process.env.SITE_URL || 'http://localhost:5173');
+    // Send users to app Settings where we store the token; change path if you want a different destination:
+    frontUrl.pathname = '/app/settings';
+    frontUrl.hash = `#calendly_oauth=success&access_token=${encodeURIComponent(
+      access_token
+    )}&refresh_token=${encodeURIComponent(refresh_token || '')}&expires_in=${encodeURIComponent(
+      expires_in
+    )}&token_type=${encodeURIComponent(token_type || 'Bearer')}`;
 
-    if (error) {
-      return { statusCode: 500, body: `Supabase error: ${error.message}` };
-    }
-
-    // Bounce back to the app
     return {
       statusCode: 302,
-      headers: { Location: `${process.env.SITE_URL}/app/calendar?connected=1` },
-      body: "",
+      headers: { Location: frontUrl.toString() },
+      body: '',
     };
   } catch (err) {
-    return { statusCode: 500, body: err.stack || String(err) };
+    return { statusCode: 500, body: `Callback error: ${err.message}` };
   }
 };
