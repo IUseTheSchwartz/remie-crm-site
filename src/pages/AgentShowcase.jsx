@@ -573,10 +573,10 @@ export default function AgentShowcase() {
           <div className="mt-4 flex items-center justify-end">
             <button
               onClick={() => {
-                // Signal sidebar to refresh its link state immediately
+                // keep sidebar refresh signal
                 window.localStorage.setItem("agent_profile_refresh", Date.now().toString());
-                // Send user back to the app home where the sidebar lives
-                nav("/app");
+                // go straight to the public agent site
+                nav(`/a/${slug}`);
               }}
               className="rounded-lg bg-white px-4 py-2 text-sm font-medium text-black hover:bg-neutral-200"
             >
