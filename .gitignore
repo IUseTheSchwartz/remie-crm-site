@@ -1,1 +1,30 @@
-node_modules
+# Node
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Build output
+dist/
+build/
+.cache/
+*.log
+
+# Local env files
+.env
+.env.local
+.env.*.local
+supabase/.env
+
+# IDE/editor
+.vscode/
+.idea/
+*.swp
+.DS_Store
+
+# Netlify
+.netlify/
+
+# Other lockfiles
+pnpm-lock.yaml
+yarn.lock
