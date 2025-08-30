@@ -2,5 +2,5 @@
 @tailwind components;
 @tailwind utilities;
 
-/* Make it obvious Tailwind loaded */
-body { @apply bg-neutral-950 text-white; }
+/* optional global reset */
+html, body, #root { height: 100%; }
