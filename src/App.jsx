@@ -2,7 +2,16 @@
 import { useState, useEffect } from "react";
 import { Routes, Route, Link, Navigate, useNavigate } from "react-router-dom";
 import { motion } from "framer-motion";
-import { Check, Zap, LogOut, Phone, Shield, Star, CreditCard, ExternalLink } from "lucide-react";
+import {
+  Check,
+  Zap,
+  LogOut,
+  Phone,
+  Shield,
+  Star,
+  CreditCard,
+  ExternalLink,
+} from "lucide-react";
 
 import ProtectedRoute from "./components/ProtectedRoute.jsx";
 import { AuthProvider, useAuth } from "./auth.jsx";
@@ -31,7 +40,7 @@ const BRAND = {
   accentRing: "ring-indigo-400/50",
 };
 
-// Pricing plans (Stripe Checkout links)
+// ---------- Pricing cards data (unchanged) ----------
 const PLANS = [
   {
     name: "Mail List",
@@ -361,7 +370,7 @@ function DashboardHome() {
   );
 }
 
-// ---------- App Layout ----------
+// ---------- App Layout (sidebar + routes) ----------
 function AppLayout() {
   const { user, logout } = useAuth();
   const nav = useNavigate();
@@ -379,8 +388,9 @@ function AppLayout() {
           <DashLink to="/app">Home</DashLink>
           <DashLink to="/app/leads">Leads</DashLink>
           <DashLink to="/app/reports">Reports</DashLink>
+          <DashLink to="/app/calendar">Calendar</DashLink> {/* NEW in sidebar */}
           <DashLink to="/app/settings">Settings</DashLink>
-          <DashLink to="/app/calendar">Calendar</DashLink> {/* NEW */}
+
           <div className="pt-2 mt-2 border-t border-white/10" />
           <ViewAgentSiteLink />
           <DashLink to="/app/agent/showcase">Edit Agent Site</DashLink>
@@ -403,8 +413,8 @@ function AppLayout() {
             <Route index element={<DashboardHome />} />
             <Route path="leads" element={<LeadsPage />} />
             <Route path="reports" element={<ReportsPage />} />
+            <Route path="calendar" element={<CalendarPage />} /> {/* NEW route */}
             <Route path="settings" element={<SettingsPage />} />
-            <Route path="calendar" element={<CalendarPage />} /> {/* NEW */}
             <Route path="agent/showcase" element={<AgentShowcase />} />
           </Routes>
         </div>
