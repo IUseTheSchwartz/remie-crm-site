@@ -1,19 +1,15 @@
 // File: src/pages/MessagesPage.jsx
 import { useEffect, useMemo, useRef, useState } from "react";
-import { supabase } from "../lib/supabaseClient";
-import { ExternalLink, Send, Phone, Mail, MessageSquare, MessageCircle } from "lucide-react";
+import { ExternalLink, Send, MessageSquare, MessageCircle } from "lucide-react";
 
-/**
- * This page is provider-agnostic UI that calls your backend:
- *   GET  /api/sendblue/conversations?search=&limit=50
- *   GET  /api/sendblue/conversations/:id/messages
- *   POST /api/sendblue/messages  { conversationId, body, channel: "imessage"|"sms" }
- *
- * Your backend should:
- *   - hold SEND BLUE API KEY (server-side only)
- *   - translate these to Sendblue API calls
- *   - normalize responses to { id, name, lastMessageAt, unreadCount, preview, ... }
- */
+// Choose the Edge Function base URL
+const API = import.meta.env.PROD
+  ? "https://<YOUR-PROJECT-REF>.functions.supabase.co/messaging" // ← replace with your Supabase project ref
+  : "/api/messaging"; // dev proxy (Vite) -> http://localhost:54321/functions/v1/messaging
+
+// Minimal tenant resolution (replace with your real tenant management)
+const tenantId = () => localStorage.getItem("tenant_id") || "demo-tenant";
+const tenantHeaders = () => ({ "x-tenant-id": tenantId() });
 
 function Pill({ active, children, onClick }) {
   return (
@@ -51,7 +47,7 @@ export default function MessagesPage() {
 
   const [contact, setContact] = useState(null);
   const [composer, setComposer] = useState("");
-  const [channel, setChannel] = useState("imessage"); // "imessage" or "sms"
+  const [channel, setChannel] = useState("sms"); // using Twilio (SMS). Keep UI toggle for future.
 
   const bottomRef = useRef(null);
 
@@ -59,10 +55,20 @@ export default function MessagesPage() {
   async function fetchConversations() {
     setLoadingConvos(true);
     try {
-      const res = await fetch(`/api/sendblue/conversations?search=${encodeURIComponent(search)}&limit=50`);
+      const res = await fetch(`${API}/conversations`, { headers: tenantHeaders() });
       const json = await res.json();
-      setConvos(json || []);
-      if (!activeId && json?.length) setActiveId(json[0].id);
+      // Simple client-side search filter (name/number/preview)
+      const list = (json || []).filter((c) => {
+        const q = search.trim().toLowerCase();
+        if (!q) return true;
+        return (
+          (c.name || "").toLowerCase().includes(q) ||
+          (c.number || "").toLowerCase().includes(q) ||
+          (c.preview || "").toLowerCase().includes(q)
+        );
+      });
+      setConvos(list);
+      if (!activeId && list?.length) setActiveId(list[0].id);
     } catch (e) {
       console.error(e);
     } finally {
@@ -75,11 +81,10 @@ export default function MessagesPage() {
     if (!id) return;
     setLoadingThread(true);
     try {
-      const res = await fetch(`/api/sendblue/conversations/${id}/messages`);
+      const res = await fetch(`${API}/conversations/${id}/messages`, { headers: tenantHeaders() });
       const json = await res.json();
       setThread(json?.messages || []);
       setContact(json?.contact || null);
-      // scroll to bottom after load
       setTimeout(() => bottomRef.current?.scrollIntoView({ behavior: "smooth" }), 50);
     } catch (e) {
       console.error(e);
@@ -105,16 +110,15 @@ export default function MessagesPage() {
     setTimeout(() => bottomRef.current?.scrollIntoView({ behavior: "smooth" }), 10);
 
     try {
-      await fetch(`/api/sendblue/messages`, {
+      await fetch(`${API}/messages`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ conversationId: activeId, body: text, channel }),
+        headers: { "Content-Type": "application/json", ...tenantHeaders() },
+        body: JSON.stringify({ conversationId: activeId, body: text }),
       });
-      // Optionally re-fetch to replace optimistic ID with real one
+      // re-fetch to sync with server (provider_id, etc.)
       fetchThread(activeId);
     } catch (e) {
       console.error(e);
-      // revert optimistic on error
       setThread((prev) => prev.filter((m) => m.id !== optimistic.id));
       alert("Failed to send message.");
     }
@@ -122,7 +126,7 @@ export default function MessagesPage() {
 
   // initial + search debounce
   useEffect(() => {
-    const t = setTimeout(fetchConversations, 300);
+    const t = setTimeout(fetchConversations, 250);
     return () => clearTimeout(t);
   }, [search]);
 
@@ -159,7 +163,7 @@ export default function MessagesPage() {
                 }`}
               >
                 <div className="grid h-9 w-9 place-items-center rounded-full bg-white/10 text-sm font-medium">
-                  {((c.name || "").trim()[0] || "?").toUpperCase()}
+                  {((c.name || "").trim()[0] || (c.number || "?")[0] || "?").toUpperCase()}
                 </div>
                 <div className="min-w-0 flex-1">
                   <div className="flex items-center justify-between gap-2">
@@ -193,7 +197,7 @@ export default function MessagesPage() {
               rel="noreferrer"
               className="inline-flex items-center gap-1 text-xs text-indigo-300 underline"
             >
-              Open in Sendblue <ExternalLink className="h-3.5 w-3.5" />
+              Open in Provider <ExternalLink className="h-3.5 w-3.5" />
             </a>
           ) : null}
         </div>
@@ -225,13 +229,14 @@ export default function MessagesPage() {
         {/* composer */}
         <div className="border-t border-white/10 p-3">
           <div className="mb-2 flex items-center gap-2">
-            <Pill active={channel === "imessage"} onClick={() => setChannel("imessage")}>
-              <MessageCircle className="mr-1 inline h-3.5 w-3.5" />
-              iMessage
-            </Pill>
             <Pill active={channel === "sms"} onClick={() => setChannel("sms")}>
               <MessageSquare className="mr-1 inline h-3.5 w-3.5" />
               SMS
+            </Pill>
+            {/* Keep iMessage tab for future expansion */}
+            <Pill active={channel === "imessage"} onClick={() => setChannel("imessage")}>
+              <MessageCircle className="mr-1 inline h-3.5 w-3.5" />
+              iMessage
             </Pill>
           </div>
           <div className="flex items-center gap-2">
@@ -239,7 +244,7 @@ export default function MessagesPage() {
               value={composer}
               onChange={setComposer}
               onEnter={sendMessage}
-              placeholder={`Type a ${channel === "imessage" ? "blue" : "SMS"} message…`}
+              placeholder={`Type a ${channel.toUpperCase()} message…`}
             />
             <button
               onClick={sendMessage}
