@@ -1,18 +1,11 @@
-// File: src/pages/SettingsPage.jsx
+// File: src/pages/Settings.jsx
 import { useEffect, useMemo, useState } from "react";
 import { supabase } from "../supabaseClient";
 
-// Calendly OAuth constants (from Calendly docs)
-const CALENDLY_AUTH_HOST = "https://auth.calendly.com"; // must be EXACT
-// Minimal scopes to read upcoming meetings. Add more later if you need:
-const CALENDLY_SCOPES = [
-  "users.read",
-  "scheduled_events.read",
-  "event_types.read",
-  "organization.read",
-];
+// --- Calendly OAuth constants ---
+const CALENDLY_AUTH_HOST = "https://auth.calendly.com";
 
-export default function SettingsPage() {
+export default function Settings() {
   const [user, setUser] = useState(null);
   const [sub, setSub] = useState(null);
   const [loadingSub, setLoadingSub] = useState(true);
@@ -23,14 +16,11 @@ export default function SettingsPage() {
   const [busy, setBusy] = useState(false);
   const [cancelMsg, setCancelMsg] = useState("");
 
-  // ---- Calendly client id (public Vite var) ----
+  // Calendly
   const clientId = import.meta.env.VITE_CALENDLY_CLIENT_ID;
-
-  // We’ll use the deployed site URL (Netlify var) if present; otherwise origin.
   const siteUrl =
     import.meta.env.VITE_SITE_URL?.replace(/\/$/, "") ||
     (typeof window !== "undefined" ? window.location.origin : "");
-  // Callback is a Netlify function:
   const redirectUri = `${siteUrl}/.netlify/functions/calendly-auth-callback`;
 
   useEffect(() => {
@@ -68,32 +58,6 @@ export default function SettingsPage() {
       ignore = true;
     };
   }, []);
-
-  // Build the authorize URL exactly as Calendly expects.
-  const authorizeUrl = useMemo(() => {
-    if (!clientId || !redirectUri) return "";
-    const url = new URL("/oauth/authorize", CALENDLY_AUTH_HOST);
-    url.searchParams.set("client_id", clientId);
-    url.searchParams.set("response_type", "code");
-    url.searchParams.set("redirect_uri", redirectUri);
-    // space-separated scopes (Calendly expects spaces, not commas)
-    url.searchParams.set("scope", CALENDLY_SCOPES.join(" "));
-    // include state to map back to the supabase user
-    if (user?.id) url.searchParams.set("state", user.id);
-    return url.toString();
-  }, [clientId, redirectUri, user?.id]);
-
-  const connectCalendly = () => {
-    if (!clientId) {
-      alert("Missing VITE_CALENDLY_CLIENT_ID in your Netlify/Vite env vars.");
-      return;
-    }
-    if (!siteUrl) {
-      alert("Missing site URL to build redirect URI.");
-      return;
-    }
-    window.location.assign(authorizeUrl);
-  };
 
   const onChangePassword = async (e) => {
     e.preventDefault();
@@ -153,6 +117,20 @@ export default function SettingsPage() {
     } finally {
       setBusy(false);
     }
+  };
+
+  const connectCalendly = () => {
+    if (!clientId) {
+      alert("Missing VITE_CALENDLY_CLIENT_ID env var.");
+      return;
+    }
+    const url = new URL("/oauth/authorize", CALENDLY_AUTH_HOST);
+    url.searchParams.set("client_id", clientId);
+    url.searchParams.set("response_type", "code");
+    url.searchParams.set("redirect_uri", redirectUri);
+    if (user?.id) url.searchParams.set("state", user.id);
+
+    window.location.assign(url.toString());
   };
 
   const fmtDate = (iso) => {
@@ -226,7 +204,10 @@ export default function SettingsPage() {
             <div className="flex flex-wrap gap-4">
               <Info label="Plan" value={sub.plan || "—"} />
               <Info label="Status" value={sub.status || "—"} />
-              <Info label="Renews / ends" value={fmtDate(sub.current_period_end)} />
+              <Info
+                label="Renews / ends"
+                value={fmtDate(sub.current_period_end)}
+              />
             </div>
             <div className="mt-4 flex flex-wrap gap-3">
               <button
@@ -244,28 +225,18 @@ export default function SettingsPage() {
         )}
       </section>
 
-      {/* Calendly OAuth */}
+      {/* Calendly */}
       <section className="mb-10 rounded-2xl border p-5">
         <h2 className="text-lg font-medium mb-3">Calendly</h2>
         <p className="text-sm text-gray-600 mb-3">
-          Connect your Calendly account to sync meetings into your CRM.
+          Connect your Calendly account to sync meetings.
         </p>
-        <div className="flex gap-3">
-          <button
-            onClick={connectCalendly}
-            className="rounded-xl px-4 py-2 bg-blue-600 text-white"
-          >
-            Connect Calendly
-          </button>
-          <a
-            href="https://developer.calendly.com/api-docs/ZG9jOjU5NDA3-oauth-20"
-            target="_blank"
-            rel="noreferrer"
-            className="text-sm underline opacity-70 hover:opacity-100"
-          >
-            Calendly OAuth docs
-          </a>
-        </div>
+        <button
+          onClick={connectCalendly}
+          className="rounded-xl px-4 py-2 bg-blue-600 text-white"
+        >
+          Connect Calendly
+        </button>
       </section>
     </div>
   );
