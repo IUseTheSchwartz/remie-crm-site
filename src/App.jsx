@@ -14,6 +14,7 @@ import {
 } from "lucide-react";
 
 import ProtectedRoute from "./components/ProtectedRoute.jsx";
+import SubscriptionGate from "./components/SubscriptionGate.jsx"; // <-- NEW
 import { AuthProvider, useAuth } from "./auth.jsx";
 import LoginPage from "./pages/LoginPage.jsx";
 import SignupPage from "./pages/SignupPage.jsx";
@@ -25,6 +26,7 @@ import SettingsPage from "./pages/SettingsPage.jsx";
 import AgentShowcase from "./pages/AgentShowcase.jsx";
 import AgentPublic from "./pages/AgentPublic.jsx";
 import CalendarPage from "./pages/CalendarPage.jsx"; // NEW
+import SubscribePage from "./pages/SubscribePage.jsx"; // <-- NEW
 
 // KPI helpers
 import NumberCard from "./components/NumberCard.jsx";
@@ -435,8 +437,19 @@ export default function App() {
         {/* public agent page */}
         <Route path="/a/:slug" element={<AgentPublic />} />
 
+        {/* public subscribe/paywall page */}
+        <Route path="/subscribe" element={<SubscribePage />} /> {/* NEW */}
+
+        {/* protected + subscription-gated app */}
         <Route element={<ProtectedRoute />}>
-          <Route path="/app/*" element={<AppLayout />} />
+          <Route
+            path="/app/*"
+            element={
+              <SubscriptionGate>
+                <AppLayout />
+              </SubscriptionGate>
+            }
+          />
         </Route>
 
         <Route path="*" element={<Navigate to="/" replace />} />
