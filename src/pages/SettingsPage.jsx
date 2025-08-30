@@ -13,7 +13,7 @@ export default function Settings() {
   const [busy, setBusy] = useState(false);
   const [cancelMsg, setCancelMsg] = useState("");
 
-  // Calendly integration
+  // Calendly (reverted to calendly.com host)
   const clientId = import.meta.env.VITE_CALENDLY_CLIENT_ID;
   const redirectUri = `${window.location.origin}/.netlify/functions/calendly-auth-callback`;
 
@@ -38,9 +38,7 @@ export default function Settings() {
           .maybeSingle();
 
         if (!ignore) {
-          if (subErr) {
-            console.error(subErr);
-          }
+          if (subErr) console.error(subErr);
           setSub(subData || null);
           setLoadingSub(false);
         }
@@ -102,7 +100,6 @@ export default function Settings() {
       const text = await res.text();
       if (!res.ok) throw new Error(text || "Cancel failed");
       setCancelMsg("Your subscription will be canceled at the period end.");
-      // Refresh subscription row
       const { data: subData } = await supabase
         .from("subscriptions")
         .select("*")
@@ -125,17 +122,18 @@ export default function Settings() {
     }
   };
 
-  // FIXED connectCalendly
+  // Reverted link: calendly.com/oauth/authorize
   const connectCalendly = () => {
     if (!clientId) {
       alert("Missing VITE_CALENDLY_CLIENT_ID env var.");
       return;
     }
 
-    const url = new URL("https://auth.calendly.com/oauth/authorize"); // ✅ correct domain
+    const url = new URL("https://calendly.com/oauth/authorize");
     url.searchParams.set("client_id", clientId);
     url.searchParams.set("response_type", "code");
     url.searchParams.set("redirect_uri", redirectUri);
+    // join with spaces; URLSearchParams will encode properly
     url.searchParams.set(
       "scope",
       [
