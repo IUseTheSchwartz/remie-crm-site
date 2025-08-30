@@ -15,6 +15,7 @@ import ReportsPage from "./pages/ReportsPage.jsx";
 import SettingsPage from "./pages/SettingsPage.jsx";
 import AgentShowcase from "./pages/AgentShowcase.jsx";
 import AgentPublic from "./pages/AgentPublic.jsx";
+import MessagesPage from "./pages/MessagesPage.jsx"; // ← NEW
 
 // KPI helpers
 import NumberCard from "./components/NumberCard.jsx";
@@ -259,7 +260,7 @@ function ViewAgentSiteLink() {
         )
         .subscribe();
 
-      // Respond to "Done" in wizard (localStorage signal)
+    // Respond to "Done" in wizard (localStorage signal)
       const onStorage = (e) => {
         if (e.key === "agent_profile_refresh") {
           fetchProfile();
@@ -382,6 +383,7 @@ function AppLayout() {
         </div>
         <nav className="p-3 space-y-1 text-sm">
           <DashLink to="/app">Home</DashLink>
+          <DashLink to="/app/messages">Messages</DashLink> {/* ← NEW */}
           <DashLink to="/app/leads">Leads</DashLink>
           <DashLink to="/app/reports">Reports</DashLink>
           <DashLink to="/app/settings">Settings</DashLink>
@@ -409,6 +411,7 @@ function AppLayout() {
         <div className="p-4">
           <Routes>
             <Route index element={<DashboardHome />} />
+            <Route path="messages" element={<MessagesPage />} /> {/* ← NEW */}
             <Route path="leads" element={<LeadsPage />} />
             <Route path="reports" element={<ReportsPage />} />
             {/* Settings always visible */}
