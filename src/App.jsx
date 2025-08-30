@@ -101,6 +101,7 @@ function LandingPage() {
 
   return (
     <div className="min-h-screen bg-neutral-950 text-white">
+      {/* soft gradient glow */}
       <div className="pointer-events-none fixed inset-0 overflow-hidden">
         <div className="absolute -top-56 left-1/2 h-[36rem] w-[36rem] -translate-x-1/2 rounded-full bg-gradient-to-br from-indigo-600/20 via-fuchsia-500/10 to-rose-500/10 blur-3xl" />
       </div>
@@ -124,8 +125,12 @@ function LandingPage() {
 
       <section className="relative z-10 mx-auto max-w-7xl px-6 pb-10 pt-16 sm:pt-20">
         <div className="mx-auto max-w-3xl text-center">
-          <motion.h1 initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.5 }}
-            className="text-4xl font-semibold leading-tight sm:text-5xl">
+          <motion.h1
+            initial={{ opacity: 0, y: 10 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ duration: 0.5 }}
+            className="text-4xl font-semibold leading-tight sm:text-5xl"
+          >
             Close more policies. Not tabs.
           </motion.h1>
           <p className="mt-4 text-lg text-white/70">
@@ -153,8 +158,10 @@ function LandingPage() {
 
         <div className="mt-10 grid gap-6 md:grid-cols-3">
           {PLANS.map((plan) => (
-            <div key={plan.name}
-              className={`relative rounded-3xl border ${plan.highlighted ? "border-white/30 bg-white/[0.06]" : "border-white/10 bg-white/[0.04]"} p-6 ring-1 ${plan.highlighted ? BRAND.accentRing : "ring-white/5"}`}>
+            <div
+              key={plan.name}
+              className={`relative rounded-3xl border ${plan.highlighted ? "border-white/30 bg-white/[0.06]" : "border-white/10 bg-white/[0.04]"} p-6 ring-1 ${plan.highlighted ? BRAND.accentRing : "ring-white/5"}`}
+            >
               {plan.ctaNote && (
                 <div className="absolute -top-3 left-6 rounded-full border border-white/15 bg-white/10 px-3 py-1 text-xs font-medium backdrop-blur">
                   {plan.ctaNote}
@@ -176,8 +183,10 @@ function LandingPage() {
               </ul>
               <a
                 href={annual ? plan.buyUrl?.annual : plan.buyUrl?.monthly}
-                target="_blank" rel="noreferrer"
-                className={`mt-6 grid w-full place-items-center rounded-2xl border border-white/15 px-4 py-3 font-medium hover:bg-white/10 ${plan.highlighted ? `bg-gradient-to-r ${BRAND.primary}` : "bg-white/5"}`}>
+                target="_blank"
+                rel="noreferrer"
+                className={`mt-6 grid w-full place-items-center rounded-2xl border border-white/15 px-4 py-3 font-medium hover:bg-white/10 ${plan.highlighted ? `bg-gradient-to-r ${BRAND.primary}` : "bg-white/5"}`}
+              >
                 <CreditCard className="mr-2 h-5 w-5" /> Buy {plan.name}
               </a>
             </div>
@@ -203,7 +212,7 @@ function DashLink({ to, children }) {
   );
 }
 
-// ---------- Dashboard + AppLayout ----------
+// ---------- Dashboard ----------
 function DashboardHome() {
   const snap = dashboardSnapshot();
   const money = (n) =>
@@ -223,10 +232,34 @@ function DashboardHome() {
           <NumberCard key={x.label} label={x.label} value={x.value} sublabel={x.sub} />
         ))}
       </div>
+
+      <div className="grid gap-4 md:grid-cols-2">
+        <div className="rounded-2xl border border-white/10 bg-white/[0.03] p-4 ring-1 ring-white/5">
+          <div className="mb-2 text-sm font-semibold">This Week</div>
+          <div className="grid grid-cols-5 gap-3 text-sm">
+            <NumberCard label="Closed" value={snap.thisWeek.closed} />
+            <NumberCard label="Clients" value={snap.thisWeek.clients} />
+            <NumberCard label="Leads" value={snap.thisWeek.leads} />
+            <NumberCard label="Appts" value={snap.thisWeek.appointments} />
+            <NumberCard label="Premium" value={money(snap.thisWeek.premium)} />
+          </div>
+        </div>
+        <div className="rounded-2xl border border-white/10 bg-white/[0.03] p-4 ring-1 ring-white/5">
+          <div className="mb-2 text-sm font-semibold">This Month</div>
+          <div className="grid grid-cols-5 gap-3 text-sm">
+            <NumberCard label="Closed" value={snap.thisMonth.closed} />
+            <NumberCard label="Clients" value={snap.thisMonth.clients} />
+            <NumberCard label="Leads" value={snap.thisMonth.leads} />
+            <NumberCard label="Appts" value={snap.thisMonth.appointments} />
+            <NumberCard label="Premium" value={money(snap.thisMonth.premium)} />
+          </div>
+        </div>
+      </div>
     </div>
   );
 }
 
+// ---------- App Layout (sidebar + routes) ----------
 function AppLayout() {
   const { user, logout } = useAuth();
   const nav = useNavigate();
@@ -245,6 +278,9 @@ function AppLayout() {
           <DashLink to="/app/leads">Leads</DashLink>
           <DashLink to="/app/reports">Reports</DashLink>
           <DashLink to="/app/settings">Settings</DashLink>
+          <div className="pt-2 mt-2 border-t border-white/10" />
+          {/* Public agent site quick actions */}
+          <ViewAgentSiteLink />
           <DashLink to="/app/agent/showcase">Edit Agent Site</DashLink>
         </nav>
       </aside>
@@ -265,12 +301,115 @@ function AppLayout() {
             <Route index element={<DashboardHome />} />
             <Route path="leads" element={<LeadsPage />} />
             <Route path="reports" element={<ReportsPage />} />
+            {/* Settings always visible */}
             <Route path="settings" element={<SettingsPage />} />
+            {/* Agent wizard/private */}
             <Route path="agent/showcase" element={<AgentShowcase />} />
           </Routes>
         </div>
       </main>
     </div>
+  );
+}
+
+// ---------- Live “View/Preview” link in sidebar ----------
+function ViewAgentSiteLink() {
+  const [slug, setSlug] = useState("");
+  const [published, setPublished] = useState(false);
+  const [loading, setLoading] = useState(true);
+
+  async function fetchProfile() {
+    try {
+      const { data: auth } = await supabase.auth.getUser();
+      const uid = auth?.user?.id;
+      if (!uid) {
+        setSlug("");
+        setPublished(false);
+        return;
+      }
+      const { data, error } = await supabase
+        .from("agent_profiles")
+        .select("slug, published")
+        .eq("user_id", uid)
+        .maybeSingle();
+
+      if (!error && data) {
+        setSlug(data.slug || "");
+        setPublished(!!data.published);
+      } else {
+        setSlug("");
+        setPublished(false);
+      }
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  useEffect(() => {
+    let isMounted = true;
+    (async () => {
+      await fetchProfile();
+
+      const channel = supabase
+        .channel("agent_profiles_self")
+        .on(
+          "postgres_changes",
+          { event: "*", schema: "public", table: "agent_profiles" },
+          async () => {
+            if (!isMounted) return;
+            await fetchProfile();
+          }
+        )
+        .subscribe();
+
+      const onStorage = (e) => {
+        if (e.key === "agent_profile_refresh") {
+          fetchProfile();
+        }
+      };
+      window.addEventListener("storage", onStorage);
+
+      return () => {
+        isMounted = false;
+        try { supabase.removeChannel?.(channel); } catch {}
+        window.removeEventListener("storage", onStorage);
+      };
+    })();
+  }, []);
+
+  if (loading) {
+    return (
+      <div className="block rounded-lg px-3 py-2 text-white/40 cursor-default">
+        View My Agent Site…
+      </div>
+    );
+  }
+
+  if (!slug) {
+    return (
+      <Link
+        to="/app/agent/showcase"
+        className="flex items-center gap-2 rounded-lg px-3 py-2 text-amber-300/90 hover:bg-white/5"
+        title="Finish setup to generate your public link"
+      >
+        <ExternalLink className="h-4 w-4" />
+        <span>Finish Agent Site Setup</span>
+      </Link>
+    );
+  }
+
+  const href = `/a/${slug}`;
+  return (
+    <a
+      href={href}
+      target="_blank"
+      rel="noreferrer"
+      className="flex items-center gap-2 rounded-lg px-3 py-2 text-white/80 hover:bg-white/5 hover:text-white"
+      title={published ? "Open your public agent page" : "Open preview (publish in the wizard)"}
+    >
+      <ExternalLink className="h-4 w-4" />
+      <span>{published ? "View My Agent Site" : "Preview My Agent Site"}</span>
+    </a>
   );
 }
 
@@ -282,10 +421,14 @@ export default function App() {
         <Route path="/" element={<LandingPage />} />
         <Route path="/login" element={<LoginPage />} />
         <Route path="/signup" element={<SignupPage />} />
+
+        {/* public agent page */}
         <Route path="/a/:slug" element={<AgentPublic />} />
+
         <Route element={<ProtectedRoute />}>
           <Route path="/app/*" element={<AppLayout />} />
         </Route>
+
         <Route path="*" element={<Navigate to="/" replace />} />
       </Routes>
     </AuthProvider>
