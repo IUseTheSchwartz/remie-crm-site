@@ -24,9 +24,6 @@ const STATES = [
   { code: "WI", name: "Wisconsin" }, { code: "WY", name: "Wyoming" },
 ];
 
-// 👇 map for DB upsert so state_name satisfies NOT NULL constraint
-const STATE_NAME_BY_CODE = Object.fromEntries(STATES.map((s) => [s.code, s.name]));
-
 const slugify = (s) =>
   (s || "")
     .toLowerCase()
@@ -56,6 +53,7 @@ export default function AgentShowcase() {
   const [phone, setPhone] = useState("");
   const [shortBio, setShortBio] = useState("");
   const [npn, setNpn] = useState("");
+  const [calendlyUrl, setCalendlyUrl] = useState(""); // NEW
   const slug = useMemo(() => slugify(fullName) || "my-profile", [fullName]);
 
   // Step 2 headshot
@@ -93,6 +91,7 @@ export default function AgentShowcase() {
         setNpn(prof.npn || "");
         setPublished(!!prof.published);
         setHeadshotUrl(prof.headshot_url || "");
+        setCalendlyUrl(prof.calendly_url || ""); // NEW
       } else {
         setEmail(auth.user?.email || "");
       }
@@ -118,6 +117,13 @@ export default function AgentShowcase() {
   }, []);
 
   /* ---------- Step 1: Save profile ---------- */
+  function normalizeUrl(u) {
+    if (!u) return "";
+    let x = u.trim();
+    if (!/^https?:\/\//i.test(x)) x = "https://" + x;
+    return x;
+  }
+
   async function saveProfile() {
     setLoading(true);
     try {
@@ -134,6 +140,7 @@ export default function AgentShowcase() {
           phone,
           short_bio: shortBio,
           npn,
+          calendly_url: calendlyUrl ? normalizeUrl(calendlyUrl) : null, // NEW
           published,
           headshot_url: headshotUrl || null,
           updated_at: new Date().toISOString(),
@@ -273,7 +280,6 @@ export default function AgentShowcase() {
         rowsToUpsert.push({
           user_id: uid,
           state_code: code,
-          state_name: STATE_NAME_BY_CODE[code] || code, // ✅ satisfy NOT NULL
           license_number: stateMap[code].license_number || null,
           license_image_url: license_image_url || null,
           updated_at: new Date().toISOString(),
@@ -385,6 +391,20 @@ export default function AgentShowcase() {
                 placeholder="National Producer Number"
               />
             </Field>
+
+            {/* NEW: Calendly Link */}
+            <Field label="Calendly Link" full>
+              <input
+                value={calendlyUrl}
+                onChange={(e) => setCalendlyUrl(e.target.value)}
+                className="w-full rounded-lg border border-white/10 bg-black/30 px-3 py-2 outline-none"
+                placeholder="https://calendly.com/yourname/meeting"
+              />
+              <div className="mt-1 text-xs text-white/60">
+                Paste your public Calendly booking URL. Your public page will show a “Book now” button.
+              </div>
+            </Field>
+
             <Field label="Short Bio" full>
               <textarea
                 value={shortBio}
@@ -577,10 +597,10 @@ export default function AgentShowcase() {
           <div className="mt-4 flex items-center justify-end">
             <button
               onClick={() => {
-                // keep sidebar refresh signal
+                // Signal sidebar to refresh its link state immediately
                 window.localStorage.setItem("agent_profile_refresh", Date.now().toString());
-                // go straight to the public agent site
-                nav(`/a/${slug}`);
+                // Send user back to the app home where the sidebar lives
+                nav("/app");
               }}
               className="rounded-lg bg-white px-4 py-2 text-sm font-medium text-black hover:bg-neutral-200"
             >
