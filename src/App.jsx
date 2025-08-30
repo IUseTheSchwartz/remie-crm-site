@@ -15,8 +15,6 @@ import ReportsPage from "./pages/ReportsPage.jsx";
 import SettingsPage from "./pages/SettingsPage.jsx";
 import AgentShowcase from "./pages/AgentShowcase.jsx";
 import AgentPublic from "./pages/AgentPublic.jsx";
-import MessagesPage from "./pages/MessagesPage.jsx"; // Messages tab
-import SettingsPhoneSetup from "./pages/SettingsPhoneSetup.jsx"; // ← NEW (Phone Setup)
 
 // KPI helpers
 import NumberCard from "./components/NumberCard.jsx";
@@ -210,7 +208,7 @@ function DashLink({ to, children }) {
   );
 }
 
-// ---------- UPDATED: ViewAgentSiteLink ----------
+// ---------- UPDATED: ViewAgentSiteLink (kept) ----------
 function ViewAgentSiteLink() {
   const [slug, setSlug] = useState("");
   const [published, setPublished] = useState(false);
@@ -381,11 +379,9 @@ function AppLayout() {
         </div>
         <nav className="p-3 space-y-1 text-sm">
           <DashLink to="/app">Home</DashLink>
-          <DashLink to="/app/messages">Messages</DashLink>
           <DashLink to="/app/leads">Leads</DashLink>
           <DashLink to="/app/reports">Reports</DashLink>
           <DashLink to="/app/settings">Settings</DashLink>
-          <DashLink to="/app/settings/phone">Phone Setup</DashLink> {/* ← NEW link */}
           <div className="pt-2 mt-2 border-t border-white/10" />
           <ViewAgentSiteLink />
           <DashLink to="/app/agent/showcase">Edit Agent Site</DashLink>
@@ -406,11 +402,11 @@ function AppLayout() {
         <div className="p-4">
           <Routes>
             <Route index element={<DashboardHome />} />
-            <Route path="messages" element={<MessagesPage />} />
             <Route path="leads" element={<LeadsPage />} />
             <Route path="reports" element={<ReportsPage />} />
+            {/* Settings always visible */}
             <Route path="settings" element={<SettingsPage />} />
-            <Route path="settings/phone" element={<SettingsPhoneSetup />} /> {/* ← NEW route */}
+            {/* Agent wizard/private */}
             <Route path="agent/showcase" element={<AgentShowcase />} />
           </Routes>
         </div>
