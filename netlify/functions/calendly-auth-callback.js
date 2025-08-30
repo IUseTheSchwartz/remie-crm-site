@@ -1,118 +1,121 @@
-// File: netlify/functions/calendly-auth-callback.js
-const { createClient } = require("@supabase/supabase-js");
+// netlify/functions/calendly-auth-callback.js
 
-// Calendly token endpoint (per docs)
-const TOKEN_URL = "https://auth.calendly.com/oauth/token";
+// IMPORTANT: This must match the Redirect URI you configured in the Calendly Dev Console
+const REDIRECT_URI =
+  "https://remiecrm.com/.netlify/functions/calendly-auth-callback";
+
+// Where to send users after a successful link
+const RETURN_AFTER_LINK = "https://remiecrm.com/app/settings?calendly=connected";
+
+// Calendly OAuth endpoints (per their docs)
+const CALENDLY_AUTH_BASE = "https://auth.calendly.com";
+const TOKEN_URL = `${CALENDLY_AUTH_BASE}/oauth/token`;
+
+// Supabase REST info
+const SUPABASE_URL = process.env.SUPABASE_URL;
+const SUPABASE_SERVICE_ROLE = process.env.SUPABASE_SERVICE_ROLE;
 
 exports.handler = async (event) => {
   try {
-    const params = new URLSearchParams(event.rawQuery || "");
-    const code = params.get("code");
-    const stateUserId = params.get("state"); // we sent user_id as "state" from the client
+    // Parse query params from Calendly redirect
+    const url = new URL(event.rawUrl || `${event.headers["x-forwarded-proto"]}://${event.headers.host}${event.path}${event.rawQuery ? "?" + event.rawQuery : ""}`);
+    const code = url.searchParams.get("code");
+    const state = url.searchParams.get("state"); // we pass user_id in `state` from the client
 
     if (!code) {
-      return text(400, "Missing ?code in callback.");
+      return text(400, "Missing ?code from Calendly.");
     }
-    if (!stateUserId) {
-      return text(400, "Missing ?state (user id).");
-    }
-
-    const {
-      CALENDLY_CLIENT_ID,
-      CALENDLY_CLIENT_SECRET,
-      SITE_URL,
-      SUPABASE_URL,
-      SUPABASE_SERVICE_ROLE,
-    } = process.env;
-
-    if (!CALENDLY_CLIENT_ID || !CALENDLY_CLIENT_SECRET) {
-      return text(500, "Server missing Calendly client credentials.");
-    }
-    if (!SUPABASE_URL || !SUPABASE_SERVICE_ROLE) {
-      return text(500, "Server missing Supabase service role env.");
+    if (!state) {
+      return text(400, "Missing ?state (expected user_id).");
     }
 
-    const redirectUri = `${(SITE_URL || "").replace(/\/$/, "")}/.netlify/functions/calendly-auth-callback`;
-
-    // Build basic auth header: base64(client_id:client_secret)
-    const basic = Buffer.from(
-      `${CALENDLY_CLIENT_ID}:${CALENDLY_CLIENT_SECRET}`,
-      "utf8"
-    ).toString("base64");
-
-    // Exchange code for tokens
-    const body = new URLSearchParams({
-      grant_type: "authorization_code",
-      code,
-      redirect_uri: redirectUri,
-    });
-
+    // Exchange authorization code for tokens
     const tokenRes = await fetch(TOKEN_URL, {
       method: "POST",
-      headers: {
-        Authorization: `Basic ${basic}`,
-        "Content-Type": "application/x-www-form-urlencoded",
-      },
-      body,
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({
+        grant_type: "authorization_code",
+        code,
+        redirect_uri: REDIRECT_URI,
+        client_id: process.env.CALENDLY_CLIENT_ID,
+        client_secret: process.env.CALENDLY_CLIENT_SECRET,
+      }),
     });
 
-    const tokenJson = await tokenRes.json();
-
     if (!tokenRes.ok) {
-      console.error("Calendly token exchange failed:", tokenJson);
+      const errTxt = await tokenRes.text();
       return text(
         400,
-        `Token exchange failed: ${JSON.stringify(tokenJson)}`
+        `Token exchange failed: ${errTxt || tokenRes.statusText}`
       );
     }
 
     const {
       access_token,
       refresh_token,
+      expires_in, // seconds
+      created_at, // seconds since epoch (Calendly includes this)
+      scope, // might be present/empty based on app configuration
       token_type,
-      expires_in,
-      scope,
-      created_at,
-      owner, // Calendly includes an owner resource sometimes
-    } = tokenJson;
+    } = await tokenRes.json();
 
-    const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE);
+    // Compute an absolute expiry time (ISO). Add a small safety margin.
+    const base = created_at ? Number(created_at) : Math.floor(Date.now() / 1000);
+    const expiresAtSec = base + Number(expires_in || 0) - 30;
+    const expires_at = new Date(expiresAtSec * 1000).toISOString();
 
-    // Upsert into your table (see SQL below)
-    const { error: upsertErr } = await supabase
-      .from("calendly_tokens")
-      .upsert(
+    // Upsert into Supabase via REST (no extra deps needed)
+    // Ensure calendly_tokens has a UNIQUE constraint on user_id for upsert to work.
+    const upsertRes = await fetch(`${SUPABASE_URL}/rest/v1/calendly_tokens`, {
+      method: "POST",
+      headers: {
+        apikey: SUPABASE_SERVICE_ROLE,
+        Authorization: `Bearer ${SUPABASE_SERVICE_ROLE}`,
+        "Content-Type": "application/json",
+        Prefer: "resolution=merge-duplicates",
+      },
+      body: JSON.stringify([
         {
-          user_id: stateUserId,
+          user_id: state, // <-- we passed the Supabase user id in `state`
           access_token,
           refresh_token,
-          token_type,
-          expires_in,
-          scope,
-          created_at: created_at ? new Date(created_at * 1000).toISOString() : null,
-          connected_at: new Date().toISOString(),
+          expires_at,
+          scope: scope || null,
+          token_type: token_type || "Bearer",
         },
-        { onConflict: "user_id" }
-      );
+      ]),
+    });
 
-    if (upsertErr) {
-      console.error("Supabase upsert error:", upsertErr);
-      return text(500, "Saved tokens failed.");
+    if (!upsertRes.ok) {
+      const errTxt = await upsertRes.text();
+      return text(
+        500,
+        `Failed to save tokens in Supabase: ${errTxt || upsertRes.statusText}`
+      );
     }
 
-    // Redirect back to your app
-    const back = `${(SITE_URL || "").replace(/\/$/, "")}/app/calendar?connected=1`;
+    // Redirect the browser back to Settings
     return {
       statusCode: 302,
-      headers: { Location: back },
+      headers: {
+        Location: RETURN_AFTER_LINK,
+        "Cache-Control": "no-store",
+      },
       body: "",
     };
   } catch (err) {
-    console.error(err);
-    return text(500, "Unexpected server error.");
+    return text(500, `Unexpected error: ${err.message || String(err)}`);
   }
 };
 
-function text(status, msg) {
-  return { statusCode: status, headers: { "Content-Type": "text/plain" }, body: msg };
+// Helper: plain text response
+function text(statusCode, body) {
+  return {
+    statusCode,
+    headers: {
+      "Content-Type": "text/plain; charset=utf-8",
+      "Cache-Control": "no-store",
+    },
+    body,
+  };
 }
