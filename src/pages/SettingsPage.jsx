@@ -1,6 +1,6 @@
 // File: src/pages/Settings.jsx
 import { useEffect, useState } from "react";
-import { supabase } from "../supabaseClient"; // make sure this path matches your project
+import { supabase } from "../supabaseClient"; // keep your existing path
 
 export default function Settings() {
   const [user, setUser] = useState(null);
@@ -12,6 +12,11 @@ export default function Settings() {
   const [pwMsg, setPwMsg] = useState("");
   const [busy, setBusy] = useState(false);
   const [cancelMsg, setCancelMsg] = useState("");
+
+  // Calendly state
+  const [calLoading, setCalLoading] = useState(true);
+  const [calConnected, setCalConnected] = useState(false);
+  const [calOrgName, setCalOrgName] = useState("");
 
   useEffect(() => {
     let ignore = false;
@@ -25,6 +30,7 @@ export default function Settings() {
       if (ignore) return;
       setUser(data.user || null);
 
+      // load subscription
       if (data.user?.id) {
         setLoadingSub(true);
         const { data: subData, error: subErr } = await supabase
@@ -34,14 +40,41 @@ export default function Settings() {
           .maybeSingle();
 
         if (!ignore) {
-          if (subErr) {
-            console.error(subErr);
-          }
+          if (subErr) console.error(subErr);
           setSub(subData || null);
           setLoadingSub(false);
         }
       } else {
         setLoadingSub(false);
+      }
+
+      // load calendly connection
+      if (data.user?.id) {
+        setCalLoading(true);
+        const { data: tokenRow, error: tokenErr } = await supabase
+          .from("calendly_tokens")
+          .select("access_token, organization, owner")
+          .eq("user_id", data.user.id)
+          .maybeSingle();
+
+        if (!ignore) {
+          if (!tokenErr && tokenRow?.access_token) {
+            setCalConnected(true);
+            // Try to show a nice org/owner label if present
+            const label =
+              tokenRow?.organization?.name ||
+              tokenRow?.owner?.name ||
+              tokenRow?.owner?.email ||
+              "";
+            setCalOrgName(label);
+          } else {
+            setCalConnected(false);
+            setCalOrgName("");
+          }
+          setCalLoading(false);
+        }
+      } else {
+        setCalLoading(false);
       }
     }
 
@@ -80,7 +113,11 @@ export default function Settings() {
       setCancelMsg("No active subscription found.");
       return;
     }
-    if (!confirm("Cancel at period end? You will keep access until the end of the current billing period.")) {
+    if (
+      !confirm(
+        "Cancel at period end? You will keep access until the end of the current billing period."
+      )
+    ) {
       return;
     }
     setBusy(true);
@@ -115,6 +152,37 @@ export default function Settings() {
     } catch {
       return iso;
     }
+  };
+
+  // Calendly OAuth start
+  const connectCalendly = () => {
+    const clientId = import.meta.env.VITE_CALENDLY_CLIENT_ID;
+    if (!clientId) {
+      alert("Missing VITE_CALENDLY_CLIENT_ID env var.");
+      return;
+    }
+    const redirectUri = `${window.location.origin}/.netlify/functions/calendly-auth-callback`;
+    const url = `https://auth.calendly.com/oauth/authorize?client_id=${clientId}&response_type=code&redirect_uri=${encodeURIComponent(
+      redirectUri
+    )}&scope=organization.read+event_types.read+scheduled_events.read+users.read`;
+    window.location.href = url;
+  };
+
+  // Optional: disconnect Calendly (deletes saved token)
+  const disconnectCalendly = async () => {
+    if (!user?.id) return;
+    if (!confirm("Disconnect Calendly from this account?")) return;
+    setCalLoading(true);
+    const { error } = await supabase
+      .from("calendly_tokens")
+      .delete()
+      .eq("user_id", user.id);
+    if (error) {
+      alert(error.message || "Could not disconnect.");
+    }
+    setCalConnected(false);
+    setCalOrgName("");
+    setCalLoading(false);
   };
 
   return (
@@ -167,6 +235,42 @@ export default function Settings() {
             {pwMsg && <div className="text-sm">{pwMsg}</div>}
           </div>
         </form>
+      </section>
+
+      {/* Calendly */}
+      <section className="mb-10 rounded-2xl border p-5">
+        <h2 className="text-lg font-medium mb-3">Calendly</h2>
+        {calLoading ? (
+          <div>Checking connection…</div>
+        ) : calConnected ? (
+          <div className="flex items-center justify-between">
+            <div>
+              <div className="text-sm text-gray-500">Status</div>
+              <div className="font-medium">
+                Connected {calOrgName ? `— ${calOrgName}` : ""}
+              </div>
+            </div>
+            <button
+              onClick={disconnectCalendly}
+              className="rounded-xl px-4 py-2 border hover:bg-gray-50"
+            >
+              Disconnect
+            </button>
+          </div>
+        ) : (
+          <div className="flex items-center justify-between">
+            <div>
+              <div className="text-sm text-gray-500">Status</div>
+              <div className="font-medium">Not connected</div>
+            </div>
+            <button
+              onClick={connectCalendly}
+              className="rounded-xl px-4 py-2 bg-indigo-600 text-white hover:bg-indigo-700"
+            >
+              Connect Calendly
+            </button>
+          </div>
+        )}
       </section>
 
       {/* Subscription */}
