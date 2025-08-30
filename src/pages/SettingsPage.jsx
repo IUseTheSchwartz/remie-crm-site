@@ -1,8 +1,8 @@
 // File: src/pages/SettingsPage.jsx
 import { useEffect, useState } from "react";
-import { supabase } from "../supabaseClient";
+import { supabase } from "../supabaseClient"; // adjust path if needed
 
-export default function Settings() {
+export default function SettingsPage() {
   const [user, setUser] = useState(null);
   const [sub, setSub] = useState(null);
   const [loadingSub, setLoadingSub] = useState(true);
@@ -34,9 +34,7 @@ export default function Settings() {
           .maybeSingle();
 
         if (!ignore) {
-          if (subErr) {
-            console.error(subErr);
-          }
+          if (subErr) console.error(subErr);
           setSub(subData || null);
           setLoadingSub(false);
         }
@@ -98,6 +96,7 @@ export default function Settings() {
       const text = await res.text();
       if (!res.ok) throw new Error(text || "Cancel failed");
       setCancelMsg("Your subscription will be canceled at the period end.");
+      // Refresh subscription row
       const { data: subData } = await supabase
         .from("subscriptions")
         .select("*")
@@ -120,13 +119,23 @@ export default function Settings() {
     }
   };
 
-  // ---------- NEW: Calendly connect handler ----------
+  // ---------- Calendly Connect ----------
   const onConnectCalendly = () => {
     const clientId = import.meta.env.VITE_CALENDLY_CLIENT_ID;
+    if (!clientId) {
+      alert("Missing VITE_CALENDLY_CLIENT_ID env var");
+      return;
+    }
+
     const redirect = `${window.location.origin}/.netlify/functions/calendly-auth-callback`;
 
-    // pick simple valid scope(s)
-    const scopes = "users.read scheduled_events.read";
+    // ✅ FIXED: Calendly scopes use COLONS, not dots
+    const scopes = [
+      "users:read",
+      "scheduled_events:read",
+      "event_types:read",
+      "organization:read",
+    ].join(" ");
 
     const authorizeUrl =
       `https://calendly.com/oauth/authorize` +
@@ -193,6 +202,7 @@ export default function Settings() {
       {/* Subscription */}
       <section className="mb-10 rounded-2xl border p-5">
         <h2 className="text-lg font-medium mb-3">Subscription</h2>
+
         {loadingSub ? (
           <div>Loading subscription…</div>
         ) : sub ? (
@@ -200,8 +210,12 @@ export default function Settings() {
             <div className="flex flex-wrap gap-4">
               <Info label="Plan" value={sub.plan || "—"} />
               <Info label="Status" value={sub.status || "—"} />
-              <Info label="Renews / ends" value={fmtDate(sub.current_period_end)} />
+              <Info
+                label="Renews / ends"
+                value={fmtDate(sub.current_period_end)}
+              />
             </div>
+
             <div className="mt-4 flex flex-wrap gap-3">
               <button
                 onClick={onCancelSubscription}
@@ -218,15 +232,15 @@ export default function Settings() {
         )}
       </section>
 
-      {/* Calendly Connect */}
+      {/* Calendly */}
       <section className="mb-10 rounded-2xl border p-5">
         <h2 className="text-lg font-medium mb-3">Calendly</h2>
-        <p className="text-sm text-gray-600 mb-3">
-          Connect your Calendly account to sync upcoming meetings.
+        <p className="text-sm text-gray-600 mb-4">
+          Connect your Calendly account to sync your meetings.
         </p>
         <button
           onClick={onConnectCalendly}
-          className="rounded-xl px-4 py-2 bg-indigo-600 text-white"
+          className="rounded-xl px-4 py-2 bg-indigo-600 text-white hover:bg-indigo-700"
         >
           Connect Calendly
         </button>
