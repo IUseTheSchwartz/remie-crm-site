@@ -1,3 +1,7 @@
+/* src/index.css */
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
+
+/* Optional: your global tweaks */
+html, body, #root { height: 100%; }
