@@ -24,6 +24,9 @@ const STATES = [
   { code: "WI", name: "Wisconsin" }, { code: "WY", name: "Wyoming" },
 ];
 
+// 👇 map for DB upsert so state_name satisfies NOT NULL constraint
+const STATE_NAME_BY_CODE = Object.fromEntries(STATES.map((s) => [s.code, s.name]));
+
 const slugify = (s) =>
   (s || "")
     .toLowerCase()
@@ -270,6 +273,7 @@ export default function AgentShowcase() {
         rowsToUpsert.push({
           user_id: uid,
           state_code: code,
+          state_name: STATE_NAME_BY_CODE[code] || code, // ✅ satisfy NOT NULL
           license_number: stateMap[code].license_number || null,
           license_image_url: license_image_url || null,
           updated_at: new Date().toISOString(),
