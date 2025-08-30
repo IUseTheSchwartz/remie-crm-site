@@ -1,8 +1,6 @@
-/* src/index.css */
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
 
-/* helpful defaults */
 html, body, #root { height: 100%; }
 body { background: #0a0a0a; color: white; }
