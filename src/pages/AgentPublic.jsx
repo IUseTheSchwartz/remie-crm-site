@@ -38,7 +38,7 @@ export default function AgentPublic() {
       try {
         const { data: prof, error: e1 } = await supabase
           .from("agent_profiles")
-          .select("user_id, full_name, email, phone, short_bio, headshot_url, npn, published, slug")
+          .select("user_id, full_name, email, phone, short_bio, headshot_url, npn, published, slug, calendly_url") // calendly_url
           .eq("slug", slug)
           .maybeSingle();
 
@@ -49,7 +49,6 @@ export default function AgentPublic() {
         }
         if (mounted) setProfile(prof);
 
-        // NOTE: selecting state_name and license_image_url (your schema)
         const { data: st, error: e2 } = await supabase
           .from("agent_states")
           .select("state_code, state_name, license_number, license_image_url")
@@ -102,6 +101,7 @@ export default function AgentPublic() {
 
   const callHref = profile.phone ? `tel:${profile.phone.replace(/[^\d+]/g, "")}` : null;
   const mailHref = profile.email ? `mailto:${profile.email}` : null;
+  const bookHref = profile.calendly_url ? profile.calendly_url : null; // NEW
 
   return (
     <div className="min-h-screen bg-neutral-950 text-white">
@@ -157,6 +157,17 @@ export default function AgentPublic() {
               {mailHref && (
                 <a href={mailHref} className="inline-flex items-center gap-2 rounded-xl border border-white/15 bg-white/5 px-3 py-2 text-sm hover:bg-white/10">
                   <Mail className="h-4 w-4" /> Email
+                </a>
+              )}
+              {bookHref && (
+                <a
+                  href={bookHref}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="inline-flex items-center gap-2 rounded-xl border border-white/15 bg-white/5 px-3 py-2 text-sm hover:bg-white/10"
+                  title="Book an appointment"
+                >
+                  <ExternalLink className="h-4 w-4" /> Book appointment
                 </a>
               )}
             </div>
@@ -255,6 +266,16 @@ export default function AgentPublic() {
               {mailHref && (
                 <a href={mailHref} className="inline-flex items-center gap-2 rounded-xl border border-white/15 bg-white/5 px-3 py-2 text-sm hover:bg-white/10">
                   <Mail className="h-4 w-4" /> Email
+                </a>
+              )}
+              {bookHref && (
+                <a
+                  href={bookHref}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="inline-flex items-center gap-2 rounded-xl border border-white/15 bg-white/5 px-3 py-2 text-sm hover:bg-white/10"
+                >
+                  <ExternalLink className="h-4 w-4" /> Book appointment
                 </a>
               )}
             </div>
