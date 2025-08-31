@@ -26,7 +26,7 @@ function ToolCard({ icon: Icon, title, desc, onClick }) {
 }
 
 export default function ToolsPage() {
-  // env vars pulled from Netlify → Site settings → Environment variables
+  // Read from Netlify env variables
   const QUOTE_URL = import.meta.env.VITE_QUOTE_TOOL_URL || "";
   const CARRIER_DIR_URL = import.meta.env.VITE_CARRIER_DIRECTORY_URL || "";
 
@@ -41,7 +41,7 @@ export default function ToolsPage() {
       title: "Quote Tool",
       desc: "Open your carrier/aggregator quote tool.",
       icon: Calculator,
-      onClick: () => open(QUOTE_URL), // set VITE_QUOTE_TOOL_URL in Netlify env
+      onClick: () => open(QUOTE_URL),
     },
     {
       title: "ZIP → Time Zone",
@@ -59,7 +59,7 @@ export default function ToolsPage() {
       title: "Carrier Phone Directory",
       desc: "Your master carrier support phone list.",
       icon: Phone,
-      onClick: () => open(CARRIER_DIR_URL), // link set in Netlify env
+      onClick: () => open(CARRIER_DIR_URL),
     },
   ];
 
