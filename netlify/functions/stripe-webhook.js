@@ -26,15 +26,24 @@ async function resolveSupabaseUserId({ supabase, metadataUserId, email }) {
 }
 
 exports.handler = async (event) => {
-  const stripe = new Stripe(process.env.STRIPE_SECRET_KEY);
-  const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_ROLE);
+  // ✅ Ensure the service-role key env var works no matter how you named it
+  const SUPABASE_SERVICE_ROLE =
+    process.env.SUPABASE_SERVICE_ROLE || process.env.SUPABASE_SERVICE_ROLE_KEY;
 
-  // Verify Stripe signature
+  const stripe = new Stripe(process.env.STRIPE_SECRET_KEY);
+  const supabase = createClient(process.env.SUPABASE_URL, SUPABASE_SERVICE_ROLE);
+
+  // ✅ Handle Netlify base64 bodies
   const sig = event.headers["stripe-signature"];
+  const rawBody = event.isBase64Encoded
+    ? Buffer.from(event.body, "base64").toString("utf8")
+    : event.body;
+
   let evt;
   try {
-    evt = stripe.webhooks.constructEvent(event.body, sig, process.env.STRIPE_WEBHOOK_SECRET);
+    evt = stripe.webhooks.constructEvent(rawBody, sig, process.env.STRIPE_WEBHOOK_SECRET);
   } catch (err) {
+    console.error("Bad signature:", err);
     return { statusCode: 400, body: `Bad signature: ${err.message}` };
   }
 
@@ -57,35 +66,31 @@ exports.handler = async (event) => {
     if (evt.type === "checkout.session.completed") {
       const session = evt.data.object;
       customerId = session.customer;
-      subscriptionId = session.subscription;
-      customerEmail = session.customer_details?.email || null;
+      customerEmail = session.customer_details?.email || session.customer_email || null;
+      const customer = customerId ? await stripe.customers.retrieve(customerId) : null;
+      metadataUserId = customer?.metadata?.user_id || session?.metadata?.user_id || null;
 
-      if (subscriptionId) {
-        subscription = await stripe.subscriptions.retrieve(subscriptionId);
-        status = subscription?.status || status;
-        currentPeriodEnd = epochToISO(subscription?.current_period_end);
-        const item = subscription?.items?.data?.[0];
-        planName = priceToPlanName(item?.price);
-      }
-      if (customerId) {
-        const customer = await stripe.customers.retrieve(customerId);
-        metadataUserId = customer?.metadata?.user_id || null;
-        customerEmail = customerEmail || customer?.email || null;
-      }
+      // Get active subscription for this customer
+      const subs = await stripe.subscriptions.list({ customer: customerId, status: "all", limit: 1 });
+      subscription = subs.data?.[0] || null;
     } else {
       subscription = evt.data.object;
       subscriptionId = subscription.id;
       customerId = subscription.customer;
-      status = subscription?.status || status;
-      currentPeriodEnd = epochToISO(subscription?.current_period_end);
-      const item = subscription?.items?.data?.[0];
-      planName = priceToPlanName(item?.price);
+      currentPeriodEnd = epochToISO(subscription.current_period_end);
+      status = (subscription.status || "unknown").toLowerCase();
+      planName = priceToPlanName(subscription.items?.data?.[0]?.price);
+      // Try to get email/user from customer
+      const cust = customerId ? await stripe.customers.retrieve(customerId) : null;
+      customerEmail = cust?.email || null;
+      metadataUserId = cust?.metadata?.user_id || subscription?.metadata?.user_id || null;
+    }
 
-      if (customerId) {
-        const customer = await stripe.customers.retrieve(customerId);
-        metadataUserId = customer?.metadata?.user_id || null;
-        customerEmail = customer?.email || null;
-      }
+    if (subscription) {
+      subscriptionId = subscription.id;
+      currentPeriodEnd = epochToISO(subscription.current_period_end);
+      status = (subscription.status || "unknown").toLowerCase();
+      planName = priceToPlanName(subscription.items?.data?.[0]?.price);
     }
 
     const userId = await resolveSupabaseUserId({ supabase, metadataUserId, email: customerEmail });
@@ -94,9 +99,10 @@ exports.handler = async (event) => {
       return { statusCode: 200, body: "no user mapped" };
     }
 
-    const { error } = await supabase.from("subscriptions").upsert({
+    // ✅ Use correct column names; keep history (no ON CONFLICT)
+    const { error } = await supabase.from("subscriptions").insert({
       user_id: userId,
-      plan: planName,
+      plan_name: planName,
       status,
       stripe_customer_id: customerId || null,
       stripe_subscription_id: subscriptionId || null,
