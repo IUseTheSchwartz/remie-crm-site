@@ -12,41 +12,36 @@ import {
   schedulePolicyKickoffEmail
 } from "../lib/automation.js";
 
-const TEMPLATE_HEADERS = ["name","phone","email"]; // minimum CSV headers
+const TEMPLATE_HEADERS = ["name","phone","email","dob","state","beneficiary","beneficiary_name","gender"]; // extended template
 
 // --- Helpers to map many header variants ---
-const H = {
-  first: [
-    "first","first name","firstname","given name","given_name","fname","first_name"
-  ],
-  last: [
-    "last","last name","lastname","surname","family name","lname","last_name","family_name"
-  ],
-  full: [
-    "name","full name","fullname","full_name"
-  ],
-  email: [
-    "email","e-mail","email address","mail","email_address"
-  ],
-  phone: [
-    "phone","phone number","mobile","cell","tel","telephone","number","phone_number"
-  ],
-  notes: [
-    "notes","note","comments","comment","details"
-  ],
-  company: [
-    "company","business","organization","organisation"
-  ],
-};
-
 const norm = (s) => (s || "").toString().trim().toLowerCase();
+
+const H = {
+  first: ["first","first name","firstname","given name","given_name","fname","first_name"],
+  last:  ["last","last name","lastname","surname","family name","lname","last_name","family_name"],
+  full:  ["name","full name","fullname","full_name"],
+
+  email: ["email","e-mail","email address","mail","email_address"],
+  phone: ["phone","phone number","mobile","cell","tel","telephone","number","phone_number"],
+
+  notes: ["notes","note","comments","comment","details"],
+
+  // NEW fields
+  dob:   ["dob","date of birth","birthdate","birth date","date_of_birth","d.o.b."],
+  state: ["state","state code","state_code","st","province"],
+
+  beneficiary:      ["beneficiary","bene","beneficiary type","beneficiary_type"],
+  beneficiary_name: ["beneficiary name","beneficiary_name","bene name","bene_name","beneficiary full name"],
+  gender:           ["gender","sex","gender_identity"],
+};
 
 function buildHeaderIndex(headers) {
   const idx = {};
   const normalized = headers.map(norm);
   const find = (candidates) => {
     for (let i = 0; i < normalized.length; i++) {
-      if (candidates.includes(normalized[i])) return headers[i]; // original header
+      if (candidates.includes(normalized[i])) return headers[i]; // original header name
     }
     return null;
   };
@@ -54,10 +49,16 @@ function buildHeaderIndex(headers) {
     first:  find(H.first),
     last:   find(H.last),
     full:   find(H.full),
+
     email:  find(H.email),
     phone:  find(H.phone),
     notes:  find(H.notes),
-    company:find(H.company),
+
+    dob:    find(H.dob),
+    state:  find(H.state),
+    beneficiary:       find(H.beneficiary),
+    beneficiary_name:  find(H.beneficiary_name),
+    gender:            find(H.gender),
   };
 }
 
@@ -76,28 +77,41 @@ function buildName(row, map) {
   const combined = `${first} ${last}`.trim();
   if (combined) return combined;
 
-  const company = pick(row, map.company);
-  if (company) return company;
-
-  const email = pick(row, map.email);
+  const email = pick(row, map.email) || row.email || row.Email || "";
   if (email && email.includes("@")) return email.split("@")[0];
 
   return "";
 }
 
 function buildPhone(row, map) {
-  return (
-    pick(row, map.phone) ||
-    row.phone || row.number || row.Phone || row.Number || ""
-  );
+  return pick(row, map.phone) || row.phone || row.number || row.Phone || row.Number || "";
 }
-
 function buildEmail(row, map) {
   return pick(row, map.email) || row.email || row.Email || "";
 }
-
 function buildNotes(row, map) {
   return pick(row, map.notes) || "";
+}
+
+// NEW builders for extra fields
+function buildDob(row, map) {
+  const raw = pick(row, map.dob) || row.dob || row.DOB || row.birthdate || row["Date of Birth"] || "";
+  // Keep as plain string; you can normalize to ISO later if you want.
+  return raw;
+}
+function buildState(row, map) {
+  const v = pick(row, map.state) || row.state || row.State || "";
+  return v.toUpperCase();
+}
+function buildBeneficiary(row, map) {
+  return pick(row, map.beneficiary) || row.beneficiary || row.Beneficiary || "";
+}
+function buildBeneficiaryName(row, map) {
+  return pick(row, map.beneficiary_name) || row.beneficiary_name || row["Beneficiary Name"] || "";
+}
+function buildGender(row, map) {
+  const v = pick(row, map.gender) || row.gender || row.Gender || row.sex || row.Sex || "";
+  return v;
 }
 
 export default function LeadsPage() {
@@ -128,7 +142,8 @@ export default function LeadsPage() {
     const q = filter.trim().toLowerCase();
     return q
       ? src.filter(r =>
-          [r.name, r.email, r.phone].some(v => (v||"").toLowerCase().includes(q)))
+          [r.name, r.email, r.phone, r.state, r.gender, r.beneficiary, r.beneficiaryName]
+            .some(v => (v||"").toLowerCase().includes(q)))
       : src;
   }, [tab, allClients, onlyLeads, onlySold, filter]);
 
@@ -148,18 +163,21 @@ export default function LeadsPage() {
 
         const normalized = rows
           .map((r) => {
-            const name  = r.name || r.Name || buildName(r, map);
-            const phone = buildPhone(r, map);
-            const email = buildEmail(r, map);
-            const notes = buildNotes(r, map);
-
-            return normalizePerson({
-              name,
-              phone,
-              email,
-              notes,
+            const person = normalizePerson({
+              name:  r.name || r.Name || buildName(r, map),
+              phone: buildPhone(r, map),
+              email: buildEmail(r, map),
+              notes: buildNotes(r, map),
               status: "lead",
+
+              // NEW fields on root
+              dob:              buildDob(r, map),
+              state:            buildState(r, map),
+              beneficiary:      buildBeneficiary(r, map),
+              beneficiaryName:  buildBeneficiaryName(r, map),
+              gender:           buildGender(r, map),
             });
+            return person;
           })
           .filter(r => r.name || r.phone || r.email);
 
@@ -176,7 +194,10 @@ export default function LeadsPage() {
   }
 
   function downloadTemplate() {
-    const csv = Papa.unparse([Object.fromEntries(TEMPLATE_HEADERS.map(h => [h, ""]))], { header: true });
+    const csv = Papa.unparse(
+      [Object.fromEntries(TEMPLATE_HEADERS.map(h => [h, ""]))],
+      { header: true }
+    );
     const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
@@ -213,9 +234,18 @@ export default function LeadsPage() {
           zip: soldPayload.zip || "",
         }
       },
-      name: soldPayload.name || base.name || "",
+
+      // keep top-level identity
+      name:  soldPayload.name  || base.name  || "",
       phone: soldPayload.phone || base.phone || "",
       email: soldPayload.email || base.email || "",
+
+      // keep NEW fields from the form (even when marked sold)
+      dob:             soldPayload.dob            ?? base.dob || "",
+      state:           soldPayload.state          ?? base.state || "",
+      beneficiary:     soldPayload.beneficiary    ?? base.beneficiary || "",
+      beneficiaryName: soldPayload.beneficiaryName?? base.beneficiaryName || "",
+      gender:          soldPayload.gender         ?? base.gender || "",
     };
 
     // Persist
@@ -251,7 +281,7 @@ export default function LeadsPage() {
     setTab("sold");
   }
 
-  // NEW: delete a single record (from both local "clients" and "leads")
+  // Delete a single record (from both local "clients" and "leads")
   function removeOne(id) {
     if (!confirm("Delete this record? This only affects your local data.")) return;
     const nextClients = clients.filter(c => c.id !== id);
@@ -321,7 +351,7 @@ export default function LeadsPage() {
       <div className="flex items-center gap-3">
         <input
           className="w-full rounded-xl border border-white/10 bg-black/40 px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-indigo-500/40"
-          placeholder="Search by name, phone, or email…"
+          placeholder="Search by name, phone, email, state, beneficiary, or gender…"
           value={filter}
           onChange={(e) => setFilter(e.target.value)}
         />
@@ -329,12 +359,17 @@ export default function LeadsPage() {
 
       {/* Table */}
       <div className="overflow-x-auto rounded-2xl border border-white/10">
-        <table className="min-w-[920px] w-full border-collapse text-sm">
+        <table className="min-w-[1100px] w-full border-collapse text-sm">
           <thead className="bg-white/[0.04] text-white/70">
             <tr>
               <Th>Name</Th>
               <Th>Phone</Th>
               <Th>Email</Th>
+              <Th>DOB</Th>
+              <Th>State</Th>
+              <Th>Beneficiary</Th>
+              <Th>Beneficiary Name</Th>
+              <Th>Gender</Th>
               <Th>Status</Th>
               <Th>Carrier</Th>
               <Th>Face</Th>
@@ -350,6 +385,11 @@ export default function LeadsPage() {
                 <Td>{p.name || "—"}</Td>
                 <Td>{p.phone || "—"}</Td>
                 <Td>{p.email || "—"}</Td>
+                <Td>{p.dob || "—"}</Td>
+                <Td>{p.state || "—"}</Td>
+                <Td>{p.beneficiary || "—"}</Td>
+                <Td>{p.beneficiaryName || "—"}</Td>
+                <Td>{p.gender || "—"}</Td>
                 <Td>
                   <span className={`rounded-full px-2 py-0.5 text-xs ${
                     p.status === "sold" ? "bg-emerald-500/15 text-emerald-300" : "bg-white/10 text-white/80"
@@ -370,7 +410,6 @@ export default function LeadsPage() {
                     >
                       Mark as SOLD
                     </button>
-                    {/* NEW: Delete button */}
                     <button
                       onClick={() => removeOne(p.id)}
                       className="rounded-lg border border-rose-500/40 bg-rose-500/10 px-2 py-1 hover:bg-rose-500/20"
@@ -384,7 +423,7 @@ export default function LeadsPage() {
             ))}
             {visible.length === 0 && (
               <tr>
-                <td colSpan={10} className="p-6 text-center text-white/60">
+                <td colSpan={15} className="p-6 text-center text-white/60">
                   No records yet. Import a CSV or add leads to your Clients list.
                 </td>
               </tr>
@@ -415,17 +454,28 @@ function SoldDrawer({ initial, allClients, onClose, onSave }) {
     name: initial?.name || "",
     phone: initial?.phone || "",
     email: initial?.email || "",
+
+    // NEW personal fields
+    dob: initial?.dob || "",
+    state: initial?.state || "",
+    beneficiary: initial?.beneficiary || "",
+    beneficiaryName: initial?.beneficiaryName || "",
+    gender: initial?.gender || "",
+
+    // Sale details
     carrier: initial?.sold?.carrier || "",
     faceAmount: initial?.sold?.faceAmount || "",
     premium: initial?.sold?.premium || "",
     monthlyPayment: initial?.sold?.monthlyPayment || "",
     startDate: initial?.sold?.startDate || "",
-    // NEW address fields
+
+    // Address
     street: initial?.sold?.address?.street || "",
     city: initial?.sold?.address?.city || "",
-    state: initial?.sold?.address?.state || "",
+    stateAddr: initial?.sold?.address?.state || "",
     zip: initial?.sold?.address?.zip || "",
-    // NEW automation toggles
+
+    // Automations
     sendWelcomeText: true,
     sendPolicyEmailOrMail: true,
   });
@@ -439,12 +489,26 @@ function SoldDrawer({ initial, allClients, onClose, onSave }) {
       name: c.name || f.name,
       phone: c.phone || f.phone,
       email: c.email || f.email,
+      dob: c.dob || f.dob,
+      state: c.state || f.state,
+      beneficiary: c.beneficiary || f.beneficiary,
+      beneficiaryName: c.beneficiaryName || f.beneficiaryName,
+      gender: c.gender || f.gender,
     }));
   }
 
   function submit(e) {
     e.preventDefault();
-    onSave(form);
+    // map stateAddr back to address.state field
+    onSave({
+      ...form,
+      state: form.state, // top-level person state
+      // pack into sold.address
+      street: form.street,
+      city: form.city,
+      state: form.stateAddr,
+      zip: form.zip,
+    });
   }
 
   return (
@@ -485,6 +549,28 @@ function SoldDrawer({ initial, allClients, onClose, onSave }) {
                    className="inp" placeholder="jane@example.com" />
           </Field>
 
+          {/* NEW Personal */}
+          <Field label="DOB">
+            <input value={form.dob} onChange={(e)=>setForm({...form, dob:e.target.value})}
+                   className="inp" placeholder="1990-07-04" />
+          </Field>
+          <Field label="State (residence)">
+            <input value={form.state} onChange={(e)=>setForm({...form, state:e.target.value.toUpperCase()})}
+                   className="inp" placeholder="TX" />
+          </Field>
+          <Field label="Beneficiary">
+            <input value={form.beneficiary} onChange={(e)=>setForm({...form, beneficiary:e.target.value})}
+                   className="inp" placeholder="Spouse / Child / Trust" />
+          </Field>
+          <Field label="Beneficiary Name">
+            <input value={form.beneficiaryName} onChange={(e)=>setForm({...form, beneficiaryName:e.target.value})}
+                   className="inp" placeholder="John Doe" />
+          </Field>
+          <Field label="Gender">
+            <input value={form.gender} onChange={(e)=>setForm({...form, gender:e.target.value})}
+                   className="inp" placeholder="F / M / Non-binary" />
+          </Field>
+
           {/* Sale details */}
           <Field label="Carrier sold">
             <input value={form.carrier} onChange={(e)=>setForm({...form, carrier:e.target.value})}
@@ -507,7 +593,7 @@ function SoldDrawer({ initial, allClients, onClose, onSave }) {
                    className="inp" />
           </Field>
 
-          {/* Address (NEW) */}
+          {/* Address */}
           <Field label="Street">
             <input value={form.street} onChange={(e)=>setForm({...form, street:e.target.value})}
                    className="inp" placeholder="123 Main St" />
@@ -516,8 +602,8 @@ function SoldDrawer({ initial, allClients, onClose, onSave }) {
             <input value={form.city} onChange={(e)=>setForm({...form, city:e.target.value})}
                    className="inp" placeholder="Austin" />
           </Field>
-          <Field label="State">
-            <input value={form.state} onChange={(e)=>setForm({...form, state:e.target.value})}
+          <Field label="State (mailing)">
+            <input value={form.stateAddr} onChange={(e)=>setForm({...form, stateAddr:e.target.value.toUpperCase()})}
                    className="inp" placeholder="TX" />
           </Field>
           <Field label="ZIP">
@@ -525,7 +611,7 @@ function SoldDrawer({ initial, allClients, onClose, onSave }) {
                    className="inp" placeholder="78701" />
           </Field>
 
-          {/* Automations (NEW) */}
+          {/* Automations */}
           <div className="sm:col-span-2 mt-1 grid gap-2">
             <label className="inline-flex items-center gap-2 text-sm">
               <input
