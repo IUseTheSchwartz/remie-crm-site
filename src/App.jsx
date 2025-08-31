@@ -22,7 +22,7 @@ import AgentPublic from "./pages/AgentPublic.jsx";
 // Supabase
 import { supabase } from "./lib/supabaseClient.js";
 
-// Centralized routes config (all /app routes + sidebar labels live here)
+// Routes config (component refs, no JSX inside)
 import { routes } from "./routesConfig.js";
 
 // Brand / theme
@@ -349,13 +349,12 @@ function AppLayout() {
 
         <div className="p-4">
           <Routes>
-            {routes.map(r =>
-              r.index ? (
-                <Route key={r.key} index element={r.element} />
-              ) : (
-                <Route key={r.key} path={r.path.replace("/app/", "")} element={r.element} />
-              )
-            )}
+            {routes.map((r) => {
+              const C = r.component;
+              return r.index
+                ? <Route key={r.key} index element={<C />} />
+                : <Route key={r.key} path={r.path.replace("/app/", "")} element={<C />} />;
+            })}
           </Routes>
         </div>
       </main>
