@@ -14,6 +14,96 @@ import {
 
 const TEMPLATE_HEADERS = ["name","phone","email"]; // minimum CSV headers
 
+// --- Helpers to map many header variants ---
+const H = {
+  first: [
+    "first","first name","firstname","given name","given_name","fname","first_name"
+  ],
+  last: [
+    "last","last name","lastname","surname","family name","lname","last_name","family_name"
+  ],
+  full: [
+    "name","full name","fullname","full_name"
+  ],
+  email: [
+    "email","e-mail","email address","mail","email_address"
+  ],
+  phone: [
+    "phone","phone number","mobile","cell","tel","telephone","number","phone_number"
+  ],
+  notes: [
+    "notes","note","comments","comment","details"
+  ],
+  company: [
+    "company","business","organization","organisation"
+  ],
+};
+
+const norm = (s) => (s || "").toString().trim().toLowerCase();
+
+function buildHeaderIndex(headers) {
+  const idx = {};
+  const normalized = headers.map(norm);
+  const find = (candidates) => {
+    for (let i = 0; i < normalized.length; i++) {
+      if (candidates.includes(normalized[i])) return headers[i]; // original header
+    }
+    return null;
+  };
+  return {
+    first:  find(H.first),
+    last:   find(H.last),
+    full:   find(H.full),
+    email:  find(H.email),
+    phone:  find(H.phone),
+    notes:  find(H.notes),
+    company:find(H.company),
+  };
+}
+
+function pick(row, key) {
+  if (!key) return "";
+  const v = row[key];
+  return v == null ? "" : String(v).trim();
+}
+
+function buildName(row, map) {
+  // Prefer explicit full-name-like fields
+  let full = pick(row, map.full);
+  if (full) return full;
+
+  // Otherwise combine first + last if present
+  const first = pick(row, map.first);
+  const last  = pick(row, map.last);
+  const combined = `${first} ${last}`.trim();
+  if (combined) return combined;
+
+  // Fallbacks: company or email local-part
+  const company = pick(row, map.company);
+  if (company) return company;
+
+  const email = pick(row, map.email);
+  if (email && email.includes("@")) return email.split("@")[0];
+
+  return "";
+}
+
+function buildPhone(row, map) {
+  // keep your original fallbacks plus aliases
+  return (
+    pick(row, map.phone) ||
+    row.phone || row.number || row.Phone || row.Number || ""
+  );
+}
+
+function buildEmail(row, map) {
+  return pick(row, map.email) || row.email || row.Email || "";
+}
+
+function buildNotes(row, map) {
+  return pick(row, map.notes) || "";
+}
+
 export default function LeadsPage() {
   const [tab, setTab] = useState("clients"); // 'clients' | 'leads' | 'sold'
   const [leads, setLeads] = useState([]);
@@ -50,16 +140,33 @@ export default function LeadsPage() {
     Papa.parse(file, {
       header: true,
       skipEmptyLines: true,
+      transformHeader: (h) => h.trim(),
       complete: (res) => {
-        const rows = res.data;
+        const rows = res.data || [];
+        if (!rows.length) {
+          alert("CSV has no rows.");
+          return;
+        }
+        const headers = Object.keys(rows[0] || {});
+        const map = buildHeaderIndex(headers);
+
         const normalized = rows
-          .map(r => normalizePerson({
-            name: r.name || r.Name,
-            phone: r.phone || r.number || r.Phone || r.Number,
-            email: r.email || r.Email,
-            status: "lead",
-          }))
+          .map((r) => {
+            const name  = r.name || r.Name || buildName(r, map);
+            const phone = buildPhone(r, map);
+            const email = buildEmail(r, map);
+            const notes = buildNotes(r, map);
+
+            return normalizePerson({
+              name,
+              phone,
+              email,
+              notes,
+              status: "lead",
+            });
+          })
           .filter(r => r.name || r.phone || r.email);
+
         const newLeads = [...normalized, ...leads];
         const newClients = [...normalized, ...clients];
         saveLeads(newLeads);
