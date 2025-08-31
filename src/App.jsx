@@ -17,21 +17,13 @@ import ProtectedRoute from "./components/ProtectedRoute.jsx";
 import { AuthProvider, useAuth } from "./auth.jsx";
 import LoginPage from "./pages/LoginPage.jsx";
 import SignupPage from "./pages/SignupPage.jsx";
-
-// Pages
-import LeadsPage from "./pages/LeadsPage.jsx";
-import ReportsPage from "./pages/ReportsPage.jsx";
-import SettingsPage from "./pages/SettingsPage.jsx";
-import AgentShowcase from "./pages/AgentShowcase.jsx";
 import AgentPublic from "./pages/AgentPublic.jsx";
-import CalendarPage from "./pages/CalendarPage.jsx"; // keep calendar page
-
-// KPI helpers
-import NumberCard from "./components/NumberCard.jsx";
-import { dashboardSnapshot } from "./lib/stats.js";
 
 // Supabase
 import { supabase } from "./lib/supabaseClient.js";
+
+// Centralized routes config (all /app routes + sidebar labels live here)
+import { routes } from "./routesConfig.js";
 
 // Brand / theme
 const BRAND = {
@@ -316,60 +308,6 @@ function ViewAgentSiteLink() {
   );
 }
 
-// ---------- Dashboard ----------
-function Card({ title, children }) {
-  return (
-    <div className="rounded-2xl border border-white/10 bg-white/[0.03] p-4 ring-1 ring-white/5">
-      <div className="mb-2 text-sm font-semibold">{title}</div>
-      <div className="text-sm text-white/80">{children}</div>
-    </div>
-  );
-}
-
-function DashboardHome() {
-  const snap = dashboardSnapshot();
-  const money = (n) =>
-    Intl.NumberFormat(undefined, { style: "currency", currency: "USD", maximumFractionDigits: 0 }).format(n || 0);
-
-  const kpi = [
-    { label: "Closed (today)", value: snap.today.closed, sub: `This month: ${snap.thisMonth.closed}` },
-    { label: "Clients (today)", value: snap.today.clients, sub: `This month: ${snap.thisMonth.clients}` },
-    { label: "Leads (today)", value: snap.today.leads, sub: `This week: ${snap.thisWeek.leads}` },
-    { label: "Appointments (today)", value: snap.today.appointments, sub: `This week: ${snap.thisWeek.appointments}` },
-  ];
-
-  return (
-    <div className="space-y-6">
-      <div className="grid gap-4 md:grid-cols-4">
-        {kpi.map((x) => (
-          <NumberCard key={x.label} label={x.label} value={x.value} sublabel={x.sub} />
-        ))}
-      </div>
-
-      <div className="grid gap-4 md:grid-cols-2">
-        <Card title="This Week">
-          <div className="grid grid-cols-5 gap-3 text-sm">
-            <NumberCard label="Closed" value={snap.thisWeek.closed} />
-            <NumberCard label="Clients" value={snap.thisWeek.clients} />
-            <NumberCard label="Leads" value={snap.thisWeek.leads} />
-            <NumberCard label="Appts" value={snap.thisWeek.appointments} />
-            <NumberCard label="Premium" value={money(snap.thisWeek.premium)} />
-          </div>
-        </Card>
-        <Card title="This Month">
-          <div className="grid grid-cols-5 gap-3 text-sm">
-            <NumberCard label="Closed" value={snap.thisMonth.closed} />
-            <NumberCard label="Clients" value={snap.thisMonth.clients} />
-            <NumberCard label="Leads" value={snap.thisMonth.leads} />
-            <NumberCard label="Appts" value={snap.thisMonth.appointments} />
-            <NumberCard label="Premium" value={money(snap.thisMonth.premium)} />
-          </div>
-        </Card>
-      </div>
-    </div>
-  );
-}
-
 // ---------- App Layout (sidebar + routes) ----------
 function AppLayout() {
   const { user, logout } = useAuth();
@@ -385,15 +323,16 @@ function AppLayout() {
           <div className="font-semibold">{BRAND.name}</div>
         </div>
         <nav className="p-3 space-y-1 text-sm">
-          <DashLink to="/app">Home</DashLink>
-          <DashLink to="/app/leads">Leads</DashLink>
-          <DashLink to="/app/reports">Reports</DashLink>
-          <DashLink to="/app/calendar">Calendar</DashLink>
-          <DashLink to="/app/settings">Settings</DashLink>
+          {routes.filter(r => r.showInSidebar && r.group !== "agent").map(r => (
+            <DashLink key={r.path} to={r.path}>{r.label}</DashLink>
+          ))}
 
           <div className="pt-2 mt-2 border-t border-white/10" />
           <ViewAgentSiteLink />
-          <DashLink to="/app/agent/showcase">Edit Agent Site</DashLink>
+
+          {routes.filter(r => r.showInSidebar && r.group === "agent").map(r => (
+            <DashLink key={r.path} to={r.path}>{r.label}</DashLink>
+          ))}
         </nav>
       </aside>
 
@@ -410,12 +349,13 @@ function AppLayout() {
 
         <div className="p-4">
           <Routes>
-            <Route index element={<DashboardHome />} />
-            <Route path="leads" element={<LeadsPage />} />
-            <Route path="reports" element={<ReportsPage />} />
-            <Route path="calendar" element={<CalendarPage />} />
-            <Route path="settings" element={<SettingsPage />} />
-            <Route path="agent/showcase" element={<AgentShowcase />} />
+            {routes.map(r =>
+              r.index ? (
+                <Route key={r.key} index element={r.element} />
+              ) : (
+                <Route key={r.key} path={r.path.replace("/app/", "")} element={r.element} />
+              )
+            )}
           </Routes>
         </div>
       </main>
