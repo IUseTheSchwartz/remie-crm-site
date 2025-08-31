@@ -12,9 +12,9 @@ import {
   schedulePolicyKickoffEmail
 } from "../lib/automation.js";
 
-const TEMPLATE_HEADERS = ["name","phone","email"]; // minimum CSV headers
+const TEMPLATE_HEADERS = ["name","phone","email"]; // minimal CSV template
 
-// --- Helpers to map many header variants (extended with DOB/State/Beneficiary/Gender) ---
+// ---- Header alias helpers ---------------------------------------------------
 const H = {
   first: [
     "first","first name","firstname","given name","given_name","fname","first_name"
@@ -37,19 +37,18 @@ const H = {
   company: [
     "company","business","organization","organisation"
   ],
-
   // NEW fields
   dob: [
-    "dob","date of birth","date_of_birth","birthdate","birthday","d.o.b"
+    "dob","date of birth","birthdate","birth date","d.o.b.","date"
   ],
   state: [
-    "state","st","us state","province","region"
+    "state","st","us state","residence state"
   ],
   beneficiary: [
-    "beneficiary","has beneficiary","primary beneficiary","beneficiary (y/n)","beneficiary_yes_no"
+    "beneficiary","beneficiary type"
   ],
   beneficiary_name: [
-    "beneficiary name","beneficiary_name","primary beneficiary name","beneficiary full name"
+    "beneficiary name","beneficiary_name","beneficiary full name"
   ],
   gender: [
     "gender","sex"
@@ -62,25 +61,24 @@ function buildHeaderIndex(headers) {
   const normalized = headers.map(norm);
   const find = (candidates) => {
     for (let i = 0; i < normalized.length; i++) {
-      if (candidates.includes(normalized[i])) return headers[i]; // original header
+      if (candidates.includes(normalized[i])) return headers[i]; // return original header
     }
     return null;
   };
   return {
-    first:   find(H.first),
-    last:    find(H.last),
-    full:    find(H.full),
-    email:   find(H.email),
-    phone:   find(H.phone),
-    notes:   find(H.notes),
-    company: find(H.company),
-
+    first:  find(H.first),
+    last:   find(H.last),
+    full:   find(H.full),
+    email:  find(H.email),
+    phone:  find(H.phone),
+    notes:  find(H.notes),
+    company:find(H.company),
     // NEW
-    dob:              find(H.dob),
-    state:            find(H.state),
-    beneficiary:      find(H.beneficiary),
+    dob:    find(H.dob),
+    state:  find(H.state),
+    beneficiary: find(H.beneficiary),
     beneficiary_name: find(H.beneficiary_name),
-    gender:           find(H.gender),
+    gender: find(H.gender),
   };
 }
 
@@ -91,79 +89,30 @@ function pick(row, key) {
 }
 
 function buildName(row, map) {
-  // Prefer explicit full-name-like fields
-  let full = pick(row, map.full) || row.name || row.Name || "";
+  const full = pick(row, map.full);
   if (full) return full;
-
-  // Otherwise combine first + last if present
   const first = pick(row, map.first);
   const last  = pick(row, map.last);
   const combined = `${first} ${last}`.trim();
   if (combined) return combined;
-
-  // Fallbacks: company or email local-part
   const company = pick(row, map.company);
   if (company) return company;
-
-  const email = pick(row, map.email) || row.email || row.Email || "";
+  const email = pick(row, map.email);
   if (email && email.includes("@")) return email.split("@")[0];
-
   return "";
 }
+const buildPhone = (row, map) =>
+  pick(row, map.phone) || row.phone || row.number || row.Phone || row.Number || "";
+const buildEmail = (row, map) =>
+  pick(row, map.email) || row.email || row.Email || "";
+const buildNotes = (row, map) => pick(row, map.notes) || "";
 
-function buildPhone(row, map) {
-  // keep your original fallbacks plus aliases
-  return (
-    pick(row, map.phone) ||
-    row.phone || row.number || row.Phone || row.Number || ""
-  );
-}
-
-function buildEmail(row, map) {
-  return pick(row, map.email) || row.email || row.Email || "";
-}
-
-function buildNotes(row, map) {
-  return pick(row, map.notes) || "";
-}
-
-// --- NEW: normalizers for the added fields ---
-function buildDob(row, map) {
-  const raw = pick(row, map.dob) || row.DOB || row["Date of Birth"] || "";
-  // accept as-is; UI just displays it. (Could add date parsing later.)
-  return raw;
-}
-
-function buildState(row, map) {
-  const raw = pick(row, map.state) || row.State || row.STATE || "";
-  return raw.toUpperCase();
-}
-
-function buildBeneficiary(row, map) {
-  // map common yes/no shapes to "Yes"/"No"
-  const raw = (pick(row, map.beneficiary) || row.Beneficiary || row["Beneficiary (Y/N)"] || "").toString().trim().toLowerCase();
-  if (!raw) return "";
-  const yesVals = ["y","yes","true","1","primary","has","t"];
-  const noVals  = ["n","no","false","0","none","f"];
-  if (yesVals.includes(raw)) return "Yes";
-  if (noVals.includes(raw))  return "No";
-  // if it's not a tidy yes/no, keep original (e.g., "Primary/Contingent")
-  return raw;
-}
-
-function buildBeneficiaryName(row, map) {
-  return pick(row, map.beneficiary_name) || row["Beneficiary Name"] || row["Primary Beneficiary Name"] || "";
-}
-
-function buildGender(row, map) {
-  const raw = (pick(row, map.gender) || row.Gender || "").toString().trim().toLowerCase();
-  if (!raw) return "";
-  if (["m","male","man"].includes(raw)) return "Male";
-  if (["f","female","woman"].includes(raw)) return "Female";
-  if (["nb","nonbinary","non-binary","non binary"].includes(raw)) return "Non-binary";
-  // default: capitalize first letter
-  return raw.charAt(0).toUpperCase() + raw.slice(1);
-}
+// NEW field builders (string passthrough)
+const buildDob = (row, map) => pick(row, map.dob);
+const buildState = (row, map) => pick(row, map.state).toUpperCase();
+const buildBeneficiary = (row, map) => pick(row, map.beneficiary);
+const buildBeneficiaryName = (row, map) => pick(row, map.beneficiary_name);
+const buildGender = (row, map) => pick(row, map.gender);
 
 export default function LeadsPage() {
   const [tab, setTab] = useState("clients"); // 'clients' | 'leads' | 'sold'
@@ -177,7 +126,7 @@ export default function LeadsPage() {
     setClients(loadClients());
   }, []);
 
-  // Merge clients + leads into a deduped "clients" view
+  // Merge clients + leads into a deduped Clients view
   const allClients = useMemo(() => {
     const map = new Map();
     for (const x of clients) map.set(x.id, x);
@@ -193,7 +142,8 @@ export default function LeadsPage() {
     const q = filter.trim().toLowerCase();
     return q
       ? src.filter(r =>
-          [r.name, r.email, r.phone].some(v => (v||"").toLowerCase().includes(q)))
+          [r.name, r.email, r.phone, r.state, r.gender, r.beneficiary_name]
+            .some(v => (v||"").toLowerCase().includes(q)))
       : src;
   }, [tab, allClients, onlyLeads, onlySold, filter]);
 
@@ -213,31 +163,22 @@ export default function LeadsPage() {
 
         const normalized = rows
           .map((r) => {
-            const name   = r.name || r.Name || buildName(r, map);
-            const phone  = buildPhone(r, map);
-            const email  = buildEmail(r, map);
-            const notes  = buildNotes(r, map);
+            const name  = r.name || r.Name || buildName(r, map);
+            const phone = buildPhone(r, map);
+            const email = buildEmail(r, map);
+            const notes = buildNotes(r, map);
 
             // NEW fields
-            const dob              = buildDob(r, map);
-            const state            = buildState(r, map);
-            const beneficiary      = buildBeneficiary(r, map);
+            const dob  = buildDob(r, map);
+            const state = buildState(r, map);
+            const beneficiary = buildBeneficiary(r, map);
             const beneficiary_name = buildBeneficiaryName(r, map);
-            const gender           = buildGender(r, map);
+            const gender = buildGender(r, map);
 
             return normalizePerson({
-              name,
-              phone,
-              email,
-              notes,
+              name, phone, email, notes,
               status: "lead",
-
-              // attach new fields directly to the person
-              dob,
-              state,
-              beneficiary,
-              beneficiary_name,
-              gender,
+              dob, state, beneficiary, beneficiary_name, gender,
             });
           })
           .filter(r => r.name || r.phone || r.email);
@@ -268,7 +209,6 @@ export default function LeadsPage() {
   function openAsSold(person) { setSelected(person); }
 
   function saveSoldInfo(id, soldPayload) {
-    // Update / upsert record and mark as SOLD
     let list = [...allClients];
     const idx = list.findIndex(x => x.id === id);
     const base = idx >= 0 ? list[idx] : normalizePerson({ id });
@@ -297,7 +237,6 @@ export default function LeadsPage() {
       email: soldPayload.email || base.email || "",
     };
 
-    // Persist
     const nextClients = upsert(clients, updated);
     const nextLeads   = upsert(leads, updated);
     saveClients(nextClients);
@@ -305,7 +244,6 @@ export default function LeadsPage() {
     setClients(nextClients);
     setLeads(nextLeads);
 
-    // OPTIONAL: queue automations when toggled
     if (soldPayload.sendWelcomeText) {
       scheduleWelcomeText({
         name: updated.name,
@@ -314,7 +252,7 @@ export default function LeadsPage() {
         startDate: updated.sold?.startDate,
       });
     }
-    if (soldPayload.sendPolicyKickoffEmail) {
+    if (soldPayload.sendPolicyEmailOrMail) {
       schedulePolicyKickoffEmail({
         name: updated.name,
         email: updated.email,
@@ -330,7 +268,6 @@ export default function LeadsPage() {
     setTab("sold");
   }
 
-  // Delete a single record (from both local "clients" and "leads")
   function removeOne(id) {
     if (!confirm("Delete this record? This only affects your local data.")) return;
     const nextClients = clients.filter(c => c.id !== id);
@@ -400,7 +337,7 @@ export default function LeadsPage() {
       <div className="flex items-center gap-3">
         <input
           className="w-full rounded-xl border border-white/10 bg-black/40 px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-indigo-500/40"
-          placeholder="Search by name, phone, or email…"
+          placeholder="Search by name, phone, email, state…"
           value={filter}
           onChange={(e) => setFilter(e.target.value)}
         />
@@ -408,7 +345,7 @@ export default function LeadsPage() {
 
       {/* Table */}
       <div className="overflow-x-auto rounded-2xl border border-white/10">
-        <table className="min-w-[1280px] w-full border-collapse text-sm">
+        <table className="min-w-[1200px] w-full border-collapse text-sm">
           <thead className="bg-white/[0.04] text-white/70">
             <tr>
               <Th>Name</Th>
@@ -494,8 +431,8 @@ export default function LeadsPage() {
   );
 }
 
-function Th({ children }) { return <th className="px-3 py-2 text-left font-medium whitespace-nowrap">{children}</th>; }
-function Td({ children }) { return <td className="px-3 py-2 whitespace-nowrap">{children}</td>; }
+function Th({ children }) { return <th className="px-3 py-2 text-left font-medium">{children}</th>; }
+function Td({ children }) { return <td className="px-3 py-2">{children}</td>; }
 
 function SoldDrawer({ initial, allClients, onClose, onSave }) {
   const [form, setForm] = useState({
@@ -508,12 +445,12 @@ function SoldDrawer({ initial, allClients, onClose, onSave }) {
     premium: initial?.sold?.premium || "",
     monthlyPayment: initial?.sold?.monthlyPayment || "",
     startDate: initial?.sold?.startDate || "",
-    // Address fields
+    // Address
     street: initial?.sold?.address?.street || "",
     city: initial?.sold?.address?.city || "",
     state: initial?.sold?.address?.state || "",
     zip: initial?.sold?.address?.zip || "",
-    // Automation toggles
+    // Automations
     sendWelcomeText: true,
     sendPolicyEmailOrMail: true,
   });
@@ -540,7 +477,6 @@ function SoldDrawer({ initial, allClients, onClose, onSave }) {
       <div className="relative m-auto w-full max-w-3xl rounded-2xl border border-white/15 bg-neutral-950 p-5">
         <div className="mb-3 text-lg font-semibold">Mark as SOLD</div>
 
-        {/* Select existing client to pre-fill */}
         <div className="mb-3">
           <label className="text-sm text-white/70">Select existing client (optional)</label>
           <select
@@ -559,7 +495,6 @@ function SoldDrawer({ initial, allClients, onClose, onSave }) {
         </div>
 
         <form onSubmit={submit} className="grid gap-3 sm:grid-cols-2">
-          {/* Identity */}
           <Field label="Name">
             <input value={form.name} onChange={(e)=>setForm({...form, name:e.target.value})}
                    className="inp" placeholder="Jane Doe" />
@@ -573,7 +508,6 @@ function SoldDrawer({ initial, allClients, onClose, onSave }) {
                    className="inp" placeholder="jane@example.com" />
           </Field>
 
-          {/* Sale details */}
           <Field label="Carrier sold">
             <input value={form.carrier} onChange={(e)=>setForm({...form, carrier:e.target.value})}
                    className="inp" placeholder="Mutual of Omaha" />
@@ -595,7 +529,6 @@ function SoldDrawer({ initial, allClients, onClose, onSave }) {
                    className="inp" />
           </Field>
 
-          {/* Address */}
           <Field label="Street">
             <input value={form.street} onChange={(e)=>setForm({...form, street:e.target.value})}
                    className="inp" placeholder="123 Main St" />
@@ -613,7 +546,6 @@ function SoldDrawer({ initial, allClients, onClose, onSave }) {
                    className="inp" placeholder="78701" />
           </Field>
 
-          {/* Automations */}
           <div className="sm:col-span-2 mt-1 grid gap-2">
             <label className="inline-flex items-center gap-2 text-sm">
               <input
