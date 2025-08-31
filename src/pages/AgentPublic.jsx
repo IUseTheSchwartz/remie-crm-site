@@ -49,10 +49,10 @@ export default function AgentPublic() {
         }
         if (mounted) setProfile(prof);
 
-        // NOTE: selecting state_name and licence_image_url (your schema)
+        // NOTE: selecting state_name and license_image_url (your schema)
         const { data: st, error: e2 } = await supabase
           .from("agent_states")
-          .select("state_code, state_name, license_number, licence_image_url")
+          .select("state_code, state_name, license_number, license_image_url")
           .eq("user_id", prof.user_id);
 
         if (e2) {
@@ -183,7 +183,7 @@ export default function AgentPublic() {
               .map((s) => {
                 const code = s.state_code;
                 const displayName = s.state_name || STATE_NAMES[code] || code;
-                const url = s.licence_image_url || "";
+                const url = s.license_image_url || "";
                 const isPdf = url.toLowerCase().endsWith(".pdf");
                 const verifyHref = REGULATOR_LINKS[code];
 
