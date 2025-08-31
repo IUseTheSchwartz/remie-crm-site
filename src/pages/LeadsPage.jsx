@@ -12,53 +12,75 @@ import {
   schedulePolicyKickoffEmail
 } from "../lib/automation.js";
 
-const TEMPLATE_HEADERS = ["name","phone","email","dob","state","beneficiary","beneficiary_name","gender"]; // extended template
+const TEMPLATE_HEADERS = ["name","phone","email"]; // minimum CSV headers
 
-// --- Helpers to map many header variants ---
-const norm = (s) => (s || "").toString().trim().toLowerCase();
-
+// --- Helpers to map many header variants (extended with DOB/State/Beneficiary/Gender) ---
 const H = {
-  first: ["first","first name","firstname","given name","given_name","fname","first_name"],
-  last:  ["last","last name","lastname","surname","family name","lname","last_name","family_name"],
-  full:  ["name","full name","fullname","full_name"],
-
-  email: ["email","e-mail","email address","mail","email_address"],
-  phone: ["phone","phone number","mobile","cell","tel","telephone","number","phone_number"],
-
-  notes: ["notes","note","comments","comment","details"],
+  first: [
+    "first","first name","firstname","given name","given_name","fname","first_name"
+  ],
+  last: [
+    "last","last name","lastname","surname","family name","lname","last_name","family_name"
+  ],
+  full: [
+    "name","full name","fullname","full_name"
+  ],
+  email: [
+    "email","e-mail","email address","mail","email_address"
+  ],
+  phone: [
+    "phone","phone number","mobile","cell","tel","telephone","number","phone_number"
+  ],
+  notes: [
+    "notes","note","comments","comment","details"
+  ],
+  company: [
+    "company","business","organization","organisation"
+  ],
 
   // NEW fields
-  dob:   ["dob","date of birth","birthdate","birth date","date_of_birth","d.o.b."],
-  state: ["state","state code","state_code","st","province"],
-
-  beneficiary:      ["beneficiary","bene","beneficiary type","beneficiary_type"],
-  beneficiary_name: ["beneficiary name","beneficiary_name","bene name","bene_name","beneficiary full name"],
-  gender:           ["gender","sex","gender_identity"],
+  dob: [
+    "dob","date of birth","date_of_birth","birthdate","birthday","d.o.b"
+  ],
+  state: [
+    "state","st","us state","province","region"
+  ],
+  beneficiary: [
+    "beneficiary","has beneficiary","primary beneficiary","beneficiary (y/n)","beneficiary_yes_no"
+  ],
+  beneficiary_name: [
+    "beneficiary name","beneficiary_name","primary beneficiary name","beneficiary full name"
+  ],
+  gender: [
+    "gender","sex"
+  ],
 };
 
+const norm = (s) => (s || "").toString().trim().toLowerCase();
+
 function buildHeaderIndex(headers) {
-  const idx = {};
   const normalized = headers.map(norm);
   const find = (candidates) => {
     for (let i = 0; i < normalized.length; i++) {
-      if (candidates.includes(normalized[i])) return headers[i]; // original header name
+      if (candidates.includes(normalized[i])) return headers[i]; // original header
     }
     return null;
   };
   return {
-    first:  find(H.first),
-    last:   find(H.last),
-    full:   find(H.full),
+    first:   find(H.first),
+    last:    find(H.last),
+    full:    find(H.full),
+    email:   find(H.email),
+    phone:   find(H.phone),
+    notes:   find(H.notes),
+    company: find(H.company),
 
-    email:  find(H.email),
-    phone:  find(H.phone),
-    notes:  find(H.notes),
-
-    dob:    find(H.dob),
-    state:  find(H.state),
-    beneficiary:       find(H.beneficiary),
-    beneficiary_name:  find(H.beneficiary_name),
-    gender:            find(H.gender),
+    // NEW
+    dob:              find(H.dob),
+    state:            find(H.state),
+    beneficiary:      find(H.beneficiary),
+    beneficiary_name: find(H.beneficiary_name),
+    gender:           find(H.gender),
   };
 }
 
@@ -69,13 +91,19 @@ function pick(row, key) {
 }
 
 function buildName(row, map) {
-  let full = pick(row, map.full);
+  // Prefer explicit full-name-like fields
+  let full = pick(row, map.full) || row.name || row.Name || "";
   if (full) return full;
 
+  // Otherwise combine first + last if present
   const first = pick(row, map.first);
   const last  = pick(row, map.last);
   const combined = `${first} ${last}`.trim();
   if (combined) return combined;
+
+  // Fallbacks: company or email local-part
+  const company = pick(row, map.company);
+  if (company) return company;
 
   const email = pick(row, map.email) || row.email || row.Email || "";
   if (email && email.includes("@")) return email.split("@")[0];
@@ -84,34 +112,57 @@ function buildName(row, map) {
 }
 
 function buildPhone(row, map) {
-  return pick(row, map.phone) || row.phone || row.number || row.Phone || row.Number || "";
+  // keep your original fallbacks plus aliases
+  return (
+    pick(row, map.phone) ||
+    row.phone || row.number || row.Phone || row.Number || ""
+  );
 }
+
 function buildEmail(row, map) {
   return pick(row, map.email) || row.email || row.Email || "";
 }
+
 function buildNotes(row, map) {
   return pick(row, map.notes) || "";
 }
 
-// NEW builders for extra fields
+// --- NEW: normalizers for the added fields ---
 function buildDob(row, map) {
-  const raw = pick(row, map.dob) || row.dob || row.DOB || row.birthdate || row["Date of Birth"] || "";
-  // Keep as plain string; you can normalize to ISO later if you want.
+  const raw = pick(row, map.dob) || row.DOB || row["Date of Birth"] || "";
+  // accept as-is; UI just displays it. (Could add date parsing later.)
   return raw;
 }
+
 function buildState(row, map) {
-  const v = pick(row, map.state) || row.state || row.State || "";
-  return v.toUpperCase();
+  const raw = pick(row, map.state) || row.State || row.STATE || "";
+  return raw.toUpperCase();
 }
+
 function buildBeneficiary(row, map) {
-  return pick(row, map.beneficiary) || row.beneficiary || row.Beneficiary || "";
+  // map common yes/no shapes to "Yes"/"No"
+  const raw = (pick(row, map.beneficiary) || row.Beneficiary || row["Beneficiary (Y/N)"] || "").toString().trim().toLowerCase();
+  if (!raw) return "";
+  const yesVals = ["y","yes","true","1","primary","has","t"];
+  const noVals  = ["n","no","false","0","none","f"];
+  if (yesVals.includes(raw)) return "Yes";
+  if (noVals.includes(raw))  return "No";
+  // if it's not a tidy yes/no, keep original (e.g., "Primary/Contingent")
+  return raw;
 }
+
 function buildBeneficiaryName(row, map) {
-  return pick(row, map.beneficiary_name) || row.beneficiary_name || row["Beneficiary Name"] || "";
+  return pick(row, map.beneficiary_name) || row["Beneficiary Name"] || row["Primary Beneficiary Name"] || "";
 }
+
 function buildGender(row, map) {
-  const v = pick(row, map.gender) || row.gender || row.Gender || row.sex || row.Sex || "";
-  return v;
+  const raw = (pick(row, map.gender) || row.Gender || "").toString().trim().toLowerCase();
+  if (!raw) return "";
+  if (["m","male","man"].includes(raw)) return "Male";
+  if (["f","female","woman"].includes(raw)) return "Female";
+  if (["nb","nonbinary","non-binary","non binary"].includes(raw)) return "Non-binary";
+  // default: capitalize first letter
+  return raw.charAt(0).toUpperCase() + raw.slice(1);
 }
 
 export default function LeadsPage() {
@@ -142,8 +193,7 @@ export default function LeadsPage() {
     const q = filter.trim().toLowerCase();
     return q
       ? src.filter(r =>
-          [r.name, r.email, r.phone, r.state, r.gender, r.beneficiary, r.beneficiaryName]
-            .some(v => (v||"").toLowerCase().includes(q)))
+          [r.name, r.email, r.phone].some(v => (v||"").toLowerCase().includes(q)))
       : src;
   }, [tab, allClients, onlyLeads, onlySold, filter]);
 
@@ -163,21 +213,32 @@ export default function LeadsPage() {
 
         const normalized = rows
           .map((r) => {
-            const person = normalizePerson({
-              name:  r.name || r.Name || buildName(r, map),
-              phone: buildPhone(r, map),
-              email: buildEmail(r, map),
-              notes: buildNotes(r, map),
+            const name   = r.name || r.Name || buildName(r, map);
+            const phone  = buildPhone(r, map);
+            const email  = buildEmail(r, map);
+            const notes  = buildNotes(r, map);
+
+            // NEW fields
+            const dob              = buildDob(r, map);
+            const state            = buildState(r, map);
+            const beneficiary      = buildBeneficiary(r, map);
+            const beneficiary_name = buildBeneficiaryName(r, map);
+            const gender           = buildGender(r, map);
+
+            return normalizePerson({
+              name,
+              phone,
+              email,
+              notes,
               status: "lead",
 
-              // NEW fields on root
-              dob:              buildDob(r, map),
-              state:            buildState(r, map),
-              beneficiary:      buildBeneficiary(r, map),
-              beneficiaryName:  buildBeneficiaryName(r, map),
-              gender:           buildGender(r, map),
+              // attach new fields directly to the person
+              dob,
+              state,
+              beneficiary,
+              beneficiary_name,
+              gender,
             });
-            return person;
           })
           .filter(r => r.name || r.phone || r.email);
 
@@ -194,10 +255,7 @@ export default function LeadsPage() {
   }
 
   function downloadTemplate() {
-    const csv = Papa.unparse(
-      [Object.fromEntries(TEMPLATE_HEADERS.map(h => [h, ""]))],
-      { header: true }
-    );
+    const csv = Papa.unparse([Object.fromEntries(TEMPLATE_HEADERS.map(h => [h, ""]))], { header: true });
     const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
@@ -234,18 +292,9 @@ export default function LeadsPage() {
           zip: soldPayload.zip || "",
         }
       },
-
-      // keep top-level identity
-      name:  soldPayload.name  || base.name  || "",
+      name: soldPayload.name || base.name || "",
       phone: soldPayload.phone || base.phone || "",
       email: soldPayload.email || base.email || "",
-
-      // keep NEW fields from the form (even when marked sold)
-      dob:             soldPayload.dob            ?? base.dob || "",
-      state:           soldPayload.state          ?? base.state || "",
-      beneficiary:     soldPayload.beneficiary    ?? base.beneficiary || "",
-      beneficiaryName: soldPayload.beneficiaryName?? base.beneficiaryName || "",
-      gender:          soldPayload.gender         ?? base.gender || "",
     };
 
     // Persist
@@ -265,7 +314,7 @@ export default function LeadsPage() {
         startDate: updated.sold?.startDate,
       });
     }
-    if (soldPayload.sendPolicyEmailOrMail) {
+    if (soldPayload.sendPolicyKickoffEmail) {
       schedulePolicyKickoffEmail({
         name: updated.name,
         email: updated.email,
@@ -351,7 +400,7 @@ export default function LeadsPage() {
       <div className="flex items-center gap-3">
         <input
           className="w-full rounded-xl border border-white/10 bg-black/40 px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-indigo-500/40"
-          placeholder="Search by name, phone, email, state, beneficiary, or gender…"
+          placeholder="Search by name, phone, or email…"
           value={filter}
           onChange={(e) => setFilter(e.target.value)}
         />
@@ -359,7 +408,7 @@ export default function LeadsPage() {
 
       {/* Table */}
       <div className="overflow-x-auto rounded-2xl border border-white/10">
-        <table className="min-w-[1100px] w-full border-collapse text-sm">
+        <table className="min-w-[1280px] w-full border-collapse text-sm">
           <thead className="bg-white/[0.04] text-white/70">
             <tr>
               <Th>Name</Th>
@@ -388,7 +437,7 @@ export default function LeadsPage() {
                 <Td>{p.dob || "—"}</Td>
                 <Td>{p.state || "—"}</Td>
                 <Td>{p.beneficiary || "—"}</Td>
-                <Td>{p.beneficiaryName || "—"}</Td>
+                <Td>{p.beneficiary_name || "—"}</Td>
                 <Td>{p.gender || "—"}</Td>
                 <Td>
                   <span className={`rounded-full px-2 py-0.5 text-xs ${
@@ -445,8 +494,8 @@ export default function LeadsPage() {
   );
 }
 
-function Th({ children }) { return <th className="px-3 py-2 text-left font-medium">{children}</th>; }
-function Td({ children }) { return <td className="px-3 py-2">{children}</td>; }
+function Th({ children }) { return <th className="px-3 py-2 text-left font-medium whitespace-nowrap">{children}</th>; }
+function Td({ children }) { return <td className="px-3 py-2 whitespace-nowrap">{children}</td>; }
 
 function SoldDrawer({ initial, allClients, onClose, onSave }) {
   const [form, setForm] = useState({
@@ -454,28 +503,17 @@ function SoldDrawer({ initial, allClients, onClose, onSave }) {
     name: initial?.name || "",
     phone: initial?.phone || "",
     email: initial?.email || "",
-
-    // NEW personal fields
-    dob: initial?.dob || "",
-    state: initial?.state || "",
-    beneficiary: initial?.beneficiary || "",
-    beneficiaryName: initial?.beneficiaryName || "",
-    gender: initial?.gender || "",
-
-    // Sale details
     carrier: initial?.sold?.carrier || "",
     faceAmount: initial?.sold?.faceAmount || "",
     premium: initial?.sold?.premium || "",
     monthlyPayment: initial?.sold?.monthlyPayment || "",
     startDate: initial?.sold?.startDate || "",
-
-    // Address
+    // Address fields
     street: initial?.sold?.address?.street || "",
     city: initial?.sold?.address?.city || "",
-    stateAddr: initial?.sold?.address?.state || "",
+    state: initial?.sold?.address?.state || "",
     zip: initial?.sold?.address?.zip || "",
-
-    // Automations
+    // Automation toggles
     sendWelcomeText: true,
     sendPolicyEmailOrMail: true,
   });
@@ -489,26 +527,12 @@ function SoldDrawer({ initial, allClients, onClose, onSave }) {
       name: c.name || f.name,
       phone: c.phone || f.phone,
       email: c.email || f.email,
-      dob: c.dob || f.dob,
-      state: c.state || f.state,
-      beneficiary: c.beneficiary || f.beneficiary,
-      beneficiaryName: c.beneficiaryName || f.beneficiaryName,
-      gender: c.gender || f.gender,
     }));
   }
 
   function submit(e) {
     e.preventDefault();
-    // map stateAddr back to address.state field
-    onSave({
-      ...form,
-      state: form.state, // top-level person state
-      // pack into sold.address
-      street: form.street,
-      city: form.city,
-      state: form.stateAddr,
-      zip: form.zip,
-    });
+    onSave(form);
   }
 
   return (
@@ -549,28 +573,6 @@ function SoldDrawer({ initial, allClients, onClose, onSave }) {
                    className="inp" placeholder="jane@example.com" />
           </Field>
 
-          {/* NEW Personal */}
-          <Field label="DOB">
-            <input value={form.dob} onChange={(e)=>setForm({...form, dob:e.target.value})}
-                   className="inp" placeholder="1990-07-04" />
-          </Field>
-          <Field label="State (residence)">
-            <input value={form.state} onChange={(e)=>setForm({...form, state:e.target.value.toUpperCase()})}
-                   className="inp" placeholder="TX" />
-          </Field>
-          <Field label="Beneficiary">
-            <input value={form.beneficiary} onChange={(e)=>setForm({...form, beneficiary:e.target.value})}
-                   className="inp" placeholder="Spouse / Child / Trust" />
-          </Field>
-          <Field label="Beneficiary Name">
-            <input value={form.beneficiaryName} onChange={(e)=>setForm({...form, beneficiaryName:e.target.value})}
-                   className="inp" placeholder="John Doe" />
-          </Field>
-          <Field label="Gender">
-            <input value={form.gender} onChange={(e)=>setForm({...form, gender:e.target.value})}
-                   className="inp" placeholder="F / M / Non-binary" />
-          </Field>
-
           {/* Sale details */}
           <Field label="Carrier sold">
             <input value={form.carrier} onChange={(e)=>setForm({...form, carrier:e.target.value})}
@@ -602,8 +604,8 @@ function SoldDrawer({ initial, allClients, onClose, onSave }) {
             <input value={form.city} onChange={(e)=>setForm({...form, city:e.target.value})}
                    className="inp" placeholder="Austin" />
           </Field>
-          <Field label="State (mailing)">
-            <input value={form.stateAddr} onChange={(e)=>setForm({...form, stateAddr:e.target.value.toUpperCase()})}
+          <Field label="State">
+            <input value={form.state} onChange={(e)=>setForm({...form, state:e.target.value})}
                    className="inp" placeholder="TX" />
           </Field>
           <Field label="ZIP">
