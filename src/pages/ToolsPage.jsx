@@ -1,5 +1,5 @@
 // File: src/pages/ToolsPage.jsx
-import { Search, Calculator, Globe, MapPin, Phone, ShieldCheck } from "lucide-react";
+import { Search, Calculator, Globe, Phone, ShieldCheck } from "lucide-react";
 
 function open(url) {
   if (!url) return alert("No URL configured for this tool yet.");
@@ -31,10 +31,10 @@ export default function ToolsPage() {
 
   const tools = [
     {
-      title: "TruePeopleSearch",
+      title: "FastPeopleSearch",
       desc: "Quickly look up phones, addresses, and relatives.",
       icon: Search,
-      onClick: () => open("https://www.truepeoplesearch.com/"),
+      onClick: () => open("https://www.fastpeoplesearch.com/"),
     },
     {
       title: "Quote Tool",
@@ -59,12 +59,6 @@ export default function ToolsPage() {
       desc: "Common carrier service numbers (set your sheet URL).",
       icon: Phone,
       onClick: () => open(CARRIER_DIR_URL), // set VITE_CARRIER_DIRECTORY_URL
-    },
-    {
-      title: "State DOI Finder",
-      desc: "State insurance department links.",
-      icon: MapPin,
-      onClick: () => open("https://content.naic.org/state-web-map"),
     },
   ];
 
