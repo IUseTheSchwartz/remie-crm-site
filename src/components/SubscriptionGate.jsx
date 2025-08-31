@@ -16,6 +16,7 @@ export default function SubscriptionGate({ children }) {
   const [loading, setLoading] = useState(true);
   const [sub, setSub] = useState(null);
   const [error, setError] = useState("");
+  const [userEmail, setUserEmail] = useState("");     // ✅ track email for bypass
   const nav = useNavigate();
 
   async function load() {
@@ -25,6 +26,8 @@ export default function SubscriptionGate({ children }) {
       const { data: u, error: auErr } = await supabase.auth.getUser();
       if (auErr) throw auErr;
       const user = u?.user;
+
+      setUserEmail(user?.email || "");                // ✅ store email for bypass
 
       if (!user?.id) {
         setSub(null);
@@ -56,6 +59,11 @@ export default function SubscriptionGate({ children }) {
     const { data: subAuth } = supabase.auth.onAuthStateChange(() => load());
     return () => subAuth.subscription.unsubscribe();
   }, []);
+
+  // ✅ Hard-coded bypass for your email (temporary while business is verified)
+  if (userEmail && userEmail.toLowerCase() === "jacobprieto@gmail.com") {
+    return <>{children}</>;
+  }
 
   if (loading) {
     return (
@@ -96,7 +104,7 @@ export default function SubscriptionGate({ children }) {
 
             {/* Send to pricing on the landing page */}
             <button
-              onClick={() => nav('/#pricing')}
+              onClick={() => nav("/#pricing")}
               className="px-4 py-2 rounded-lg bg-indigo-600 hover:bg-indigo-700 transition"
             >
               Subscribe
