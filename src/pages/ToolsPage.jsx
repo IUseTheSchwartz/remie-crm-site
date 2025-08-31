@@ -75,12 +75,6 @@ export default function ToolsPage() {
           <ToolCard key={t.title} {...t} />
         ))}
       </div>
-
-      <div className="text-xs text-white/40">
-        Tip: set <code className="rounded bg-white/10 px-1">VITE_QUOTE_TOOL_URL</code> and{" "}
-        <code className="rounded bg-white/10 px-1">VITE_CARRIER_DIRECTORY_URL</code> in your Netlify
-        environment variables.
-      </div>
     </div>
   );
 }
