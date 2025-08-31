@@ -54,6 +54,7 @@ export default function AgentShowcase() {
   const [phone, setPhone] = useState("");
   const [shortBio, setShortBio] = useState("");
   const [npn, setNpn] = useState("");
+  const [calendlyUrl, setCalendlyUrl] = useState(""); // NEW
   const slug = useMemo(() => slugify(fullName) || "my-profile", [fullName]);
 
   // Step 2 headshot
@@ -61,7 +62,6 @@ export default function AgentShowcase() {
   const [headshotUrl, setHeadshotUrl] = useState("");
 
   // Step 3 states
-  // stateMap: { [state_code]: { selected: bool, license_number: string, license_image_url: string, file?: File } }
   const [stateMap, setStateMap] = useState({});
   const [savingStates, setSavingStates] = useState(false);
 
@@ -89,13 +89,14 @@ export default function AgentShowcase() {
         setPhone(prof.phone || "");
         setShortBio(prof.short_bio || "");
         setNpn(prof.npn || "");
+        setCalendlyUrl(prof.calendly_url || ""); // NEW
         setPublished(!!prof.published);
         setHeadshotUrl(prof.headshot_url || "");
       } else {
         setEmail(auth.user?.email || "");
       }
 
-      // states (NOTE: your table uses "license_image_url")
+      // states
       const { data: st } = await supabase
         .from("agent_states")
         .select("state_code, state_name, license_number, license_image_url")
@@ -132,6 +133,7 @@ export default function AgentShowcase() {
           phone,
           short_bio: shortBio,
           npn,
+          calendly_url: calendlyUrl || null, // NEW
           published,
           headshot_url: headshotUrl || null,
           updated_at: new Date().toISOString(),
@@ -219,7 +221,7 @@ export default function AgentShowcase() {
     });
   }
 
-  /* ---------- Step 3: Save (uploads + rows; uses state_name & license_image_url) ---------- */
+  /* ---------- Step 3: Save (uploads + rows) ---------- */
   async function saveStates() {
     setSavingStates(true);
     try {
@@ -227,7 +229,6 @@ export default function AgentShowcase() {
       const uid = auth?.user?.id;
       if (!uid) throw new Error("Please log in");
 
-      // Validate selected states have both license number and file/url
       const selectedCodes = Object.keys(stateMap).filter((c) => stateMap[c]?.selected);
       for (const code of selectedCodes) {
         const item = stateMap[code];
@@ -235,7 +236,6 @@ export default function AgentShowcase() {
         if (!item.license_image_url && !item.file) throw new Error(`Please upload a license image/PDF for ${code}.`);
       }
 
-      // Existing rows
       const { data: existingRows, error: selErr } = await supabase
         .from("agent_states")
         .select("state_code")
@@ -246,12 +246,11 @@ export default function AgentShowcase() {
       const desired = new Set(selectedCodes);
       const toDelete = [...existing].filter((c) => !desired.has(c));
 
-      // Upload any pending files and collect rows to upsert
       const rowsToUpsert = [];
       const bucket = supabase.storage.from("agent_public_v2");
 
       for (const code of selectedCodes) {
-        const state_name = STATE_NAME_BY_CODE[code] || code; // REQUIRED by your table (NOT NULL)
+        const state_name = STATE_NAME_BY_CODE[code] || code;
         let license_image_url = stateMap[code].license_image_url || "";
         if (stateMap[code].file) {
           const file = stateMap[code].file;
@@ -274,12 +273,11 @@ export default function AgentShowcase() {
           state_code: code,
           state_name,
           license_number: stateMap[code].license_number || null,
-          license_image_url: license_image_url || null, // <-- your column
+          license_image_url: license_image_url || null,
           updated_at: new Date().toISOString(),
         });
       }
 
-      // Upsert selected rows
       if (rowsToUpsert.length) {
         const { error: upErr } = await supabase
           .from("agent_states")
@@ -287,7 +285,6 @@ export default function AgentShowcase() {
         if (upErr) throw upErr;
       }
 
-      // Delete unselected rows
       if (toDelete.length) {
         const { error: delErr } = await supabase
           .from("agent_states")
@@ -384,6 +381,17 @@ export default function AgentShowcase() {
                 placeholder="National Producer Number"
               />
             </Field>
+
+            {/* NEW: Calendly link */}
+            <Field label="Calendly link (optional)" full>
+              <input
+                value={calendlyUrl}
+                onChange={(e) => setCalendlyUrl(e.target.value)}
+                className="w-full rounded-lg border border-white/10 bg-black/30 px-3 py-2 outline-none"
+                placeholder="https://calendly.com/your-name/meeting"
+              />
+            </Field>
+
             <Field label="Short Bio" full>
               <textarea
                 value={shortBio}
