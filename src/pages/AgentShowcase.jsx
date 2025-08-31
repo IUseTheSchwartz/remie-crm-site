@@ -60,8 +60,8 @@ export default function AgentShowcase() {
   const [headshotFile, setHeadshotFile] = useState(null);
   const [headshotUrl, setHeadshotUrl] = useState("");
 
-  // Step 3 states (rich)
-  // stateMap: { [state_code]: { selected: bool, license_number: string, licence_image_url: string, file?: File } }
+  // Step 3 states
+  // stateMap: { [state_code]: { selected: bool, license_number: string, license_image_url: string, file?: File } }
   const [stateMap, setStateMap] = useState({});
   const [savingStates, setSavingStates] = useState(false);
 
@@ -95,10 +95,10 @@ export default function AgentShowcase() {
         setEmail(auth.user?.email || "");
       }
 
-      // states (NOTE: your table uses "licence_image_url")
+      // states (NOTE: your table uses "license_image_url")
       const { data: st } = await supabase
         .from("agent_states")
-        .select("state_code, state_name, license_number, licence_image_url")
+        .select("state_code, state_name, license_number, license_image_url")
         .eq("user_id", uid);
 
       if (st?.length) {
@@ -107,7 +107,7 @@ export default function AgentShowcase() {
           next[r.state_code] = {
             selected: true,
             license_number: r.license_number || "",
-            licence_image_url: r.licence_image_url || "",
+            license_image_url: r.license_image_url || "",
           };
         }
         setStateMap(next);
@@ -199,7 +199,7 @@ export default function AgentShowcase() {
   function toggleState(code) {
     setStateMap((prev) => {
       const next = { ...prev };
-      const cur = next[code] || { selected: false, license_number: "", licence_image_url: "" };
+      const cur = next[code] || { selected: false, license_number: "", license_image_url: "" };
       next[code] = { ...cur, selected: !cur.selected };
       return next;
     });
@@ -207,19 +207,19 @@ export default function AgentShowcase() {
 
   function setLicenseNumber(code, value) {
     setStateMap((prev) => {
-      const cur = prev[code] || { selected: true, license_number: "", licence_image_url: "" };
+      const cur = prev[code] || { selected: true, license_number: "", license_image_url: "" };
       return { ...prev, [code]: { ...cur, license_number: value } };
     });
   }
 
   function setLicenseFile(code, file) {
     setStateMap((prev) => {
-      const cur = prev[code] || { selected: true, license_number: "", licence_image_url: "" };
+      const cur = prev[code] || { selected: true, license_number: "", license_image_url: "" };
       return { ...prev, [code]: { ...cur, file } };
     });
   }
 
-  /* ---------- Step 3: Save (uploads + rows; uses state_name & licence_image_url) ---------- */
+  /* ---------- Step 3: Save (uploads + rows; uses state_name & license_image_url) ---------- */
   async function saveStates() {
     setSavingStates(true);
     try {
@@ -232,7 +232,7 @@ export default function AgentShowcase() {
       for (const code of selectedCodes) {
         const item = stateMap[code];
         if (!item.license_number?.trim()) throw new Error(`Please enter a license number for ${code}.`);
-        if (!item.licence_image_url && !item.file) throw new Error(`Please upload a license image/PDF for ${code}.`);
+        if (!item.license_image_url && !item.file) throw new Error(`Please upload a license image/PDF for ${code}.`);
       }
 
       // Existing rows
@@ -251,8 +251,8 @@ export default function AgentShowcase() {
       const bucket = supabase.storage.from("agent_public_v2");
 
       for (const code of selectedCodes) {
-        const state_name = STATE_NAME_BY_CODE[code] || code;
-        let licence_image_url = stateMap[code].licence_image_url || "";
+        const state_name = STATE_NAME_BY_CODE[code] || code; // REQUIRED by your table (NOT NULL)
+        let license_image_url = stateMap[code].license_image_url || "";
         if (stateMap[code].file) {
           const file = stateMap[code].file;
           const ext = (file.name.split(".").pop() || "jpg").toLowerCase();
@@ -266,20 +266,20 @@ export default function AgentShowcase() {
           if (upErr) throw upErr;
 
           const { data: pub } = bucket.getPublicUrl(key);
-          licence_image_url = pub?.publicUrl || "";
+          license_image_url = pub?.publicUrl || "";
         }
 
         rowsToUpsert.push({
           user_id: uid,
           state_code: code,
-          state_name, // <-- REQUIRED by your table (NOT NULL)
+          state_name,
           license_number: stateMap[code].license_number || null,
-          licence_image_url: licence_image_url || null, // <-- matches your column spelling
+          license_image_url: license_image_url || null, // <-- your column
           updated_at: new Date().toISOString(),
         });
       }
 
-      // Upsert selected rows (composite unique key should be user_id+state_code if you set it)
+      // Upsert selected rows
       if (rowsToUpsert.length) {
         const { error: upErr } = await supabase
           .from("agent_states")
@@ -465,7 +465,7 @@ export default function AgentShowcase() {
 
           <div className="space-y-3">
             {STATES.map((s) => {
-              const entry = stateMap[s.code] || { selected: false, license_number: "", licence_image_url: "" };
+              const entry = stateMap[s.code] || { selected: false, license_number: "", license_image_url: "" };
               const selected = !!entry.selected;
 
               return (
@@ -506,10 +506,10 @@ export default function AgentShowcase() {
 
                       <div className="md:col-span-1">
                         <div className="text-xs text-white/70 mb-1">Current File</div>
-                        {entry.licence_image_url ? (
-                          entry.licence_image_url.toLowerCase().includes(".pdf") ? (
+                        {entry.license_image_url ? (
+                          entry.license_image_url.toLowerCase().includes(".pdf") ? (
                             <a
-                              href={entry.licence_image_url}
+                              href={entry.license_image_url}
                               target="_blank"
                               rel="noreferrer"
                               className="text-xs text-indigo-300 underline"
@@ -518,7 +518,7 @@ export default function AgentShowcase() {
                             </a>
                           ) : (
                             <img
-                              src={entry.licence_image_url}
+                              src={entry.license_image_url}
                               alt={`${s.code} license`}
                               className="h-20 w-32 rounded-lg border border-white/10 object-cover"
                             />
