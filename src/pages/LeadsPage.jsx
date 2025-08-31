@@ -115,7 +115,7 @@ const buildBeneficiaryName = (row, map) => pick(row, map.beneficiary_name);
 const buildGender = (row, map) => pick(row, map.gender);
 
 export default function LeadsPage() {
-  const [tab, setTab] = useState("clients"); // 'clients' | 'leads' | 'sold'
+  const [tab, setTab] = useState("clients"); // 'clients' | 'sold'  (label "Leads" for 'clients')
   const [leads, setLeads] = useState([]);
   const [clients, setClients] = useState([]);
   const [selected, setSelected] = useState(null);
@@ -126,7 +126,7 @@ export default function LeadsPage() {
     setClients(loadClients());
   }, []);
 
-  // Merge clients + leads into a deduped Clients view
+  // Merge clients + leads into a deduped "Leads" view (formerly "Clients")
   const allClients = useMemo(() => {
     const map = new Map();
     for (const x of clients) map.set(x.id, x);
@@ -134,18 +134,17 @@ export default function LeadsPage() {
     return [...map.values()];
   }, [clients, leads]);
 
-  const onlyLeads = useMemo(() => allClients.filter(c => c.status === "lead"), [allClients]);
   const onlySold  = useMemo(() => allClients.filter(c => c.status === "sold"), [allClients]);
 
   const visible = useMemo(() => {
-    const src = tab === "clients" ? allClients : tab === "leads" ? onlyLeads : onlySold;
+    const src = tab === "clients" ? allClients : onlySold;
     const q = filter.trim().toLowerCase();
     return q
       ? src.filter(r =>
           [r.name, r.email, r.phone, r.state, r.gender, r.beneficiary_name]
             .some(v => (v||"").toLowerCase().includes(q)))
       : src;
-  }, [tab, allClients, onlyLeads, onlySold, filter]);
+  }, [tab, allClients, onlySold, filter]);
 
   function handleImportCsv(file) {
     Papa.parse(file, {
@@ -294,8 +293,7 @@ export default function LeadsPage() {
       <div className="flex flex-wrap items-center gap-3">
         <div className="inline-flex rounded-full border border-white/15 bg-white/5 p-1 text-sm">
           {[
-            { id:"clients", label:"Clients" },
-            { id:"leads",   label:"Leads" },
+            { id:"clients", label:"Leads" },   // renamed from Clients
             { id:"sold",    label:"Sold"  },
           ].map(t => (
             <button
@@ -410,7 +408,7 @@ export default function LeadsPage() {
             {visible.length === 0 && (
               <tr>
                 <td colSpan={15} className="p-6 text-center text-white/60">
-                  No records yet. Import a CSV or add leads to your Clients list.
+                  No records yet. Import a CSV or add leads.
                 </td>
               </tr>
             )}
@@ -478,13 +476,13 @@ function SoldDrawer({ initial, allClients, onClose, onSave }) {
         <div className="mb-3 text-lg font-semibold">Mark as SOLD</div>
 
         <div className="mb-3">
-          <label className="text-sm text-white/70">Select existing client (optional)</label>
+          <label className="text-sm text-white/70">Select existing lead (optional)</label>
           <select
             className="mt-1 w-full rounded-xl border border-white/10 bg-black/40 px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-indigo-500/40"
             onChange={(e) => e.target.value && pickClient(e.target.value)}
             defaultValue=""
           >
-            <option value="" disabled>Choose from Clients…</option>
+            <option value="" disabled>Choose from Leads…</option>
             {allClients.map(c => (
               <option key={c.id} value={c.id}>
                 {c.name || c.email || c.phone || c.id}
@@ -508,6 +506,7 @@ function SoldDrawer({ initial, allClients, onClose, onSave }) {
                    className="inp" placeholder="jane@example.com" />
           </Field>
 
+        {/* sold fields */}
           <Field label="Carrier sold">
             <input value={form.carrier} onChange={(e)=>setForm({...form, carrier:e.target.value})}
                    className="inp" placeholder="Mutual of Omaha" />
