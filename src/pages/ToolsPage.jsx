@@ -26,6 +26,7 @@ function ToolCard({ icon: Icon, title, desc, onClick }) {
 }
 
 export default function ToolsPage() {
+  // env vars pulled from Netlify → Site settings → Environment variables
   const QUOTE_URL = import.meta.env.VITE_QUOTE_TOOL_URL || "";
   const CARRIER_DIR_URL = import.meta.env.VITE_CARRIER_DIRECTORY_URL || "";
 
@@ -56,9 +57,9 @@ export default function ToolsPage() {
     },
     {
       title: "Carrier Phone Directory",
-      desc: "Common carrier service numbers (set your sheet URL).",
+      desc: "Your master carrier support phone list.",
       icon: Phone,
-      onClick: () => open(CARRIER_DIR_URL), // set VITE_CARRIER_DIRECTORY_URL
+      onClick: () => open(CARRIER_DIR_URL), // link set in Netlify env
     },
   ];
 
@@ -76,8 +77,9 @@ export default function ToolsPage() {
       </div>
 
       <div className="text-xs text-white/40">
-        Tip: set <code className="rounded bg-white/10 px-1">VITE_QUOTE_TOOL_URL</code> (and optionally{" "}
-        <code className="rounded bg-white/10 px-1">VITE_CARRIER_DIRECTORY_URL</code>) in your Netlify env.
+        Tip: set <code className="rounded bg-white/10 px-1">VITE_QUOTE_TOOL_URL</code> and{" "}
+        <code className="rounded bg-white/10 px-1">VITE_CARRIER_DIRECTORY_URL</code> in your Netlify
+        environment variables.
       </div>
     </div>
   );
