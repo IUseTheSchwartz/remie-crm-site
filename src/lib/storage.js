@@ -34,7 +34,7 @@ export function saveClients(clients) {
 /* ---------------------------
    Shape normalizer
 
-   Person:
+   Person (stored locally):
    {
      id: string,
      name: string,
@@ -42,22 +42,21 @@ export function saveClients(clients) {
      email: string,
      status: 'lead' | 'sold',
 
-     // --- Extra lead attributes ---
-     dob: string,                    // e.g. "1990-05-12" or "05/12/1990"
-     state: string,                  // two-letter or full
-     gender: string,                 // "Male" | "Female" | "Other" | ""
-     beneficiary: string,            // yes/no/relationship
-     beneficiaryName: string,        // name of beneficiary
-     notes: string,
+     // NEW optional lead fields
+     notes?: string,
+     dob?: string,                 // freeform date from CSV
+     state?: string,               // e.g., "TX"
+     beneficiary?: string,         // e.g., "Primary"
+     beneficiary_name?: string,    // e.g., "John Doe"
+     gender?: string,              // e.g., "Male"
 
      sold: {
        carrier: string,
        faceAmount: string|number,
        premium: string|number,
        monthlyPayment: string|number,
-       startDate: string,            // YYYY-MM-DD
-       policyNumber: string,         // NEW
-       name: string,                 // snapshot at sale time
+       startDate: string (YYYY-MM-DD),
+       name: string,
        phone: string,
        email: string,
        address: {
@@ -72,40 +71,38 @@ export function saveClients(clients) {
 export function normalizePerson(p = {}) {
   const sold = p.sold || null;
 
+  // Allow/keep extra lead fields if present
+  const keep = {
+    notes: p.notes ?? "",
+    dob: p.dob ?? "",
+    state: p.state ?? "",
+    beneficiary: p.beneficiary ?? "",
+    beneficiary_name: p.beneficiary_name ?? "",
+    gender: p.gender ?? "",
+  };
+
   return {
     id: p.id || (typeof crypto !== "undefined" ? crypto.randomUUID() : String(Date.now())),
-    name: (p.name ?? "").trim(),
-    phone: (p.phone ?? p.number ?? "").trim(),
-    email: (p.email ?? "").trim(),
+    name: p.name || "",
+    phone: p.phone || p.number || "",
+    email: p.email || "",
     status: p.status === "sold" ? "sold" : "lead",
-
-    // Extra lead attributes (keep if present; default to empty)
-    dob: (p.dob ?? "").trim(),
-    state: (p.state ?? "").trim(),
-    gender: (p.gender ?? "").trim(),
-    beneficiary: (p.beneficiary ?? "").trim(),
-    beneficiaryName: (p.beneficiaryName ?? "").trim(),
-    notes: (p.notes ?? "").trim(),
-
+    ...keep,
     sold: sold
       ? {
-          carrier: (sold.carrier ?? "").trim(),
-          faceAmount: sold.faceAmount ?? "",
-          premium: sold.premium ?? "",
-          monthlyPayment: sold.monthlyPayment ?? "",
-          startDate: (sold.startDate ?? "").trim(),
-          policyNumber: (sold.policyNumber ?? "").trim(), // NEW
-
-          // snapshot of identity at sale time, falling back to top-level
-          name: (sold.name ?? p.name ?? "").trim(),
-          phone: (sold.phone ?? p.phone ?? p.number ?? "").trim(),
-          email: (sold.email ?? p.email ?? "").trim(),
-
+          carrier: sold.carrier || "",
+          faceAmount: sold.faceAmount || "",
+          premium: sold.premium || "",
+          monthlyPayment: sold.monthlyPayment || "",
+          startDate: sold.startDate || "",
+          name: sold.name || p.name || "",
+          phone: sold.phone || p.phone || "",
+          email: sold.email || p.email || "",
           address: {
-            street: (sold.address?.street ?? "").trim(),
-            city: (sold.address?.city ?? "").trim(),
-            state: (sold.address?.state ?? "").trim(),
-            zip: (sold.address?.zip ?? "").trim(),
+            street: sold.address?.street || "",
+            city: sold.address?.city || "",
+            state: sold.address?.state || "",
+            zip: sold.address?.zip || "",
           },
         }
       : null,
@@ -114,13 +111,32 @@ export function normalizePerson(p = {}) {
 
 /* ---------------------------
    Array upsert by id
+
+   - Normalizes incoming
+   - If an existing record has a non-null `sold` and the
+     incoming one is `null`/missing, we preserve the existing `sold`.
 ----------------------------*/
 export function upsert(arr = [], obj = {}) {
-  const normalized = normalizePerson(obj);
+  const incoming = normalizePerson(obj);
   const next = [...arr];
-  const i = next.findIndex((x) => x.id === normalized.id);
-  if (i >= 0) next[i] = { ...next[i], ...normalized };
-  else next.unshift(normalized);
+  const i = next.findIndex((x) => x.id === incoming.id);
+
+  if (i >= 0) {
+    const existing = next[i];
+
+    // Prefer incoming.sold only if provided (non-null)
+    const mergedSold =
+      incoming.sold != null ? incoming.sold : existing.sold ?? null;
+
+    // Merge everything else (incoming primitives will override)
+    next[i] = {
+      ...existing,
+      ...incoming,
+      sold: mergedSold,
+    };
+  } else {
+    next.unshift(incoming);
+  }
   return next;
 }
 
