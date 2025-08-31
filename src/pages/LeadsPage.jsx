@@ -68,17 +68,14 @@ function pick(row, key) {
 }
 
 function buildName(row, map) {
-  // Prefer explicit full-name-like fields
   let full = pick(row, map.full);
   if (full) return full;
 
-  // Otherwise combine first + last if present
   const first = pick(row, map.first);
   const last  = pick(row, map.last);
   const combined = `${first} ${last}`.trim();
   if (combined) return combined;
 
-  // Fallbacks: company or email local-part
   const company = pick(row, map.company);
   if (company) return company;
 
@@ -89,7 +86,6 @@ function buildName(row, map) {
 }
 
 function buildPhone(row, map) {
-  // keep your original fallbacks plus aliases
   return (
     pick(row, map.phone) ||
     row.phone || row.number || row.Phone || row.Number || ""
@@ -255,6 +251,18 @@ export default function LeadsPage() {
     setTab("sold");
   }
 
+  // NEW: delete a single record (from both local "clients" and "leads")
+  function removeOne(id) {
+    if (!confirm("Delete this record? This only affects your local data.")) return;
+    const nextClients = clients.filter(c => c.id !== id);
+    const nextLeads   = leads.filter(l => l.id !== id);
+    saveClients(nextClients);
+    saveLeads(nextLeads);
+    setClients(nextClients);
+    setLeads(nextLeads);
+    if (selected?.id === id) setSelected(null);
+  }
+
   function removeAll() {
     if (!confirm("Clear ALL locally stored leads/clients?")) return;
     saveLeads([]);
@@ -355,12 +363,22 @@ export default function LeadsPage() {
                 <Td>{p.sold?.monthlyPayment || "—"}</Td>
                 <Td>{p.sold?.startDate || "—"}</Td>
                 <Td>
-                  <button
-                    onClick={() => openAsSold(p)}
-                    className="rounded-lg border border-white/15 px-2 py-1 hover:bg-white/10"
-                  >
-                    Mark as SOLD
-                  </button>
+                  <div className="flex items-center gap-2">
+                    <button
+                      onClick={() => openAsSold(p)}
+                      className="rounded-lg border border-white/15 px-2 py-1 hover:bg-white/10"
+                    >
+                      Mark as SOLD
+                    </button>
+                    {/* NEW: Delete button */}
+                    <button
+                      onClick={() => removeOne(p.id)}
+                      className="rounded-lg border border-rose-500/40 bg-rose-500/10 px-2 py-1 hover:bg-rose-500/20"
+                      title="Delete this record (local only)"
+                    >
+                      Delete
+                    </button>
+                  </div>
                 </Td>
               </tr>
             ))}
