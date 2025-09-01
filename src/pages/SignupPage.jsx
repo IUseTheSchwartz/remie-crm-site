@@ -1,6 +1,6 @@
 // File: src/pages/SignupPage.jsx
 import { useState } from "react";
-import { Link, useNavigate } from "react-router-dom";
+import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import { Zap } from "lucide-react";
 import { useAuth } from "../auth.jsx";
 
@@ -12,6 +12,8 @@ const BRAND = {
 export default function SignupPage() {
   const { signup } = useAuth();
   const nav = useNavigate();
+  const [params] = useSearchParams();
+  const next = params.get("next"); // e.g. "start-trial"
 
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -24,8 +26,12 @@ export default function SignupPage() {
     try {
       await signup({ email, password });
       setOk("Check your email to confirm your account, then log in.");
-      // Optionally navigate to login after a short delay
-      setTimeout(() => nav("/login"), 1500);
+
+      // IMPORTANT: if user arrived via "Start 14-day Free Trial",
+      // send them to login with the same next param so the login page
+      // can auto-continue into the trial checkout flow.
+      const target = next === "start-trial" ? "/login?next=start-trial" : "/login";
+      setTimeout(() => nav(target), 1500);
     } catch (e) {
       setErr(e.message || "Signup failed");
     }
@@ -44,6 +50,13 @@ export default function SignupPage() {
         <p className="mt-1 text-sm text-white/70">
           Use your work email. We’ll send a confirmation email.
         </p>
+
+        {/* Subtle banner when continuing into a trial */}
+        {next === "start-trial" && (
+          <div className="mt-3 rounded-xl border border-white/10 bg-white/[0.04] p-3 text-xs text-white/80">
+            After you confirm and log in, we’ll automatically start your 14-day trial.
+          </div>
+        )}
 
         <form onSubmit={handleSubmit} className="mt-6 space-y-4">
           <div>
@@ -68,7 +81,13 @@ export default function SignupPage() {
         </form>
 
         <div className="mt-4 text-center text-sm text-white/70">
-          Already have an account? <Link to="/login" className="underline">Log in</Link>
+          Already have an account?{" "}
+          <Link
+            to={next === "start-trial" ? "/login?next=start-trial" : "/login"}
+            className="underline"
+          >
+            Log in
+          </Link>
         </div>
 
         <div className="mt-3 text-center text-sm">
