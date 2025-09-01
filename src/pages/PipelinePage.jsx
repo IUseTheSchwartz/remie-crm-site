@@ -8,7 +8,7 @@ import {
 import {
   loadLeads, saveLeads,
   loadClients, saveClients,
-  normalizePerson, upsert
+  normalizePerson
 } from "../lib/storage.js";
 
 /* ---------------------------------- Config --------------------------------- */
@@ -66,14 +66,6 @@ function ensurePipelineDefaults(person) {
   return patch;
 }
 
-function mergeAndSave(updated, clients, leads) {
-  const nextClients = upsert(clients, updated);
-  const nextLeads   = upsert(leads, updated);
-  saveClients(nextClients);
-  saveLeads(nextLeads);
-  return { nextClients, nextLeads };
-}
-
 function telHref(s) {
   const d = String(s || "").replace(/[^\d+]/g, "");
   return d ? `tel:${d}` : "#";
@@ -115,15 +107,23 @@ export default function PipelinePage() {
     setClients(loadClients());
   }, []);
 
+  // Combine both lists and pick the FRESHEST copy per id (fix #2)
   const all = useMemo(() => {
-    const map = new Map();
-    for (const x of clients) {
-      if (x.status !== "sold") map.set(x.id, ensurePipelineDefaults(x));
-    }
-    for (const y of leads) {
-      if (y.status !== "sold") map.set(y.id, ensurePipelineDefaults(y));
-    }
-    return Array.from(map.values());
+    const byId = new Map();
+    const pickFresh = (existing, incoming) => {
+      const te = existing?.stage_changed_at ? new Date(existing.stage_changed_at).getTime() : -1;
+      const ti = incoming?.stage_changed_at ? new Date(incoming.stage_changed_at).getTime() : -1;
+      return ti > te ? incoming : existing;
+    };
+
+    [...clients, ...leads].forEach((raw) => {
+      if (!raw || raw.status === "sold") return;
+      const p = ensurePipelineDefaults(raw);
+      const cur = byId.get(p.id);
+      byId.set(p.id, cur ? pickFresh(cur, p) : p);
+    });
+
+    return Array.from(byId.values());
   }, [clients, leads]);
 
   const filtered = useMemo(() => {
@@ -156,12 +156,30 @@ export default function PipelinePage() {
 
   /* ---------------------------- Mutations / actions --------------------------- */
 
+  // Deterministic save that replaces by id in BOTH lists (fix #1)
   function updatePerson(patch) {
-    const base = { ...patch }; // preserve custom fields
-    const { nextClients, nextLeads } = mergeAndSave(base, clients, leads);
+    const item = { ...patch }; // preserve custom fields
+
+    const replaceById = (list, obj) => {
+      const idx = list.findIndex((x) => x.id === obj.id);
+      if (idx >= 0) {
+        const copy = list.slice();
+        copy[idx] = obj;
+        return copy.filter((x, i) => i === copy.findIndex(y => y.id === x.id)); // dedupe same id
+      }
+      return [obj, ...list.filter((x) => x.id !== obj.id)];
+    };
+
+    const nextClients = replaceById(clients, item);
+    const nextLeads   = replaceById(leads, item);
+
+    saveClients(nextClients);
+    saveLeads(nextLeads);
+
     setClients(nextClients);
     setLeads(nextLeads);
-    if (selected?.id === base.id) setSelected(base);
+
+    if (selected?.id === item.id) setSelected(item);
   }
 
   function setStage(person, stage) {
@@ -367,7 +385,7 @@ function Drawer({ person, onClose, onSetStage, onUpdate, onNextFollowUp, notes, 
   const [pendingReason, setPendingReason] = useState(person?.pipeline?.pending?.reason || "");
   const [followPick, setFollowPick] = useState("");
 
-  // NEW: local stage selection + explicit Save button
+  // Local stage selection + explicit Save button
   const [selectedStage, setSelectedStage] = useState(person.stage);
 
   function addFollowFromPick(hours) {
