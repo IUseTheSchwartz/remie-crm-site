@@ -4,13 +4,17 @@ import { supabase } from "../lib/supabaseClient.js";
 import { migrateSoldLeads } from "../lib/migrateLeads.js";
 import { loadLeads } from "../lib/storage.js";
 
-// Promise timeout helper so UI never "hangs"
-function withTimeout(promise, ms = 12000, label = "operation") {
-  let t;
-  const timeout = new Promise((_, rej) =>
-    (t = setTimeout(() => rej(new Error(`${label} timed out after ${ms}ms`)), ms))
-  );
-  return Promise.race([promise.finally(() => clearTimeout(t)), timeout]);
+// Promise timeout helper that does NOT use .finally()
+function withTimeout(promiseLike, ms = 12000, label = "operation") {
+  return new Promise((resolve, reject) => {
+    const id = setTimeout(
+      () => reject(new Error(`${label} timed out after ${ms}ms`)),
+      ms
+    );
+    Promise.resolve(promiseLike)
+      .then((v) => { clearTimeout(id); resolve(v); })
+      .catch((e) => { clearTimeout(id); reject(e); });
+  });
 }
 
 export default function MailingPage() {
