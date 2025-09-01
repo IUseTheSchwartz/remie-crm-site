@@ -259,20 +259,22 @@ export default function PipelinePage() {
         </div>
       </div>
 
-      {/* Board */}
-      <div className="grid gap-4 md:grid-cols-6">
-        {STAGES.map((stage) => (
-          <Lane
-            key={stage.id}
-            stage={stage}
-            people={lanes[stage.id] || []}
-            onOpen={openCard}
-            onMoveTo={(id, dest) => {
-              const p = all.find(x => x.id === id);
-              if (p) setStage(p, dest);
-            }}
-          />
-        ))}
+      {/* Board — horizontally scrollable lanes with fixed width */}
+      <div className="overflow-x-auto">
+        <div className="flex w-max gap-4 pr-2">
+          {STAGES.map((stage) => (
+            <Lane
+              key={stage.id}
+              stage={stage}
+              people={lanes[stage.id] || []}
+              onOpen={openCard}
+              onMoveTo={(id, dest) => {
+                const p = all.find(x => x.id === id);
+                if (p) setStage(p, dest);
+              }}
+            />
+          ))}
+        </div>
       </div>
 
       {/* Drawer */}
@@ -298,7 +300,7 @@ export default function PipelinePage() {
 
 function Lane({ stage, people, onOpen, onMoveTo }) {
   return (
-    <div className="min-h-[420px] rounded-2xl border border-white/10 bg-white/[0.03] p-2">
+    <div className="w-[340px] md:w-[360px] shrink-0 rounded-2xl border border-white/10 bg-white/[0.03] p-2">
       <div className="flex items-center justify-between px-2 pb-2">
         <div className="text-sm font-medium">
           {stage.label}
@@ -306,7 +308,7 @@ function Lane({ stage, people, onOpen, onMoveTo }) {
         </div>
       </div>
 
-      <div className="grid gap-2 min-h-[300px]">
+      <div className="min-h-[300px] space-y-2">
         {people.map((p) => (
           <Card
             key={p.id}
