@@ -108,6 +108,29 @@ export default function PipelinePage() {
   const [notesMap, setNotesMap] = useState(loadNotesMap());
   const [showFilters, setShowFilters] = useState(false);
 
+  // 1) Prevent page-level horizontal scroll (board has its own horizontal scroll)
+  useEffect(() => {
+    const html = document.documentElement;
+    const body = document.body;
+    const prevHtml = html.style.overflowX;
+    const prevBody = body.style.overflowX;
+    html.style.overflowX = "hidden";
+    body.style.overflowX = "hidden";
+    return () => {
+      html.style.overflowX = prevHtml;
+      body.style.overflowX = prevBody;
+    };
+  }, []);
+
+  // 2) Lock background scroll while drawer is open
+  useEffect(() => {
+    const body = document.body;
+    const prev = body.style.overflow;
+    if (selected) body.style.overflow = "hidden";
+    else body.style.overflow = prev || "";
+    return () => { body.style.overflow = prev || ""; };
+  }, [selected]);
+
   useEffect(() => {
     setLeads(loadLeads());
     setClients(loadClients());
@@ -229,7 +252,7 @@ export default function PipelinePage() {
   /* --------------------------------- Render ---------------------------------- */
 
   return (
-    <div className="space-y-4">
+    <div className="space-y-4 overflow-x-hidden">
       {/* Toolbar */}
       <div className="flex flex-wrap items-center gap-2">
         <div className="relative">
@@ -286,7 +309,6 @@ export default function PipelinePage() {
           onUpdate={updatePerson}
           onNextFollowUp={setNextFollowUp}
           notes={notesFor(selected.id)}
-          // onAddNote takes (personId, body)
           onAddNote={(pid, body) => addNote(pid, body, false)}
           onDeleteNote={(pid, noteId) => deleteNote(pid, noteId)}
           onPinNote={(pid, noteId, pinned) => pinNote(pid, noteId, pinned)}
@@ -298,7 +320,7 @@ export default function PipelinePage() {
 
 /* --------------------------------- Subparts -------------------------------- */
 
-function Lane({ stage, people, onOpen, onMoveTo }) {
+function Lane({ stage, people, onOpen }) {
   return (
     <div className="w-[340px] md:w-[360px] shrink-0 rounded-2xl border border-white/10 bg-white/[0.03] p-2">
       <div className="flex items-center justify-between px-2 pb-2">
@@ -310,12 +332,7 @@ function Lane({ stage, people, onOpen, onMoveTo }) {
 
       <div className="min-h-[300px] space-y-2">
         {people.map((p) => (
-          <Card
-            key={p.id}
-            person={p}
-            onOpen={() => onOpen(p)}
-            onMoveTo={(dest) => onMoveTo(p.id, dest)}
-          />
+          <Card key={p.id} person={p} onOpen={() => onOpen(p)} />
         ))}
         {people.length === 0 && (
           <div className="rounded-xl border border-dashed border-white/10 p-4 text-center text-xs text-white/50">
@@ -331,7 +348,6 @@ function Card({ person, onOpen }) {
   const badge = STAGE_STYLE[person.stage] || "bg-white/10 text-white/80";
   const next = person.next_follow_up_at ? fmtDateTime(person.next_follow_up_at) : "—";
 
-  // Fixed height to keep all cards consistent across columns
   return (
     <div className="rounded-xl border border-white/10 bg-black/40 p-3 hover:bg-black/50 h-[150px] flex flex-col">
       <div className="flex-1 min-h-0">
@@ -407,7 +423,7 @@ function Drawer({
   );
 
   return (
-    <div className="fixed inset-0 z-40 grid bg-black/60 p-2 md:p-4">
+    <div className="fixed inset-0 z-40 grid w-screen bg-black/60 p-2 md:p-4">
       <div className="relative ml-auto h-full w-full max-w-xl rounded-2xl border border-white/15 bg-neutral-950">
         {/* Header */}
         <div className="flex items-center justify-between border-b border-white/10 px-4 py-3">
@@ -464,18 +480,17 @@ function Drawer({
             value={followPick}
             onChange={(e) => setFollowPick(e.target.value)}
           />
+        </div>
+        <div className="flex justify-end gap-2 border-b border-white/10 px-4 pb-3 pt-1">
           <button
             onClick={() => {
               const iso = followPick ? new Date(followPick).toISOString() : null;
               onNextFollowUp(person, iso);
             }}
-            className="ml-2 rounded-lg border border-white/15 px-3 py-1.5 text-xs hover:bg-white/10"
+            className="rounded-lg border border-white/15 px-3 py-1.5 text-xs hover:bg-white/10"
           >
             Save follow-up
           </button>
-          <div className="ml-auto text-xs text-white/50">
-            Current: {person.next_follow_up_at ? fmtDateTime(person.next_follow_up_at) : "—"}
-          </div>
         </div>
 
         {/* Body */}
