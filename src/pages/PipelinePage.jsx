@@ -50,6 +50,8 @@ function saveNotesMap(m) {
 function nowIso() { return new Date().toISOString(); }
 
 function ensurePipelineDefaults(person) {
+  // Normalize only when LOADING so id/shape is stable,
+  // but we will NOT normalize on SAVE (to keep custom fields).
   const base = normalizePerson(person);
   const patch = { ...base };
   if (patch.status === "sold") return patch;
@@ -109,7 +111,6 @@ export default function PipelinePage() {
   const [selected, setSelected] = useState(null);
   const [notesMap, setNotesMap] = useState(loadNotesMap());
   const [showFilters, setShowFilters] = useState(false);
-
   const [draggingId, setDraggingId] = useState(null);
 
   useEffect(() => {
@@ -161,8 +162,9 @@ export default function PipelinePage() {
 
   function openCard(p) { setSelected(p); }
 
+  // IMPORTANT FIX: do NOT call normalizePerson here; preserve pipeline fields
   function updatePerson(patch) {
-    const base = normalizePerson(patch);
+    const base = { ...patch }; // keep stage/pipeline/etc intact
     const { nextClients, nextLeads } = mergeAndSave(base, clients, leads);
     setClients(nextClients);
     setLeads(nextLeads);
