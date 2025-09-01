@@ -13,7 +13,7 @@ import {
 
 /* ---------------------------------- Config --------------------------------- */
 
-// Order here controls the display order
+// Display order
 const STAGES = [
   { id: "no_pickup",     label: "No Pickup",     hint: "No answer / left VM" },
   { id: "answered",      label: "Answered",      hint: "Reached the lead" },
@@ -23,12 +23,13 @@ const STAGES = [
   { id: "app_submitted", label: "App Submitted", hint: "Fully submitted" },
 ];
 
-// Render as 2 rows of 3
+// 2 rows × 3 columns
 const ROWS = [
   ["no_pickup", "answered", "quoted"],
   ["app_started", "app_pending", "app_submitted"],
 ];
 
+// visual tags
 const STAGE_STYLE = {
   no_pickup:     "bg-white/10 text-white/80",
   answered:      "bg-sky-500/15 text-sky-300",
@@ -37,6 +38,12 @@ const STAGE_STYLE = {
   app_pending:   "bg-fuchsia-500/15 text-fuchsia-300",
   app_submitted: "bg-emerald-500/15 text-emerald-300",
 };
+
+// Card geometry (for scroll area height)
+const CARD_H = 150;    // must match .h-[150px] on Card
+const GAP_Y = 8;       // space-y-2 = 0.5rem = 8px
+const MAX_VISIBLE = 5; // show 5 cards then scroll
+const SCROLL_H = CARD_H * MAX_VISIBLE + GAP_Y * (MAX_VISIBLE - 1); // ~760px
 
 /* ------------------------------- Notes storage ----------------------------- */
 
@@ -51,7 +58,6 @@ function saveNotesMap(m) { localStorage.setItem(NOTES_KEY, JSON.stringify(m)); }
 
 function nowIso() { return new Date().toISOString(); }
 
-/** Preserve custom fields (stage, pipeline, etc.) when normalizing. */
 function ensurePipelineDefaults(person) {
   const base = { ...normalizePerson(person), ...person };
   const patch = { ...base };
@@ -130,7 +136,6 @@ export default function PipelinePage() {
     setClients(loadClients());
   }, []);
 
-  // Combine both lists and pick freshest by id
   const all = useMemo(() => {
     const byId = new Map();
     const pickFresh = (existing, incoming) => {
@@ -274,7 +279,7 @@ export default function PipelinePage() {
         </div>
       </div>
 
-      {/* Board — 2 rows of 3 columns */}
+      {/* Board — 2 rows of 3 columns, each lane scrolls */}
       <div className="grid gap-4">
         {ROWS.map((row, i) => (
           <div key={i} className="grid gap-4 md:grid-cols-3">
@@ -323,7 +328,11 @@ function Lane({ stage, people, onOpen }) {
         </div>
       </div>
 
-      <div className="min-h-[300px] space-y-2">
+      {/* Scrollable list showing ~5 cards; vertical scroll only inside the lane */}
+      <div
+        className="space-y-2 overflow-y-auto overscroll-contain pr-1"
+        style={{ maxHeight: `${SCROLL_H}px` }}
+      >
         {people.map((p) => (
           <Card key={p.id} person={p} onOpen={() => onOpen(p)} />
         ))}
@@ -341,7 +350,6 @@ function Card({ person, onOpen }) {
   const badge = STAGE_STYLE[person.stage] || "bg-white/10 text-white/80";
   const next = person.next_follow_up_at ? fmtDateTime(person.next_follow_up_at) : "—";
 
-  // Fixed height = consistent cards in every column
   return (
     <div className="rounded-xl border border-white/10 bg-black/40 p-3 hover:bg-black/50 h-[150px] flex flex-col">
       <div className="flex-1 min-h-0">
@@ -607,7 +615,11 @@ function Drawer({
         </div>
 
         <style>{`.inp{width:100%; border-radius:.75rem; border:1px solid rgba(255,255,255,.1); background:#00000066; padding:.45rem .6rem; outline:none}
-        .inp:focus{box-shadow:0 0 0 2px rgba(99,102,241,.4)}`}</style>
+        .inp:focus{box-shadow:0 0 0 2px rgba(99,102,241,.4)}
+        /* Optional: nicer thin scrollbar for lanes */
+        .overscroll-contain::-webkit-scrollbar{width:8px}
+        .overscroll-contain::-webkit-scrollbar-thumb{background:rgba(255,255,255,.15); border-radius:8px}
+        .overscroll-contain::-webkit-scrollbar-track{background:transparent}`}</style>
       </div>
     </div>
   );
