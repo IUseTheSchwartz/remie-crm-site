@@ -2,7 +2,7 @@
 import { useEffect, useMemo, useState } from "react";
 import {
   Phone, Mail, Clock, StickyNote, Search, Filter,
-  CheckCircle2, ChevronRight, X
+  CheckCircle2, ChevronRight, X, Trash2
 } from "lucide-react";
 
 import {
@@ -27,12 +27,6 @@ const STAGE_STYLE = {
   app_pending: "bg-fuchsia-500/15 text-fuchsia-300",
 };
 
-const FOLLOWUP_SUGGESTIONS = [
-  { label: "Today PM", hours: 4 },
-  { label: "Tomorrow AM", hours: 24 },
-  { label: "Next Week", hours: 24 * 7 },
-];
-
 /* ------------------------------- Notes storage ----------------------------- */
 
 const NOTES_KEY = "remie_notes_v1";
@@ -40,23 +34,15 @@ function loadNotesMap() {
   try { return JSON.parse(localStorage.getItem(NOTES_KEY) || "{}"); }
   catch { return {}; }
 }
-function saveNotesMap(m) {
-  localStorage.setItem(NOTES_KEY, JSON.stringify(m));
-}
+function saveNotesMap(m) { localStorage.setItem(NOTES_KEY, JSON.stringify(m)); }
 
 /* ------------------------------ Helper functions --------------------------- */
 
 function nowIso() { return new Date().toISOString(); }
 
-/**
- * IMPORTANT FIX:
- * We must preserve custom fields (stage, pipeline, etc.)
- * Normalizers often drop unknown keys. So we merge:
- *   base = { ...normalizePerson(person), ...person }
- * That way we keep normalized id/name/phone but DO NOT lose pipeline fields.
- */
+/** Preserve custom fields (stage, pipeline, etc.) when normalizing. */
 function ensurePipelineDefaults(person) {
-  const base = { ...normalizePerson(person), ...person };
+  const base = { ...normalizePerson(person), ...person }; // <- keep custom fields
   const patch = { ...base };
   if (patch.status === "sold") return patch;
 
@@ -87,6 +73,20 @@ function fmtDateTime(iso) {
     const d = new Date(iso);
     return `${d.toLocaleDateString()} ${d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}`;
   } catch { return "—"; }
+}
+
+function toLocalInputValue(iso) {
+  if (!iso) return "";
+  try {
+    const d = new Date(iso);
+    const pad = (n) => String(n).padStart(2, "0");
+    const yyyy = d.getFullYear();
+    const mm = pad(d.getMonth() + 1);
+    const dd = pad(d.getDate());
+    const hh = pad(d.getHours());
+    const mi = pad(d.getMinutes());
+    return `${yyyy}-${mm}-${dd}T${hh}:${mi}`;
+  } catch { return ""; }
 }
 
 function daysInStage(iso) {
@@ -121,14 +121,12 @@ export default function PipelinePage() {
       const ti = incoming?.stage_changed_at ? new Date(incoming.stage_changed_at).getTime() : -1;
       return ti > te ? incoming : existing;
     };
-
     [...clients, ...leads].forEach((raw) => {
       if (!raw || raw.status === "sold") return;
       const p = ensurePipelineDefaults(raw);
       const cur = byId.get(p.id);
       byId.set(p.id, cur ? pickFresh(cur, p) : p);
     });
-
     return Array.from(byId.values());
   }, [clients, leads]);
 
@@ -171,7 +169,7 @@ export default function PipelinePage() {
       if (idx >= 0) {
         const copy = list.slice();
         copy[idx] = obj;
-        return copy.filter((x, i) => i === copy.findIndex(y => y.id === x.id));
+        return copy.filter((x, i) => i === copy.findIndex(y => y.id === x.id)); // de-dupe
       }
       return [obj, ...list.filter((x) => x.id !== obj.id)];
     };
@@ -298,7 +296,7 @@ export default function PipelinePage() {
 
 function Lane({ stage, people, onOpen, onMoveTo }) {
   return (
-    <div className="min-h-[420px] rounded-2xl border border-white/10 bg-white/[0.03] p-2">
+    <div className="min-h[420px] rounded-2xl border border-white/10 bg-white/[0.03] p-2">
       <div className="flex items-center justify-between px-2 pb-2">
         <div className="text-sm font-medium">
           {stage.label}
@@ -325,7 +323,7 @@ function Lane({ stage, people, onOpen, onMoveTo }) {
   );
 }
 
-function Card({ person, onOpen, onMoveTo }) {
+function Card({ person, onOpen /* dropdown removed */ }) {
   const badge = STAGE_STYLE[person.stage] || "bg-white/10 text-white/80";
   const next = person.next_follow_up_at ? fmtDateTime(person.next_follow_up_at) : "—";
 
@@ -365,17 +363,6 @@ function Card({ person, onOpen, onMoveTo }) {
           Open
           <ChevronRight className="h-3.5 w-3.5" />
         </button>
-
-        {/* Quick move dropdown */}
-        <select
-          className="rounded-lg border border-white/15 bg-black/40 px-2 py-1 text-xs outline-none hover:bg-white/10"
-          value={person.stage || "no_pickup"}
-          onChange={(e) => onMoveTo?.(e.target.value)}
-        >
-          {STAGES.map(s => (
-            <option key={s.id} value={s.id}>{s.label}</option>
-          ))}
-        </select>
       </div>
     </div>
   );
@@ -389,15 +376,10 @@ function Drawer({ person, onClose, onSetStage, onUpdate, onNextFollowUp, notes, 
     premium: person?.pipeline?.quote?.premium || "",
   });
   const [pendingReason, setPendingReason] = useState(person?.pipeline?.pending?.reason || "");
-  const [followPick, setFollowPick] = useState("");
+  const [followPick, setFollowPick] = useState(toLocalInputValue(person?.next_follow_up_at || ""));
 
   // Local stage selection + explicit Save button
   const [selectedStage, setSelectedStage] = useState(person.stage);
-
-  function addFollowFromPick(hours) {
-    const t = new Date(Date.now() + hours * 3600 * 1000).toISOString();
-    onNextFollowUp(person, t);
-  }
 
   const StageChip = ({ id, children }) => (
     <button
@@ -463,29 +445,25 @@ function Drawer({ person, onClose, onSetStage, onUpdate, onNextFollowUp, notes, 
           </button>
         </div>
 
-        {/* Follow-up quick picks */}
-        <div className="flex flex-wrap items-center gap-2 border-b border-white/10 px-4 py-3">
+        {/* Follow-up: manual only */}
+        <div className="flex items-center gap-2 border-b border-white/10 px-4 py-3">
           <div className="text-xs text-white/60">Next follow-up:</div>
-          {FOLLOWUP_SUGGESTIONS.map(s => (
-            <button key={s.label}
-              onClick={() => addFollowFromPick(s.hours)}
-              className="rounded-lg border border-white/15 px-2 py-1 text-xs hover:bg-white/10">
-              {s.label}
-            </button>
-          ))}
           <input
             type="datetime-local"
-            className="ml-auto rounded-lg border border-white/10 bg-black/40 px-2 py-1 text-xs outline-none focus:ring-2 focus:ring-indigo-500/40"
+            className="rounded-lg border border-white/10 bg-black/40 px-2 py-1 text-xs outline-none focus:ring-2 focus:ring-indigo-500/40"
             value={followPick}
             onChange={(e) => setFollowPick(e.target.value)}
-            onBlur={() => {
-              if (followPick) {
-                const iso = new Date(followPick).toISOString();
-                onNextFollowUp(person, iso);
-              }
-            }}
           />
-          <div className="text-xs text-white/50">
+          <button
+            onClick={() => {
+              const iso = followPick ? new Date(followPick).toISOString() : null;
+              onNextFollowUp(person, iso);
+            }}
+            className="ml-2 rounded-lg border border-white/15 px-3 py-1.5 text-xs hover:bg-white/10"
+          >
+            Save follow-up
+          </button>
+          <div className="ml-auto text-xs text-white/50">
             Current: {person.next_follow_up_at ? fmtDateTime(person.next_follow_up_at) : "—"}
           </div>
         </div>
@@ -513,18 +491,27 @@ function Drawer({ person, onClose, onSetStage, onUpdate, onNextFollowUp, notes, 
                 </button>
                 <div className="text-xs text-white/50">{notes.length} note{notes.length === 1 ? "" : "s"}</div>
               </div>
+
               <div className="mt-1 grid gap-2">
                 {notes.map(n => (
                   <div key={n.id} className="rounded-lg border border-white/10 bg-black/30 p-2">
                     <div className="mb-1 flex items-center justify-between text-xs text-white/60">
                       <span>{new Date(n.created_at).toLocaleString()}</span>
-                      <div className="flex items-center gap-2">
-                        <button onClick={() => onPinNote(person.id, n.id, !n.pinned)} className="hover:underline">
+                      <div className="flex items-center gap-3">
+                        <button
+                          onClick={() => onPinNote(person.id, n.id, !n.pinned)}
+                          className="hover:underline"
+                          title={n.pinned ? "Unpin" : "Pin"}
+                        >
                           {n.pinned ? "Unpin" : "Pin"}
                         </button>
-                        {!n.auto && (
-                          <button onClick={() => onDeleteNote(person.id, n.id)} className="text-rose-300 hover:underline">Delete</button>
-                        )}
+                        <button
+                          onClick={() => onDeleteNote(person.id, n.id)}
+                          title="Delete note"
+                          className="text-rose-300 hover:text-rose-200"
+                        >
+                          <Trash2 className="h-4 w-4" />
+                        </button>
                       </div>
                     </div>
                     <div className={`text-sm ${n.auto ? "text-white/75 italic" : ""}`}>{n.body}</div>
