@@ -80,12 +80,7 @@ function toLocalInputValue(iso) {
   try {
     const d = new Date(iso);
     const pad = (n) => String(n).padStart(2, "0");
-    const yyyy = d.getFullYear();
-    const mm = pad(d.getMonth() + 1);
-    const dd = pad(d.getDate());
-    const hh = pad(d.getHours());
-    const mi = pad(d.getMinutes());
-    return `${yyyy}-${mm}-${dd}T${hh}:${mi}`;
+    return `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
   } catch { return ""; }
 }
 
@@ -169,7 +164,8 @@ export default function PipelinePage() {
       if (idx >= 0) {
         const copy = list.slice();
         copy[idx] = obj;
-        return copy.filter((x, i) => i === copy.findIndex(y => y.id === x.id)); // de-dupe
+        // Ensure only one copy by id
+        return copy.filter((x, i) => i === copy.findIndex(y => y.id === x.id));
       }
       return [obj, ...list.filter((x) => x.id !== obj.id)];
     };
@@ -258,7 +254,7 @@ export default function PipelinePage() {
         </div>
       </div>
 
-      {/* Board (no drag & drop) */}
+      {/* Board */}
       <div className="grid gap-4 md:grid-cols-4">
         {STAGES.map((stage) => (
           <Lane
@@ -284,7 +280,6 @@ export default function PipelinePage() {
           onNextFollowUp={setNextFollowUp}
           notes={notesFor(selected.id)}
           onAddNote={(body) => addNote(selected.id, body, false)}
-          // FIX: callbacks now accept (personId, noteId, ...)
           onDeleteNote={(pid, noteId) => deleteNote(pid, noteId)}
           onPinNote={(pid, noteId, pinned) => pinNote(pid, noteId, pinned)}
         />
@@ -324,20 +319,24 @@ function Lane({ stage, people, onOpen, onMoveTo }) {
   );
 }
 
-function Card({ person, onOpen /* dropdown removed */ }) {
+function Card({ person, onOpen }) {
   const badge = STAGE_STYLE[person.stage] || "bg-white/10 text-white/80";
   const next = person.next_follow_up_at ? fmtDateTime(person.next_follow_up_at) : "—";
 
-  // Make all cards same height & balanced
+  // FIXED HEIGHT + truncation so all cards match the No Pickup column
   return (
-    <div className="rounded-xl border border-white/10 bg-black/40 p-3 hover:bg-black/50 min-h-[130px] flex flex-col justify-between">
-      <div>
+    <div className="rounded-xl border border-white/10 bg-black/40 p-3 hover:bg-black/50 h-[150px] flex flex-col">
+      <div className="flex-1 min-h-0">
         <div className="flex items-start justify-between gap-2">
-          <div className="font-medium truncate">{person.name || person.email || person.phone || "Unnamed"}</div>
-          <span className={`ml-2 rounded-full px-2 py-0.5 text-xs ${badge}`}>{labelForStage(person.stage)}</span>
+          <div className="font-medium truncate max-w-[70%]">
+            {person.name || person.email || person.phone || "Unnamed"}
+          </div>
+          <span className={`ml-2 shrink-0 rounded-full px-2 py-0.5 text-xs ${badge}`}>
+            {labelForStage(person.stage)}
+          </span>
         </div>
 
-        <div className="mt-1 text-xs text-white/70 space-y-1">
+        <div className="mt-1 text-xs text-white/70 space-y-1 overflow-hidden">
           {person.phone && (
             <div className="flex items-center gap-1">
               <Phone className="h-3.5 w-3.5 shrink-0" />
@@ -358,7 +357,7 @@ function Card({ person, onOpen /* dropdown removed */ }) {
         </div>
       </div>
 
-      <div className="mt-2 flex items-center gap-2">
+      <div className="pt-2">
         <button
           onClick={onOpen}
           className="inline-flex items-center gap-1 rounded-lg border border-white/15 px-2 py-1 text-xs hover:bg-white/10"
