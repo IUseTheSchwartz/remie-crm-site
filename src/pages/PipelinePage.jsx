@@ -13,18 +13,23 @@ import {
 
 /* ---------------------------------- Config --------------------------------- */
 
+// Order here controls the column order on the board
 const STAGES = [
-  { id: "no_pickup",   label: "No Pickup",    hint: "No answer / left VM" },
-  { id: "quoted",      label: "Quoted",       hint: "Shared premium/face" },
-  { id: "app_started", label: "App Started",  hint: "Began application" },
-  { id: "app_pending", label: "App Pending",  hint: "Waiting on UW/docs" },
+  { id: "no_pickup",     label: "No Pickup",     hint: "No answer / left VM" },
+  { id: "answered",      label: "Answered",      hint: "Reached the lead" },
+  { id: "quoted",        label: "Quoted",        hint: "Shared premium/face" },
+  { id: "app_started",   label: "App Started",   hint: "Began application" },
+  { id: "app_pending",   label: "App Pending",   hint: "Waiting on UW/docs" },
+  { id: "app_submitted", label: "App Submitted", hint: "Fully submitted" },
 ];
 
 const STAGE_STYLE = {
-  no_pickup:   "bg-white/10 text-white/80",
-  quoted:      "bg-amber-500/15 text-amber-300",
-  app_started: "bg-indigo-500/15 text-indigo-300",
-  app_pending: "bg-fuchsia-500/15 text-fuchsia-300",
+  no_pickup:     "bg-white/10 text-white/80",
+  answered:      "bg-sky-500/15 text-sky-300",
+  quoted:        "bg-amber-500/15 text-amber-300",
+  app_started:   "bg-indigo-500/15 text-indigo-300",
+  app_pending:   "bg-fuchsia-500/15 text-fuchsia-300",
+  app_submitted: "bg-emerald-500/15 text-emerald-300",
 };
 
 /* ------------------------------- Notes storage ----------------------------- */
@@ -42,7 +47,7 @@ function nowIso() { return new Date().toISOString(); }
 
 /** Preserve custom fields (stage, pipeline, etc.) when normalizing. */
 function ensurePipelineDefaults(person) {
-  const base = { ...normalizePerson(person), ...person };
+  const base = { ...normalizePerson(person), ...person }; // keep custom fields
   const patch = { ...base };
   if (patch.status === "sold") return patch;
 
@@ -108,6 +113,7 @@ export default function PipelinePage() {
     setClients(loadClients());
   }, []);
 
+  // Combine both lists and pick the FRESHEST copy per id
   const all = useMemo(() => {
     const byId = new Map();
     const pickFresh = (existing, incoming) => {
@@ -154,6 +160,7 @@ export default function PipelinePage() {
 
   /* ---------------------------- Mutations / actions --------------------------- */
 
+  // Deterministic save that replaces by id in BOTH lists
   function updatePerson(patch) {
     const item = { ...patch };
 
@@ -162,6 +169,7 @@ export default function PipelinePage() {
       if (idx >= 0) {
         const copy = list.slice();
         copy[idx] = obj;
+        // Ensure only one copy by id
         return copy.filter((x, i) => i === copy.findIndex(y => y.id === x.id));
       }
       return [obj, ...list.filter((x) => x.id !== obj.id)];
@@ -252,7 +260,7 @@ export default function PipelinePage() {
       </div>
 
       {/* Board */}
-      <div className="grid gap-4 md:grid-cols-4">
+      <div className="grid gap-4 md:grid-cols-6">
         {STAGES.map((stage) => (
           <Lane
             key={stage.id}
@@ -276,7 +284,7 @@ export default function PipelinePage() {
           onUpdate={updatePerson}
           onNextFollowUp={setNextFollowUp}
           notes={notesFor(selected.id)}
-          // ✅ Fix: make onAddNote accept (personId, body)
+          // onAddNote takes (personId, body)
           onAddNote={(pid, body) => addNote(pid, body, false)}
           onDeleteNote={(pid, noteId) => deleteNote(pid, noteId)}
           onPinNote={(pid, noteId, pinned) => pinNote(pid, noteId, pinned)}
@@ -321,6 +329,7 @@ function Card({ person, onOpen }) {
   const badge = STAGE_STYLE[person.stage] || "bg-white/10 text-white/80";
   const next = person.next_follow_up_at ? fmtDateTime(person.next_follow_up_at) : "—";
 
+  // Fixed height to keep all cards consistent across columns
   return (
     <div className="rounded-xl border border-white/10 bg-black/40 p-3 hover:bg-black/50 h-[150px] flex flex-col">
       <div className="flex-1 min-h-0">
@@ -427,11 +436,9 @@ function Drawer({
         {/* STAGE PICKER + SAVE */}
         <div className="flex flex-wrap items-center gap-2 border-b border-white/10 px-4 py-3">
           <div className="text-xs text-white/60 mr-1">Stage:</div>
-          <StageChip id="no_pickup">No Pickup</StageChip>
-          <StageChip id="quoted">Quoted</StageChip>
-          <StageChip id="app_started">App Started</StageChip>
-          <StageChip id="app_pending">App Pending</StageChip>
-
+          {STAGES.map(s => (
+            <StageChip key={s.id} id={s.id}>{s.label}</StageChip>
+          ))}
           <button
             onClick={() => onSetStage(person, selectedStage)}
             disabled={selectedStage === person.stage}
@@ -440,6 +447,7 @@ function Drawer({
                 ? "cursor-not-allowed border-white/10 text-white/40"
                 : "border-white/15 bg-white/5 hover:bg-white/10"
             }`}
+            title={selectedStage === person.stage ? "No changes to save" : "Save stage"}
           >
             Save stage
           </button>
@@ -537,6 +545,7 @@ function Drawer({
                 ))}
               </div>
 
+              {/* Quick save helpers */}
               <div className="mt-3 text-xs text-white/60">Quote (optional)</div>
               <div className="grid grid-cols-3 gap-2">
                 <input className="inp" placeholder="Carrier"
@@ -598,9 +607,11 @@ function Drawer({
 function labelForStage(id) {
   const m = {
     no_pickup: "No Pickup",
+    answered: "Answered",
     quoted: "Quoted",
     app_started: "App Started",
     app_pending: "App Pending",
+    app_submitted: "App Submitted",
   };
   return m[id] || "No Pickup";
 }
