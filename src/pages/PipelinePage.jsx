@@ -21,7 +21,6 @@ const STAGES = [
   { id: "app_pending", label: "App Pending",  hint: "Waiting on UW/docs" },
 ];
 
-// Simple badge colors per stage
 const STAGE_STYLE = {
   no_pickup:   "bg-white/10 text-white/80",
   quoted:      "bg-amber-500/15 text-amber-300",
@@ -29,7 +28,6 @@ const STAGE_STYLE = {
   app_pending: "bg-fuchsia-500/15 text-fuchsia-300",
 };
 
-// Quick suggestions for next follow-up (hours from now)
 const FOLLOWUP_SUGGESTIONS = [
   { label: "Today PM", hours: 4 },
   { label: "Tomorrow AM", hours: 24 },
@@ -38,7 +36,6 @@ const FOLLOWUP_SUGGESTIONS = [
 
 /* ------------------------------- Notes storage ----------------------------- */
 
-// Lightweight notes store in localStorage, keyed by lead.id
 const NOTES_KEY = "remie_notes_v1";
 function loadNotesMap() {
   try { return JSON.parse(localStorage.getItem(NOTES_KEY) || "{}"); }
@@ -53,16 +50,16 @@ function saveNotesMap(m) {
 function nowIso() { return new Date().toISOString(); }
 
 function ensurePipelineDefaults(person) {
-  // Skip sold contacts from the working board
-  if (person.status === "sold") return person;
+  // normalize ensures we have a stable id
+  const base = normalizePerson(person);
+  const patch = { ...base };
+  if (patch.status === "sold") return patch;
 
-  const patch = { ...person };
   if (!patch.stage) patch.stage = "no_pickup";
   if (!patch.stage_changed_at) patch.stage_changed_at = nowIso();
   if (patch.call_attempts == null) patch.call_attempts = 0;
   if (!patch.last_outcome) patch.last_outcome = "";
   if (!patch.priority) patch.priority = "medium";
-  // Space for storing quote/app info without changing your existing Sold flow
   patch.pipeline = patch.pipeline || {
     quote: { carrier: "", face: "", premium: "" },
     pending: { reason: "" },
@@ -71,7 +68,6 @@ function ensurePipelineDefaults(person) {
 }
 
 function mergeAndSave(updated, clients, leads) {
-  // Upsert into both lists; keep your existing storage approach
   const nextClients = upsert(clients, updated);
   const nextLeads   = upsert(leads, updated);
   saveClients(nextClients);
@@ -107,17 +103,17 @@ function daysInStage(iso) {
 /* --------------------------------- Component -------------------------------- */
 
 export default function PipelinePage() {
-  // Core data
   const [leads, setLeads] = useState([]);
   const [clients, setClients] = useState([]);
 
-  // UI state
   const [filter, setFilter] = useState("");
-  const [selected, setSelected] = useState(null); // currently opened card (drawer)
+  const [selected, setSelected] = useState(null);
   const [notesMap, setNotesMap] = useState(loadNotesMap());
   const [showFilters, setShowFilters] = useState(false);
 
-  // Load from your existing local storage
+  // for smoother DnD
+  const [draggingId, setDraggingId] = useState(null);
+
   useEffect(() => {
     const L = loadLeads();
     const C = loadClients();
@@ -125,15 +121,24 @@ export default function PipelinePage() {
     setClients(C);
   }, []);
 
-  // Build deduped collection (like your Leads view), excluding sold
+  // Build deduped collection (exclude sold) & ensure ids/defaults
   const all = useMemo(() => {
     const map = new Map();
-    for (const x of clients) if (x.status !== "sold") map.set(x.id, ensurePipelineDefaults(x));
-    for (const y of leads)   if (y.status !== "sold") map.set(y.id, ensurePipelineDefaults(y));
+    for (const x of clients) {
+      if (x.status !== "sold") {
+        const v = ensurePipelineDefaults(x);
+        map.set(v.id, v);
+      }
+    }
+    for (const y of leads) {
+      if (y.status !== "sold") {
+        const v = ensurePipelineDefaults(y);
+        map.set(v.id, v);
+      }
+    }
     return Array.from(map.values());
   }, [clients, leads]);
 
-  // Filter by search text
   const filtered = useMemo(() => {
     const q = filter.trim().toLowerCase();
     if (!q) return all;
@@ -143,14 +148,12 @@ export default function PipelinePage() {
     );
   }, [all, filter]);
 
-  // Group into lanes
   const lanes = useMemo(() => {
     const out = Object.fromEntries(STAGES.map(s => [s.id, []]));
     for (const p of filtered) {
       const key = STAGE_STYLE[p.stage] ? p.stage : "no_pickup";
       out[key].push(p);
     }
-    // Sort by next follow up (so the soonest is top) then by days in stage
     for (const id of Object.keys(out)) {
       out[id].sort((a,b) => {
         const na = a.next_follow_up_at ? new Date(a.next_follow_up_at).getTime() : Infinity;
@@ -173,7 +176,6 @@ export default function PipelinePage() {
     const { nextClients, nextLeads } = mergeAndSave(base, clients, leads);
     setClients(nextClients);
     setLeads(nextLeads);
-    // also refresh selected if open
     if (selected?.id === base.id) setSelected(base);
   }
 
@@ -182,12 +184,15 @@ export default function PipelinePage() {
     updatePerson({ ...person, stage, stage_changed_at: nowIso() });
   }
 
+  function moveToStageById(id, stage) {
+    const person = all.find(p => p.id === id);
+    if (person) moveStage(person, stage);
+  }
+
   function setOutcome(person, outcome, extra = {}) {
     const patch = { ...person, last_outcome: outcome };
-    // smart increments for some outcomes
     if (outcome === "no_answer" || outcome === "left_vm") {
       patch.call_attempts = (person.call_attempts || 0) + 1;
-      // stay in no_pickup unless they were elsewhere
       patch.stage = "no_pickup";
     }
     if (outcome === "quoted") {
@@ -210,18 +215,16 @@ export default function PipelinePage() {
     }
     if (outcome === "not_interested") {
       patch.pipeline = { ...(person.pipeline || {}), lost_reason: extra.lost_reason || "" };
-      patch.stage = "no_pickup"; // keep it off-board by simply letting filters hide it, or set a flag
+      patch.stage = "no_pickup";
       patch.status = "lost";
     }
     if (outcome === "sold") {
-      // Minimal: mark as sold; you can fill full policy later on Leads page
       patch.status = "sold";
     }
 
     patch.stage_changed_at = nowIso();
     updatePerson(patch);
 
-    // auto-note
     const msg = autoNoteForOutcome(outcome, extra);
     if (msg) addNote(person.id, msg, true);
   }
@@ -297,11 +300,9 @@ export default function PipelinePage() {
             key={stage.id}
             stage={stage}
             people={lanes[stage.id] || []}
-            onDropCard={(id) => {
-              const person = all.find(p => p.id === id);
-              if (person) moveStage(person, stage.id);
-            }}
+            onDropCard={(id) => moveToStageById(id, stage.id)}
             onOpen={openCard}
+            setDraggingId={setDraggingId}
           />
         ))}
       </div>
@@ -325,14 +326,21 @@ export default function PipelinePage() {
 
 /* --------------------------------- Subparts -------------------------------- */
 
-function Lane({ stage, people, onDropCard, onOpen }) {
+function Lane({ stage, people, onDropCard, onOpen, setDraggingId }) {
   return (
     <div
       className="min-h-[420px] rounded-2xl border border-white/10 bg-white/[0.03] p-2"
-      onDragOver={(e) => e.preventDefault()}
+      onDragOver={(e) => {
+        e.preventDefault();
+        try { e.dataTransfer.dropEffect = "move"; } catch {}
+      }}
       onDrop={(e) => {
-        const id = e.dataTransfer.getData("text/plain");
+        e.preventDefault();
+        const idA = e.dataTransfer.getData("application/remie-id");
+        const idB = e.dataTransfer.getData("text/plain");
+        const id = idA || idB;
         if (id) onDropCard(id);
+        setDraggingId?.(null);
       }}
     >
       <div className="flex items-center justify-between px-2 pb-2">
@@ -341,9 +349,27 @@ function Lane({ stage, people, onDropCard, onOpen }) {
           <span className="ml-2 text-xs text-white/50">{stage.hint}</span>
         </div>
       </div>
-      <div className="grid gap-2">
+      <div
+        className="grid gap-2"
+        onDragOver={(e) => { e.preventDefault(); }}
+        onDrop={(e) => {
+          e.preventDefault();
+          const idA = e.dataTransfer.getData("application/remie-id");
+          const idB = e.dataTransfer.getData("text/plain");
+          const id = idA || idB;
+          if (id) onDropCard(id);
+          setDraggingId?.(null);
+        }}
+      >
         {people.map((p) => (
-          <Card key={p.id} person={p} onOpen={() => onOpen(p)} />
+          <Card
+            key={p.id}
+            person={p}
+            onOpen={() => onOpen(p)}
+            setDraggingId={setDraggingId}
+            // fallback: allow moving via dropdown (no drag)
+            onMoveTo={(stageId) => onDropCard(p.id, stageId)}
+          />
         ))}
         {people.length === 0 && (
           <div className="rounded-xl border border-dashed border-white/10 p-4 text-center text-xs text-white/50">
@@ -355,19 +381,29 @@ function Lane({ stage, people, onDropCard, onOpen }) {
   );
 }
 
-function Card({ person, onOpen }) {
+function Card({ person, onOpen, setDraggingId, onMoveTo }) {
   const badge = STAGE_STYLE[person.stage] || "bg-white/10 text-white/80";
   const next = person.next_follow_up_at ? fmtDateTime(person.next_follow_up_at) : "—";
+
   return (
     <div
       draggable
-      onDragStart={(e) => e.dataTransfer.setData("text/plain", person.id)}
+      onDragStart={(e) => {
+        setDraggingId?.(person.id);
+        try {
+          e.dataTransfer.setData("application/remie-id", person.id);
+          e.dataTransfer.setData("text/plain", person.id);
+          e.dataTransfer.effectAllowed = "move";
+        } catch {}
+      }}
+      onDragEnd={() => setDraggingId?.(null)}
       className="cursor-grab active:cursor-grabbing rounded-xl border border-white/10 bg-black/40 p-3 hover:bg-black/50"
     >
-      <div className="flex items-start justify-between">
+      <div className="flex items-start justify-between gap-2">
         <div className="font-medium">{person.name || person.email || person.phone || "Unnamed"}</div>
         <span className={`ml-2 rounded-full px-2 py-0.5 text-xs ${badge}`}>{labelForStage(person.stage)}</span>
       </div>
+
       <div className="mt-1 text-xs text-white/70 space-y-1">
         {person.phone && (
           <div className="flex items-center gap-1">
@@ -387,14 +423,28 @@ function Card({ person, onOpen }) {
           <span className="ml-auto text-white/40">Age: {daysInStage(person.stage_changed_at)}</span>
         </div>
       </div>
-      <button
-        onClick={onOpen}
-        className="mt-2 inline-flex items-center gap-1 rounded-lg border border-white/15 px-2 py-1 text-xs hover:bg-white/10"
-      >
-        <StickyNote className="h-3.5 w-3.5" />
-        Open
-        <ChevronRight className="h-3.5 w-3.5" />
-      </button>
+
+      <div className="mt-2 flex items-center gap-2">
+        <button
+          onClick={onOpen}
+          className="inline-flex items-center gap-1 rounded-lg border border-white/15 px-2 py-1 text-xs hover:bg-white/10"
+        >
+          <StickyNote className="h-3.5 w-3.5" />
+          Open
+          <ChevronRight className="h-3.5 w-3.5" />
+        </button>
+
+        {/* No-drag fallback: quick move dropdown */}
+        <select
+          className="rounded-lg border border-white/15 bg-black/40 px-2 py-1 text-xs outline-none hover:bg-white/10"
+          value={person.stage || "no_pickup"}
+          onChange={(e) => onMoveTo?.(e.target.value)}
+        >
+          {STAGES.map(s => (
+            <option key={s.id} value={s.id}>{s.label}</option>
+          ))}
+        </select>
+      </div>
     </div>
   );
 }
@@ -483,7 +533,7 @@ function Drawer({ person, onClose, onOutcome, onNextFollowUp, notes, onAddNote, 
           </div>
         </div>
 
-        {/* Body: two columns on wide screens */}
+        {/* Body */}
         <div className="grid gap-4 p-4 sm:grid-cols-2">
           {/* Notes */}
           <section className="rounded-xl border border-white/10 bg-white/[0.03] p-3">
@@ -530,7 +580,7 @@ function Drawer({ person, onClose, onOutcome, onNextFollowUp, notes, onAddNote, 
             </div>
           </section>
 
-          {/* Details / mini-forms */}
+          {/* Details */}
           <section className="rounded-xl border border-white/10 bg-white/[0.03] p-3">
             <div className="mb-2 text-sm font-medium">Details</div>
             <div className="grid gap-2 text-sm">
@@ -543,7 +593,6 @@ function Drawer({ person, onClose, onOutcome, onNextFollowUp, notes, onAddNote, 
                 ))}
               </div>
 
-              {/* Quote quick fields */}
               <div className="mt-3 text-xs text-white/60">Quote (optional)</div>
               <div className="grid grid-cols-3 gap-2">
                 <input className="inp" placeholder="Carrier"
@@ -560,7 +609,6 @@ function Drawer({ person, onClose, onOutcome, onNextFollowUp, notes, onAddNote, 
                 <CheckCircle2 className="h-4 w-4" /> Save Quote & mark Quoted
               </button>
 
-              {/* Pending reason */}
               <div className="mt-3 text-xs text-white/60">Pending reason</div>
               <input className="inp" placeholder="Underwriting / APS / eSign…"
                 value={pendingReason} onChange={(e)=>setPendingReason(e.target.value)} />
@@ -571,7 +619,6 @@ function Drawer({ person, onClose, onOutcome, onNextFollowUp, notes, onAddNote, 
                 <CheckCircle2 className="h-4 w-4" /> Save reason & mark Pending
               </button>
 
-              {/* Sold / Lost quick links */}
               <div className="mt-4 flex flex-wrap items-center gap-2">
                 <button
                   onClick={() => onOutcome(person, "sold")}
