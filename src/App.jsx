@@ -40,8 +40,8 @@ const PLANS = [
     monthly: 100,
     yearly: 80,
     buyUrl: {
-      monthly: "https://buy.stripe.com/test_8x24gBghhaXefke23T5c405",
-      annual: "https://buy.stripe.com/test_28EaEZ4yz0iAfkedMB5c404",
+      monthly: "https://buy.stripe.com/00w9AV5CGaQ61oqc0Q8Ra00",
+      annual: "https://buy.stripe.com/7sYcN70imgaqffg2qg8Ra01",
     },
     features: [
       "Automatic birthday letters for each contact",
@@ -58,8 +58,8 @@ const PLANS = [
     monthly: 350,
     yearly: 280,
     buyUrl: {
-      monthly: "https://buy.stripe.com/test_8x28wR9ST7L2dc6gYN5c403",
-      annual: "https://buy.stripe.com/test_00w5kF5CD8P67RM8sh5c402",
+      monthly: "https://buy.stripe.com/fZuaEZghk9M26IK3uk8Ra05",
+      annual: "https://buy.stripe.com/9B64gB0im8HY2suc0Q8Ra06",
     },
     features: [
       "Lead inbox & drag-and-drop pipeline",
@@ -83,8 +83,8 @@ const PLANS = [
     monthly: 1500,
     yearly: 1200,
     buyUrl: {
-      monthly: "https://buy.stripe.com/test_00w28tc11d5m4FAaAp5c400",
-      annual: "https://buy.stripe.com/test_14AcN7d55fdu6NIfUJ5c401",
+      monthly: "https://buy.stripe.com/6oUcN70im7DUc341mc8Ra02",
+      annual: "https://buy.stripe.com/6oUdRb1mqaQ69UW8OE8Ra04",
     },
     features: [
       "Everything in Basic",
