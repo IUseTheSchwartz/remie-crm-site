@@ -2,8 +2,7 @@
 import { useEffect, useMemo, useState } from "react";
 import {
   Phone, Mail, Clock, StickyNote, Search, Filter,
-  MoveRight, MoveLeft, CheckCircle2, AlertCircle, ChevronRight, X,
-  Voicemail, ThumbsDown, DollarSign
+  CheckCircle2, ChevronRight, X, DollarSign
 } from "lucide-react";
 
 import {
@@ -50,8 +49,7 @@ function saveNotesMap(m) {
 function nowIso() { return new Date().toISOString(); }
 
 function ensurePipelineDefaults(person) {
-  // Normalize only when LOADING so id/shape is stable,
-  // but we will NOT normalize on SAVE (to keep custom fields).
+  // Normalize ONLY on read so id/shape is stable (we won't normalize on save)
   const base = normalizePerson(person);
   const patch = { ...base };
   if (patch.status === "sold") return patch;
@@ -111,7 +109,6 @@ export default function PipelinePage() {
   const [selected, setSelected] = useState(null);
   const [notesMap, setNotesMap] = useState(loadNotesMap());
   const [showFilters, setShowFilters] = useState(false);
-  const [draggingId, setDraggingId] = useState(null);
 
   useEffect(() => {
     setLeads(loadLeads());
@@ -145,6 +142,7 @@ export default function PipelinePage() {
       const key = STAGE_STYLE[p.stage] ? p.stage : "no_pickup";
       out[key].push(p);
     }
+    // Sort by next follow-up then by time in stage
     for (const id of Object.keys(out)) {
       out[id].sort((a,b) => {
         const na = a.next_follow_up_at ? new Date(a.next_follow_up_at).getTime() : Infinity;
@@ -162,63 +160,19 @@ export default function PipelinePage() {
 
   function openCard(p) { setSelected(p); }
 
-  // IMPORTANT FIX: do NOT call normalizePerson here; preserve pipeline fields
+  // Do NOT normalize on save — preserve custom fields
   function updatePerson(patch) {
-    const base = { ...patch }; // keep stage/pipeline/etc intact
+    const base = { ...patch };
     const { nextClients, nextLeads } = mergeAndSave(base, clients, leads);
     setClients(nextClients);
     setLeads(nextLeads);
     if (selected?.id === base.id) setSelected(base);
   }
 
-  function moveStage(person, stage) {
-    if (!STAGE_STYLE[stage]) stage = "no_pickup";
-    updatePerson({ ...person, stage, stage_changed_at: nowIso() });
-  }
-
-  function moveToStageById(id, stage) {
-    const person = all.find(p => p.id === id);
-    if (person) moveStage(person, stage);
-  }
-
-  function setOutcome(person, outcome, extra = {}) {
-    const patch = { ...person, last_outcome: outcome };
-    if (outcome === "no_answer" || outcome === "left_vm") {
-      patch.call_attempts = (person.call_attempts || 0) + 1;
-      patch.stage = "no_pickup";
-    }
-    if (outcome === "quoted") {
-      patch.stage = "quoted";
-      patch.pipeline = { ...(person.pipeline || {}), quote: {
-        carrier: extra.carrier || person?.pipeline?.quote?.carrier || "",
-        face: extra.face || person?.pipeline?.quote?.face || "",
-        premium: extra.premium || person?.pipeline?.quote?.premium || "",
-      }};      
-    }
-    if (outcome === "app_started") {
-      patch.stage = "app_started";
-    }
-    if (outcome === "app_pending") {
-      patch.stage = "app_pending";
-      patch.pipeline = {
-        ...(person.pipeline || {}),
-        pending: { reason: extra.reason || person?.pipeline?.pending?.reason || "" }
-      };
-    }
-    if (outcome === "not_interested") {
-      patch.pipeline = { ...(person.pipeline || {}), lost_reason: extra.lost_reason || "" };
-      patch.stage = "no_pickup";
-      patch.status = "lost";
-    }
-    if (outcome === "sold") {
-      patch.status = "sold";
-    }
-
-    patch.stage_changed_at = nowIso();
-    updatePerson(patch);
-
-    const msg = autoNoteForOutcome(outcome, extra);
-    if (msg) addNote(person.id, msg, true);
+  function setStage(person, stage) {
+    const safe = STAGE_STYLE[stage] ? stage : "no_pickup";
+    updatePerson({ ...person, stage: safe, stage_changed_at: nowIso() });
+    autoNoteForStageChange(person, safe);
   }
 
   function setNextFollowUp(person, dateIso) {
@@ -285,16 +239,18 @@ export default function PipelinePage() {
         </div>
       </div>
 
-      {/* Kanban board */}
+      {/* Board (no drag & drop) */}
       <div className="grid gap-4 md:grid-cols-4">
         {STAGES.map((stage) => (
           <Lane
             key={stage.id}
             stage={stage}
             people={lanes[stage.id] || []}
-            onDropCard={(id, destStageId) => moveToStageById(id, destStageId || stage.id)}
             onOpen={openCard}
-            setDraggingId={setDraggingId}
+            onMoveTo={(id, dest) => {
+              const p = all.find(x => x.id === id);
+              if (p) setStage(p, dest);
+            }}
           />
         ))}
       </div>
@@ -304,7 +260,7 @@ export default function PipelinePage() {
         <Drawer
           person={selected}
           onClose={() => setSelected(null)}
-          onOutcome={setOutcome}
+          onSetStage={setStage}
           onNextFollowUp={setNextFollowUp}
           notes={notesFor(selected.id)}
           onAddNote={(body) => addNote(selected.id, body, false)}
@@ -318,34 +274,9 @@ export default function PipelinePage() {
 
 /* --------------------------------- Subparts -------------------------------- */
 
-function Lane({ stage, people, onDropCard, onOpen, setDraggingId }) {
-  const [isOver, setIsOver] = useState(false);
-
+function Lane({ stage, people, onOpen, onMoveTo }) {
   return (
-    <div
-      className={`min-h-[420px] rounded-2xl border border-white/10 bg-white/[0.03] p-2 transition-colors ${
-        isOver ? "ring-2 ring-indigo-500/50" : ""
-      }`}
-      onDragOver={(e) => {
-        e.preventDefault();
-        e.stopPropagation();
-        try { e.dataTransfer.dropEffect = "move"; } catch {}
-        setIsOver(true);
-      }}
-      onDragLeave={(e) => {
-        e.preventDefault();
-        e.stopPropagation();
-        setIsOver(false);
-      }}
-      onDrop={(e) => {
-        e.preventDefault();
-        e.stopPropagation();
-        const id = e.dataTransfer.getData("application/remie-id") || e.dataTransfer.getData("text/plain");
-        if (id) onDropCard(id, stage.id);
-        setDraggingId?.(null);
-        setIsOver(false);
-      }}
-    >
+    <div className="min-h-[420px] rounded-2xl border border-white/10 bg-white/[0.03] p-2">
       <div className="flex items-center justify-between px-2 pb-2">
         <div className="text-sm font-medium">
           {stage.label}
@@ -353,20 +284,18 @@ function Lane({ stage, people, onDropCard, onOpen, setDraggingId }) {
         </div>
       </div>
 
-      {/* Make the entire lane body droppable & tall enough */}
       <div className="grid gap-2 min-h-[300px]">
         {people.map((p) => (
           <Card
             key={p.id}
             person={p}
             onOpen={() => onOpen(p)}
-            setDraggingId={setDraggingId}
-            onMoveTo={(stageId) => onDropCard(p.id, stageId)}
+            onMoveTo={(dest) => onMoveTo(p.id, dest)}
           />
         ))}
         {people.length === 0 && (
           <div className="rounded-xl border border-dashed border-white/10 p-4 text-center text-xs text-white/50">
-            Drop leads here
+            No leads in this stage
           </div>
         )}
       </div>
@@ -374,24 +303,12 @@ function Lane({ stage, people, onDropCard, onOpen, setDraggingId }) {
   );
 }
 
-function Card({ person, onOpen, setDraggingId, onMoveTo }) {
+function Card({ person, onOpen, onMoveTo }) {
   const badge = STAGE_STYLE[person.stage] || "bg-white/10 text-white/80";
   const next = person.next_follow_up_at ? fmtDateTime(person.next_follow_up_at) : "—";
 
   return (
-    <div
-      draggable
-      onDragStart={(e) => {
-        setDraggingId?.(person.id);
-        try {
-          e.dataTransfer.setData("application/remie-id", person.id);
-          e.dataTransfer.setData("text/plain", person.id);
-          e.dataTransfer.effectAllowed = "move";
-        } catch {}
-      }}
-      onDragEnd={() => setDraggingId?.(null)}
-      className="cursor-grab active:cursor-grabbing rounded-xl border border-white/10 bg-black/40 p-3 hover:bg-black/50"
-    >
+    <div className="rounded-xl border border-white/10 bg-black/40 p-3 hover:bg-black/50">
       <div className="flex items-start justify-between gap-2">
         <div className="font-medium">{person.name || person.email || person.phone || "Unnamed"}</div>
         <span className={`ml-2 rounded-full px-2 py-0.5 text-xs ${badge}`}>{labelForStage(person.stage)}</span>
@@ -427,7 +344,7 @@ function Card({ person, onOpen, setDraggingId, onMoveTo }) {
           <ChevronRight className="h-3.5 w-3.5" />
         </button>
 
-        {/* No-drag fallback: quick move dropdown */}
+        {/* Quick move dropdown */}
         <select
           className="rounded-lg border border-white/15 bg-black/40 px-2 py-1 text-xs outline-none hover:bg-white/10"
           value={person.stage || "no_pickup"}
@@ -442,7 +359,7 @@ function Card({ person, onOpen, setDraggingId, onMoveTo }) {
   );
 }
 
-function Drawer({ person, onClose, onOutcome, onNextFollowUp, notes, onAddNote, onDeleteNote, onPinNote }) {
+function Drawer({ person, onClose, onSetStage, onNextFollowUp, notes, onAddNote, onDeleteNote, onPinNote }) {
   const [noteText, setNoteText] = useState("");
   const [quote, setQuote] = useState({
     carrier: person?.pipeline?.quote?.carrier || "",
@@ -456,6 +373,19 @@ function Drawer({ person, onClose, onOutcome, onNextFollowUp, notes, onAddNote, 
     const t = new Date(Date.now() + hours * 3600 * 1000).toISOString();
     onNextFollowUp(person, t);
   }
+
+  const StageButton = ({ id, children }) => (
+    <button
+      onClick={() => onSetStage(person, id)}
+      className={`rounded-full px-3 py-1 text-xs border ${
+        person.stage === id
+          ? "bg-white text-black border-white/10"
+          : "bg-white/5 text-white border-white/15 hover:bg-white/10"
+      }`}
+    >
+      {children}
+    </button>
+  );
 
   return (
     <div className="fixed inset-0 z-40 grid bg-black/60 p-2 md:p-4">
@@ -486,17 +416,13 @@ function Drawer({ person, onClose, onOutcome, onNextFollowUp, notes, onAddNote, 
           </button>
         </div>
 
-        {/* Outcome bar */}
-        <div className="grid grid-cols-2 gap-2 border-b border-white/10 p-3 text-xs sm:grid-cols-3">
-          <OutcomeBtn label="No Answer"    icon={AlertCircle} onClick={() => onOutcome(person, "no_answer")} />
-          <OutcomeBtn label="Left VM"      icon={Voicemail}   onClick={() => onOutcome(person, "left_vm")} />
-          <OutcomeBtn label="Quoted"       icon={DollarSign}  onClick={() => onOutcome(person, "quoted", quote)} />
-          <OutcomeBtn label="App Started"  icon={MoveRight}   onClick={() => onOutcome(person, "app_started")} />
-          <OutcomeBtn label="App Pending"  icon={MoveLeft}    onClick={() => onOutcome(person, "app_pending", { reason: pendingReason })} />
-          <OutcomeBtn label="Not Interested" icon={ThumbsDown} onClick={() => {
-            const reason = prompt("Reason (optional)?") || "";
-            onOutcome(person, "not_interested", { lost_reason: reason });
-          }} />
+        {/* STAGE PICKER (top bar) */}
+        <div className="flex flex-wrap items-center gap-2 border-b border-white/10 px-4 py-3">
+          <div className="text-xs text-white/60 mr-1">Stage:</div>
+          <StageButton id="no_pickup">No Pickup</StageButton>
+          <StageButton id="quoted">Quoted</StageButton>
+          <StageButton id="app_started">App Started</StageButton>
+          <StageButton id="app_pending">App Pending</StageButton>
         </div>
 
         {/* Follow-up quick picks */}
@@ -577,7 +503,7 @@ function Drawer({ person, onClose, onOutcome, onNextFollowUp, notes, onAddNote, 
           <section className="rounded-xl border border-white/10 bg-white/[0.03] p-3">
             <div className="mb-2 text-sm font-medium">Details</div>
             <div className="grid gap-2 text-sm">
-              <div className="text-xs text-white/60">Stage</div>
+              <div className="text-xs text-white/60">Current stage</div>
               <div className="flex flex-wrap gap-2">
                 {STAGES.map(s => (
                   <span key={s.id} className={`cursor-default rounded-full px-2 py-0.5 text-xs ${STAGE_STYLE[s.id]} ${person.stage === s.id ? "ring-1 ring-white/30" : "opacity-60"}`}>
@@ -597,7 +523,24 @@ function Drawer({ person, onClose, onOutcome, onNextFollowUp, notes, onAddNote, 
                   value={quote.premium} onChange={(e)=>setQuote({...quote, premium: e.target.value})} />
               </div>
               <button
-                onClick={() => onOutcome(person, "quoted", quote)}
+                onClick={() => {
+                  // Save quote info and set stage to Quoted
+                  const patch = {
+                    ...person,
+                    stage: "quoted",
+                    stage_changed_at: nowIso(),
+                    pipeline: {
+                      ...(person.pipeline || {}),
+                      quote: {
+                        carrier: quote.carrier,
+                        face: quote.face,
+                        premium: quote.premium,
+                      },
+                    },
+                  };
+                  // Persist
+                  onSetStage(patch, "quoted");
+                }}
                 className="mt-1 inline-flex items-center gap-2 rounded-lg border border-white/15 px-2 py-1 text-xs hover:bg-white/10"
               >
                 <CheckCircle2 className="h-4 w-4" /> Save Quote & mark Quoted
@@ -608,28 +551,22 @@ function Drawer({ person, onClose, onOutcome, onNextFollowUp, notes, onAddNote, 
               <input className="inp" placeholder="Underwriting / APS / eSign…"
                 value={pendingReason} onChange={(e)=>setPendingReason(e.target.value)} />
               <button
-                onClick={() => onOutcome(person, "app_pending", { reason: pendingReason })}
+                onClick={() => {
+                  const patch = {
+                    ...person,
+                    stage: "app_pending",
+                    stage_changed_at: nowIso(),
+                    pipeline: {
+                      ...(person.pipeline || {}),
+                      pending: { reason: pendingReason },
+                    },
+                  };
+                  onSetStage(patch, "app_pending");
+                }}
                 className="mt-1 inline-flex items-center gap-2 rounded-lg border border-white/15 px-2 py-1 text-xs hover:bg-white/10"
               >
                 <CheckCircle2 className="h-4 w-4" /> Save reason & mark Pending
               </button>
-
-              {/* Sold / Lost quick links */}
-              <div className="mt-4 flex flex-wrap items-center gap-2">
-                <button
-                  onClick={() => onOutcome(person, "sold")}
-                  className="rounded-lg border border-emerald-500/40 bg-emerald-500/10 px-2 py-1 text-xs text-emerald-300 hover:bg-emerald-500/15">
-                  Mark Sold
-                </button>
-                <button
-                  onClick={() => {
-                    const reason = prompt("Reason (optional)?") || "";
-                    onOutcome(person, "not_interested", { lost_reason: reason });
-                  }}
-                  className="rounded-lg border border-rose-500/40 bg-rose-500/10 px-2 py-1 text-xs text-rose-300 hover:bg-rose-500/15">
-                  Mark Lost
-                </button>
-              </div>
             </div>
           </section>
         </div>
@@ -643,17 +580,6 @@ function Drawer({ person, onClose, onOutcome, onNextFollowUp, notes, onAddNote, 
 
 /* ------------------------------- Tiny helpers ------------------------------ */
 
-function OutcomeBtn({ label, icon:Icon, onClick }) {
-  return (
-    <button
-      onClick={onClick}
-      className="inline-flex items-center justify-center gap-1 rounded-lg border border-white/15 bg-white/5 px-2 py-1.5 hover:bg-white/10"
-    >
-      <Icon className="h-4 w-4" /> {label}
-    </button>
-  );
-}
-
 function labelForStage(id) {
   const m = {
     no_pickup: "No Pickup",
@@ -664,28 +590,14 @@ function labelForStage(id) {
   return m[id] || "No Pickup";
 }
 
-function autoNoteForOutcome(type, extra) {
-  switch (type) {
-    case "no_answer": return "Outcome: No answer. Will retry.";
-    case "left_vm": return "Outcome: Left voicemail.";
-    case "quoted": {
-      const { carrier, face, premium } = (extra || {});
-      const parts = [];
-      if (carrier) parts.push(`Carrier ${carrier}`);
-      if (face) parts.push(`Face ${face}`);
-      if (premium) parts.push(`Premium ${premium}`);
-      return `Outcome: Quoted. ${parts.join(", ")}`.trim();
-    }
-    case "app_started": return "Outcome: Application started.";
-    case "app_pending": {
-      const reason = extra?.reason ? ` (${extra.reason})` : "";
-      return `Outcome: App pending${reason}.`;
-    }
-    case "not_interested": {
-      const r = extra?.lost_reason ? ` Reason: ${extra.lost_reason}` : "";
-      return `Outcome: Not interested.${r}`;
-    }
-    case "sold": return "Outcome: Sold (marked).";
-    default: return "";
-  }
+function autoNoteForStageChange(person, newStage) {
+  const stageLabel = labelForStage(newStage);
+  const msg = `Stage set to: ${stageLabel}.`;
+  try {
+    const m = loadNotesMap();
+    const arr = m[person.id] || [];
+    arr.push({ id: crypto.randomUUID(), body: msg, auto: true, pinned: false, created_at: nowIso() });
+    m[person.id] = arr;
+    saveNotesMap(m);
+  } catch {}
 }
