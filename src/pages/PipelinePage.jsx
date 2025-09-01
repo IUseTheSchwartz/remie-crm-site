@@ -48,9 +48,15 @@ function saveNotesMap(m) {
 
 function nowIso() { return new Date().toISOString(); }
 
+/**
+ * IMPORTANT FIX:
+ * We must preserve custom fields (stage, pipeline, etc.)
+ * Normalizers often drop unknown keys. So we merge:
+ *   base = { ...normalizePerson(person), ...person }
+ * That way we keep normalized id/name/phone but DO NOT lose pipeline fields.
+ */
 function ensurePipelineDefaults(person) {
-  // Normalize ONLY on read so id/shape is stable (we won't normalize on save)
-  const base = normalizePerson(person);
+  const base = { ...normalizePerson(person), ...person };
   const patch = { ...base };
   if (patch.status === "sold") return patch;
 
@@ -107,7 +113,7 @@ export default function PipelinePage() {
     setClients(loadClients());
   }, []);
 
-  // Combine both lists and pick the FRESHEST copy per id (fix #2)
+  // Combine both lists and pick the FRESHEST copy per id
   const all = useMemo(() => {
     const byId = new Map();
     const pickFresh = (existing, incoming) => {
@@ -156,16 +162,16 @@ export default function PipelinePage() {
 
   /* ---------------------------- Mutations / actions --------------------------- */
 
-  // Deterministic save that replaces by id in BOTH lists (fix #1)
+  // Deterministic save that replaces by id in BOTH lists
   function updatePerson(patch) {
-    const item = { ...patch }; // preserve custom fields
+    const item = { ...patch };
 
     const replaceById = (list, obj) => {
       const idx = list.findIndex((x) => x.id === obj.id);
       if (idx >= 0) {
         const copy = list.slice();
         copy[idx] = obj;
-        return copy.filter((x, i) => i === copy.findIndex(y => y.id === x.id)); // dedupe same id
+        return copy.filter((x, i) => i === copy.findIndex(y => y.id === x.id));
       }
       return [obj, ...list.filter((x) => x.id !== obj.id)];
     };
