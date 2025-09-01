@@ -2,8 +2,9 @@
 
 // LocalStorage keys (swap to Supabase later)
 const KEYS = {
-  leads: "remie_leads_v1",     // raw leads / prospects
-  clients: "remie_clients_v1", // unified list (leads + sold)
+  leads: "remie_leads_v1",           // raw leads / prospects
+  clients: "remie_clients_v1",       // unified list (leads + sold)
+  leadsApiKey: "remie_leads_api_key_v1", // NEW: vendor API key for auto-import
 };
 
 /* ---------------------------
@@ -32,34 +33,49 @@ export function saveClients(clients) {
 }
 
 /* ---------------------------
+   API Key helpers (NEW)
+----------------------------*/
+export function loadLeadsApiKey() {
+  try {
+    return localStorage.getItem(KEYS.leadsApiKey) || "";
+  } catch {
+    return "";
+  }
+}
+export function saveLeadsApiKey(value = "") {
+  if (typeof value !== "string") value = String(value ?? "");
+  localStorage.setItem(KEYS.leadsApiKey, value.trim());
+}
+export function clearLeadsApiKey() {
+  localStorage.removeItem(KEYS.leadsApiKey);
+}
+
+/* ---------------------------
    Shape normalizer
 
-   Person (stored locally):
+   Person:
    {
      id: string,
      name: string,
      phone: string,
      email: string,
-     status: 'lead' | 'sold',
-
-     // NEW optional lead fields
+     status: "lead" | "sold",
      notes?: string,
-     dob?: string,                 // freeform date from CSV
-     state?: string,               // e.g., "TX"
-     beneficiary?: string,         // e.g., "Primary"
-     beneficiary_name?: string,    // e.g., "John Doe"
-     gender?: string,              // e.g., "Male"
-
-     sold: {
+     dob?: string,
+     state?: string,
+     beneficiary?: string,
+     beneficiary_name?: string,
+     company?: string,
+     gender?: string,
+     sold?: {
        carrier: string,
        faceAmount: string|number,
        premium: string|number,
        monthlyPayment: string|number,
-       startDate: string (YYYY-MM-DD),
-       name: string,
-       phone: string,
-       email: string,
-       address: {
+       policyNumber?: string, // NEW field supported
+       effectiveDate?: string,
+       notes?: string,
+       address?: {
          street: string,
          city: string,
          state: string,
@@ -78,11 +94,16 @@ export function normalizePerson(p = {}) {
     state: p.state ?? "",
     beneficiary: p.beneficiary ?? "",
     beneficiary_name: p.beneficiary_name ?? "",
+    company: p.company ?? "",
     gender: p.gender ?? "",
   };
 
   return {
-    id: p.id || (typeof crypto !== "undefined" ? crypto.randomUUID() : String(Date.now())),
+    id:
+      p.id ||
+      (typeof crypto !== "undefined"
+        ? crypto.randomUUID()
+        : String(Date.now())),
     name: p.name || "",
     phone: p.phone || p.number || "",
     email: p.email || "",
@@ -94,10 +115,9 @@ export function normalizePerson(p = {}) {
           faceAmount: sold.faceAmount || "",
           premium: sold.premium || "",
           monthlyPayment: sold.monthlyPayment || "",
-          startDate: sold.startDate || "",
-          name: sold.name || p.name || "",
-          phone: sold.phone || p.phone || "",
-          email: sold.email || p.email || "",
+          policyNumber: sold.policyNumber || "",
+          effectiveDate: sold.effectiveDate || "",
+          notes: sold.notes || "",
           address: {
             street: sold.address?.street || "",
             city: sold.address?.city || "",
@@ -110,32 +130,32 @@ export function normalizePerson(p = {}) {
 }
 
 /* ---------------------------
-   Array upsert by id
-
-   - Normalizes incoming
-   - If an existing record has a non-null `sold` and the
-     incoming one is `null`/missing, we preserve the existing `sold`.
+   Upsert utility (merge by id)
 ----------------------------*/
-export function upsert(arr = [], obj = {}) {
-  const incoming = normalizePerson(obj);
-  const next = [...arr];
-  const i = next.findIndex((x) => x.id === incoming.id);
+export function upsert(arr = [], person = {}) {
+  const item = normalizePerson(person);
+  const idx = arr.findIndex((x) => x.id === item.id);
+  if (idx === -1) return [...arr, item];
 
-  if (i >= 0) {
-    const existing = next[i];
+  // Merge existing with new (favor new truthy values)
+  const prev = arr[idx];
+  const next = {
+    ...prev,
+    ...item,
+    sold: item.sold ?? prev.sold ?? null,
+  };
+  const copy = [...arr];
+  copy[idx] = next;
+  return copy;
+}
 
-    // Prefer incoming.sold only if provided (non-null)
-    const mergedSold =
-      incoming.sold != null ? incoming.sold : existing.sold ?? null;
-
-    // Merge everything else (incoming primitives will override)
-    next[i] = {
-      ...existing,
-      ...incoming,
-      sold: mergedSold,
-    };
-  } else {
-    next.unshift(incoming);
+/* ---------------------------
+   Merge array of persons
+----------------------------*/
+export function merge(arr = [], incoming = []) {
+  let next = [...arr];
+  for (const p of incoming) {
+    next = upsert(next, p);
   }
   return next;
 }
@@ -150,4 +170,5 @@ export function removeById(arr = [], id) {
 export function clearAllLocal() {
   localStorage.removeItem(KEYS.leads);
   localStorage.removeItem(KEYS.clients);
+  localStorage.removeItem(KEYS.leadsApiKey); // include API key in full clear
 }
