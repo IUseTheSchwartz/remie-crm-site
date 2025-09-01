@@ -2,7 +2,7 @@
 import { useEffect, useMemo, useState } from "react";
 import {
   Phone, Mail, Clock, StickyNote, Search, Filter,
-  CheckCircle2, ChevronRight, X, DollarSign
+  CheckCircle2, ChevronRight, X
 } from "lucide-react";
 
 import {
@@ -115,7 +115,6 @@ export default function PipelinePage() {
     setClients(loadClients());
   }, []);
 
-  // Build deduped collection (exclude sold) & ensure ids/defaults
   const all = useMemo(() => {
     const map = new Map();
     for (const x of clients) {
@@ -142,7 +141,6 @@ export default function PipelinePage() {
       const key = STAGE_STYLE[p.stage] ? p.stage : "no_pickup";
       out[key].push(p);
     }
-    // Sort by next follow-up then by time in stage
     for (const id of Object.keys(out)) {
       out[id].sort((a,b) => {
         const na = a.next_follow_up_at ? new Date(a.next_follow_up_at).getTime() : Infinity;
@@ -158,11 +156,8 @@ export default function PipelinePage() {
 
   /* ---------------------------- Mutations / actions --------------------------- */
 
-  function openCard(p) { setSelected(p); }
-
-  // Do NOT normalize on save — preserve custom fields
   function updatePerson(patch) {
-    const base = { ...patch };
+    const base = { ...patch }; // preserve custom fields
     const { nextClients, nextLeads } = mergeAndSave(base, clients, leads);
     setClients(nextClients);
     setLeads(nextLeads);
@@ -178,6 +173,8 @@ export default function PipelinePage() {
   function setNextFollowUp(person, dateIso) {
     updatePerson({ ...person, next_follow_up_at: dateIso || null });
   }
+
+  function openCard(p) { setSelected(p); }
 
   /* ---------------------------------- Notes ---------------------------------- */
 
@@ -261,6 +258,7 @@ export default function PipelinePage() {
           person={selected}
           onClose={() => setSelected(null)}
           onSetStage={setStage}
+          onUpdate={updatePerson}
           onNextFollowUp={setNextFollowUp}
           notes={notesFor(selected.id)}
           onAddNote={(body) => addNote(selected.id, body, false)}
@@ -359,7 +357,7 @@ function Card({ person, onOpen, onMoveTo }) {
   );
 }
 
-function Drawer({ person, onClose, onSetStage, onNextFollowUp, notes, onAddNote, onDeleteNote, onPinNote }) {
+function Drawer({ person, onClose, onSetStage, onUpdate, onNextFollowUp, notes, onAddNote, onDeleteNote, onPinNote }) {
   const [noteText, setNoteText] = useState("");
   const [quote, setQuote] = useState({
     carrier: person?.pipeline?.quote?.carrier || "",
@@ -369,16 +367,19 @@ function Drawer({ person, onClose, onSetStage, onNextFollowUp, notes, onAddNote,
   const [pendingReason, setPendingReason] = useState(person?.pipeline?.pending?.reason || "");
   const [followPick, setFollowPick] = useState("");
 
+  // NEW: local stage selection + explicit Save button
+  const [selectedStage, setSelectedStage] = useState(person.stage);
+
   function addFollowFromPick(hours) {
     const t = new Date(Date.now() + hours * 3600 * 1000).toISOString();
     onNextFollowUp(person, t);
   }
 
-  const StageButton = ({ id, children }) => (
+  const StageChip = ({ id, children }) => (
     <button
-      onClick={() => onSetStage(person, id)}
+      onClick={() => setSelectedStage(id)}
       className={`rounded-full px-3 py-1 text-xs border ${
-        person.stage === id
+        selectedStage === id
           ? "bg-white text-black border-white/10"
           : "bg-white/5 text-white border-white/15 hover:bg-white/10"
       }`}
@@ -416,13 +417,26 @@ function Drawer({ person, onClose, onSetStage, onNextFollowUp, notes, onAddNote,
           </button>
         </div>
 
-        {/* STAGE PICKER (top bar) */}
+        {/* STAGE PICKER + SAVE */}
         <div className="flex flex-wrap items-center gap-2 border-b border-white/10 px-4 py-3">
           <div className="text-xs text-white/60 mr-1">Stage:</div>
-          <StageButton id="no_pickup">No Pickup</StageButton>
-          <StageButton id="quoted">Quoted</StageButton>
-          <StageButton id="app_started">App Started</StageButton>
-          <StageButton id="app_pending">App Pending</StageButton>
+          <StageChip id="no_pickup">No Pickup</StageChip>
+          <StageChip id="quoted">Quoted</StageChip>
+          <StageChip id="app_started">App Started</StageChip>
+          <StageChip id="app_pending">App Pending</StageChip>
+
+          <button
+            onClick={() => onSetStage(person, selectedStage)}
+            disabled={selectedStage === person.stage}
+            className={`ml-auto rounded-lg border px-3 py-1.5 text-xs ${
+              selectedStage === person.stage
+                ? "cursor-not-allowed border-white/10 text-white/40"
+                : "border-white/15 bg-white/5 hover:bg-white/10"
+            }`}
+            title={selectedStage === person.stage ? "No changes to save" : "Save stage"}
+          >
+            Save stage
+          </button>
         </div>
 
         {/* Follow-up quick picks */}
@@ -468,7 +482,7 @@ function Drawer({ person, onClose, onSetStage, onNextFollowUp, notes, onAddNote,
               />
               <div className="flex items-center justify-between">
                 <button
-                  onClick={() => { if (noteText.trim()) { onAddNote(noteText.trim()); setNoteText(""); } }}
+                  onClick={() => { if (noteText.trim()) { onAddNote(person.id, noteText.trim()); setNoteText(""); } }}
                   className="rounded-lg border border-white/15 px-3 py-1.5 text-sm hover:bg-white/10"
                 >
                   Add note
@@ -481,11 +495,11 @@ function Drawer({ person, onClose, onSetStage, onNextFollowUp, notes, onAddNote,
                     <div className="mb-1 flex items-center justify-between text-xs text-white/60">
                       <span>{new Date(n.created_at).toLocaleString()}</span>
                       <div className="flex items-center gap-2">
-                        <button onClick={() => onPinNote(n.id, !n.pinned)} className="hover:underline">
+                        <button onClick={() => onPinNote(person.id, n.id, !n.pinned)} className="hover:underline">
                           {n.pinned ? "Unpin" : "Pin"}
                         </button>
                         {!n.auto && (
-                          <button onClick={() => onDeleteNote(n.id)} className="text-rose-300 hover:underline">Delete</button>
+                          <button onClick={() => onDeleteNote(person.id, n.id)} className="text-rose-300 hover:underline">Delete</button>
                         )}
                       </div>
                     </div>
@@ -524,22 +538,15 @@ function Drawer({ person, onClose, onSetStage, onNextFollowUp, notes, onAddNote,
               </div>
               <button
                 onClick={() => {
-                  // Save quote info and set stage to Quoted
-                  const patch = {
+                  onUpdate({
                     ...person,
                     stage: "quoted",
                     stage_changed_at: nowIso(),
                     pipeline: {
                       ...(person.pipeline || {}),
-                      quote: {
-                        carrier: quote.carrier,
-                        face: quote.face,
-                        premium: quote.premium,
-                      },
+                      quote: { ...quote },
                     },
-                  };
-                  // Persist
-                  onSetStage(patch, "quoted");
+                  });
                 }}
                 className="mt-1 inline-flex items-center gap-2 rounded-lg border border-white/15 px-2 py-1 text-xs hover:bg-white/10"
               >
@@ -552,7 +559,7 @@ function Drawer({ person, onClose, onSetStage, onNextFollowUp, notes, onAddNote,
                 value={pendingReason} onChange={(e)=>setPendingReason(e.target.value)} />
               <button
                 onClick={() => {
-                  const patch = {
+                  onUpdate({
                     ...person,
                     stage: "app_pending",
                     stage_changed_at: nowIso(),
@@ -560,8 +567,7 @@ function Drawer({ person, onClose, onSetStage, onNextFollowUp, notes, onAddNote,
                       ...(person.pipeline || {}),
                       pending: { reason: pendingReason },
                     },
-                  };
-                  onSetStage(patch, "app_pending");
+                  });
                 }}
                 className="mt-1 inline-flex items-center gap-2 rounded-lg border border-white/15 px-2 py-1 text-xs hover:bg-white/10"
               >
