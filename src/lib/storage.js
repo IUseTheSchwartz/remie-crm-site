@@ -1,174 +1,291 @@
-// File: src/lib/storage.js
+// File: src/pages/LeadsPage.jsx
+import { useEffect, useMemo, useState } from "react";
+import Papa from "papaparse";
+import {
+  loadLeads, saveLeads,
+  loadClients, saveClients,
+  normalizePerson, upsert
+} from "../lib/storage.js";
 
-// LocalStorage keys (swap to Supabase later)
-const KEYS = {
-  leads: "remie_leads_v1",           // raw leads / prospects
-  clients: "remie_clients_v1",       // unified list (leads + sold)
-  leadsApiKey: "remie_leads_api_key_v1", // NEW: vendor API key for auto-import
+import {
+  scheduleWelcomeText,
+  schedulePolicyKickoffEmail
+} from "../lib/automation.js";
+
+// NEW: API key helpers
+import {
+  loadLeadsApiKey,
+  saveLeadsApiKey,
+  clearLeadsApiKey,
+} from "../lib/storage.js";
+
+// Icons (lucide-react) are already used in your app, optional
+import { Key, Eye, EyeOff, Trash2 } from "lucide-react";
+
+/* ---------------------------
+   CSV -> fields map & helpers
+----------------------------*/
+const HEADERS = {
+  full: ["name", "full name", "fullname"],
+  first: ["first", "first name", "firstname", "given name"],
+  last: ["last", "last name", "lastname", "surname", "family name"],
+  email: ["email", "e-mail", "mail"],
+  phone: [
+    "phone","phone number","mobile","cell","tel","telephone","number","phone_number"
+  ],
+  notes: ["notes","note","comments","comment","details"],
+  company: ["company","business","organization","organisation"],
+  // NEW fields
+  dob: ["dob","date of birth","birthdate","birth date","d.o.b.","date"],
+  state: ["state","us state","residence state"],
+  beneficiary: ["beneficiary","beneficiary type"],
+  beneficiary_name: ["beneficiary name","beneficiary_name","beneficiary full name"],
+  gender: ["gender","sex"],
 };
 
-/* ---------------------------
-   Basic load/save helpers
-----------------------------*/
-export function loadLeads() {
-  try {
-    return JSON.parse(localStorage.getItem(KEYS.leads)) || [];
-  } catch {
-    return [];
+const norm = (s) => (s || "").toString().trim().toLowerCase();
+
+function buildHeaderIndex(headers) {
+  const H = {};
+  for (const [key, list] of Object.entries(HEADERS)) {
+    const found = list
+      .map((v) => headers.findIndex((h) => norm(h) === norm(v)))
+      .find((idx) => idx >= 0);
+    H[key] = found ?? -1;
   }
+  return H;
 }
-export function saveLeads(leads) {
-  localStorage.setItem(KEYS.leads, JSON.stringify(leads));
-}
-
-export function loadClients() {
-  try {
-    return JSON.parse(localStorage.getItem(KEYS.clients)) || [];
-  } catch {
-    return [];
-  }
-}
-export function saveClients(clients) {
-  localStorage.setItem(KEYS.clients, JSON.stringify(clients));
-}
-
-/* ---------------------------
-   API Key helpers (NEW)
-----------------------------*/
-export function loadLeadsApiKey() {
-  try {
-    return localStorage.getItem(KEYS.leadsApiKey) || "";
-  } catch {
-    return "";
-  }
-}
-export function saveLeadsApiKey(value = "") {
-  if (typeof value !== "string") value = String(value ?? "");
-  localStorage.setItem(KEYS.leadsApiKey, value.trim());
-}
-export function clearLeadsApiKey() {
-  localStorage.removeItem(KEYS.leadsApiKey);
-}
-
-/* ---------------------------
-   Shape normalizer
-
-   Person:
-   {
-     id: string,
-     name: string,
-     phone: string,
-     email: string,
-     status: "lead" | "sold",
-     notes?: string,
-     dob?: string,
-     state?: string,
-     beneficiary?: string,
-     beneficiary_name?: string,
-     company?: string,
-     gender?: string,
-     sold?: {
-       carrier: string,
-       faceAmount: string|number,
-       premium: string|number,
-       monthlyPayment: string|number,
-       policyNumber?: string, // NEW field supported
-       effectiveDate?: string,
-       notes?: string,
-       address?: {
-         street: string,
-         city: string,
-         state: string,
-         zip: string,
-       }
-     } | null
-   }
-----------------------------*/
-export function normalizePerson(p = {}) {
-  const sold = p.sold || null;
-
-  // Allow/keep extra lead fields if present
-  const keep = {
-    notes: p.notes ?? "",
-    dob: p.dob ?? "",
-    state: p.state ?? "",
-    beneficiary: p.beneficiary ?? "",
-    beneficiary_name: p.beneficiary_name ?? "",
-    company: p.company ?? "",
-    gender: p.gender ?? "",
-  };
-
+function headerMap(H) {
+  const find = (key) => (H[key] >= 0 ? H[key] : null);
   return {
-    id:
-      p.id ||
-      (typeof crypto !== "undefined"
-        ? crypto.randomUUID()
-        : String(Date.now())),
-    name: p.name || "",
-    phone: p.phone || p.number || "",
-    email: p.email || "",
-    status: p.status === "sold" ? "sold" : "lead",
-    ...keep,
-    sold: sold
-      ? {
-          carrier: sold.carrier || "",
-          faceAmount: sold.faceAmount || "",
-          premium: sold.premium || "",
-          monthlyPayment: sold.monthlyPayment || "",
-          policyNumber: sold.policyNumber || "",
-          effectiveDate: sold.effectiveDate || "",
-          notes: sold.notes || "",
-          address: {
-            street: sold.address?.street || "",
-            city: sold.address?.city || "",
-            state: sold.address?.state || "",
-            zip: sold.address?.zip || "",
-          },
-        }
-      : null,
+    full: find("full"),
+    first: find("first"),
+    last: find("last"),
+    email: find("email"),
+    phone: find("phone"),
+    notes: find("notes"),
+    company: find("company"),
+    dob: find("dob"),
+    state: find("state"),
+    beneficiary: find("beneficiary"),
+    beneficiary_name: find("beneficiary_name"),
+    gender: find("gender"),
   };
+}
+function pick(row, key) {
+  if (!key && key !== 0) return "";
+  const v = row[key];
+  return v == null ? "" : String(v).trim();
+}
+function buildName(row, map) {
+  const full = pick(row, map.full);
+  if (full) return full;
+  const first = pick(row, map.first);
+  const last = pick(row, map.last);
+  return [first, last].filter(Boolean).join(" ").trim();
 }
 
 /* ---------------------------
-   Upsert utility (merge by id)
+   Page
 ----------------------------*/
-export function upsert(arr = [], person = {}) {
-  const item = normalizePerson(person);
-  const idx = arr.findIndex((x) => x.id === item.id);
-  if (idx === -1) return [...arr, item];
+export default function LeadsPage() {
+  const [leads, setLeads] = useState(() => loadLeads());
+  const [clients, setClients] = useState(() => loadClients());
 
-  // Merge existing with new (favor new truthy values)
-  const prev = arr[idx];
-  const next = {
-    ...prev,
-    ...item,
-    sold: item.sold ?? prev.sold ?? null,
-  };
-  const copy = [...arr];
-  copy[idx] = next;
-  return copy;
-}
+  // NEW: API key modal state
+  const [apiKeyOpen, setApiKeyOpen] = useState(false);
+  const [apiKey, setApiKey] = useState(() => loadLeadsApiKey());
+  const [showKey, setShowKey] = useState(false);
 
-/* ---------------------------
-   Merge array of persons
-----------------------------*/
-export function merge(arr = [], incoming = []) {
-  let next = [...arr];
-  for (const p of incoming) {
-    next = upsert(next, p);
+  useEffect(() => {
+    saveLeads(leads);
+  }, [leads]);
+
+  useEffect(() => {
+    saveClients(clients);
+  }, [clients]);
+
+  /* -------------- CSV import -------------- */
+  function handleImportCsv(file) {
+    Papa.parse(file, {
+      header: true,
+      skipEmptyLines: true,
+      complete: (results) => {
+        const rows = results.data || [];
+        const headers = results.meta?.fields || [];
+        const H = buildHeaderIndex(headers);
+        const M = headerMap(H);
+
+        const imported = rows.map((row) =>
+          normalizePerson({
+            name: buildName(row, M),
+            email: pick(row, M.email),
+            phone: pick(row, M.phone),
+            notes: pick(row, M.notes),
+            company: pick(row, M.company),
+            dob: pick(row, M.dob),
+            state: pick(row, M.state),
+            beneficiary: pick(row, M.beneficiary),
+            beneficiary_name: pick(row, M.beneficiary_name),
+            gender: pick(row, M.gender),
+          })
+        );
+
+        setLeads((prev) => {
+          let next = [...prev];
+          for (const p of imported) next = upsert(next, p);
+          return next;
+        });
+      },
+      error: (err) => {
+        console.error("CSV parse error:", err);
+        alert("Failed to parse CSV. Please check your file.");
+      },
+    });
   }
-  return next;
+
+  function downloadTemplate() {
+    const headers = [
+      "Full Name","First","Last","Email","Phone","Notes","Company",
+      "DOB","State","Beneficiary","Beneficiary Name","Gender"
+    ];
+    const csv = [headers.join(",")].join("\n");
+    const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = "leads_template.csv";
+    a.click();
+    URL.revokeObjectURL(url);
+  }
+
+  // Save API key on modal save
+  function handleSaveApiKey() {
+    saveLeadsApiKey(apiKey);
+    setApiKeyOpen(false);
+  }
+  function handleClearApiKey() {
+    if (!confirm("Remove the saved API key?")) return;
+    clearLeadsApiKey();
+    setApiKey("");
+    setShowKey(false);
+  }
+
+  /* -------------- UI -------------- */
+  return (
+    <div className="mx-auto max-w-6xl p-4 text-white">
+      <h1 className="mb-4 text-2xl font-semibold">Leads</h1>
+
+      {/* Top actions */}
+      <div className="mb-6 flex flex-wrap items-center gap-3">
+        {/* Import CSV */}
+        <label className="cursor-pointer rounded-xl border border-white/15 bg-white/5 px-3 py-2 text-sm">
+          <input
+            type="file"
+            accept=".csv"
+            className="hidden"
+            onChange={(e) => e.target.files?.[0] && handleImportCsv(e.target.files[0])}
+          />
+          Import CSV
+        </label>
+
+        {/* NEW: Add API Key button */}
+        <button
+          onClick={() => setApiKeyOpen(true)}
+          className="inline-flex items-center gap-2 rounded-xl border border-white/15 bg-white/5 px-3 py-2 text-sm"
+          title="Set API key for lead auto-import"
+        >
+          <Key size={16} />
+          Add API Key
+        </button>
+
+        {/* Template download */}
+        <button
+          onClick={downloadTemplate}
+          className="rounded-xl border border-white/15 bg-white/5 px-3 py-2 text-sm"
+        >
+          Download CSV Template
+        </button>
+      </div>
+
+      {/* ... your existing leads table / form UI continues below ... */}
+
+      {/* ===== API Key Modal (NEW) ===== */}
+      {apiKeyOpen && (
+        <div className="fixed inset-0 z-50 grid place-items-center bg-black/60 p-4">
+          <div className="w-full max-w-lg rounded-2xl border border-white/10 bg-zinc-900 p-4 shadow-xl">
+            <div className="mb-3 flex items-center justify-between">
+              <h2 className="text-lg font-semibold">Lead Vendor API Key</h2>
+            </div>
+
+            <p className="mb-3 text-sm text-white/70">
+              Paste your lead vendor API key. We’ll store it locally for auto-import.
+            </p>
+
+            <div className="mb-3">
+              <label className="mb-1 block text-sm text-white/70">API Key</label>
+              <div className="flex items-center gap-2">
+                <input
+                  type={showKey ? "text" : "password"}
+                  className="inp flex-1"
+                  placeholder="sk_live_..."
+                  value={apiKey}
+                  onChange={(e) => setApiKey(e.target.value)}
+                />
+                <button
+                  onClick={() => setShowKey((s) => !s)}
+                  className="rounded-xl border border-white/15 bg-white/5 px-2 py-2"
+                  title={showKey ? "Hide" : "Show"}
+                >
+                  {showKey ? <EyeOff size={16} /> : <Eye size={16} />}
+                </button>
+                {apiKey && (
+                  <button
+                    onClick={handleClearApiKey}
+                    className="rounded-xl border border-white/15 bg-white/5 px-2 py-2"
+                    title="Clear saved key"
+                  >
+                    <Trash2 size={16} />
+                  </button>
+                )}
+              </div>
+              {!!loadLeadsApiKey() && (
+                <p className="mt-2 text-xs text-emerald-400">
+                  A key is currently saved {showKey ? `(visible)` : `(hidden)`}.
+                </p>
+              )}
+            </div>
+
+            <div className="mt-4 flex items-center justify-end gap-2">
+              <button
+                onClick={() => setApiKeyOpen(false)}
+                className="rounded-xl border border-white/15 bg-white/5 px-3 py-2 text-sm"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={handleSaveApiKey}
+                className="rounded-xl bg-indigo-600 px-3 py-2 text-sm"
+              >
+                Save Key
+              </button>
+            </div>
+          </div>
+
+          {/* minimal input style to match your existing page */}
+          <style>{`.inp{width:100%; border-radius:0.75rem; border:1px solid rgba(255,255,255,.15); background:#0b0b0b; padding:.5rem .75rem; outline:none}
+          .inp:focus{box-shadow:0 0 0 2px rgba(99,102,241,.4)}`}</style>
+        </div>
+      )}
+
+      {/* Keep the rest of your existing LeadsPage content/render below */}
+    </div>
+  );
 }
 
-/* ---------------------------
-   Optional utilities
-----------------------------*/
-export function removeById(arr = [], id) {
-  return arr.filter((x) => x.id !== id);
-}
-
-export function clearAllLocal() {
-  localStorage.removeItem(KEYS.leads);
-  localStorage.removeItem(KEYS.clients);
-  localStorage.removeItem(KEYS.leadsApiKey); // include API key in full clear
-}
+/* NOTE:
+   This only saves/reads the API key locally for now.
+   When you’re ready, we can swap to Supabase Row Level Security (user-scoped),
+   and wire your vendor’s webhook to a Netlify function that upserts leads
+   using this key for validation.
+*/
