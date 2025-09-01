@@ -42,7 +42,7 @@ function nowIso() { return new Date().toISOString(); }
 
 /** Preserve custom fields (stage, pipeline, etc.) when normalizing. */
 function ensurePipelineDefaults(person) {
-  const base = { ...normalizePerson(person), ...person }; // keep custom fields
+  const base = { ...normalizePerson(person), ...person };
   const patch = { ...base };
   if (patch.status === "sold") return patch;
 
@@ -99,7 +99,7 @@ export default function PipelinePage() {
   const [clients, setClients] = useState([]);
 
   const [filter, setFilter] = useState("");
-  const [selected, setSelected] = useState(null);
+  ㊙ const [selected, setSelected] = useState(null);
   const [notesMap, setNotesMap] = useState(loadNotesMap());
   const [showFilters, setShowFilters] = useState(false);
 
@@ -108,7 +108,6 @@ export default function PipelinePage() {
     setClients(loadClients());
   }, []);
 
-  // Combine both lists and pick the FRESHEST copy per id
   const all = useMemo(() => {
     const byId = new Map();
     const pickFresh = (existing, incoming) => {
@@ -155,7 +154,6 @@ export default function PipelinePage() {
 
   /* ---------------------------- Mutations / actions --------------------------- */
 
-  // Deterministic save that replaces by id in BOTH lists
   function updatePerson(patch) {
     const item = { ...patch };
 
@@ -164,7 +162,6 @@ export default function PipelinePage() {
       if (idx >= 0) {
         const copy = list.slice();
         copy[idx] = obj;
-        // Ensure only one copy by id
         return copy.filter((x, i) => i === copy.findIndex(y => y.id === x.id));
       }
       return [obj, ...list.filter((x) => x.id !== obj.id)];
@@ -279,7 +276,8 @@ export default function PipelinePage() {
           onUpdate={updatePerson}
           onNextFollowUp={setNextFollowUp}
           notes={notesFor(selected.id)}
-          onAddNote={(body) => addNote(selected.id, body, false)}
+          // ✅ Fix: make onAddNote accept (personId, body)
+          onAddNote={(pid, body) => addNote(pid, body, false)}
           onDeleteNote={(pid, noteId) => deleteNote(pid, noteId)}
           onPinNote={(pid, noteId, pinned) => pinNote(pid, noteId, pinned)}
         />
@@ -323,7 +321,6 @@ function Card({ person, onOpen }) {
   const badge = STAGE_STYLE[person.stage] || "bg-white/10 text-white/80";
   const next = person.next_follow_up_at ? fmtDateTime(person.next_follow_up_at) : "—";
 
-  // FIXED HEIGHT + truncation so all cards match the No Pickup column
   return (
     <div className="rounded-xl border border-white/10 bg-black/40 p-3 hover:bg-black/50 h-[150px] flex flex-col">
       <div className="flex-1 min-h-0">
@@ -443,7 +440,6 @@ function Drawer({
                 ? "cursor-not-allowed border-white/10 text-white/40"
                 : "border-white/15 bg-white/5 hover:bg-white/10"
             }`}
-            title={selectedStage === person.stage ? "No changes to save" : "Save stage"}
           >
             Save stage
           </button>
@@ -541,7 +537,6 @@ function Drawer({
                 ))}
               </div>
 
-              {/* Quote quick fields */}
               <div className="mt-3 text-xs text-white/60">Quote (optional)</div>
               <div className="grid grid-cols-3 gap-2">
                 <input className="inp" placeholder="Carrier"
@@ -568,7 +563,6 @@ function Drawer({
                 <CheckCircle2 className="h-4 w-4" /> Save Quote & mark Quoted
               </button>
 
-              {/* Pending reason */}
               <div className="mt-3 text-xs text-white/60">Pending reason</div>
               <input className="inp" placeholder="Underwriting / APS / eSign…"
                 value={pendingReason} onChange={(e)=>setPendingReason(e.target.value)} />
