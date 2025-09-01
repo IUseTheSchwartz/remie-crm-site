@@ -118,7 +118,11 @@ function LandingPage() {
           </div>
           <div className="flex items-center gap-3">
             <Link to="/login" className="text-sm opacity-80 hover:opacity-100">Log in</Link>
-            <Link to="/signup" className={`hidden rounded-xl bg-gradient-to-r ${BRAND.primary} px-4 py-2 text-sm font-medium ring-1 ring-white/10 md:block`}>
+            {/* CHANGED: link now includes ?next=start-trial */}
+            <Link
+              to="/signup?next=start-trial"
+              className={`hidden rounded-xl bg-gradient-to-r ${BRAND.primary} px-4 py-2 text-sm font-medium ring-1 ring-white/10 md:block`}
+            >
               Start 14-day free trial
             </Link>
           </div>
