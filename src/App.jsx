@@ -316,12 +316,17 @@ function AppLayout() {
   return (
     <div className="min-h-screen bg-neutral-950 text-white grid md:grid-cols-[240px_1fr]">
       <aside className="hidden md:block border-r border-white/10 bg-black/30">
-        <div className="p-4 flex items-center gap-3 border-b border-white/10">
+        <a
+          href="https://remiecrm.com"
+          target="_blank"
+          rel="noopener noreferrer"
+          className="p-4 flex items-center gap-3 border-b border-white/10"
+        >
           <div className={`grid h-9 w-9 place-items-center rounded-2xl bg-gradient-to-br ${BRAND.primary} ring-1 ring-white/10`}>
             <Zap className="h-5 w-5" />
           </div>
           <div className="font-semibold">{BRAND.name}</div>
-        </div>
+        </a>
         <nav className="p-3 space-y-1 text-sm">
           {routes.filter(r => r.showInSidebar && r.group !== "agent").map(r => (
             <DashLink key={r.path} to={r.path}>{r.label}</DashLink>
