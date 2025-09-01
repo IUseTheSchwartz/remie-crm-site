@@ -99,7 +99,7 @@ export default function PipelinePage() {
   const [clients, setClients] = useState([]);
 
   const [filter, setFilter] = useState("");
-  ㊙ const [selected, setSelected] = useState(null);
+  const [selected, setSelected] = useState(null);
   const [notesMap, setNotesMap] = useState(loadNotesMap());
   const [showFilters, setShowFilters] = useState(false);
 
