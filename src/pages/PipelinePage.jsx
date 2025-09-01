@@ -50,7 +50,6 @@ function saveNotesMap(m) {
 function nowIso() { return new Date().toISOString(); }
 
 function ensurePipelineDefaults(person) {
-  // normalize ensures we have a stable id
   const base = normalizePerson(person);
   const patch = { ...base };
   if (patch.status === "sold") return patch;
@@ -111,30 +110,21 @@ export default function PipelinePage() {
   const [notesMap, setNotesMap] = useState(loadNotesMap());
   const [showFilters, setShowFilters] = useState(false);
 
-  // for smoother DnD
   const [draggingId, setDraggingId] = useState(null);
 
   useEffect(() => {
-    const L = loadLeads();
-    const C = loadClients();
-    setLeads(L);
-    setClients(C);
+    setLeads(loadLeads());
+    setClients(loadClients());
   }, []);
 
   // Build deduped collection (exclude sold) & ensure ids/defaults
   const all = useMemo(() => {
     const map = new Map();
     for (const x of clients) {
-      if (x.status !== "sold") {
-        const v = ensurePipelineDefaults(x);
-        map.set(v.id, v);
-      }
+      if (x.status !== "sold") map.set(x.id, ensurePipelineDefaults(x));
     }
     for (const y of leads) {
-      if (y.status !== "sold") {
-        const v = ensurePipelineDefaults(y);
-        map.set(v.id, v);
-      }
+      if (y.status !== "sold") map.set(y.id, ensurePipelineDefaults(y));
     }
     return Array.from(map.values());
   }, [clients, leads]);
@@ -300,7 +290,7 @@ export default function PipelinePage() {
             key={stage.id}
             stage={stage}
             people={lanes[stage.id] || []}
-            onDropCard={(id) => moveToStageById(id, stage.id)}
+            onDropCard={(id, destStageId) => moveToStageById(id, destStageId || stage.id)}
             onOpen={openCard}
             setDraggingId={setDraggingId}
           />
@@ -327,20 +317,31 @@ export default function PipelinePage() {
 /* --------------------------------- Subparts -------------------------------- */
 
 function Lane({ stage, people, onDropCard, onOpen, setDraggingId }) {
+  const [isOver, setIsOver] = useState(false);
+
   return (
     <div
-      className="min-h-[420px] rounded-2xl border border-white/10 bg-white/[0.03] p-2"
+      className={`min-h-[420px] rounded-2xl border border-white/10 bg-white/[0.03] p-2 transition-colors ${
+        isOver ? "ring-2 ring-indigo-500/50" : ""
+      }`}
       onDragOver={(e) => {
         e.preventDefault();
+        e.stopPropagation();
         try { e.dataTransfer.dropEffect = "move"; } catch {}
+        setIsOver(true);
+      }}
+      onDragLeave={(e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        setIsOver(false);
       }}
       onDrop={(e) => {
         e.preventDefault();
-        const idA = e.dataTransfer.getData("application/remie-id");
-        const idB = e.dataTransfer.getData("text/plain");
-        const id = idA || idB;
-        if (id) onDropCard(id);
+        e.stopPropagation();
+        const id = e.dataTransfer.getData("application/remie-id") || e.dataTransfer.getData("text/plain");
+        if (id) onDropCard(id, stage.id);
         setDraggingId?.(null);
+        setIsOver(false);
       }}
     >
       <div className="flex items-center justify-between px-2 pb-2">
@@ -349,31 +350,21 @@ function Lane({ stage, people, onDropCard, onOpen, setDraggingId }) {
           <span className="ml-2 text-xs text-white/50">{stage.hint}</span>
         </div>
       </div>
-      <div
-        className="grid gap-2"
-        onDragOver={(e) => { e.preventDefault(); }}
-        onDrop={(e) => {
-          e.preventDefault();
-          const idA = e.dataTransfer.getData("application/remie-id");
-          const idB = e.dataTransfer.getData("text/plain");
-          const id = idA || idB;
-          if (id) onDropCard(id);
-          setDraggingId?.(null);
-        }}
-      >
+
+      {/* Make the entire lane body droppable & tall enough */}
+      <div className="grid gap-2 min-h-[300px]">
         {people.map((p) => (
           <Card
             key={p.id}
             person={p}
             onOpen={() => onOpen(p)}
             setDraggingId={setDraggingId}
-            // fallback: allow moving via dropdown (no drag)
             onMoveTo={(stageId) => onDropCard(p.id, stageId)}
           />
         ))}
         {people.length === 0 && (
           <div className="rounded-xl border border-dashed border-white/10 p-4 text-center text-xs text-white/50">
-            Drag leads here
+            Drop leads here
           </div>
         )}
       </div>
@@ -593,6 +584,7 @@ function Drawer({ person, onClose, onOutcome, onNextFollowUp, notes, onAddNote, 
                 ))}
               </div>
 
+              {/* Quote quick fields */}
               <div className="mt-3 text-xs text-white/60">Quote (optional)</div>
               <div className="grid grid-cols-3 gap-2">
                 <input className="inp" placeholder="Carrier"
@@ -609,6 +601,7 @@ function Drawer({ person, onClose, onOutcome, onNextFollowUp, notes, onAddNote, 
                 <CheckCircle2 className="h-4 w-4" /> Save Quote & mark Quoted
               </button>
 
+              {/* Pending reason */}
               <div className="mt-3 text-xs text-white/60">Pending reason</div>
               <input className="inp" placeholder="Underwriting / APS / eSign…"
                 value={pendingReason} onChange={(e)=>setPendingReason(e.target.value)} />
@@ -619,6 +612,7 @@ function Drawer({ person, onClose, onOutcome, onNextFollowUp, notes, onAddNote, 
                 <CheckCircle2 className="h-4 w-4" /> Save reason & mark Pending
               </button>
 
+              {/* Sold / Lost quick links */}
               <div className="mt-4 flex flex-wrap items-center gap-2">
                 <button
                   onClick={() => onOutcome(person, "sold")}
