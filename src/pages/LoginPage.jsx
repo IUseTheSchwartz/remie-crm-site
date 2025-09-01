@@ -1,8 +1,9 @@
 // File: src/pages/LoginPage.jsx
 import { useState } from "react";
-import { Link, useLocation, useNavigate } from "react-router-dom";
+import { Link, useLocation, useNavigate, useSearchParams } from "react-router-dom";
 import { Zap } from "lucide-react";
 import { useAuth } from "../auth.jsx";
+import { startTrialCheckout, getPriceId } from "../lib/billing.js";
 
 const BRAND = {
   name: "Remie CRM",
@@ -13,20 +14,42 @@ export default function LoginPage() {
   const { login } = useAuth();
   const nav = useNavigate();
   const loc = useLocation();
+  const [params] = useSearchParams();
+  const next = params.get("next"); // e.g. "start-trial"
+
   const from = loc.state?.from?.pathname || "/app";
 
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [err, setErr] = useState("");
+  const [loading, setLoading] = useState(false);
 
   const handleSubmit = async (e) => {
     e.preventDefault();
     setErr("");
+    setLoading(true);
     try {
       await login({ email, password });
+
+      // If this login was initiated by the Free Trial CTA, immediately start the trial
+      if (next === "start-trial") {
+        try {
+          await startTrialCheckout(getPriceId());
+          // startTrialCheckout redirects to Stripe; no further code runs
+          return;
+        } catch (e) {
+          console.error(e);
+          alert(e.message || "Could not start your trial. Please try again.");
+          // Fallback to normal navigation if something goes wrong
+        }
+      }
+
+      // Normal post-login navigation
       nav(from, { replace: true });
     } catch (e) {
       setErr(e.message || "Login failed");
+    } finally {
+      setLoading(false);
     }
   };
 
@@ -41,6 +64,12 @@ export default function LoginPage() {
         </div>
         <h1 className="text-2xl font-semibold">Log in</h1>
         <p className="mt-1 text-sm text-white/70">Use the email and password you signed up with.</p>
+
+        {next === "start-trial" && (
+          <div className="mt-3 rounded-xl border border-white/10 bg-white/[0.04] p-3 text-xs text-white/80">
+            After you log in, we’ll automatically start your 14-day trial.
+          </div>
+        )}
 
         <form onSubmit={handleSubmit} className="mt-6 space-y-4">
           <div>
@@ -58,13 +87,19 @@ export default function LoginPage() {
             />
           </div>
           {err && <div className="text-sm text-rose-400">{err}</div>}
-          <button className="w-full rounded-xl bg-white px-4 py-2 font-medium text-black hover:bg-white/90">
-            Continue
+          <button className="w-full rounded-xl bg-white px-4 py-2 font-medium text-black hover:bg-white/90" disabled={loading}>
+            {loading ? "Working..." : "Continue"}
           </button>
         </form>
 
         <div className="mt-4 text-center text-sm text-white/70">
-          New here? <Link to="/signup" className="underline">Create an account</Link>
+          New here?{" "}
+          <Link
+            to={next === "start-trial" ? "/signup?next=start-trial" : "/signup"}
+            className="underline"
+          >
+            Create an account
+          </Link>
         </div>
 
         <div className="mt-3 text-center text-sm">
