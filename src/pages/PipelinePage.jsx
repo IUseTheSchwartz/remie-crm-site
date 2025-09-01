@@ -42,7 +42,7 @@ function nowIso() { return new Date().toISOString(); }
 
 /** Preserve custom fields (stage, pipeline, etc.) when normalizing. */
 function ensurePipelineDefaults(person) {
-  const base = { ...normalizePerson(person), ...person }; // <- keep custom fields
+  const base = { ...normalizePerson(person), ...person }; // keep custom fields
   const patch = { ...base };
   if (patch.status === "sold") return patch;
 
@@ -284,8 +284,9 @@ export default function PipelinePage() {
           onNextFollowUp={setNextFollowUp}
           notes={notesFor(selected.id)}
           onAddNote={(body) => addNote(selected.id, body, false)}
-          onDeleteNote={(noteId) => deleteNote(selected.id, noteId)}
-          onPinNote={(noteId, pinned) => pinNote(selected.id, noteId, pinned)}
+          // FIX: callbacks now accept (personId, noteId, ...)
+          onDeleteNote={(pid, noteId) => deleteNote(pid, noteId)}
+          onPinNote={(pid, noteId, pinned) => pinNote(pid, noteId, pinned)}
         />
       )}
     </div>
@@ -296,7 +297,7 @@ export default function PipelinePage() {
 
 function Lane({ stage, people, onOpen, onMoveTo }) {
   return (
-    <div className="min-h[420px] rounded-2xl border border-white/10 bg-white/[0.03] p-2">
+    <div className="min-h-[420px] rounded-2xl border border-white/10 bg-white/[0.03] p-2">
       <div className="flex items-center justify-between px-2 pb-2">
         <div className="text-sm font-medium">
           {stage.label}
@@ -327,30 +328,33 @@ function Card({ person, onOpen /* dropdown removed */ }) {
   const badge = STAGE_STYLE[person.stage] || "bg-white/10 text-white/80";
   const next = person.next_follow_up_at ? fmtDateTime(person.next_follow_up_at) : "—";
 
+  // Make all cards same height & balanced
   return (
-    <div className="rounded-xl border border-white/10 bg-black/40 p-3 hover:bg-black/50">
-      <div className="flex items-start justify-between gap-2">
-        <div className="font-medium">{person.name || person.email || person.phone || "Unnamed"}</div>
-        <span className={`ml-2 rounded-full px-2 py-0.5 text-xs ${badge}`}>{labelForStage(person.stage)}</span>
-      </div>
+    <div className="rounded-xl border border-white/10 bg-black/40 p-3 hover:bg-black/50 min-h-[130px] flex flex-col justify-between">
+      <div>
+        <div className="flex items-start justify-between gap-2">
+          <div className="font-medium truncate">{person.name || person.email || person.phone || "Unnamed"}</div>
+          <span className={`ml-2 rounded-full px-2 py-0.5 text-xs ${badge}`}>{labelForStage(person.stage)}</span>
+        </div>
 
-      <div className="mt-1 text-xs text-white/70 space-y-1">
-        {person.phone && (
+        <div className="mt-1 text-xs text-white/70 space-y-1">
+          {person.phone && (
+            <div className="flex items-center gap-1">
+              <Phone className="h-3.5 w-3.5 shrink-0" />
+              <a href={telHref(person.phone)} className="hover:underline truncate">{person.phone}</a>
+            </div>
+          )}
+          {person.email && (
+            <div className="flex items-center gap-1">
+              <Mail className="h-3.5 w-3.5 shrink-0" />
+              <a href={mailHref(person.email)} className="hover:underline truncate">{person.email}</a>
+            </div>
+          )}
           <div className="flex items-center gap-1">
-            <Phone className="h-3.5 w-3.5" />
-            <a href={telHref(person.phone)} className="hover:underline">{person.phone}</a>
+            <Clock className="h-3.5 w-3.5 shrink-0" />
+            <span className="truncate">Next: {next}</span>
+            <span className="ml-auto text-white/40">Age: {daysInStage(person.stage_changed_at)}</span>
           </div>
-        )}
-        {person.email && (
-          <div className="flex items-center gap-1">
-            <Mail className="h-3.5 w-3.5" />
-            <a href={mailHref(person.email)} className="hover:underline">{person.email}</a>
-          </div>
-        )}
-        <div className="flex items-center gap-1">
-          <Clock className="h-3.5 w-3.5" />
-          <span>Next: {next}</span>
-          <span className="ml-auto text-white/40">Age: {daysInStage(person.stage_changed_at)}</span>
         </div>
       </div>
 
@@ -368,7 +372,10 @@ function Card({ person, onOpen /* dropdown removed */ }) {
   );
 }
 
-function Drawer({ person, onClose, onSetStage, onUpdate, onNextFollowUp, notes, onAddNote, onDeleteNote, onPinNote }) {
+function Drawer({
+  person, onClose, onSetStage, onUpdate, onNextFollowUp,
+  notes, onAddNote, onDeleteNote, onPinNote
+}) {
   const [noteText, setNoteText] = useState("");
   const [quote, setQuote] = useState({
     carrier: person?.pipeline?.quote?.carrier || "",
@@ -377,8 +384,6 @@ function Drawer({ person, onClose, onSetStage, onUpdate, onNextFollowUp, notes, 
   });
   const [pendingReason, setPendingReason] = useState(person?.pipeline?.pending?.reason || "");
   const [followPick, setFollowPick] = useState(toLocalInputValue(person?.next_follow_up_at || ""));
-
-  // Local stage selection + explicit Save button
   const [selectedStage, setSelectedStage] = useState(person.stage);
 
   const StageChip = ({ id, children }) => (
