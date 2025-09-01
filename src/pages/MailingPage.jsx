@@ -1,53 +1,78 @@
 // File: src/pages/MailingPage.jsx
-import { useEffect, useState, useCallback, useRef } from "react";
+import { useEffect, useState, useCallback } from "react";
 import { supabase } from "../lib/supabaseClient.js";
 import { migrateSoldLeads } from "../lib/migrateLeads.js";
+import { loadLeads } from "../lib/storage.js";
+
+// Promise timeout helper so UI never "hangs"
+function withTimeout(promise, ms = 12000, label = "operation") {
+  let t;
+  const timeout = new Promise((_, rej) =>
+    (t = setTimeout(() => rej(new Error(`${label} timed out after ${ms}ms`)), ms))
+  );
+  return Promise.race([promise.finally(() => clearTimeout(t)), timeout]);
+}
 
 export default function MailingPage() {
   const [jobs, setJobs] = useState([]);
   const [loading, setLoading] = useState(true);
   const [msg, setMsg] = useState("");
   const [user, setUser] = useState(null);
-  const [authReady, setAuthReady] = useState(false); // session hydration gate
-  const authTimer = useRef(null);
+  const [authChecking, setAuthChecking] = useState(true);
 
-  // 1) Hydrate session and listen for changes
-  const hydrateAuth = useCallback(async () => {
+  // --- Auth: refresh on mount, focus, visibility changes --------------------
+  const loadUser = useCallback(async () => {
     try {
-      const { data } = await supabase.auth.getSession();
-      if (data?.session?.user) setUser(data.session.user);
-      setAuthReady(true);
+      setAuthChecking(true);
+      const { data } = await supabase.auth.getUser();
+      setUser(data?.user || null);
     } catch {
-      setAuthReady(true);
+      setUser(null);
+    } finally {
+      setAuthChecking(false);
     }
   }, []);
 
   useEffect(() => {
-    // initial hydration
-    hydrateAuth();
-    // subscribe to changes
-    const { data: sub } = supabase.auth.onAuthStateChange((_event, session) => {
-      setUser(session?.user || null);
-      setAuthReady(true);
-    });
-    // extra grace: some browsers restore async — give it up to 1200ms
-    authTimer.current = setTimeout(() => setAuthReady(true), 1200);
-    return () => {
-      sub?.subscription?.unsubscribe?.();
-      if (authTimer.current) clearTimeout(authTimer.current);
-    };
-  }, [hydrateAuth]);
+    // initial
+    loadUser();
 
-  // 2) Jobs fetch
+    // whenever tab regains focus or becomes visible
+    const onFocus = () => loadUser();
+    const onVis = () => document.visibilityState === "visible" && loadUser();
+    window.addEventListener("focus", onFocus);
+    document.addEventListener("visibilitychange", onVis);
+
+    // token auto-refresh can change session silently — poll every 30s
+    const t = setInterval(loadUser, 30000);
+
+    // react to explicit auth state changes
+    const { data: sub } = supabase.auth.onAuthStateChange((_evt, session) => {
+      setUser(session?.user || null);
+    });
+
+    return () => {
+      window.removeEventListener("focus", onFocus);
+      document.removeEventListener("visibilitychange", onVis);
+      clearInterval(t);
+      sub?.subscription?.unsubscribe?.();
+    };
+  }, [loadUser]);
+
+  // --- Jobs table -----------------------------------------------------------
   const fetchJobs = useCallback(async () => {
     setMsg("");
     setLoading(true);
     try {
-      const { data: j, error } = await supabase
-        .from("mail_jobs")
-        .select("id, lead_id, type, status, created_at, error")
-        .order("created_at", { ascending: false })
-        .limit(50);
+      const { data: j, error } = await withTimeout(
+        supabase
+          .from("mail_jobs")
+          .select("id, lead_id, type, status, created_at, error")
+          .order("created_at", { ascending: false })
+          .limit(50),
+        12000,
+        "fetch jobs"
+      );
       if (error) {
         setMsg("Supabase error: " + error.message);
         setJobs([]);
@@ -55,38 +80,48 @@ export default function MailingPage() {
         setJobs(j || []);
       }
     } catch (e) {
-      setMsg("Unexpected error: " + (e?.message || e));
+      setMsg((e?.message || String(e)));
       setJobs([]);
     } finally {
       setLoading(false);
     }
   }, []);
 
-  useEffect(() => {
-    fetchJobs();
-  }, [fetchJobs]);
+  useEffect(() => { fetchJobs(); }, [fetchJobs]);
 
-  // 3) Migrate button
+  // --- Migrate SOLD (idempotent) -------------------------------------------
   const doMigrate = async () => {
     setMsg("");
-    if (!authReady) {
-      setMsg("Checking sign-in…");
-      return;
-    }
-    if (!user?.id) {
+    // grab fresh user right before we start
+    const { data } = await supabase.auth.getUser();
+    const u = data?.user;
+    if (!u?.id) {
       setMsg("Please sign in to migrate SOLD leads.");
       return;
     }
+
+    // local stats for clarity
+    const localAll = loadLeads() || [];
+    const localSoldCount = localAll.filter(p => p?.status === "sold").length;
+
     try {
-      setMsg("Migrating SOLD leads → Supabase…");
-      const r = await migrateSoldLeads(user.id);
-      setMsg(`✅ Scanned ${r.scanned}; SOLD found ${r.soldFound}; inserted ${r.inserted}; skipped ${r.skipped}.`);
+      setMsg(`Migrating SOLD leads → Supabase… (local SOLD: ${localSoldCount})`);
+      const result = await withTimeout(migrateSoldLeads(u.id), 15000, "migrate sold leads");
+      const parts = [
+        `Scanned ${result.scanned}`,
+        `SOLD found ${result.soldFound}`,
+        `Inserted ${result.inserted}`,
+        `Skipped ${result.skipped}`,
+      ];
+      if (result.note) parts.push(`Note: ${result.note}`);
+      setMsg("✅ " + parts.join(" · "));
       await fetchJobs();
     } catch (e) {
-      setMsg("Migration error: " + (e?.message || e));
+      setMsg("Migration error: " + (e?.message || String(e)));
     }
   };
 
+  // --- UI -------------------------------------------------------------------
   return (
     <div className="p-6 text-white">
       <div className="mb-5 flex items-center justify-between">
@@ -95,6 +130,7 @@ export default function MailingPage() {
           <button
             onClick={fetchJobs}
             className="rounded-lg border border-white/15 px-3 py-2 text-sm hover:bg-white/10"
+            title="Reload recent mail jobs"
           >
             Refresh
           </button>
@@ -102,7 +138,6 @@ export default function MailingPage() {
             onClick={doMigrate}
             className="rounded-lg bg-indigo-600 px-3 py-2 text-sm"
             title="Migrate only SOLD leads from localStorage to Supabase (idempotent)"
-            disabled={!authReady}
           >
             Migrate SOLD leads (local → Supabase)
           </button>
@@ -112,7 +147,7 @@ export default function MailingPage() {
       <div className="mb-4 rounded-xl border border-white/10 bg-white/[0.04] p-3 text-sm">
         <div>
           <b>Auth:</b>{" "}
-          {!authReady ? "Checking…" : user ? `Signed in as ${user.email}` : "Not signed in"}
+          {authChecking ? "Checking…" : user ? `Signed in as ${user.email}` : "Not signed in"}
         </div>
         {msg && <div className="mt-2 text-amber-300">{msg}</div>}
         <div className="mt-2 text-xs text-white/60">
@@ -137,7 +172,7 @@ export default function MailingPage() {
               </tr>
             </thead>
             <tbody>
-              {jobs.map(j => (
+              {jobs.map((j) => (
                 <tr key={j.id} className="border-t border-white/10 hover:bg-white/5">
                   <td className="px-3 py-2 capitalize">{j.type.replace(/_/g, " ")}</td>
                   <td className="px-3 py-2">{j.lead_id || "-"}</td>
