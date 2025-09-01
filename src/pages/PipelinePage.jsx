@@ -13,7 +13,7 @@ import {
 
 /* ---------------------------------- Config --------------------------------- */
 
-// Order here controls the column order on the board
+// Order here controls the display order
 const STAGES = [
   { id: "no_pickup",     label: "No Pickup",     hint: "No answer / left VM" },
   { id: "answered",      label: "Answered",      hint: "Reached the lead" },
@@ -21,6 +21,12 @@ const STAGES = [
   { id: "app_started",   label: "App Started",   hint: "Began application" },
   { id: "app_pending",   label: "App Pending",   hint: "Waiting on UW/docs" },
   { id: "app_submitted", label: "App Submitted", hint: "Fully submitted" },
+];
+
+// Render as 2 rows of 3
+const ROWS = [
+  ["no_pickup", "answered", "quoted"],
+  ["app_started", "app_pending", "app_submitted"],
 ];
 
 const STAGE_STYLE = {
@@ -47,7 +53,7 @@ function nowIso() { return new Date().toISOString(); }
 
 /** Preserve custom fields (stage, pipeline, etc.) when normalizing. */
 function ensurePipelineDefaults(person) {
-  const base = { ...normalizePerson(person), ...person }; // keep custom fields
+  const base = { ...normalizePerson(person), ...person };
   const patch = { ...base };
   if (patch.status === "sold") return patch;
 
@@ -97,6 +103,8 @@ function daysInStage(iso) {
   } catch { return "—"; }
 }
 
+function getStageMeta(id) { return STAGES.find(s => s.id === id) || STAGES[0]; }
+
 /* --------------------------------- Component -------------------------------- */
 
 export default function PipelinePage() {
@@ -108,21 +116,7 @@ export default function PipelinePage() {
   const [notesMap, setNotesMap] = useState(loadNotesMap());
   const [showFilters, setShowFilters] = useState(false);
 
-  // 1) Prevent page-level horizontal scroll (board has its own horizontal scroll)
-  useEffect(() => {
-    const html = document.documentElement;
-    const body = document.body;
-    const prevHtml = html.style.overflowX;
-    const prevBody = body.style.overflowX;
-    html.style.overflowX = "hidden";
-    body.style.overflowX = "hidden";
-    return () => {
-      html.style.overflowX = prevHtml;
-      body.style.overflowX = prevBody;
-    };
-  }, []);
-
-  // 2) Lock background scroll while drawer is open
+  // Lock background scroll while drawer is open
   useEffect(() => {
     const body = document.body;
     const prev = body.style.overflow;
@@ -136,7 +130,7 @@ export default function PipelinePage() {
     setClients(loadClients());
   }, []);
 
-  // Combine both lists and pick the FRESHEST copy per id
+  // Combine both lists and pick freshest by id
   const all = useMemo(() => {
     const byId = new Map();
     const pickFresh = (existing, incoming) => {
@@ -183,7 +177,6 @@ export default function PipelinePage() {
 
   /* ---------------------------- Mutations / actions --------------------------- */
 
-  // Deterministic save that replaces by id in BOTH lists
   function updatePerson(patch) {
     const item = { ...patch };
 
@@ -192,7 +185,6 @@ export default function PipelinePage() {
       if (idx >= 0) {
         const copy = list.slice();
         copy[idx] = obj;
-        // Ensure only one copy by id
         return copy.filter((x, i) => i === copy.findIndex(y => y.id === x.id));
       }
       return [obj, ...list.filter((x) => x.id !== obj.id)];
@@ -252,7 +244,7 @@ export default function PipelinePage() {
   /* --------------------------------- Render ---------------------------------- */
 
   return (
-    <div className="space-y-4 overflow-x-hidden">
+    <div className="space-y-4">
       {/* Toolbar */}
       <div className="flex flex-wrap items-center gap-2">
         <div className="relative">
@@ -282,22 +274,23 @@ export default function PipelinePage() {
         </div>
       </div>
 
-      {/* Board — horizontally scrollable lanes with fixed width */}
-      <div className="overflow-x-auto">
-        <div className="flex w-max gap-4 pr-2">
-          {STAGES.map((stage) => (
-            <Lane
-              key={stage.id}
-              stage={stage}
-              people={lanes[stage.id] || []}
-              onOpen={openCard}
-              onMoveTo={(id, dest) => {
-                const p = all.find(x => x.id === id);
-                if (p) setStage(p, dest);
-              }}
-            />
-          ))}
-        </div>
+      {/* Board — 2 rows of 3 columns */}
+      <div className="grid gap-4">
+        {ROWS.map((row, i) => (
+          <div key={i} className="grid gap-4 md:grid-cols-3">
+            {row.map((stageId) => {
+              const meta = getStageMeta(stageId);
+              return (
+                <Lane
+                  key={stageId}
+                  stage={meta}
+                  people={lanes[stageId] || []}
+                  onOpen={openCard}
+                />
+              );
+            })}
+          </div>
+        ))}
       </div>
 
       {/* Drawer */}
@@ -322,7 +315,7 @@ export default function PipelinePage() {
 
 function Lane({ stage, people, onOpen }) {
   return (
-    <div className="w-[340px] md:w-[360px] shrink-0 rounded-2xl border border-white/10 bg-white/[0.03] p-2">
+    <div className="rounded-2xl border border-white/10 bg-white/[0.03] p-2">
       <div className="flex items-center justify-between px-2 pb-2">
         <div className="text-sm font-medium">
           {stage.label}
@@ -348,6 +341,7 @@ function Card({ person, onOpen }) {
   const badge = STAGE_STYLE[person.stage] || "bg-white/10 text-white/80";
   const next = person.next_follow_up_at ? fmtDateTime(person.next_follow_up_at) : "—";
 
+  // Fixed height = consistent cards in every column
   return (
     <div className="rounded-xl border border-white/10 bg-black/40 p-3 hover:bg-black/50 h-[150px] flex flex-col">
       <div className="flex-1 min-h-0">
@@ -471,7 +465,7 @@ function Drawer({
           </button>
         </div>
 
-        {/* Follow-up: manual only */}
+        {/* Follow-up: manual only + save */}
         <div className="flex items-center gap-2 border-b border-white/10 px-4 py-3">
           <div className="text-xs text-white/60">Next follow-up:</div>
           <input
