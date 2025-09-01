@@ -1,5 +1,5 @@
 // File: src/pages/MailingPage.jsx
-import { useEffect, useState, useCallback } from "react";
+import { useEffect, useState, useCallback, useRef } from "react";
 import { supabase } from "../lib/supabaseClient.js";
 import { migrateSoldLeads } from "../lib/migrateLeads.js";
 
@@ -8,12 +8,37 @@ export default function MailingPage() {
   const [loading, setLoading] = useState(true);
   const [msg, setMsg] = useState("");
   const [user, setUser] = useState(null);
+  const [authReady, setAuthReady] = useState(false); // session hydration gate
+  const authTimer = useRef(null);
 
-  const fetchUser = useCallback(async () => {
-    const { data } = await supabase.auth.getUser();
-    setUser(data?.user || null);
+  // 1) Hydrate session and listen for changes
+  const hydrateAuth = useCallback(async () => {
+    try {
+      const { data } = await supabase.auth.getSession();
+      if (data?.session?.user) setUser(data.session.user);
+      setAuthReady(true);
+    } catch {
+      setAuthReady(true);
+    }
   }, []);
 
+  useEffect(() => {
+    // initial hydration
+    hydrateAuth();
+    // subscribe to changes
+    const { data: sub } = supabase.auth.onAuthStateChange((_event, session) => {
+      setUser(session?.user || null);
+      setAuthReady(true);
+    });
+    // extra grace: some browsers restore async — give it up to 1200ms
+    authTimer.current = setTimeout(() => setAuthReady(true), 1200);
+    return () => {
+      sub?.subscription?.unsubscribe?.();
+      if (authTimer.current) clearTimeout(authTimer.current);
+    };
+  }, [hydrateAuth]);
+
+  // 2) Jobs fetch
   const fetchJobs = useCallback(async () => {
     setMsg("");
     setLoading(true);
@@ -38,21 +63,23 @@ export default function MailingPage() {
   }, []);
 
   useEffect(() => {
-    (async () => {
-      await fetchUser();
-      await fetchJobs();
-      // console helper (optional)
-      window.__migrateSoldLeads = async () => {
-        const r = await migrateSoldLeads();
-        alert(`Scanned ${r.scanned}, SOLD found ${r.soldFound}, inserted ${r.inserted}, skipped ${r.skipped}`);
-      };
-    })();
-  }, [fetchUser, fetchJobs]);
+    fetchJobs();
+  }, [fetchJobs]);
 
+  // 3) Migrate button
   const doMigrate = async () => {
+    setMsg("");
+    if (!authReady) {
+      setMsg("Checking sign-in…");
+      return;
+    }
+    if (!user?.id) {
+      setMsg("Please sign in to migrate SOLD leads.");
+      return;
+    }
     try {
       setMsg("Migrating SOLD leads → Supabase…");
-      const r = await migrateSoldLeads();
+      const r = await migrateSoldLeads(user.id);
       setMsg(`✅ Scanned ${r.scanned}; SOLD found ${r.soldFound}; inserted ${r.inserted}; skipped ${r.skipped}.`);
       await fetchJobs();
     } catch (e) {
@@ -75,6 +102,7 @@ export default function MailingPage() {
             onClick={doMigrate}
             className="rounded-lg bg-indigo-600 px-3 py-2 text-sm"
             title="Migrate only SOLD leads from localStorage to Supabase (idempotent)"
+            disabled={!authReady}
           >
             Migrate SOLD leads (local → Supabase)
           </button>
@@ -82,10 +110,13 @@ export default function MailingPage() {
       </div>
 
       <div className="mb-4 rounded-xl border border-white/10 bg-white/[0.04] p-3 text-sm">
-        <div><b>Auth:</b> {user ? `Logged in as ${user.email}` : "Not logged in"}</div>
+        <div>
+          <b>Auth:</b>{" "}
+          {!authReady ? "Checking…" : user ? `Signed in as ${user.email}` : "Not signed in"}
+        </div>
         {msg && <div className="mt-2 text-amber-300">{msg}</div>}
         <div className="mt-2 text-xs text-white/60">
-          Tip: After this one-time migration, new SOLD leads are saved to Supabase automatically.
+          After this one-time migration, new SOLD leads are saved to Supabase automatically when you click “Save as SOLD”.
         </div>
       </div>
 
