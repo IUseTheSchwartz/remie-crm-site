@@ -5,10 +5,14 @@ import {
   loadLeads, saveLeads,
   loadClients, saveClients,
   normalizePerson, upsert,
-  // NEW: API key helpers
   loadLeadsApiKey, saveLeadsApiKey, clearLeadsApiKey,
 } from "../lib/storage.js";
 
+// NEW: add Supabase + our repo helper
+import { supabase } from "../lib/supabaseClient.js";
+import { repoMarkSold } from "../lib/leadsRepo.js";
+
+// Optional existing automations – left intact
 import {
   scheduleWelcomeText,
   schedulePolicyKickoffEmail
@@ -107,24 +111,28 @@ function buildName(row, map) {
   return "";
 }
 const buildPhone = (row, map) =>
-  pick(row, map.phone) || row.phone || row.number || row.Phone || row.Number || "";
+  pick(row, map.phone) || row.phone || row.number || "";
 const buildEmail = (row, map) =>
-  pick(row, map.email) || row.email || row.Email || "";
+  pick(row, map.email) || row.email || "";
 const buildNotes = (row, map) => pick(row, map.notes) || "";
 
 // NEW field builders (string passthrough)
 const buildDob = (row, map) => pick(row, map.dob);
-const buildState = (row, map) => pick(row, map.state).toUpperCase();
+const buildState = (row, map) => (pick(row, map.state) || "").toUpperCase();
 const buildBeneficiary = (row, map) => pick(row, map.beneficiary);
 const buildBeneficiaryName = (row, map) => pick(row, map.beneficiary_name);
 const buildGender = (row, map) => pick(row, map.gender);
 
 export default function LeadsPage() {
-  const [tab, setTab] = useState("clients"); // 'clients' | 'sold'  (label "Leads" for 'clients')
+  const [tab, setTab] = useState("clients"); // 'clients' | 'sold'
   const [leads, setLeads] = useState([]);
   const [clients, setClients] = useState([]);
   const [selected, setSelected] = useState(null);
   const [filter, setFilter] = useState("");
+
+  // NEW: feedback
+  const [busy, setBusy] = useState(false);
+  const [toast, setToast] = useState("");
 
   // NEW: API key modal state + handlers
   const [apiKeyOpen, setApiKeyOpen] = useState(false);
@@ -227,64 +235,110 @@ export default function LeadsPage() {
 
   function openAsSold(person) { setSelected(person); }
 
-  function saveSoldInfo(id, soldPayload) {
-    let list = [...allClients];
-    const idx = list.findIndex(x => x.id === id);
-    const base = idx >= 0 ? list[idx] : normalizePerson({ id });
+  // 🔧 REPLACED: now async, writes to local + Supabase, then enqueues mail job
+  async function saveSoldInfo(id, soldPayload) {
+    try {
+      setBusy(true);
+      setToast("");
 
-    const updated = {
-      ...base,
-      status: "sold",
-      sold: {
-        carrier: soldPayload.carrier || "",
-        faceAmount: soldPayload.faceAmount || "",
-        premium: soldPayload.premium || "",
-        monthlyPayment: soldPayload.monthlyPayment || "",
-        startDate: soldPayload.startDate || "",
+      // 1) Update local state immediately (same behavior as before)
+      let list = [...allClients];
+      const idx = list.findIndex(x => x.id === id);
+      const base = idx >= 0 ? list[idx] : normalizePerson({ id });
+
+      const updated = {
+        ...base,
+        status: "sold",
+        sold: {
+          carrier: soldPayload.carrier || "",
+          faceAmount: soldPayload.faceAmount || "",
+          premium: soldPayload.premium || "",
+          monthlyPayment: soldPayload.monthlyPayment || "",
+          policyNumber: soldPayload.policyNumber || "", // keep policy number if provided later
+          effectiveDate: soldPayload.startDate || soldPayload.effectiveDate || "",
+          notes: soldPayload.notes || "",
+          address: {
+            street: soldPayload.street || "",
+            city: soldPayload.city || "",
+            state: soldPayload.state || "",
+            zip: soldPayload.zip || "",
+          }
+        },
         name: soldPayload.name || base.name || "",
         phone: soldPayload.phone || base.phone || "",
         email: soldPayload.email || base.email || "",
-        address: {
-          street: soldPayload.street || "",
-          city: soldPayload.city || "",
-          state: soldPayload.state || "",
-          zip: soldPayload.zip || "",
-        }
-      },
-      name: soldPayload.name || base.name || "",
-      phone: soldPayload.phone || base.phone || "",
-      email: soldPayload.email || base.email || "",
-    };
+      };
 
-    const nextClients = upsert(clients, updated);
-    const nextLeads   = upsert(leads, updated);
-    saveClients(nextClients);
-    saveLeads(nextLeads);
-    setClients(nextClients);
-    setLeads(nextLeads);
+      const nextClients = upsert(clients, updated);
+      const nextLeads   = upsert(leads, updated);
+      saveClients(nextClients);
+      saveLeads(nextLeads);
+      setClients(nextClients);
+      setLeads(nextLeads);
 
-    if (soldPayload.sendWelcomeText) {
-      scheduleWelcomeText({
-        name: updated.name,
-        phone: updated.phone,
-        carrier: updated.sold?.carrier,
-        startDate: updated.sold?.startDate,
-      });
+      // 2) Persist to Supabase (via repo helper)
+      await repoMarkSold(id, updated.sold);
+
+      // 3) Optional existing automations you had
+      if (soldPayload.sendWelcomeText) {
+        scheduleWelcomeText({
+          name: updated.name,
+          phone: updated.phone,
+          carrier: updated.sold?.carrier,
+          startDate: updated.sold?.effectiveDate || updated.sold?.startDate,
+        });
+      }
+      if (soldPayload.sendPolicyEmailOrMail) {
+        schedulePolicyKickoffEmail({
+          name: updated.name,
+          email: updated.email,
+          carrier: updated.sold?.carrier,
+          faceAmount: updated.sold?.faceAmount,
+          monthlyPayment: updated.sold?.monthlyPayment,
+          startDate: updated.sold?.effectiveDate || updated.sold?.startDate,
+          address: updated.sold?.address,
+        });
+      }
+
+      // 4) Enqueue Lob mailing job (server function) – requires logged-in user
+      const { data: s } = await supabase.auth.getSession();
+      const userId = s?.session?.user?.id;
+
+      // Guardrails: only enqueue if we have enough address to mail
+      const addr = updated.sold?.address || {};
+      const hasMailAddr = addr.street && addr.city && addr.state && addr.zip;
+
+      if (userId && hasMailAddr) {
+        await fetch("/.netlify/functions/enqueue-mail-job", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            user_id: userId,
+            lead_id: id, // same UUID we store in Supabase
+            type: "welcome_policy_letter",
+            payload: {
+              firstName: (updated.name || "").split(" ")[0] || "Customer",
+              policyNumber: updated?.sold?.policyNumber || "",
+            },
+          }),
+        }).catch(() => {});
+        setToast("Saved as sold and enqueued mail job.");
+      } else if (!userId) {
+        setToast("Saved as sold locally; log in to enqueue mail job.");
+      } else {
+        setToast("Saved as sold; missing mailing address, not enqueued.");
+      }
+
+      setSelected(null);
+      setTab("sold");
+    } catch (e) {
+      console.error(e);
+      alert("Error saving SOLD: " + (e?.message || e));
+    } finally {
+      setBusy(false);
+      // auto-hide toast
+      if (toast) setTimeout(() => setToast(""), 3000);
     }
-    if (soldPayload.sendPolicyEmailOrMail) {
-      schedulePolicyKickoffEmail({
-        name: updated.name,
-        email: updated.email,
-        carrier: updated.sold?.carrier,
-        faceAmount: updated.sold?.faceAmount,
-        monthlyPayment: updated.sold?.monthlyPayment,
-        startDate: updated.sold?.startDate,
-        address: updated.sold?.address,
-      });
-    }
-
-    setSelected(null);
-    setTab("sold");
   }
 
   function removeOne(id) {
@@ -369,6 +423,8 @@ export default function LeadsPage() {
           value={filter}
           onChange={(e) => setFilter(e.target.value)}
         />
+        {busy && <span className="text-sm text-white/70">Saving…</span>}
+        {!!toast && <span className="text-sm text-emerald-400">{toast}</span>}
       </div>
 
       {/* Table */}
@@ -415,7 +471,7 @@ export default function LeadsPage() {
                 <Td>{p.sold?.faceAmount || "—"}</Td>
                 <Td>{p.sold?.premium || "—"}</Td>
                 <Td>{p.sold?.monthlyPayment || "—"}</Td>
-                <Td>{p.sold?.startDate || "—"}</Td>
+                <Td>{p.sold?.effectiveDate || p.sold?.startDate || "—"}</Td>
                 <Td>
                   <div className="flex items-center gap-2">
                     <button
@@ -532,7 +588,7 @@ function Td({ children }) { return <td className="px-3 py-2">{children}</td>; }
 
 function SoldDrawer({ initial, allClients, onClose, onSave }) {
   const [form, setForm] = useState({
-    id: initial?.id || crypto.randomUUID(),
+    id: initial?.id || (typeof crypto !== "undefined" ? crypto.randomUUID() : String(Date.now())),
     name: initial?.name || "",
     phone: initial?.phone || "",
     email: initial?.email || "",
