@@ -9,6 +9,7 @@ import AgentShowcase from "./pages/AgentShowcase.jsx";
 import ToolsPage from "./pages/ToolsPage.jsx";
 import MessagesPage from "./pages/MessagesPage.jsx";
 import MailingPage from "./pages/MailingPage.jsx";
+import MessagingSettings from "./pages/MessagingSettings.jsx";
 
 export const routes = [
   // Main section
@@ -17,6 +18,7 @@ export const routes = [
   { key: "pipeline", path: "/app/pipeline",   label: "Pipeline", component: PipelinePage,                 showInSidebar: true, group: "main" },
   { key: "reports",  path: "/app/reports",    label: "Reports",  component: ReportsPage,                  showInSidebar: true, group: "main" },
   { key: "messages", path: "/app/messages",   label: "Messages", component: MessagesPage,                 showInSidebar: true, group: "main" },
+  { key: "msgSettings", path: "/app/messaging-settings", label: "Messaging Settings", component: MessagingSettings, showInSidebar: true, group: "main" },
   { key: "mailing",  path: "/app/mailing",    label: "Mailing",  component: MailingPage,                  showInSidebar: true, group: "main" },
   { key: "calendar", path: "/app/calendar",   label: "Calendar", component: CalendarPage,                 showInSidebar: true, group: "main" },
   { key: "tools",    path: "/app/tools",      label: "Tools",    component: ToolsPage,                    showInSidebar: true, group: "main" },
