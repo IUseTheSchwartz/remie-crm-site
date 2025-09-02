@@ -4,21 +4,24 @@ import { loadLeads } from "./storage";
 
 /**
  * Migrate ONLY locally stored SOLD leads to Supabase for the provided userId.
- * - Idempotent: skips IDs already present for that user.
- * - Throws helpful errors (so the UI can show them).
+ * - Skips duplicates (idempotent).
+ * - Logs debug messages for each stage (check DevTools console).
  */
 export async function migrateSoldLeads(userId) {
   if (!userId) throw new Error("Not logged in");
 
   const localAll = loadLeads() || [];
   const localSold = localAll.filter((p) => p?.status === "sold");
+  console.debug("[migrateLeads] total local:", localAll.length, "sold:", localSold.length);
+
   if (!localSold.length) {
     return { scanned: localAll.length, soldFound: 0, inserted: 0, skipped: 0, note: "no local SOLD" };
   }
 
-  // 1) Find already-present SOLD leads to avoid duplicates
+  // 1) Check what’s already in Supabase
   let existingRows = [];
   try {
+    console.debug("[migrateLeads] checking Supabase for existing SOLD leads…");
     const { data, error } = await supabase
       .from("leads")
       .select("id")
@@ -26,12 +29,15 @@ export async function migrateSoldLeads(userId) {
       .eq("status", "sold");
     if (error) throw error;
     existingRows = data || [];
+    console.debug("[migrateLeads] found existing:", existingRows.length);
   } catch (e) {
+    console.error("[migrateLeads] select failed:", e);
     throw new Error("Supabase select failed: " + (e?.message || e));
   }
 
   const existingIds = new Set(existingRows.map((r) => r.id));
   const toInsert = localSold.filter((p) => !existingIds.has(p.id));
+  console.debug("[migrateLeads] to insert:", toInsert.length);
 
   if (!toInsert.length) {
     return {
@@ -43,7 +49,7 @@ export async function migrateSoldLeads(userId) {
     };
   }
 
-  // 2) Upsert only the new ones
+  // 2) Upsert new ones
   const rows = toInsert.map((p) => ({
     id: p.id,
     user_id: userId,
@@ -58,16 +64,18 @@ export async function migrateSoldLeads(userId) {
     beneficiary_name: p.beneficiary_name || "",
     company: p.company || "",
     gender: p.gender || "",
-    sold: p.sold || null, // { carrier, faceAmount, premium, monthlyPayment, policyNumber, effectiveDate/startDate, notes, address{street,city,state,zip} }
+    sold: p.sold || null,
     updated_at: new Date().toISOString(),
   }));
 
   try {
+    console.debug("[migrateLeads] upserting rows:", rows.length);
     const { error } = await supabase.from("leads").upsert(rows);
     if (error) throw error;
+    console.debug("[migrateLeads] upsert done");
   } catch (e) {
-    // Common cause: missing table/columns or RLS policy
-    throw new Error("Supabase upsert failed (check RLS & schema): " + (e?.message || e));
+    console.error("[migrateLeads] upsert failed:", e);
+    throw new Error("Supabase upsert failed: " + (e?.message || e));
   }
 
   return {
