@@ -14,6 +14,13 @@ import {
   schedulePolicyKickoffEmail
 } from "../lib/automation.js";
 
+// NEW: Supabase write-through helpers
+import {
+  upsertLeadServer,
+  upsertManyLeadsServer,
+  deleteLeadServer,
+} from "../lib/supabaseLeads.js";
+
 // NEW: icons for API Key UI
 import { Key, Eye, EyeOff, Trash2 } from "lucide-react";
 
@@ -126,6 +133,9 @@ export default function LeadsPage() {
   const [selected, setSelected] = useState(null);
   const [filter, setFilter] = useState("");
 
+  // NEW: lightweight server status
+  const [serverMsg, setServerMsg] = useState("");
+
   // NEW: API key modal state + handlers
   const [apiKeyOpen, setApiKeyOpen] = useState(false);
   const [apiKey, setApiKey] = useState(() => loadLeadsApiKey());
@@ -166,12 +176,12 @@ export default function LeadsPage() {
       : src;
   }, [tab, allClients, onlySold, filter]);
 
-  function handleImportCsv(file) {
+  async function handleImportCsv(file) {
     Papa.parse(file, {
       header: true,
       skipEmptyLines: true,
       transformHeader: (h) => h.trim(),
-      complete: (res) => {
+      complete: async (res) => {
         const rows = res.data || [];
         if (!rows.length) {
           alert("CSV has no rows.");
@@ -202,6 +212,7 @@ export default function LeadsPage() {
           })
           .filter(r => r.name || r.phone || r.email);
 
+        // Optimistic local update first
         const newLeads = [...normalized, ...leads];
         const newClients = [...normalized, ...clients];
         saveLeads(newLeads);
@@ -209,6 +220,16 @@ export default function LeadsPage() {
         setLeads(newLeads);
         setClients(newClients);
         setTab("clients");
+
+        // Try server batch upsert (non-blocking for UI)
+        try {
+          setServerMsg("Syncing CSV to Supabase…");
+          const count = await upsertManyLeadsServer(normalized);
+          setServerMsg(`✅ CSV synced (${count} rows)`);
+        } catch (e) {
+          console.error("CSV sync error:", e);
+          setServerMsg(`⚠️ CSV sync failed: ${e.message || e}`);
+        }
       },
       error: (err) => alert("CSV parse error: " + err.message),
     });
@@ -227,7 +248,7 @@ export default function LeadsPage() {
 
   function openAsSold(person) { setSelected(person); }
 
-  function saveSoldInfo(id, soldPayload) {
+  async function saveSoldInfo(id, soldPayload) {
     let list = [...allClients];
     const idx = list.findIndex(x => x.id === id);
     const base = idx >= 0 ? list[idx] : normalizePerson({ id });
@@ -256,6 +277,7 @@ export default function LeadsPage() {
       email: soldPayload.email || base.email || "",
     };
 
+    // Optimistic local write
     const nextClients = upsert(clients, updated);
     const nextLeads   = upsert(leads, updated);
     saveClients(nextClients);
@@ -285,10 +307,21 @@ export default function LeadsPage() {
 
     setSelected(null);
     setTab("sold");
+
+    // Try server upsert (non-blocking)
+    try {
+      setServerMsg("Syncing SOLD to Supabase…");
+      await upsertLeadServer(updated);
+      setServerMsg("✅ SOLD synced");
+    } catch (e) {
+      console.error("SOLD sync error:", e);
+      setServerMsg(`⚠️ SOLD sync failed: ${e.message || e}`);
+    }
   }
 
-  function removeOne(id) {
-    if (!confirm("Delete this record? This only affects your local data.")) return;
+  async function removeOne(id) {
+    if (!confirm("Delete this record? This affects both local and Supabase.")) return;
+    // Optimistic local delete
     const nextClients = clients.filter(c => c.id !== id);
     const nextLeads   = leads.filter(l => l.id !== id);
     saveClients(nextClients);
@@ -296,10 +329,21 @@ export default function LeadsPage() {
     setClients(nextClients);
     setLeads(nextLeads);
     if (selected?.id === id) setSelected(null);
+
+    // Try server delete
+    try {
+      setServerMsg("Deleting on Supabase…");
+      await deleteLeadServer(id);
+      setServerMsg("🗑️ Deleted in Supabase");
+    } catch (e) {
+      console.error("Delete server error:", e);
+      setServerMsg(`⚠️ Could not delete on Supabase: ${e.message || e}`);
+      // (Optional) If you want strict consistency, you could rollback local here.
+    }
   }
 
   function removeAll() {
-    if (!confirm("Clear ALL locally stored leads/clients?")) return;
+    if (!confirm("Clear ALL locally stored leads/clients? (This does NOT delete from Supabase)")) return;
     saveLeads([]);
     saveClients([]);
     setLeads([]);
@@ -360,6 +404,13 @@ export default function LeadsPage() {
           Clear all (local)
         </button>
       </div>
+
+      {/* NEW: server status line (non-blocking) */}
+      {serverMsg && (
+        <div className="rounded-xl border border-white/10 bg-white/[0.04] px-3 py-2 text-sm text-white/80">
+          {serverMsg}
+        </div>
+      )}
 
       {/* Search */}
       <div className="flex items-center gap-3">
@@ -427,7 +478,7 @@ export default function LeadsPage() {
                     <button
                       onClick={() => removeOne(p.id)}
                       className="rounded-lg border border-rose-500/40 bg-rose-500/10 px-2 py-1 hover:bg-rose-500/20"
-                      title="Delete this record (local only)"
+                      title="Delete (local + Supabase)"
                     >
                       Delete
                     </button>
