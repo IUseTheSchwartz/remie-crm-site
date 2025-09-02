@@ -5,14 +5,10 @@ import {
   loadLeads, saveLeads,
   loadClients, saveClients,
   normalizePerson, upsert,
+  // NEW: API key helpers
   loadLeadsApiKey, saveLeadsApiKey, clearLeadsApiKey,
 } from "../lib/storage.js";
 
-// NEW: add Supabase + our repo helper
-import { supabase } from "../lib/supabaseClient.js";
-import { repoMarkSold } from "../lib/leadsRepo.js";
-
-// Optional existing automations – left intact
 import {
   scheduleWelcomeText,
   schedulePolicyKickoffEmail
@@ -25,19 +21,43 @@ const TEMPLATE_HEADERS = ["name","phone","email"]; // minimal CSV template
 
 // ---- Header alias helpers ---------------------------------------------------
 const H = {
-  first: ["first","first name","firstname","given name","given_name","fname","first_name"],
-  last: ["last","last name","lastname","surname","family name","lname","last_name","family_name"],
-  full: ["name","full name","fullname","full_name"],
-  email: ["email","e-mail","email address","mail","email_address"],
-  phone: ["phone","phone number","mobile","cell","tel","telephone","number","phone_number"],
-  notes: ["notes","note","comments","comment","details"],
-  company: ["company","business","organization","organisation"],
+  first: [
+    "first","first name","firstname","given name","given_name","fname","first_name"
+  ],
+  last: [
+    "last","last name","lastname","surname","family name","lname","last_name","family_name"
+  ],
+  full: [
+    "name","full name","fullname","full_name"
+  ],
+  email: [
+    "email","e-mail","email address","mail","email_address"
+  ],
+  phone: [
+    "phone","phone number","mobile","cell","tel","telephone","number","phone_number"
+  ],
+  notes: [
+    "notes","note","comments","comment","details"
+  ],
+  company: [
+    "company","business","organization","organisation"
+  ],
   // NEW fields
-  dob: ["dob","date of birth","birthdate","birth date","d.o.b.","date"],
-  state: ["state","st","us state","residence state"],
-  beneficiary: ["beneficiary","beneficiary type"],
-  beneficiary_name: ["beneficiary name","beneficiary_name","beneficiary full name"],
-  gender: ["gender","sex"],
+  dob: [
+    "dob","date of birth","birthdate","birth date","d.o.b.","date"
+  ],
+  state: [
+    "state","st","us state","residence state"
+  ],
+  beneficiary: [
+    "beneficiary","beneficiary type"
+  ],
+  beneficiary_name: [
+    "beneficiary name","beneficiary_name","beneficiary full name"
+  ],
+  gender: [
+    "gender","sex"
+  ],
 };
 
 const norm = (s) => (s || "").toString().trim().toLowerCase();
@@ -46,7 +66,7 @@ function buildHeaderIndex(headers) {
   const normalized = headers.map(norm);
   const find = (candidates) => {
     for (let i = 0; i < normalized.length; i++) {
-      if (candidates.includes(normalized[i])) return headers[i];
+      if (candidates.includes(normalized[i])) return headers[i]; // return original header
     }
     return null;
   };
@@ -58,6 +78,7 @@ function buildHeaderIndex(headers) {
     phone:  find(H.phone),
     notes:  find(H.notes),
     company:find(H.company),
+    // NEW
     dob:    find(H.dob),
     state:  find(H.state),
     beneficiary: find(H.beneficiary),
@@ -85,38 +106,27 @@ function buildName(row, map) {
   if (email && email.includes("@")) return email.split("@")[0];
   return "";
 }
-const buildPhone = (row, map) => pick(row, map.phone) || row.phone || row.number || "";
-const buildEmail = (row, map) => pick(row, map.email) || row.email || "";
+const buildPhone = (row, map) =>
+  pick(row, map.phone) || row.phone || row.number || row.Phone || row.Number || "";
+const buildEmail = (row, map) =>
+  pick(row, map.email) || row.email || row.Email || "";
 const buildNotes = (row, map) => pick(row, map.notes) || "";
+
+// NEW field builders (string passthrough)
 const buildDob = (row, map) => pick(row, map.dob);
-const buildState = (row, map) => (pick(row, map.state) || "").toUpperCase();
+const buildState = (row, map) => pick(row, map.state).toUpperCase();
 const buildBeneficiary = (row, map) => pick(row, map.beneficiary);
 const buildBeneficiaryName = (row, map) => pick(row, map.beneficiary_name);
 const buildGender = (row, map) => pick(row, map.gender);
 
-// small fetch helper so network can’t hang UI
-async function fetchWithTimeout(resource, options = {}, ms = 5000) {
-  const controller = new AbortController();
-  const id = setTimeout(() => controller.abort(), ms);
-  try {
-    const res = await fetch(resource, { ...options, signal: controller.signal });
-    return res;
-  } finally {
-    clearTimeout(id);
-  }
-}
-
 export default function LeadsPage() {
-  const [tab, setTab] = useState("clients"); // 'clients' | 'sold'
+  const [tab, setTab] = useState("clients"); // 'clients' | 'sold'  (label "Leads" for 'clients')
   const [leads, setLeads] = useState([]);
   const [clients, setClients] = useState([]);
   const [selected, setSelected] = useState(null);
   const [filter, setFilter] = useState("");
 
-  // feedback
-  const [toast, setToast] = useState("");
-
-  // API key modal state + handlers
+  // NEW: API key modal state + handlers
   const [apiKeyOpen, setApiKeyOpen] = useState(false);
   const [apiKey, setApiKey] = useState(() => loadLeadsApiKey());
   const [showKey, setShowKey] = useState(false);
@@ -136,6 +146,7 @@ export default function LeadsPage() {
     setClients(loadClients());
   }, []);
 
+  // Merge clients + leads into a deduped "Leads" view (formerly "Clients")
   const allClients = useMemo(() => {
     const map = new Map();
     for (const x of clients) map.set(x.id, x);
@@ -176,6 +187,7 @@ export default function LeadsPage() {
             const email = buildEmail(r, map);
             const notes = buildNotes(r, map);
 
+            // NEW fields
             const dob  = buildDob(r, map);
             const state = buildState(r, map);
             const beneficiary = buildBeneficiary(r, map);
@@ -215,9 +227,7 @@ export default function LeadsPage() {
 
   function openAsSold(person) { setSelected(person); }
 
-  // >>> CHANGED: close modal immediately; background network with timeouts
-  async function saveSoldInfo(id, soldPayload) {
-    // 1) Update local state first (instant)
+  function saveSoldInfo(id, soldPayload) {
     let list = [...allClients];
     const idx = list.findIndex(x => x.id === id);
     const base = idx >= 0 ? list[idx] : normalizePerson({ id });
@@ -230,9 +240,10 @@ export default function LeadsPage() {
         faceAmount: soldPayload.faceAmount || "",
         premium: soldPayload.premium || "",
         monthlyPayment: soldPayload.monthlyPayment || "",
-        policyNumber: soldPayload.policyNumber || "",
-        effectiveDate: soldPayload.startDate || soldPayload.effectiveDate || "",
-        notes: soldPayload.notes || "",
+        startDate: soldPayload.startDate || "",
+        name: soldPayload.name || base.name || "",
+        phone: soldPayload.phone || base.phone || "",
+        email: soldPayload.email || base.email || "",
         address: {
           street: soldPayload.street || "",
           city: soldPayload.city || "",
@@ -252,90 +263,28 @@ export default function LeadsPage() {
     setClients(nextClients);
     setLeads(nextLeads);
 
-    // Close drawer immediately so it never hangs
+    if (soldPayload.sendWelcomeText) {
+      scheduleWelcomeText({
+        name: updated.name,
+        phone: updated.phone,
+        carrier: updated.sold?.carrier,
+        startDate: updated.sold?.startDate,
+      });
+    }
+    if (soldPayload.sendPolicyEmailOrMail) {
+      schedulePolicyKickoffEmail({
+        name: updated.name,
+        email: updated.email,
+        carrier: updated.sold?.carrier,
+        faceAmount: updated.sold?.faceAmount,
+        monthlyPayment: updated.sold?.monthlyPayment,
+        startDate: updated.sold?.startDate,
+        address: updated.sold?.address,
+      });
+    }
+
     setSelected(null);
     setTab("sold");
-    setToast("Saved as sold. Syncing…");
-
-    // 2) Kick off background tasks (don’t block UI)
-    (async () => {
-      try {
-        // Write to Supabase
-        await repoMarkSold(id, updated.sold);
-      } catch (e) {
-        console.warn("Supabase update failed:", e);
-        setToast("Saved locally. Supabase sync failed.");
-        return; // skip enqueue if DB write failed
-      }
-
-      // Existing automations
-      try {
-        if (soldPayload.sendWelcomeText) {
-          scheduleWelcomeText({
-            name: updated.name,
-            phone: updated.phone,
-            carrier: updated.sold?.carrier,
-            startDate: updated.sold?.effectiveDate || updated.sold?.startDate,
-          });
-        }
-        if (soldPayload.sendPolicyEmailOrMail) {
-          schedulePolicyKickoffEmail({
-            name: updated.name,
-            email: updated.email,
-            carrier: updated.sold?.carrier,
-            faceAmount: updated.sold?.faceAmount,
-            monthlyPayment: updated.sold?.monthlyPayment,
-            startDate: updated.sold?.effectiveDate || updated.sold?.startDate,
-            address: updated.sold?.address,
-          });
-        }
-      } catch (e) {
-        console.warn("Local automations error:", e);
-      }
-
-      // Enqueue Lob mail job if we have auth + full address
-      try {
-        const { data: s } = await supabase.auth.getSession();
-        const userId = s?.session?.user?.id;
-
-        const addr = updated.sold?.address || {};
-        const hasMailAddr = addr.street && addr.city && addr.state && addr.zip;
-
-        if (userId && hasMailAddr) {
-          const res = await fetchWithTimeout("/.netlify/functions/enqueue-mail-job", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-              user_id: userId,
-              lead_id: id,
-              type: "welcome_policy_letter",
-              payload: {
-                firstName: (updated.name || "").split(" ")[0] || "Customer",
-                policyNumber: updated?.sold?.policyNumber || "",
-              },
-            }),
-          }, 6000);
-
-          if (!res.ok) {
-            const t = await res.text().catch(()=> "");
-            console.warn("enqueue failed:", res.status, t);
-            setToast("Sold saved. Enqueue failed.");
-          } else {
-            setToast("Sold saved. Mail job enqueued.");
-          }
-        } else if (!userId) {
-          setToast("Sold saved. Log in to enqueue mail.");
-        } else {
-          setToast("Sold saved. Missing mailing address.");
-        }
-      } catch (e) {
-        console.warn("enqueue error:", e);
-        setToast("Sold saved. Enqueue error.");
-      }
-
-      // auto-hide toast in a bit
-      setTimeout(() => setToast(""), 4000);
-    })();
   }
 
   function removeOne(id) {
@@ -364,7 +313,7 @@ export default function LeadsPage() {
       <div className="flex flex-wrap items-center gap-3">
         <div className="inline-flex rounded-full border border-white/15 bg-white/5 p-1 text-sm">
           {[
-            { id:"clients", label:"Leads" },
+            { id:"clients", label:"Leads" },   // renamed from Clients
             { id:"sold",    label:"Sold"  },
           ].map(t => (
             <button
@@ -387,7 +336,7 @@ export default function LeadsPage() {
           Import CSV
         </label>
 
-        {/* API Key button */}
+        {/* NEW: Add API Key button */}
         <button
           onClick={() => setApiKeyOpen(true)}
           className="inline-flex items-center gap-2 rounded-xl border border-white/15 bg-white/5 px-3 py-2 text-sm"
@@ -412,7 +361,7 @@ export default function LeadsPage() {
         </button>
       </div>
 
-      {/* Search + toast */}
+      {/* Search */}
       <div className="flex items-center gap-3">
         <input
           className="w-full rounded-xl border border-white/10 bg-black/40 px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-indigo-500/40"
@@ -420,7 +369,6 @@ export default function LeadsPage() {
           value={filter}
           onChange={(e) => setFilter(e.target.value)}
         />
-        {!!toast && <span className="text-sm text-emerald-400">{toast}</span>}
       </div>
 
       {/* Table */}
@@ -467,7 +415,7 @@ export default function LeadsPage() {
                 <Td>{p.sold?.faceAmount || "—"}</Td>
                 <Td>{p.sold?.premium || "—"}</Td>
                 <Td>{p.sold?.monthlyPayment || "—"}</Td>
-                <Td>{p.sold?.effectiveDate || p.sold?.startDate || "—"}</Td>
+                <Td>{p.sold?.startDate || "—"}</Td>
                 <Td>
                   <div className="flex items-center gap-2">
                     <button
@@ -508,7 +456,7 @@ export default function LeadsPage() {
         />
       )}
 
-      {/* API Key Modal */}
+      {/* NEW: API Key Modal */}
       {apiKeyOpen && (
         <div className="fixed inset-0 z-50 grid place-items-center bg-black/60 p-4">
           <div className="w-full max-w-lg rounded-2xl border border-white/10 bg-zinc-900 p-4 shadow-xl">
@@ -570,6 +518,7 @@ export default function LeadsPage() {
             </div>
           </div>
 
+          {/* minimal input style to match your page */}
           <style>{`.inp{width:100%; border-radius:0.75rem; border:1px solid rgba(255,255,255,.15); background:#0b0b0b; padding:.5rem .75rem; outline:none}
           .inp:focus{box-shadow:0 0 0 2px rgba(99,102,241,.4)}`}</style>
         </div>
@@ -583,7 +532,7 @@ function Td({ children }) { return <td className="px-3 py-2">{children}</td>; }
 
 function SoldDrawer({ initial, allClients, onClose, onSave }) {
   const [form, setForm] = useState({
-    id: initial?.id || (typeof crypto !== "undefined" ? crypto.randomUUID() : String(Date.now())),
+    id: initial?.id || crypto.randomUUID(),
     name: initial?.name || "",
     phone: initial?.phone || "",
     email: initial?.email || "",
@@ -592,10 +541,12 @@ function SoldDrawer({ initial, allClients, onClose, onSave }) {
     premium: initial?.sold?.premium || "",
     monthlyPayment: initial?.sold?.monthlyPayment || "",
     startDate: initial?.sold?.startDate || "",
+    // Address
     street: initial?.sold?.address?.street || "",
     city: initial?.sold?.address?.city || "",
     state: initial?.sold?.address?.state || "",
     zip: initial?.sold?.address?.zip || "",
+    // Automations
     sendWelcomeText: true,
     sendPolicyEmailOrMail: true,
   });
@@ -653,6 +604,7 @@ function SoldDrawer({ initial, allClients, onClose, onSave }) {
                    className="inp" placeholder="jane@example.com" />
           </Field>
 
+        {/* sold fields */}
           <Field label="Carrier sold">
             <input value={form.carrier} onChange={(e)=>setForm({...form, carrier:e.target.value})}
                    className="inp" placeholder="Mutual of Omaha" />
