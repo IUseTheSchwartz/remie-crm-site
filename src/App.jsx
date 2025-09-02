@@ -84,11 +84,9 @@ const PLANS = [
 function LandingPage() {
   const [annual, setAnnual] = useState(true);
 
-  // Show annual price if available and annual is toggled; otherwise monthly
   const displayPrice = (plan) =>
     annual && plan.yearly != null ? plan.yearly : plan.monthly;
 
-  // Choose the correct Stripe link; if annual not available, fall back to monthly
   const buyHref = (plan) =>
     annual && plan.buyUrl?.annual ? plan.buyUrl.annual : plan.buyUrl?.monthly;
 
@@ -360,7 +358,7 @@ function ViewAgentSiteLink() {
     );
   }
 
-  // Use absolute URL + cache-buster so it always opens cleanly in a new tab
+  // Absolute URL + cache-buster
   const href = `${window.location.origin}/a/${slug}?t=${Date.now()}`;
   return (
     <a
