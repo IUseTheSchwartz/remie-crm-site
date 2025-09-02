@@ -1,49 +1,84 @@
+// File: src/auth.jsx
 import { createContext, useContext, useEffect, useMemo, useState } from "react";
-import { supabase } from "./supabaseClient";
+import { supabase } from "./lib/supabaseClient.js";
 
-const AuthContext = createContext(null);
+const AuthCtx = createContext(null);
 
 export function AuthProvider({ children }) {
   const [user, setUser] = useState(null);
-  const [loaded, setLoaded] = useState(false);
+  const [ready, setReady] = useState(false);   // auth bootstrapped
+  const [subOk, setSubOk] = useState(null);    // null=unknown, true/false after check
 
   useEffect(() => {
-    supabase.auth.getSession().then(({ data }) => {
-      setUser(data.session?.user ? { email: data.session.user.email } : null);
-      setLoaded(true);
-    });
+    let cancelled = false;
+    let timeoutId;
 
-    const { data: sub } = supabase.auth.onAuthStateChange((_event, session) => {
-      setUser(session?.user ? { email: session.user.email } : null);
-    });
+    async function bootstrap() {
+      // 1) Get current session quickly
+      const { data: { session } } = await supabase.auth.getSession();
+      if (!cancelled) setUser(session?.user ?? null);
 
-    return () => sub.subscription.unsubscribe();
+      // 2) Start a safety timeout so we never hang on UI spinners
+      timeoutId = window.setTimeout(() => {
+        if (!cancelled) setReady(true);
+      }, 6000); // 6s fallback
+
+      // 3) Listen for auth changes across tabs
+      const { data: sub } = supabase.auth.onAuthStateChange((_event, sess) => {
+        setUser(sess?.user ?? null);
+        // When we get any auth event, auth is definitely bootstrapped
+        setReady(true);
+      });
+
+      // 4) If we *already* had a session, mark ready immediately
+      if (session) {
+        setReady(true);
+      }
+
+      return () => {
+        sub?.subscription?.unsubscribe?.();
+      };
+    }
+
+    bootstrap();
+
+    return () => {
+      cancelled = true;
+      if (timeoutId) clearTimeout(timeoutId);
+    };
   }, []);
 
-  const signup = async ({ email, password }) => {
-    const { error } = await supabase.auth.signUp({ email, password });
-    if (error) throw error;
-    return true;
-  };
+  // OPTIONAL: Lightweight subscription check that won’t block UI forever
+  useEffect(() => {
+    let cancelled = false;
+    async function checkSubscription() {
+      setSubOk(null);
+      if (!user) { setSubOk(true); return; } // allow unauth or public pages
+      try {
+        // Replace with your real query if you gate parts of /app by subscription
+        // Example table: billing_subscriptions with RLS by user_id
+        const { data, error } = await supabase
+          .from("billing_subscriptions")
+          .select("status")
+          .eq("user_id", user.id)
+          .maybeSingle();
+        if (!cancelled) setSubOk(error ? true : (data?.status === "active" || data?.status === "trialing"));
+      } catch {
+        if (!cancelled) setSubOk(true); // fail open so we don’t block
+      }
+    }
+    checkSubscription();
+    return () => { cancelled = true; };
+  }, [user]);
 
-  const login = async ({ email, password }) => {
-    const { data, error } = await supabase.auth.signInWithPassword({ email, password });
-    if (error) throw error;
-    setUser(data.user ? { email: data.user.email } : null);
-    return data.user;
-  };
+  const value = useMemo(() => ({
+    user, ready, subOk,
+    async logout() { await supabase.auth.signOut(); }
+  }), [user, ready, subOk]);
 
-  const logout = async () => {
-    await supabase.auth.signOut();
-    setUser(null);
-  };
-
-  const value = useMemo(() => ({ user, signup, login, logout, loaded }), [user, loaded]);
-  return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
+  return <AuthCtx.Provider value={value}>{children}</AuthCtx.Provider>;
 }
 
 export function useAuth() {
-  const ctx = useContext(AuthContext);
-  if (!ctx) throw new Error("useAuth must be used inside AuthProvider");
-  return ctx;
+  return useContext(AuthCtx);
 }
