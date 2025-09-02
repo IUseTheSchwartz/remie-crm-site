@@ -1,45 +1,49 @@
-// File: src/auth.jsx
-import { createContext, useContext, useEffect, useState } from "react";
-import { supabase } from "./lib/supabaseClient.js";
+import { createContext, useContext, useEffect, useMemo, useState } from "react";
+import { supabase } from "./supabaseClient";
 
-const AuthCtx = createContext(null);
+const AuthContext = createContext(null);
 
 export function AuthProvider({ children }) {
   const [user, setUser] = useState(null);
-  const [loading, setLoading] = useState(true);
+  const [loaded, setLoaded] = useState(false);
 
   useEffect(() => {
-    // Get current session on load
-    supabase.auth.getSession().then(({ data: { session } }) => {
-      setUser(session?.user ?? null);
-      setLoading(false);
+    supabase.auth.getSession().then(({ data }) => {
+      setUser(data.session?.user ? { email: data.session.user.email } : null);
+      setLoaded(true);
     });
 
-    // Listen for auth changes
-    const { data: listener } = supabase.auth.onAuthStateChange(
-      (_event, session) => {
-        setUser(session?.user ?? null);
-        setLoading(false);
-      }
-    );
+    const { data: sub } = supabase.auth.onAuthStateChange((_event, session) => {
+      setUser(session?.user ? { email: session.user.email } : null);
+    });
 
-    return () => {
-      listener?.subscription?.unsubscribe();
-    };
+    return () => sub.subscription.unsubscribe();
   }, []);
 
-  async function logout() {
+  const signup = async ({ email, password }) => {
+    const { error } = await supabase.auth.signUp({ email, password });
+    if (error) throw error;
+    return true;
+  };
+
+  const login = async ({ email, password }) => {
+    const { data, error } = await supabase.auth.signInWithPassword({ email, password });
+    if (error) throw error;
+    setUser(data.user ? { email: data.user.email } : null);
+    return data.user;
+  };
+
+  const logout = async () => {
     await supabase.auth.signOut();
     setUser(null);
-  }
+  };
 
-  return (
-    <AuthCtx.Provider value={{ user, loading, logout }}>
-      {children}
-    </AuthCtx.Provider>
-  );
+  const value = useMemo(() => ({ user, signup, login, logout, loaded }), [user, loaded]);
+  return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
 }
 
 export function useAuth() {
-  return useContext(AuthCtx);
+  const ctx = useContext(AuthContext);
+  if (!ctx) throw new Error("useAuth must be used inside AuthProvider");
+  return ctx;
 }
