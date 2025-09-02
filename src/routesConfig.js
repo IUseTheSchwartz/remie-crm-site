@@ -10,7 +10,7 @@ import ToolsPage from "./pages/ToolsPage.jsx";
 import MessagesPage from "./pages/MessagesPage.jsx";
 import MailingPage from "./pages/MailingPage.jsx";
 import MessagingSettings from "./pages/MessagingSettings.jsx";
-import SupportPage from "./pages/SupportPage.jsx"; // ⬅️ NEW
+import SupportPage from "./pages/SupportPage.jsx"; // NEW
 
 export const routes = [
   // Main section
@@ -30,6 +30,6 @@ export const routes = [
   // Agent section (below divider)
   { key: "agentShowcase", path: "/app/agent/showcase", label: "Edit Agent Site", component: AgentShowcase, showInSidebar: true, group: "agent" },
 
-  // Support section (very bottom)
-  { key: "support", path: "/app/support", label: "Support", component: SupportPage, showInSidebar: true, group: "support" },
+  // Support (very bottom under Agent section)
+  { key: "support", path: "/app/support", label: "Support", component: SupportPage, showInSidebar: true, group: "agent" },
 ];
