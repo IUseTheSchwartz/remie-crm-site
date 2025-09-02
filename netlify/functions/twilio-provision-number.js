@@ -1,4 +1,4 @@
-// netlify/functions/twilio-provision-number.js
+// File: netlify/functions/twilio-provision-number.js
 const { createClient } = require("@supabase/supabase-js");
 const twilio = require("twilio");
 
@@ -9,19 +9,23 @@ const MG_SID = process.env.TWILIO_MESSAGING_SERVICE_SID;
 
 exports.handler = async (event) => {
   try {
-    if (event.httpMethod !== "POST") return { statusCode: 405, body: "Method Not Allowed" };
+    if (event.httpMethod !== "POST") {
+      return { statusCode: 405, body: JSON.stringify({ error: "Method Not Allowed" }) };
+    }
     const { user_id, areaCode = "213" } = JSON.parse(event.body || "{}");
-    if (!user_id) return { statusCode: 400, body: "user_id required" };
+    if (!user_id) return { statusCode: 400, body: JSON.stringify({ error: "user_id required" }) };
 
     // 1) Find an available local number
     const available = await client
       .availablePhoneNumbers("US")
       .local.list({ areaCode, smsEnabled: true, limit: 1 });
-    if (!available.length) return { statusCode: 404, body: "No numbers available" };
+    if (!available.length) {
+      return { statusCode: 404, body: JSON.stringify({ error: "No numbers available" }) };
+    }
 
     // 2) Buy it
     const purchased = await client.incomingPhoneNumbers.create({
-      phoneNumber: available[0].phoneNumber
+      phoneNumber: available[0].phoneNumber,
     });
 
     // 3) Attach to Messaging Service
@@ -35,12 +39,15 @@ exports.handler = async (event) => {
       user_id,
       phone_e164: purchased.phoneNumber,
       phone_sid: purchased.sid,
-      messaging_service_sid: MG_SID
+      messaging_service_sid: MG_SID,
     });
 
-    return { statusCode: 200, body: JSON.stringify({ ok: true, phone: purchased.phoneNumber }) };
+    return {
+      statusCode: 200,
+      body: JSON.stringify({ ok: true, phone: purchased.phoneNumber }),
+    };
   } catch (e) {
     console.error(e);
-    return { statusCode: 500, body: "Provision failed" };
+    return { statusCode: 500, body: JSON.stringify({ error: e.message || "Provision failed" }) };
   }
 };
