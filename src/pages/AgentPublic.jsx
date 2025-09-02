@@ -30,6 +30,9 @@ export default function AgentPublic() {
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState("");
 
+  // <-- Change this to the path you save the image under /public
+  const bannerSrc = "/brokerage-stats.png";
+
   useEffect(() => {
     let mounted = true;
     (async () => {
@@ -38,7 +41,7 @@ export default function AgentPublic() {
       try {
         const { data: prof, error: e1 } = await supabase
           .from("agent_profiles")
-          .select("user_id, full_name, email, phone, short_bio, headshot_url, npn, published, slug, calendly_url") // calendly_url
+          .select("user_id, full_name, email, phone, short_bio, headshot_url, npn, published, slug, calendly_url")
           .eq("slug", slug)
           .maybeSingle();
 
@@ -101,7 +104,7 @@ export default function AgentPublic() {
 
   const callHref = profile.phone ? `tel:${profile.phone.replace(/[^\d+]/g, "")}` : null;
   const mailHref = profile.email ? `mailto:${profile.email}` : null;
-  const bookHref = profile.calendly_url ? profile.calendly_url : null; // NEW
+  const bookHref = profile.calendly_url ? profile.calendly_url : null;
 
   return (
     <div className="min-h-screen bg-neutral-950 text-white">
@@ -171,6 +174,21 @@ export default function AgentPublic() {
                 </a>
               )}
             </div>
+          </div>
+        </div>
+      </section>
+
+      {/* NEW: Brokerage stats banner (above Licensed States) */}
+      <section className="mx-auto max-w-6xl px-4 pb-8">
+        <div className="overflow-hidden rounded-2xl border border-white/10 bg-white/[0.03] ring-1 ring-white/5">
+          <div className="relative">
+            <img
+              src={bannerSrc}
+              alt="Our brokerage stats"
+              className="w-full h-auto object-cover"
+            />
+            {/* subtle brand-tinted overlay so it matches your color scheme */}
+            <div className="pointer-events-none absolute inset-0 bg-gradient-to-br from-indigo-500/10 via-fuchsia-500/10 to-rose-500/10 mix-blend-soft-light" />
           </div>
         </div>
       </section>
@@ -258,19 +276,19 @@ export default function AgentPublic() {
               Have questions about coverage options or scheduling a call?
             </div>
             <div className="mt-4 flex flex-wrap gap-3">
-              {callHref && (
-                <a href={callHref} className="inline-flex items-center gap-2 rounded-xl border border-white/15 bg-white/5 px-3 py-2 text-sm hover:bg-white/10">
+              {profile.phone && (
+                <a href={`tel:${profile.phone.replace(/[^\d+]/g, "")}`} className="inline-flex items-center gap-2 rounded-xl border border-white/15 bg-white/5 px-3 py-2 text-sm hover:bg-white/10">
                   <Phone className="h-4 w-4" /> Call
                 </a>
               )}
-              {mailHref && (
-                <a href={mailHref} className="inline-flex items-center gap-2 rounded-xl border border-white/15 bg-white/5 px-3 py-2 text-sm hover:bg-white/10">
+              {profile.email && (
+                <a href={`mailto:${profile.email}`} className="inline-flex items-center gap-2 rounded-xl border border-white/15 bg-white/5 px-3 py-2 text-sm hover:bg-white/10">
                   <Mail className="h-4 w-4" /> Email
                 </a>
               )}
-              {bookHref && (
+              {profile.calendly_url && (
                 <a
-                  href={bookHref}
+                  href={profile.calendly_url}
                   target="_blank"
                   rel="noreferrer"
                   className="inline-flex items-center gap-2 rounded-xl border border-white/15 bg-white/5 px-3 py-2 text-sm hover:bg-white/10"
