@@ -360,18 +360,15 @@ function ViewAgentSiteLink() {
     );
   }
 
-  const href = `/a/${slug}`;
+  // Use absolute URL + cache-buster so it always opens cleanly in a new tab
+  const href = `${window.location.origin}/a/${slug}?t=${Date.now()}`;
   return (
     <a
       href={href}
       target="_blank"
       rel="noreferrer"
       className="flex items-center gap-2 rounded-lg px-3 py-2 text-white/80 hover:bg-white/5 hover:text-white"
-      title={
-        published
-          ? "Open your public agent page"
-          : "Open preview (publish in the wizard)"
-      }
+      title={published ? "Open your public agent page" : "Open preview (publish in the wizard)"}
     >
       <ExternalLink className="h-4 w-4" />
       <span>{published ? "View My Agent Site" : "Preview My Agent Site"}</span>
