@@ -38,10 +38,9 @@ const PLANS = [
     name: "Mail List",
     blurb: "Hands-off client touchpoints with auto birthday & holiday mailers.",
     monthly: 100,
-    yearly: 80,
+    yearly: null, // no annual plan
     buyUrl: {
-      monthly: "https://buy.stripe.com/00w9AV5CGaQ61oqc0Q8Ra00",
-      annual: "https://buy.stripe.com/7sYcN70imgaqffg2qg8Ra01",
+      monthly: "https://buy.stripe.com/7sY9AV7KO9M22su2qg8Ra09",
     },
     features: [
       "Automatic birthday letters for each contact",
@@ -53,13 +52,13 @@ const PLANS = [
     ctaNote: "Stay top-of-mind",
   },
   {
-    name: "Basic",
-    blurb: "All Pro features, just for a single user.",
-    monthly: 350,
-    yearly: 280,
+    name: "Remie CRM",
+    blurb: "All-in-one CRM for agents — pipeline, dialer, automations, and more.",
+    monthly: 280,
+    yearly: 250, // per-month shown when “Annual” is selected; billed annually
     buyUrl: {
-      monthly: "https://buy.stripe.com/fZuaEZghk9M26IK3uk8Ra05",
-      annual: "https://buy.stripe.com/9B64gB0im8HY2suc0Q8Ra06",
+      monthly: "https://buy.stripe.com/28E4gB8OScYeffg2qg8Ra07",
+      annual: "https://buy.stripe.com/8x2cN7aX0e2i9UW2qg8Ra08",
     },
     features: [
       "Lead inbox & drag-and-drop pipeline",
@@ -75,24 +74,7 @@ const PLANS = [
       "Bootcamp + ongoing trainings",
       "Concierge migration",
     ],
-    ctaNote: "Best for solo agents",
-  },
-  {
-    name: "Pro",
-    blurb: "All Basic features for your whole agency — unlimited team access.",
-    monthly: 1500,
-    yearly: 1200,
-    buyUrl: {
-      monthly: "https://buy.stripe.com/6oUcN70im7DUc341mc8Ra02",
-      annual: "https://buy.stripe.com/6oUdRb1mqaQ69UW8OE8Ra04",
-    },
-    features: [
-      "Everything in Basic",
-      "Unlimited team access",
-      "Concierge migration",
-      "Shared inbox & calendars",
-    ],
-    ctaNote: "For growing agencies",
+    ctaNote: "Best for agents & small teams",
     highlighted: true,
   },
 ];
@@ -100,7 +82,14 @@ const PLANS = [
 // ---------- Landing Page ----------
 function LandingPage() {
   const [annual, setAnnual] = useState(true);
-  const price = (plan) => (annual ? plan.yearly : plan.monthly);
+
+  // Show annual price if available and annual is toggled; otherwise monthly
+  const displayPrice = (plan) =>
+    annual && plan.yearly != null ? plan.yearly : plan.monthly;
+
+  // Choose the correct Stripe link; if annual not available, fall back to monthly
+  const buyHref = (plan) =>
+    annual && plan.buyUrl?.annual ? plan.buyUrl.annual : plan.buyUrl?.monthly;
 
   return (
     <div className="min-h-screen bg-neutral-950 text-white">
@@ -110,7 +99,7 @@ function LandingPage() {
 
       <header className="relative z-10 border-b border-white/10 backdrop-blur">
         <nav className="mx-auto flex max-w-7xl items-center justify-between px-6 py-4">
-          <div className="flex items-center gap-3">
+          <div className="flex items-centered gap-3">
             <div className={`grid h-9 w-9 place-items-center rounded-2xl bg-gradient-to-br ${BRAND.primary} ring-1 ring-white/10`}>
               <Zap className="h-5 w-5" />
             </div>
@@ -136,7 +125,7 @@ function LandingPage() {
             run a clean solo pipeline, or plug your whole team into one system.
           </p>
           <div className="mt-6 flex items-center justify-center gap-6 text-xs text-white/60">
-            <span className="inline-flex items-center gap-1"><Star className="h-4 w-4" /> Concierge migration (Pro)</span>
+            <span className="inline-flex items-center gap-1"><Star className="h-4 w-4" /> Concierge migration (Remie CRM)</span>
             <span className="inline-flex items-center gap-1"><Phone className="h-4 w-4" /> Click-to-call & power dialer</span>
             <span className="inline-flex items-center gap-1"><Shield className="h-4 w-4" /> Bootcamp for new features</span>
           </div>
@@ -146,47 +135,55 @@ function LandingPage() {
       <section id="pricing" className="relative z-10 mx-auto max-w-7xl px-6 py-14">
         <div className="mx-auto max-w-2xl text-center">
           <h2 className="text-3xl font-semibold tracking-tight sm:text-4xl">Simple, transparent pricing</h2>
-          <p className="mt-2 text-white/70">Switch between monthly and annual billing. Annual saves around 20%.</p>
+          <p className="mt-2 text-white/70">Switch between monthly and annual billing. Annual saves around 20% where available.</p>
           <div className="mt-6 inline-flex items-center gap-2 rounded-full border border-white/15 bg-white/5 p-1 text-sm">
             <button onClick={() => setAnnual(false)} className={`rounded-full px-3 py-1 ${!annual ? "bg-white text-black" : "text-white/80"}`}>Monthly</button>
-            <button onClick={() => setAnnual(true)} className={`rounded-full px-3 py-1 ${annual ? "bg-white text-black" : "text-white/80"}`}>Annual</button>
+            <button onClick={() => setAnnual(true)} className={`rounded-full px-3 py-1 ${annual ? "bg-white text-black" : "text-white/80"}`} title="Some plans may not have an annual option">Annual</button>
           </div>
         </div>
 
-        <div className="mt-10 grid gap-6 md:grid-cols-3">
-          {PLANS.map((plan) => (
-            <div key={plan.name}
-              className={`relative rounded-3xl border ${plan.highlighted ? "border-white/30 bg-white/[0.06]" : "border-white/10 bg-white/[0.04]"} p-6 ring-1 ${plan.highlighted ? BRAND.accentRing : "ring-white/5"}`}>
-              {plan.ctaNote && (
-                <div className="absolute -top-3 left-6 rounded-full border border-white/15 bg-white/10 px-3 py-1 text-xs font-medium backdrop-blur">
-                  {plan.ctaNote}
+        <div className="mt-10 grid gap-6 md:grid-cols-2">
+          {PLANS.map((plan) => {
+            const isAnnualShown = annual && plan.yearly != null;
+            const price = displayPrice(plan);
+            const href = buyHref(plan);
+
+            return (
+              <div key={plan.name}
+                className={`relative rounded-3xl border ${plan.highlighted ? "border-white/30 bg-white/[0.06]" : "border-white/10 bg-white/[0.04]"} p-6 ring-1 ${plan.highlighted ? BRAND.accentRing : "ring-white/5"}`}>
+                {plan.ctaNote && (
+                  <div className="absolute -top-3 left-6 rounded-full border border-white/15 bg-white/10 px-3 py-1 text-xs font-medium backdrop-blur">
+                    {plan.ctaNote}
+                  </div>
+                )}
+                <h3 className="text-xl font-semibold">{plan.name}</h3>
+                <p className="mt-1 text-sm text-white/70">{plan.blurb}</p>
+                <div className="mt-5 flex items-baseline gap-2">
+                  <span className="text-4xl font-bold">${price}</span>
+                  <span className="text-white/60">
+                    /mo {isAnnualShown && <span className="text-white/40">(annual)</span>}
+                  </span>
                 </div>
-              )}
-              <h3 className="text-xl font-semibold">{plan.name}</h3>
-              <p className="mt-1 text-sm text-white/70">{plan.blurb}</p>
-              <div className="mt-5 flex items-baseline gap-2">
-                <span className="text-4xl font-bold">${price(plan)}</span>
-                <span className="text-white/60">/mo {annual && <span className="text-white/40">(annual)</span>}</span>
+                <ul className="mt-6 space-y-2 text-sm">
+                  {plan.features.map((f) => (
+                    <li key={f} className="flex items-start gap-2">
+                      <span className="mt-0.5 rounded-full bg-white/10 p-1 ring-1 ring-white/10"><Check className="h-3.5 w-3.5" /></span>
+                      <span>{f}</span>
+                    </li>
+                  ))}
+                </ul>
+                <a
+                  href={href}
+                  target="_blank" rel="noreferrer"
+                  className={`mt-6 grid w-full place-items-center rounded-2xl border border-white/15 px-4 py-3 font-medium hover:bg-white/10 ${plan.highlighted ? `bg-gradient-to-r ${BRAND.primary}` : "bg-white/5"}`}>
+                  <CreditCard className="mr-2 h-5 w-5" /> Buy {plan.name}
+                </a>
               </div>
-              <ul className="mt-6 space-y-2 text-sm">
-                {plan.features.map((f) => (
-                  <li key={f} className="flex items-start gap-2">
-                    <span className="mt-0.5 rounded-full bg-white/10 p-1 ring-1 ring-white/10"><Check className="h-3.5 w-3.5" /></span>
-                    <span>{f}</span>
-                  </li>
-                ))}
-              </ul>
-              <a
-                href={annual ? plan.buyUrl?.annual : plan.buyUrl?.monthly}
-                target="_blank" rel="noreferrer"
-                className={`mt-6 grid w-full place-items-center rounded-2xl border border-white/15 px-4 py-3 font-medium hover:bg-white/10 ${plan.highlighted ? `bg-gradient-to-r ${BRAND.primary}` : "bg-white/5"}`}>
-                <CreditCard className="mr-2 h-5 w-5" /> Buy {plan.name}
-              </a>
-            </div>
-          ))}
+            );
+          })}
         </div>
 
-        <p className="mt-6 text-center text-xs text-white/50">Prices in USD. Annual pricing shows per-month equivalent, billed annually.</p>
+        <p className="mt-6 text-center text-xs text-white/50">Prices in USD. Annual pricing shows per-month equivalent, billed annually (where available).</p>
       </section>
 
       <footer className="relative z-10 border-t border-white/10 bg-black/40">
