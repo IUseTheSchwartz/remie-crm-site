@@ -149,8 +149,14 @@ function LandingPage() {
             const href = buyHref(plan);
 
             return (
-              <div key={plan.name}
-                className={`relative rounded-3xl border ${plan.highlighted ? "border-white/30 bg-white/[0.06]" : "border-white/10 bg-white/[0.04]"} p-6 ring-1 ${plan.highlighted ? BRAND.accentRing : "ring-white/5"}`}>
+              <div
+                key={plan.name}
+                className={`relative rounded-3xl border ${
+                  plan.highlighted ? "border-white/30 bg-white/[0.06]" : "border-white/10 bg-white/[0.04]"
+                } p-6 ring-1 ${
+                  plan.highlighted ? BRAND.accentRing : "ring-white/5"
+                } transition hover:border-white/30 hover:bg-white/[0.08] hover:ring-indigo-400/50`}
+              >
                 {plan.ctaNote && (
                   <div className="absolute -top-3 left-6 rounded-full border border-white/15 bg-white/10 px-3 py-1 text-xs font-medium backdrop-blur">
                     {plan.ctaNote}
@@ -174,8 +180,12 @@ function LandingPage() {
                 </ul>
                 <a
                   href={href}
-                  target="_blank" rel="noreferrer"
-                  className={`mt-6 grid w-full place-items-center rounded-2xl border border-white/15 px-4 py-3 font-medium hover:bg-white/10 ${plan.highlighted ? `bg-gradient-to-r ${BRAND.primary}` : "bg-white/5"}`}>
+                  target="_blank"
+                  rel="noreferrer"
+                  className={`mt-6 grid w-full place-items-center rounded-2xl border border-white/15 px-4 py-3 font-medium transition
+                    ${plan.highlighted ? `bg-gradient-to-r ${BRAND.primary}` : "bg-white/5"}
+                    hover:bg-gradient-to-r ${BRAND.primary} hover:text-white`}
+                >
                   <CreditCard className="mr-2 h-5 w-5" /> Buy {plan.name}
                 </a>
               </div>
