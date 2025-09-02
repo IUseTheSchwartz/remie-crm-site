@@ -6,12 +6,19 @@ const supabaseUrl = import.meta.env.VITE_SUPABASE_URL;
 const supabaseAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY;
 
 if (!supabaseUrl || !supabaseAnonKey) {
-  // Helpful error if env vars are missing at build or runtime
   console.warn(
     "[supabaseClient] Missing VITE_SUPABASE_URL or VITE_SUPABASE_ANON_KEY. " +
-      "Set them in Netlify > Site settings > Build & deploy > Environment."
+      "Set them in your environment variables."
   );
 }
 
-export const supabase = createClient(supabaseUrl, supabaseAnonKey);
+export const supabase = createClient(supabaseUrl, supabaseAnonKey, {
+  auth: {
+    persistSession: true,        // keep session in storage
+    autoRefreshToken: true,      // refresh tokens automatically
+    detectSessionInUrl: true,    // parse OAuth callbacks
+    storageKey: "remiecrm.auth", // avoid collisions across apps/domains
+  },
+});
+
 export default supabase;
