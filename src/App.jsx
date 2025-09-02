@@ -58,7 +58,7 @@ const PLANS = [
     yearly: 250, // per-month shown when “Annual” is selected; billed annually
     buyUrl: {
       monthly: "https://buy.stripe.com/28E4gB8OScYeffg2qg8Ra07",
-      annual: "https://buy.stripe.com/8x2cN7aX0e2i9UW2qg8Ra08",
+      annual: "https://buy.stripe.com/5kQ28tfdg2jA0km7KA8Ra0a",
     },
     features: [
       "Lead inbox & drag-and-drop pipeline",
