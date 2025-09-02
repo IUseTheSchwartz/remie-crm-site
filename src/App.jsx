@@ -38,11 +38,8 @@ const PLANS = [
     name: "Mail List",
     blurb: "Hands-off client touchpoints with auto birthday & holiday mailers.",
     monthly: 100,
-    yearly: 80,
     yearly: null, // no annual plan
     buyUrl: {
-      monthly: "https://buy.stripe.com/00w9AV5CGaQ61oqc0Q8Ra00",
-      annual: "https://buy.stripe.com/7sYcN70imgaqffg2qg8Ra01",
       monthly: "https://buy.stripe.com/7sY9AV7KO9M22su2qg8Ra09",
     },
     features: [
@@ -55,18 +52,12 @@ const PLANS = [
     ctaNote: "Stay top-of-mind",
   },
   {
-    name: "Basic",
-    blurb: "All Pro features, just for a single user.",
-    monthly: 350,
-    yearly: 280,
     name: "Remie CRM",
     blurb:
       "All-in-one CRM for agents — pipeline, dialer, automations, and more.",
     monthly: 280,
     yearly: 250, // shown as per-month when “Annual” is selected
     buyUrl: {
-      monthly: "https://buy.stripe.com/fZuaEZghk9M26IK3uk8Ra05",
-      annual: "https://buy.stripe.com/9B64gB0im8HY2suc0Q8Ra06",
       monthly: "https://buy.stripe.com/28E4gB8OScYeffg2qg8Ra07",
       annual: "https://buy.stripe.com/8x2cN7aX0e2i9UW2qg8Ra08",
     },
@@ -84,24 +75,6 @@ const PLANS = [
       "Bootcamp + ongoing trainings",
       "Concierge migration",
     ],
-    ctaNote: "Best for solo agents",
-  },
-  {
-    name: "Pro",
-    blurb: "All Basic features for your whole agency — unlimited team access.",
-    monthly: 1500,
-    yearly: 1200,
-    buyUrl: {
-      monthly: "https://buy.stripe.com/6oUcN70im7DUc341mc8Ra02",
-      annual: "https://buy.stripe.com/6oUdRb1mqaQ69UW8OE8Ra04",
-    },
-    features: [
-      "Everything in Basic",
-      "Unlimited team access",
-      "Concierge migration",
-      "Shared inbox & calendars",
-    ],
-    ctaNote: "For growing agencies",
     ctaNote: "Best for agents & small teams",
     highlighted: true,
   },
@@ -110,7 +83,6 @@ const PLANS = [
 // ---------- Landing Page ----------
 function LandingPage() {
   const [annual, setAnnual] = useState(true);
-  const price = (plan) => (annual ? plan.yearly : plan.monthly);
 
   // Show annual price if available and annual is toggled; otherwise monthly
   const displayPrice = (plan) =>
@@ -129,7 +101,6 @@ function LandingPage() {
       <header className="relative z-10 border-b border-white/10 backdrop-blur">
         <nav className="mx-auto flex max-w-7xl items-center justify-between px-6 py-4">
           <div className="flex items-center gap-3">
-            <div className={`grid h-9 w-9 place-items-center rounded-2xl bg-gradient-to-br ${BRAND.primary} ring-1 ring-white/10`}>
             <div
               className={`grid h-9 w-9 place-items-center rounded-2xl bg-gradient-to-br ${BRAND.primary} ring-1 ring-white/10`}
             >
@@ -138,8 +109,6 @@ function LandingPage() {
             <span className="font-semibold tracking-tight">{BRAND.name}</span>
           </div>
           <div className="flex items-center gap-3">
-            <Link to="/login" className="text-sm opacity-80 hover:opacity-100">Log in</Link>
-            <Link to="/signup" className={`hidden rounded-xl bg-gradient-to-r ${BRAND.primary} px-4 py-2 text-sm font-medium ring-1 ring-white/10 md:block`}>
             <Link to="/login" className="text-sm opacity-80 hover:opacity-100">
               Log in
             </Link>
@@ -155,8 +124,6 @@ function LandingPage() {
 
       <section className="relative z-10 mx-auto max-w-7xl px-6 pb-10 pt-16 sm:pt-20">
         <div className="mx-auto max-w-3xl text-center">
-          <motion.h1 initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.5 }}
-            className="text-4xl font-semibold leading-tight sm:text-5xl">
           <motion.h1
             initial={{ opacity: 0, y: 10 }}
             animate={{ opacity: 1, y: 0 }}
@@ -170,9 +137,6 @@ function LandingPage() {
             run a clean solo pipeline, or plug your whole team into one system.
           </p>
           <div className="mt-6 flex items-center justify-center gap-6 text-xs text-white/60">
-            <span className="inline-flex items-center gap-1"><Star className="h-4 w-4" /> Concierge migration (Pro)</span>
-            <span className="inline-flex items-center gap-1"><Phone className="h-4 w-4" /> Click-to-call & power dialer</span>
-            <span className="inline-flex items-center gap-1"><Shield className="h-4 w-4" /> Bootcamp for new features</span>
             <span className="inline-flex items-center gap-1">
               <Star className="h-4 w-4" /> Concierge migration (Remie CRM)
             </span>
@@ -188,8 +152,6 @@ function LandingPage() {
 
       <section id="pricing" className="relative z-10 mx-auto max-w-7xl px-6 py-14">
         <div className="mx-auto max-w-2xl text-center">
-          <h2 className="text-3xl font-semibold tracking-tight sm:text-4xl">Simple, transparent pricing</h2>
-          <p className="mt-2 text-white/70">Switch between monthly and annual billing. Annual saves around 20%.</p>
           <h2 className="text-3xl font-semibold tracking-tight sm:text-4xl">
             Simple, transparent pricing
           </h2>
@@ -198,8 +160,6 @@ function LandingPage() {
             where available.
           </p>
           <div className="mt-6 inline-flex items-center gap-2 rounded-full border border-white/15 bg-white/5 p-1 text-sm">
-            <button onClick={() => setAnnual(false)} className={`rounded-full px-3 py-1 ${!annual ? "bg-white text-black" : "text-white/80"}`}>Monthly</button>
-            <button onClick={() => setAnnual(true)} className={`rounded-full px-3 py-1 ${annual ? "bg-white text-black" : "text-white/80"}`}>Annual</button>
             <button
               onClick={() => setAnnual(false)}
               className={`rounded-full px-3 py-1 ${
@@ -220,13 +180,6 @@ function LandingPage() {
           </div>
         </div>
 
-        <div className="mt-10 grid gap-6 md:grid-cols-3">
-          {PLANS.map((plan) => (
-            <div key={plan.name}
-              className={`relative rounded-3xl border ${plan.highlighted ? "border-white/30 bg-white/[0.06]" : "border-white/10 bg-white/[0.04]"} p-6 ring-1 ${plan.highlighted ? BRAND.accentRing : "ring-white/5"}`}>
-              {plan.ctaNote && (
-                <div className="absolute -top-3 left-6 rounded-full border border-white/15 bg-white/10 px-3 py-1 text-xs font-medium backdrop-blur">
-                  {plan.ctaNote}
         <div className="mt-10 grid gap-6 md:grid-cols-2">
           {PLANS.map((plan) => {
             const isAnnualShown = annual && plan.yearly != null;
@@ -240,9 +193,10 @@ function LandingPage() {
                   plan.highlighted
                     ? "border-white/30 bg-white/[0.06]"
                     : "border-white/10 bg-white/[0.04]"
-                } p-6 ring-1 ${
+                } 
+                p-6 ring-1 transition ${
                   plan.highlighted ? BRAND.accentRing : "ring-white/5"
-                }`}
+                } hover:border-white/30 hover:bg-white/[0.08] hover:ring-indigo-400/50`}
               >
                 {plan.ctaNote && (
                   <div className="absolute -top-3 left-6 rounded-full border border-white/15 bg-white/10 px-3 py-1 text-xs font-medium backdrop-blur">
@@ -265,12 +219,6 @@ function LandingPage() {
                     )}
                   </span>
                 </div>
-              )}
-              <h3 className="text-xl font-semibold">{plan.name}</h3>
-              <p className="mt-1 text-sm text-white/70">{plan.blurb}</p>
-              <div className="mt-5 flex items-baseline gap-2">
-                <span className="text-4xl font-bold">${price(plan)}</span>
-                <span className="text-white/60">/mo {annual && <span className="text-white/40">(annual)</span>}</span>
                 <ul className="mt-6 space-y-2 text-sm">
                   {plan.features.map((f) => (
                     <li key={f} className="flex items-start gap-2">
@@ -285,36 +233,17 @@ function LandingPage() {
                   href={href}
                   target="_blank"
                   rel="noreferrer"
-                  className={`mt-6 grid w-full place-items-center rounded-2xl border border-white/15 px-4 py-3 font-medium hover:bg-white/10 ${
-                    plan.highlighted
-                      ? `bg-gradient-to-r ${BRAND.primary}`
-                      : "bg-white/5"
-                  }`}
+                  className={`mt-6 grid w-full place-items-center rounded-2xl border border-white/15 px-4 py-3 font-medium transition
+                    ${plan.highlighted ? `bg-gradient-to-r ${BRAND.primary}` : "bg-white/5"}
+                    hover:bg-gradient-to-r ${BRAND.primary} hover:text-white`}
                 >
                   <CreditCard className="mr-2 h-5 w-5" /> Buy {plan.name}
                 </a>
               </div>
-              <ul className="mt-6 space-y-2 text-sm">
-                {plan.features.map((f) => (
-                  <li key={f} className="flex items-start gap-2">
-                    <span className="mt-0.5 rounded-full bg-white/10 p-1 ring-1 ring-white/10"><Check className="h-3.5 w-3.5" /></span>
-                    <span>{f}</span>
-                  </li>
-                ))}
-              </ul>
-              <a
-                href={annual ? plan.buyUrl?.annual : plan.buyUrl?.monthly}
-                target="_blank" rel="noreferrer"
-                className={`mt-6 grid w-full place-items-center rounded-2xl border border-white/15 px-4 py-3 font-medium hover:bg-white/10 ${plan.highlighted ? `bg-gradient-to-r ${BRAND.primary}` : "bg-white/5"}`}>
-                <CreditCard className="mr-2 h-5 w-5" /> Buy {plan.name}
-              </a>
-            </div>
-          ))}
             );
           })}
         </div>
 
-        <p className="mt-6 text-center text-xs text-white/50">Prices in USD. Annual pricing shows per-month equivalent, billed annually.</p>
         <p className="mt-6 text-center text-xs text-white/50">
           Prices in USD. Annual pricing shows per-month equivalent, billed
           annually (where available).
@@ -333,7 +262,6 @@ function LandingPage() {
 // ---------- Sidebar Link ----------
 function DashLink({ to, children }) {
   return (
-    <Link to={to} className="block rounded-lg px-3 py-2 text-white/80 hover:bg-white/5 hover:text-white">
     <Link
       to={to}
       className="block rounded-lg px-3 py-2 text-white/80 hover:bg-white/5 hover:text-white"
@@ -402,7 +330,6 @@ function ViewAgentSiteLink() {
 
       return () => {
         isMounted = false;
-        try { supabase.removeChannel?.(channel); } catch {}
         try {
           supabase.removeChannel?.(channel);
         } catch {}
@@ -432,14 +359,14 @@ function ViewAgentSiteLink() {
     );
   }
 
-  const href = `/a/${slug}`;
+  // FIX: absolute URL + cache-buster so it always opens cleanly in a new tab
+  const href = `${window.location.origin}/a/${slug}?t=${Date.now()}`;
   return (
     <a
       href={href}
       target="_blank"
       rel="noreferrer"
       className="flex items-center gap-2 rounded-lg px-3 py-2 text-white/80 hover:bg-white/5 hover:text-white"
-      title={published ? "Open your public agent page" : "Open preview (publish in the wizard)"}
       title={
         published
           ? "Open your public agent page"
@@ -466,7 +393,6 @@ function AppLayout() {
           rel="noopener noreferrer"
           className="p-4 flex items-center gap-3 border-b border-white/10"
         >
-          <div className={`grid h-9 w-9 place-items-center rounded-2xl bg-gradient-to-br ${BRAND.primary} ring-1 ring-white/10`}>
           <div
             className={`grid h-9 w-9 place-items-center rounded-2xl bg-gradient-to-br ${BRAND.primary} ring-1 ring-white/10`}
           >
@@ -475,9 +401,6 @@ function AppLayout() {
           <div className="font-semibold">{BRAND.name}</div>
         </a>
         <nav className="p-3 space-y-1 text-sm">
-          {routes.filter(r => r.showInSidebar && r.group !== "agent").map(r => (
-            <DashLink key={r.path} to={r.path}>{r.label}</DashLink>
-          ))}
           {routes
             .filter((r) => r.showInSidebar && r.group !== "agent")
             .map((r) => (
@@ -489,9 +412,6 @@ function AppLayout() {
           <div className="pt-2 mt-2 border-t border-white/10" />
           <ViewAgentSiteLink />
 
-          {routes.filter(r => r.showInSidebar && r.group === "agent").map(r => (
-            <DashLink key={r.path} to={r.path}>{r.label}</DashLink>
-          ))}
           {routes
             .filter((r) => r.showInSidebar && r.group === "agent")
             .map((r) => (
@@ -504,12 +424,10 @@ function AppLayout() {
 
       <main>
         <div className="flex items-center justify-between border-b border-white/10 bg-black/30 px-4 py-3">
-          <div className="font-medium">Welcome{user?.email ? `, ${user.email}` : ""}</div>
           <div className="font-medium">
             Welcome{user?.email ? `, ${user.email}` : ""}
           </div>
           <button
-            onClick={async () => { await logout(); nav("/"); }}
             onClick={async () => {
               await logout();
               nav("/");
@@ -524,9 +442,6 @@ function AppLayout() {
           <Routes>
             {routes.map((r) => {
               const C = r.component;
-              return r.index
-                ? <Route key={r.key} index element={<C />} />
-                : <Route key={r.key} path={r.path.replace("/app/", "")} element={<C />} />;
               return r.index ? (
                 <Route key={r.key} index element={<C />} />
               ) : (
