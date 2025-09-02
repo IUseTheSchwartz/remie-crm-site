@@ -4,7 +4,7 @@ import { supabase } from "../lib/supabaseClient.js";
 import { migrateSoldLeads } from "../lib/migrateLeads.js";
 import { loadLeads } from "../lib/storage.js";
 
-// Promise timeout helper that does NOT use .finally()
+// Timeout wrapper without .finally()
 function withTimeout(promiseLike, ms = 12000, label = "operation") {
   return new Promise((resolve, reject) => {
     const id = setTimeout(
@@ -24,7 +24,7 @@ export default function MailingPage() {
   const [user, setUser] = useState(null);
   const [authChecking, setAuthChecking] = useState(true);
 
-  // --- Auth: refresh on mount, focus, visibility changes --------------------
+  // --- Auth handling --------------------------------------------------------
   const loadUser = useCallback(async () => {
     try {
       setAuthChecking(true);
@@ -38,23 +38,15 @@ export default function MailingPage() {
   }, []);
 
   useEffect(() => {
-    // initial
     loadUser();
-
-    // whenever tab regains focus or becomes visible
     const onFocus = () => loadUser();
     const onVis = () => document.visibilityState === "visible" && loadUser();
     window.addEventListener("focus", onFocus);
     document.addEventListener("visibilitychange", onVis);
-
-    // token auto-refresh can change session silently — poll every 30s
     const t = setInterval(loadUser, 30000);
-
-    // react to explicit auth state changes
     const { data: sub } = supabase.auth.onAuthStateChange((_evt, session) => {
       setUser(session?.user || null);
     });
-
     return () => {
       window.removeEventListener("focus", onFocus);
       document.removeEventListener("visibilitychange", onVis);
@@ -63,7 +55,7 @@ export default function MailingPage() {
     };
   }, [loadUser]);
 
-  // --- Jobs table -----------------------------------------------------------
+  // --- Jobs --------------------------------------------------------------
   const fetchJobs = useCallback(async () => {
     setMsg("");
     setLoading(true);
@@ -78,12 +70,14 @@ export default function MailingPage() {
         "fetch jobs"
       );
       if (error) {
+        console.error("[MailingPage] fetchJobs error:", error);
         setMsg("Supabase error: " + error.message);
         setJobs([]);
       } else {
         setJobs(j || []);
       }
     } catch (e) {
+      console.error("[MailingPage] fetchJobs exception:", e);
       setMsg((e?.message || String(e)));
       setJobs([]);
     } finally {
@@ -93,10 +87,9 @@ export default function MailingPage() {
 
   useEffect(() => { fetchJobs(); }, [fetchJobs]);
 
-  // --- Migrate SOLD (idempotent) -------------------------------------------
+  // --- Migration ----------------------------------------------------------
   const doMigrate = async () => {
     setMsg("");
-    // grab fresh user right before we start
     const { data } = await supabase.auth.getUser();
     const u = data?.user;
     if (!u?.id) {
@@ -104,13 +97,15 @@ export default function MailingPage() {
       return;
     }
 
-    // local stats for clarity
     const localAll = loadLeads() || [];
     const localSoldCount = localAll.filter(p => p?.status === "sold").length;
+    console.debug("[MailingPage] starting migrate, local SOLD:", localSoldCount);
 
     try {
       setMsg(`Migrating SOLD leads → Supabase… (local SOLD: ${localSoldCount})`);
       const result = await withTimeout(migrateSoldLeads(u.id), 15000, "migrate sold leads");
+      console.debug("[MailingPage] migrate result:", result);
+
       const parts = [
         `Scanned ${result.scanned}`,
         `SOLD found ${result.soldFound}`,
@@ -121,11 +116,12 @@ export default function MailingPage() {
       setMsg("✅ " + parts.join(" · "));
       await fetchJobs();
     } catch (e) {
+      console.error("[MailingPage] migrate error:", e);
       setMsg("Migration error: " + (e?.message || String(e)));
     }
   };
 
-  // --- UI -------------------------------------------------------------------
+  // --- UI ----------------------------------------------------------------
   return (
     <div className="p-6 text-white">
       <div className="mb-5 flex items-center justify-between">
@@ -134,14 +130,12 @@ export default function MailingPage() {
           <button
             onClick={fetchJobs}
             className="rounded-lg border border-white/15 px-3 py-2 text-sm hover:bg-white/10"
-            title="Reload recent mail jobs"
           >
             Refresh
           </button>
           <button
             onClick={doMigrate}
             className="rounded-lg bg-indigo-600 px-3 py-2 text-sm"
-            title="Migrate only SOLD leads from localStorage to Supabase (idempotent)"
           >
             Migrate SOLD leads (local → Supabase)
           </button>
