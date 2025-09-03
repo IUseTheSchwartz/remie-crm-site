@@ -21,16 +21,6 @@ import {
 
 const TEMPLATE_HEADERS = ["name","phone","email"]; // minimal CSV template
 
-// ---- Google Sheet settings (localStorage keys) ------------------------------
-const SHEET_URL_KEY = "remie_sheet_url_v1";
-const SHEET_SECRET_KEY = "remie_sheet_secret_v1";
-
-// Compute a webhook base: prefer Vite env -> origin fallback
-const WEBHOOK_BASE =
-  (import.meta?.env?.VITE_WEBHOOK_BASE?.trim?.() ||
-    (typeof window !== "undefined" ? window.location.origin : "")) +
-  "/.netlify/functions/gsheet-lead-webhook";
-
 // ---- Header alias helpers ---------------------------------------------------
 const H = {
   first: [
@@ -131,6 +121,10 @@ const buildBeneficiary = (row, map) => pick(row, map.beneficiary);
 const buildBeneficiaryName = (row, map) => pick(row, map.beneficiary_name);
 const buildGender = (row, map) => pick(row, map.gender);
 
+// Dedupe helpers
+const onlyDigits = (s) => String(s || "").replace(/\D+/g, "");
+const normEmail  = (s) => String(s || "").trim().toLowerCase();
+
 export default function LeadsPage() {
   const [tab, setTab] = useState("clients"); // 'clients' | 'sold'  (label "Leads" for 'clients')
   const [leads, setLeads] = useState([]);
@@ -141,28 +135,10 @@ export default function LeadsPage() {
   // NEW: lightweight server status
   const [serverMsg, setServerMsg] = useState("");
 
-  // NEW: Google Sheet settings (local)
-  const [sheetUrl, setSheetUrl] = useState(() => {
-    try { return localStorage.getItem(SHEET_URL_KEY) || ""; } catch { return ""; }
-  });
-  const [sheetSecret, setSheetSecret] = useState(() => {
-    try { return localStorage.getItem(SHEET_SECRET_KEY) || ""; } catch { return ""; }
-  });
-
   useEffect(() => {
     setLeads(loadLeads());
     setClients(loadClients());
   }, []);
-
-  function saveSheetSettings() {
-    localStorage.setItem(SHEET_URL_KEY, (sheetUrl || "").trim());
-    localStorage.setItem(SHEET_SECRET_KEY, (sheetSecret || "").trim());
-    alert("Google Sheet settings saved.");
-  }
-  function genSecret() {
-    const s = (crypto?.randomUUID?.() || Math.random().toString(36).slice(2)) + "-" + Date.now();
-    setSheetSecret(s);
-  }
 
   // Merge clients + leads into a deduped "Leads" view (formerly "Clients")
   const allClients = useMemo(() => {
@@ -184,6 +160,7 @@ export default function LeadsPage() {
       : src;
   }, [tab, allClients, onlySold, filter]);
 
+  // CSV import with duplicate skipping (email OR phone)
   async function handleImportCsv(file) {
     Papa.parse(file, {
       header: true,
@@ -198,42 +175,74 @@ export default function LeadsPage() {
         const headers = Object.keys(rows[0] || {});
         const map = buildHeaderIndex(headers);
 
-        const normalized = rows
-          .map((r) => {
-            const name  = r.name || r.Name || buildName(r, map);
-            const phone = buildPhone(r, map);
-            const email = buildEmail(r, map);
-            const notes = buildNotes(r, map);
+        // Existing identifiers
+        const existingEmails = new Set(
+          [...clients, ...leads].map((r) => normEmail(r.email)).filter(Boolean)
+        );
+        const existingPhones = new Set(
+          [...clients, ...leads].map((r) => onlyDigits(r.phone)).filter(Boolean)
+        );
 
-            // NEW fields
-            const dob  = buildDob(r, map);
-            const state = buildState(r, map);
-            const beneficiary = buildBeneficiary(r, map);
-            const beneficiary_name = buildBeneficiaryName(r, map);
-            const gender = buildGender(r, map);
+        // Track duplicates within the same CSV
+        const seenEmails = new Set();
+        const seenPhones = new Set();
 
-            return normalizePerson({
-              name, phone, email, notes,
-              status: "lead",
-              dob, state, beneficiary, beneficiary_name, gender,
-            });
-          })
-          .filter(r => r.name || r.phone || r.email);
+        // Normalize and filter
+        const uniqueToAdd = [];
+        for (const r of rows) {
+          const name  = r.name || r.Name || buildName(r, map);
+          const phone = buildPhone(r, map);
+          const email = buildEmail(r, map);
+          const notes = buildNotes(r, map);
+
+          // NEW fields
+          const dob  = buildDob(r, map);
+          const state = buildState(r, map);
+          const beneficiary = buildBeneficiary(r, map);
+          const beneficiary_name = buildBeneficiaryName(r, map);
+          const gender = buildGender(r, map);
+
+          const person = normalizePerson({
+            name, phone, email, notes,
+            status: "lead",
+            dob, state, beneficiary, beneficiary_name, gender,
+          });
+
+          // require at least some identifier
+          if (!(person.name || person.phone || person.email)) continue;
+
+          const e = normEmail(person.email);
+          const p = onlyDigits(person.phone);
+
+          const emailDup = e && (existingEmails.has(e) || seenEmails.has(e));
+          const phoneDup = p && (existingPhones.has(p) || seenPhones.has(p));
+          if (emailDup || phoneDup) continue;
+
+          if (e) seenEmails.add(e);
+          if (p) seenPhones.add(p);
+
+          uniqueToAdd.push(person);
+        }
+
+        if (!uniqueToAdd.length) {
+          setServerMsg("No new leads found in CSV (duplicates skipped).");
+          return;
+        }
 
         // Optimistic local update first
-        const newLeads = [...normalized, ...leads];
-        const newClients = [...normalized, ...clients];
+        const newLeads = [...uniqueToAdd, ...leads];
+        const newClients = [...uniqueToAdd, ...clients];
         saveLeads(newLeads);
         saveClients(newClients);
         setLeads(newLeads);
         setClients(newClients);
         setTab("clients");
 
-        // Try server batch upsert (non-blocking for UI)
+        // Try server batch upsert (only the new ones)
         try {
-          setServerMsg("Syncing CSV to Supabase…");
-          const count = await upsertManyLeadsServer(normalized);
-          setServerMsg(`✅ CSV synced (${count} rows)`);
+          setServerMsg(`Syncing ${uniqueToAdd.length} new lead(s) to Supabase…`);
+          const count = await upsertManyLeadsServer(uniqueToAdd);
+          setServerMsg(`✅ CSV synced (${count} new) — duplicates skipped`);
         } catch (e) {
           console.error("CSV sync error:", e);
           setServerMsg(`⚠️ CSV sync failed: ${e.message || e}`);
@@ -359,120 +368,8 @@ export default function LeadsPage() {
     setSelected(null);
   }
 
-  // Helper to copy text
-  function copy(text) {
-    navigator.clipboard?.writeText(text);
-  }
-
   return (
     <div className="space-y-6">
-      {/* Google Sheets Auto-Import Panel */}
-      <div className="rounded-2xl border border-white/10 bg-white/[0.04] p-4">
-        <div className="mb-2 text-base font-semibold">Google Sheets Auto-Import</div>
-        <p className="mb-3 text-sm text-white/70">
-          Paste your Google Sheet URL (where your vendor drops new leads). Generate a secret, then paste the
-          <strong> Webhook URL</strong> and secret into your Sheet’s Apps Script.
-        </p>
-
-        <div className="grid gap-3 sm:grid-cols-2">
-          <label className="text-sm">
-            <div className="mb-1 text-white/70">Google Sheet URL</div>
-            <input
-              className="w-full rounded-xl border border-white/10 bg-black/40 px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-indigo-500/40"
-              placeholder="https://docs.google.com/spreadsheets/d/..."
-              value={sheetUrl}
-              onChange={(e) => setSheetUrl(e.target.value)}
-            />
-          </label>
-
-          <label className="text-sm">
-            <div className="mb-1 text-white/70">Secret (for webhook auth)</div>
-            <div className="flex gap-2">
-              <input
-                className="w-full rounded-xl border border-white/10 bg-black/40 px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-indigo-500/40"
-                placeholder="Click Generate"
-                value={sheetSecret}
-                onChange={(e) => setSheetSecret(e.target.value)}
-              />
-              <button
-                onClick={genSecret}
-                className="rounded-xl border border-white/15 bg-white/5 px-3 py-2 text-sm"
-              >
-                Generate
-              </button>
-            </div>
-          </label>
-        </div>
-
-        <div className="mt-3 grid gap-2">
-          <div className="text-sm text-white/70">Webhook URL (paste this in Apps Script):</div>
-          <div className="flex items-center gap-2">
-            <code className="block w-full truncate rounded-xl border border-white/10 bg-black/60 px-3 py-2 text-xs">
-              {WEBHOOK_BASE}
-            </code>
-            <button
-              onClick={() => copy(WEBHOOK_BASE)}
-              className="rounded-xl border border-white/15 bg-white/5 px-3 py-2 text-sm"
-              title="Copy webhook URL"
-            >
-              Copy
-            </button>
-          </div>
-
-          <div className="text-sm text-white/70">Apps Script header (add to request):</div>
-          <div className="flex items-center gap-2">
-            <code className="block w-full truncate rounded-xl border border-white/10 bg-black/60 px-3 py-2 text-xs">
-              X-Webhook-Secret: {sheetSecret || "YOUR_SECRET"}
-            </code>
-            <button
-              onClick={() => copy(`X-Webhook-Secret: ${sheetSecret || "YOUR_SECRET"}`)}
-              className="rounded-xl border border-white/15 bg-white/5 px-3 py-2 text-sm"
-              title="Copy header"
-            >
-              Copy
-            </button>
-          </div>
-
-          <div className="flex justify-end gap-2 mt-3">
-            <button
-              onClick={saveSheetSettings}
-              className="rounded-xl bg-indigo-600 px-3 py-2 text-sm"
-            >
-              Save Settings
-            </button>
-          </div>
-
-          <details className="mt-2">
-            <summary className="cursor-pointer text-sm text-white/80">Show sample Apps Script</summary>
-            <pre className="mt-2 overflow-auto rounded-xl border border-white/10 bg-black/60 p-3 text-xs">
-{`function onChange(e) {
-  var sheet = SpreadsheetApp.getActiveSpreadsheet().getActiveSheet();
-  var lastRow = sheet.getLastRow();
-  var vals = sheet.getRange(lastRow, 1, 1, sheet.getLastColumn()).getValues()[0];
-
-  // Map columns to fields in your CRM
-  var payload = {
-    name: vals[0],      // Col A
-    phone: vals[1],     // Col B
-    email: vals[2],     // Col C
-    notes: vals[3] || ""// Col D (optional)
-  };
-
-  var options = {
-    method: "post",
-    contentType: "application/json",
-    headers: { "X-Webhook-Secret": "${sheetSecret || "YOUR_SECRET"}" },
-    payload: JSON.stringify(payload)
-  };
-
-  UrlFetchApp.fetch("${WEBHOOK_BASE}", options);
-}
-`}
-            </pre>
-          </details>
-        </div>
-      </div>
-
       {/* Toolbar */}
       <div className="flex flex-wrap items-center gap-3">
         <div className="inline-flex rounded-full border border-white/15 bg-white/5 p-1 text-sm">
