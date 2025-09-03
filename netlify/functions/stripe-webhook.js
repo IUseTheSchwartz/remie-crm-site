@@ -170,12 +170,42 @@ export async function handler(event) {
       console.log("[Wallet] Credited", amountCents, "cents to", userId, "from session", session.id);
     }
 
+    // NEW (additive): sync team seats from subscription quantity
+    async function syncSeatsFromStripeSubscription(sub) {
+      try {
+        if (!supabase) return;
+
+        // Find the seat line item on this subscription
+        const seatItem = (sub.items?.data || []).find(
+          (it) => it.price?.id === process.env.STRIPE_PRICE_SEAT_50
+        );
+        if (!seatItem) return; // nothing to sync if the seat price isn't on the sub
+
+        const quantity = seatItem.quantity || 0;
+
+        // Update the team row with this subscription id
+        const { error } = await supabase
+          .from("teams")
+          .update({ seats_purchased: quantity })
+          .eq("stripe_subscription_id", sub.id);
+
+        if (error) {
+          console.warn("[Webhook] Could not sync seats_purchased:", error.message);
+        } else {
+          console.log("[Webhook] Synced seats_purchased =", quantity, "for sub", sub.id);
+        }
+      } catch (e) {
+        console.warn("[Webhook] syncSeatsFromStripeSubscription error:", e?.message || e);
+      }
+    }
+
     // ---------- Event routing (kept + extended) ----------
     switch (evt.type) {
       case "customer.subscription.created":
       case "customer.subscription.updated":
       case "customer.subscription.deleted":
         await recordSubscription(evt.data.object);
+        await syncSeatsFromStripeSubscription(evt.data.object); // NEW: additive, keeps DB in sync with Stripe seats
         break;
 
       case "checkout.session.completed": {
