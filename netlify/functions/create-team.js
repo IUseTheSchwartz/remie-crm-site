@@ -52,7 +52,7 @@ export async function handler(event) {
     }
 
     // ---- Get or create Stripe customer for this user ----
-    // We prefer profiles.stripe_customer_id if it exists.
+    // Prefer profiles.stripe_customer_id if present.
     let stripeCustomerId = null;
     let userEmail = null;
 
@@ -70,7 +70,7 @@ export async function handler(event) {
     }
 
     if (!stripeCustomerId) {
-      // As a fallback, try to read email from auth.users (optional)
+      // Optional fallback: read email from auth.users
       if (!userEmail) {
         try {
           const { data: authUser } = await supa.auth.admin.getUserById(userId);
@@ -80,14 +80,14 @@ export async function handler(event) {
         }
       }
 
-      // Create customer in Stripe
+      // Create customer
       const customer = await stripe.customers.create({
         email: userEmail || undefined,
-        metadata: { user_id: userId }, // your webhook reads this fallback
+        metadata: { user_id: userId }, // your webhook can read this
       });
       stripeCustomerId = customer.id;
 
-      // Write back to profiles (best-effort)
+      // Best-effort writeback
       try {
         await supa
           .from("profiles")
@@ -99,6 +99,7 @@ export async function handler(event) {
     }
 
     // ---- Create subscription with seat price (quantity 0) ----
+    // Owner NOT included → start at 0 seats. Members add +1 each.
     let subscription;
     try {
       subscription = await stripe.subscriptions.create({
@@ -106,8 +107,7 @@ export async function handler(event) {
         items: [{ price: process.env.STRIPE_PRICE_SEAT_50, quantity: 0 }],
         payment_behavior: "default_incomplete",
         collection_method: "charge_automatically",
-        // This keeps your existing webhook compatible if you rely on app_user_id:
-        metadata: { app_user_id: userId },
+        metadata: { app_user_id: userId }, // stays compatible with your webhook
         expand: ["latest_invoice.payment_intent"],
       });
     } catch (e) {
@@ -146,7 +146,7 @@ export async function handler(event) {
       return { statusCode: 500, body: "Failed to join team as owner" };
     }
 
-    // Return client_secret if you want to complete payment step in UI (optional)
+    // Optional: return client_secret if you want to show payment confirmation UI
     const clientSecret =
       subscription?.latest_invoice?.payment_intent?.client_secret || null;
 
