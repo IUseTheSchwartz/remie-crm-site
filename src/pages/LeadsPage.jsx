@@ -5,8 +5,6 @@ import {
   loadLeads, saveLeads,
   loadClients, saveClients,
   normalizePerson, upsert,
-  // NEW: API key helpers
-  loadLeadsApiKey, saveLeadsApiKey, clearLeadsApiKey,
 } from "../lib/storage.js";
 
 import {
@@ -20,9 +18,6 @@ import {
   upsertManyLeadsServer,
   deleteLeadServer,
 } from "../lib/supabaseLeads.js";
-
-// NEW: icons for API Key UI
-import { Key, Eye, EyeOff, Trash2 } from "lucide-react";
 
 const TEMPLATE_HEADERS = ["name","phone","email"]; // minimal CSV template
 
@@ -135,21 +130,6 @@ export default function LeadsPage() {
 
   // NEW: lightweight server status
   const [serverMsg, setServerMsg] = useState("");
-
-  // NEW: API key modal state + handlers
-  const [apiKeyOpen, setApiKeyOpen] = useState(false);
-  const [apiKey, setApiKey] = useState(() => loadLeadsApiKey());
-  const [showKey, setShowKey] = useState(false);
-  function handleSaveApiKey() {
-    saveLeadsApiKey(apiKey);
-    setApiKeyOpen(false);
-  }
-  function handleClearApiKey() {
-    if (!confirm("Remove the saved API key?")) return;
-    clearLeadsApiKey();
-    setApiKey("");
-    setShowKey(false);
-  }
 
   useEffect(() => {
     setLeads(loadLeads());
@@ -380,16 +360,6 @@ export default function LeadsPage() {
           Import CSV
         </label>
 
-        {/* NEW: Add API Key button */}
-        <button
-          onClick={() => setApiKeyOpen(true)}
-          className="inline-flex items-center gap-2 rounded-xl border border-white/15 bg-white/5 px-3 py-2 text-sm"
-          title="Set API key for lead auto-import"
-        >
-          <Key size={16} />
-          Add API Key
-        </button>
-
         <button
           onClick={downloadTemplate}
           className="rounded-xl border border-white/15 bg-white/5 px-3 py-2 text-sm"
@@ -505,74 +475,6 @@ export default function LeadsPage() {
           onClose={() => setSelected(null)}
           onSave={(payload) => saveSoldInfo(payload.id, payload)}
         />
-      )}
-
-      {/* NEW: API Key Modal */}
-      {apiKeyOpen && (
-        <div className="fixed inset-0 z-50 grid place-items-center bg-black/60 p-4">
-          <div className="w-full max-w-lg rounded-2xl border border-white/10 bg-zinc-900 p-4 shadow-xl">
-            <div className="mb-3 flex items-center justify-between">
-              <h2 className="text-lg font-semibold">Lead Vendor API Key</h2>
-            </div>
-
-            <p className="mb-3 text-sm text-white/70">
-              Paste your lead vendor API key. We’ll store it locally for auto-import.
-            </p>
-
-            <div className="mb-3">
-              <label className="mb-1 block text-sm text-white/70">API Key</label>
-              <div className="flex items-center gap-2">
-                <input
-                  type={showKey ? "text" : "password"}
-                  className="inp flex-1"
-                  placeholder="sk_live_..."
-                  value={apiKey}
-                  onChange={(e) => setApiKey(e.target.value)}
-                />
-                <button
-                  onClick={() => setShowKey((s) => !s)}
-                  className="rounded-xl border border-white/15 bg-white/5 px-2 py-2"
-                  title={showKey ? "Hide" : "Show"}
-                >
-                  {showKey ? <EyeOff size={16} /> : <Eye size={16} />}
-                </button>
-                {apiKey && (
-                  <button
-                    onClick={handleClearApiKey}
-                    className="rounded-xl border border-white/15 bg-white/5 px-2 py-2"
-                    title="Clear saved key"
-                  >
-                    <Trash2 size={16} />
-                  </button>
-                )}
-              </div>
-              {!!loadLeadsApiKey() && (
-                <p className="mt-2 text-xs text-emerald-400">
-                  A key is currently saved {showKey ? `(visible)` : `(hidden)`}.
-                </p>
-              )}
-            </div>
-
-            <div className="mt-4 flex items-center justify-end gap-2">
-              <button
-                onClick={() => setApiKeyOpen(false)}
-                className="rounded-xl border border-white/15 bg-white/5 px-3 py-2 text-sm"
-              >
-                Cancel
-              </button>
-              <button
-                onClick={handleSaveApiKey}
-                className="rounded-xl bg-indigo-600 px-3 py-2 text-sm"
-              >
-                Save Key
-              </button>
-            </div>
-          </div>
-
-          {/* minimal input style to match your page */}
-          <style>{`.inp{width:100%; border-radius:0.75rem; border:1px solid rgba(255,255,255,.15); background:#0b0b0b; padding:.5rem .75rem; outline:none}
-          .inp:focus{box-shadow:0 0 0 2px rgba(99,102,241,.4)}`}</style>
-        </div>
       )}
     </div>
   );
