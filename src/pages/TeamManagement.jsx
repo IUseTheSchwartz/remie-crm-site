@@ -21,9 +21,9 @@ export default function TeamManagement() {
   const [loading, setLoading] = useState(true);
 
   // seats from DB (paid + usage)
-  const [seatsPurchased, setSeatsPurchased] = useState(0); // paid seats from DB (no bonus)
-  const [seatsUsed, setSeatsUsed] = useState(0);           // active members (owner not counted)
-  const [seatsAvailable, setSeatsAvailable] = useState(0); // DB's available (no bonus)
+  const [seatsPurchased, setSeatsPurchased] = useState(0);
+  const [seatsUsed, setSeatsUsed] = useState(0);
+  const [seatsAvailable, setSeatsAvailable] = useState(0);
   const [syncing, setSyncing] = useState(false);
 
   const isOwner = useMemo(() => me && team && team.owner_id === me, [me, team]);
@@ -68,14 +68,14 @@ export default function TeamManagement() {
     // eslint-disable-next-line
   }, [teamId]);
 
-  // ✅ CHANGED: load members via server function (service role), so RLS can't block owner
+  // Load members via server function (service role)
   async function refreshMembers() {
     try {
       const res = await callFn("list-members", { team_id: teamId });
       setMembers(res?.members || []);
     } catch (e) {
       console.warn("[TeamManagement] list-members failed:", e?.message || e);
-      setMembers([]); // fallback
+      setMembers([]);
     }
   }
 
@@ -87,7 +87,6 @@ export default function TeamManagement() {
       .single();
 
     if (counts) {
-      // DB values (no bonus included)
       setSeatsPurchased(counts.seats_purchased || 0);
       setSeatsUsed(counts.seats_used || 0);
       setSeatsAvailable(counts.seats_available || 0);
@@ -130,7 +129,6 @@ export default function TeamManagement() {
     }
   }
 
-  // Static portal link
   function openBillingPortal() {
     window.location.href = "https://billing.stripe.com/p/login/00w9AV5CGaQ61oqc0Q8Ra00";
   }
@@ -276,24 +274,29 @@ export default function TeamManagement() {
               </tr>
             </thead>
             <tbody>
-              {members.map((m) => (
-                <tr key={m.user_id} className="border-t">
-                  <td className="py-2 pr-3">{m.profile?.full_name || m.user_id?.slice(0, 6) || "—"}</td>
-                  <td className="py-2 pr-3">{m.profile?.email || "—"}</td>
-                  <td className="py-2 pr-3">{m.role}</td>
-                  <td className="py-2 pr-3">{m.status}</td>
-                  <td className="py-2 pr-3 text-right">
-                    {m.role === "member" && m.status === "active" && (
-                      <button
-                        onClick={() => removeMember(m.user_id)}
-                        className="inline-flex items-center gap-1 px-3 py-1.5 rounded-xl border hover:bg-gray-50 text-red-600"
-                      >
-                        <Trash2 className="w-4 h-4" /> Remove
-                      </button>
-                    )}
-                  </td>
-                </tr>
-              ))}
+              {members.map((m) => {
+                const email = m?.profile?.email || "—";
+                const name = m?.profile?.full_name || (email !== "—" ? email.split("@")[0] : (m.user_id?.slice(0, 6) || "—"));
+                const statusText = m?.display_status || m?.status || "—";
+                return (
+                  <tr key={m.user_id} className="border-t">
+                    <td className="py-2 pr-3">{name}</td>
+                    <td className="py-2 pr-3">{email}</td>
+                    <td className="py-2 pr-3">{m.role}</td>
+                    <td className="py-2 pr-3">{statusText}</td>
+                    <td className="py-2 pr-3 text-right">
+                      {m.role === "member" && m.status === "active" && (
+                        <button
+                          onClick={() => removeMember(m.user_id)}
+                          className="inline-flex items-center gap-1 px-3 py-1.5 rounded-xl border hover:bg-gray-50 text-red-600"
+                        >
+                          <Trash2 className="w-4 h-4" /> Remove
+                        </button>
+                      )}
+                    </td>
+                  </tr>
+                );
+              })}
               {members.length === 0 && (
                 <tr><td className="py-6 text-gray-500">No members yet.</td></tr>
               )}
