@@ -1,43 +1,45 @@
 // File: src/pages/AcceptInvite.jsx
 import { useEffect, useState } from "react";
-import { useParams, Link, useNavigate } from "react-router-dom";
+import { useParams, Link, useNavigate, useLocation } from "react-router-dom";
 import { supabase } from "../lib/supabaseClient";
 import { callFn, getCurrentUserId } from "../lib/teamApi";
 
 export default function AcceptInvite() {
   const { token } = useParams();
   const nav = useNavigate();
+  const loc = useLocation();
 
-  const [loading, setLoading] = useState(true);
   const [status, setStatus] = useState("checking"); // checking | need_auth | accepting | success | error
-  const [error, setError] = useState("");
+  const [errorMsg, setErrorMsg] = useState("");
+
+  // Build this page's URL for ?next=
+  const selfUrl = `/invite/${token}`;
 
   useEffect(() => {
     if (!token) {
       setStatus("error");
-      setError("Missing invite token.");
-      setLoading(false);
+      setErrorMsg("Missing invite token.");
       return;
     }
 
+    // Remember token so we can finish after auth
+    localStorage.setItem("pending_invite_token", token);
+
     (async () => {
-      // Save token in case we need to bounce to login/signup
-      localStorage.setItem("pending_invite_token", token);
+      // Check current session
+      const { data: sessionRes } = await supabase.auth.getSession();
+      const session = sessionRes?.session;
 
-      const { data: auth } = await supabase.auth.getUser();
-      const user = auth?.user;
-
-      if (!user) {
+      if (!session?.user?.id) {
         setStatus("need_auth");
-        setLoading(false);
         return;
       }
 
-      // Already authed → accept now
+      // Already signed in → accept now
       await acceptNow();
     })();
 
-    // If user logs in on another tab and comes back, try again
+    // If auth state changes (e.g., user logs in in this tab), try again
     const { data: sub } = supabase.auth.onAuthStateChange(async (event) => {
       if (event === "SIGNED_IN") {
         const saved = localStorage.getItem("pending_invite_token");
@@ -47,51 +49,56 @@ export default function AcceptInvite() {
       }
     });
 
-    return () => {
-      sub?.subscription?.unsubscribe?.();
-    };
-    // eslint-disable-next-line
+    return () => sub?.subscription?.unsubscribe?.();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [token]);
 
   async function acceptNow() {
     try {
       setStatus("accepting");
-      setError("");
+      setErrorMsg("");
 
-      const uid = await getCurrentUserId();
+      // Get user id (fallback to session if helper fails)
+      let uid = null;
+      try {
+        uid = await getCurrentUserId();
+      } catch {}
+      if (!uid) {
+        const { data: s } = await supabase.auth.getSession();
+        uid = s?.session?.user?.id || null;
+      }
       if (!uid) {
         setStatus("need_auth");
-        setLoading(false);
         return;
       }
 
+      // Call the function to accept
       const res = await callFn("accept-invite", { token });
       if (!res || !res.team_id) {
-        throw new Error("Unable to accept invite.");
+        throw new Error(res?.error || "Unable to accept invite.");
       }
 
-      setStatus("success");
+      // Cleanup + go to team
       localStorage.removeItem("pending_invite_token");
-      // Send them to the team dashboard (or your Home)
+      setStatus("success");
       setTimeout(() => {
         nav(`/app/team/${res.team_id}/dashboard`, { replace: true });
-      }, 600);
+      }, 500);
     } catch (e) {
       setStatus("error");
-      setError(e?.message || "Failed to accept invite.");
-    } finally {
-      setLoading(false);
+      // try to surface server messages (e.g., 401/403/409 strings)
+      setErrorMsg(e?.message || "Failed to accept invite.");
     }
   }
-
-  const nextUrl = `/invite/${token}`;
 
   return (
     <div className="min-h-screen bg-neutral-950 text-white grid place-items-center px-6">
       <div className="w-full max-w-md rounded-2xl border border-white/10 bg-white/5 p-6 space-y-4">
         <h1 className="text-xl font-semibold">Join Team</h1>
 
-        {status === "checking" && <p className="text-white/70">Checking invite…</p>}
+        {status === "checking" && (
+          <p className="text-white/70">Checking invite…</p>
+        )}
 
         {status === "need_auth" && (
           <div className="space-y-3">
@@ -100,37 +107,52 @@ export default function AcceptInvite() {
             </p>
             <div className="flex gap-2">
               <Link
-                to={`/login?next=${encodeURIComponent(nextUrl)}`}
+                to={`/login?next=${encodeURIComponent(selfUrl)}`}
                 className="rounded-xl border border-white/15 px-4 py-2 hover:bg-white/10"
               >
                 Log in
               </Link>
               <Link
-                to={`/signup?next=${encodeURIComponent(nextUrl)}`}
+                to={`/signup?next=${encodeURIComponent(selfUrl)}`}
                 className="rounded-xl border border-white/15 px-4 py-2 hover:bg-white/10"
               >
                 Sign up
               </Link>
             </div>
+            <p className="text-xs text-white/40">
+              After you finish, you’ll come back here to join the team.
+            </p>
           </div>
         )}
 
-        {status === "accepting" && <p className="text-white/70">Accepting your invite…</p>}
+        {status === "accepting" && (
+          <p className="text-white/70">Accepting your invite…</p>
+        )}
 
         {status === "success" && (
           <p className="text-green-400">Success! Redirecting to your team…</p>
         )}
 
         {status === "error" && (
-          <>
-            <p className="text-red-400">Error: {error}</p>
-            <button
-              onClick={acceptNow}
-              className="rounded-xl border border-white/15 px-4 py-2 hover:bg-white/10"
-            >
-              Try again
-            </button>
-          </>
+          <div className="space-y-3">
+            <p className="text-red-400">
+              {errorMsg || "Something went wrong while accepting the invite."}
+            </p>
+            <div className="flex gap-2">
+              <button
+                onClick={acceptNow}
+                className="rounded-xl border border-white/15 px-4 py-2 hover:bg-white/10"
+              >
+                Try again
+              </button>
+              <Link
+                to={`/login?next=${encodeURIComponent(selfUrl)}`}
+                className="rounded-xl border border-white/15 px-4 py-2 hover:bg-white/10"
+              >
+                Log in
+              </Link>
+            </div>
+          </div>
         )}
       </div>
     </div>
