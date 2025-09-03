@@ -197,10 +197,42 @@ function LandingPage() {
       </section>
 
       <footer className="relative z-10 border-t border-white/10 bg-black/40">
-        <div className="mx-auto max-w-7xl px-6 py-6 text-center text-xs text-white/60">
-          © {new Date().getFullYear()} {BRAND.name}. All rights reserved.
+        <div className="mx-auto max-w-7xl px-6 py-6 text-center text-xs text-white/60 space-y-2">
+          <div>© {new Date().getFullYear()} {BRAND.name}. All rights reserved.</div>
+          <div className="space-x-3">
+            <Link to="/legal/terms" className="hover:text-white">Terms of Service</Link>
+            <span className="text-white/30">•</span>
+            <Link to="/legal/privacy" className="hover:text-white">Privacy Policy</Link>
+          </div>
         </div>
       </footer>
+    </div>
+  );
+}
+
+// ---------- Simple Legal Pages ----------
+function TermsPage() {
+  return (
+    <div className="min-h-screen bg-neutral-950 text-white">
+      <div className="mx-auto max-w-3xl px-6 py-10">
+        <h1 className="text-2xl font-semibold">Terms of Service</h1>
+        <p className="mt-3 text-sm text-white/70">
+          These are placeholder terms. Replace with your actual Terms of Service content.
+        </p>
+      </div>
+    </div>
+  );
+}
+
+function PrivacyPage() {
+  return (
+    <div className="min-h-screen bg-neutral-950 text-white">
+      <div className="mx-auto max-w-3xl px-6 py-10">
+        <h1 className="text-2xl font-semibold">Privacy Policy</h1>
+        <p className="mt-3 text-sm text-white/70">
+          This is a placeholder privacy policy. Replace with your actual Privacy Policy content.
+        </p>
+      </div>
     </div>
   );
 }
@@ -361,6 +393,8 @@ function AppLayout() {
 
         <div className="p-4">
           <Routes>
+            <Route path="/legal/terms" element={<TermsPage />} />
+            <Route path="/legal/privacy" element={<PrivacyPage />} />
             {routes.map((r) => {
               const C = r.component;
               return r.index
