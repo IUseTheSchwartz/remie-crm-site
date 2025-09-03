@@ -33,7 +33,7 @@ export async function handler(event) {
       return { statusCode: 403, body: "Not team owner" };
     }
 
-    // LEFT join to profiles (no !inner), so members without a profile row still appear.
+    // LEFT join to profiles so we still see people without a profile yet
     const { data: rows, error: mErr } = await supa
       .from("user_teams")
       .select(`
@@ -52,7 +52,8 @@ export async function handler(event) {
       return { statusCode: 500, body: "Failed to load members" };
     }
 
-    let members = (rows || []).map((r) => ({
+    // Normalize members
+    const members = (rows || []).map((r) => ({
       user_id: r.user_id,
       role: r.role,
       status: r.status,
@@ -62,30 +63,24 @@ export async function handler(event) {
         full_name: r.profiles?.full_name ?? null,
         email: r.profiles?.email ?? null,
       },
+      display_status: r.profiles?.id ? r.status : "Setup agent profile",
     }));
 
-    // Backfill missing emails from auth if profiles is null or email is empty
-    const needsAuthLookup = members.filter(
-      (m) => !m.profile?.email || !m.profile?.id
-    );
-
-    if (needsAuthLookup.length > 0) {
+    // Backfill email from auth.users for those without profile email
+    const toBackfill = members.filter((m) => !m.profile.email);
+    if (toBackfill.length > 0) {
       await Promise.all(
-        needsAuthLookup.map(async (m) => {
+        toBackfill.map(async (m) => {
           try {
-            const { data: userRes, error: aErr } = await supa.auth.admin.getUserById(m.user_id);
+            const { data: ures, error: aErr } = await supa.auth.admin.getUserById(m.user_id);
             if (!aErr) {
-              const email = userRes?.user?.email || null;
+              const email = ures?.user?.email || null;
               if (email) {
-                m.profile = {
-                  id: m.profile?.id ?? null,
-                  full_name: m.profile?.full_name ?? null,
-                  email,
-                };
+                m.profile.email = email;
               }
             }
           } catch {
-            // ignore
+            /* noop */
           }
         })
       );
