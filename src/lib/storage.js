@@ -53,7 +53,9 @@ export function saveClients(clients) {
        faceAmount: string|number,
        premium: string|number,
        monthlyPayment: string|number,
-       policyNumber?: string, // NEW supported field
+       policyNumber?: string,
+       // We support both for compatibility with older data / UI
+       startDate?: string,
        effectiveDate?: string,
        notes?: string,
        address?: {
@@ -78,6 +80,13 @@ export function normalizePerson(p = {}) {
     gender: p.gender ?? "",
   };
 
+  // Prefer startDate (what the UI uses). If only effectiveDate exists (legacy),
+  // keep it but also mirror to startDate so the UI can read it.
+  const startDate =
+    (sold && (sold.startDate || sold.effectiveDate)) || "";
+  const effectiveDate =
+    (sold && (sold.effectiveDate || sold.startDate)) || "";
+
   return {
     id:
       p.id ||
@@ -96,7 +105,9 @@ export function normalizePerson(p = {}) {
           premium: sold.premium || "",
           monthlyPayment: sold.monthlyPayment || "",
           policyNumber: sold.policyNumber || "",
-          effectiveDate: sold.effectiveDate || "",
+          // keep both for compatibility
+          startDate,
+          effectiveDate,
           notes: sold.notes || "",
           address: {
             street: sold.address?.street || "",
