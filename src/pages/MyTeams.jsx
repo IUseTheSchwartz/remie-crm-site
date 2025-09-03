@@ -1,110 +1,116 @@
+// File: src/pages/MyTeams.jsx
 import { useEffect, useState } from "react";
+import { Link, useNavigate } from "react-router-dom";
 import { supabase } from "../lib/supabaseClient";
 import { getCurrentUserId, callFn } from "../lib/teamApi";
-import { Plus, Users, ArrowRight } from "lucide-react";
-import { useNavigate } from "react-router-dom";
+import { Users, Crown, LogOut, Plus } from "lucide-react";
 
 export default function MyTeams() {
+  const [me, setMe] = useState(null);
   const [owned, setOwned] = useState([]);
   const [memberOf, setMemberOf] = useState([]);
   const [loading, setLoading] = useState(true);
-  const [creating, setCreating] = useState(false);
-  const [teamName, setTeamName] = useState("");
-  const navigate = useNavigate();
+  const nav = useNavigate();
 
   useEffect(() => {
     (async () => {
       setLoading(true);
       const uid = await getCurrentUserId();
+      setMe(uid);
 
       // Teams I own
-      const { data: ownedRows, error: ownedErr } = await supabase
-        .from("user_teams")
-        .select("role,status,team:teams(id,name,owner_id)")
-        .eq("user_id", uid)
-        .eq("role", "owner")
-        .eq("status", "active");
-      if (ownedErr) console.warn(ownedErr);
+      const { data: own } = await supabase
+        .from("teams")
+        .select("id, name, created_at")
+        .eq("owner_id", uid)
+        .order("created_at", { ascending: false });
 
-      // Teams I'm in
-      const { data: memberRows, error: memberErr } = await supabase
+      // Teams I'm in (not owner)
+      const { data: mem } = await supabase
         .from("user_teams")
-        .select("role,status,team:teams(id,name,owner_id)")
+        .select("team_id, role, status, team:teams(id, name)")
         .eq("user_id", uid)
-        .eq("role", "member")
-        .eq("status", "active");
-      if (memberErr) console.warn(memberErr);
+        .neq("role", "owner")
+        .eq("status", "active")
+        .order("joined_at", { ascending: false });
 
-      setOwned(ownedRows?.map(r => r.team) || []);
-      setMemberOf(memberRows?.map(r => r.team) || []);
+      setOwned(own || []);
+      setMemberOf((mem || []).map((m) => ({ ...m.team, role: m.role })));
       setLoading(false);
     })();
   }, []);
 
-  async function createTeam(e) {
-    e.preventDefault();
-    if (!teamName.trim()) return;
+  async function leave(teamId) {
+    if (!confirm("Leave this team? You’ll lose access immediately.")) return;
     try {
-      setCreating(true);
-      const { team } = await callFn("create-team", { name: teamName.trim() });
-      setTeamName("");
-      navigate(`/app/team/manage/${team.id}`);
+      await callFn("leave-team", { team_id: teamId });
+      // refresh lists
+      const uid = me;
+      const { data: own } = await supabase
+        .from("teams")
+        .select("id, name, created_at")
+        .eq("owner_id", uid)
+        .order("created_at", { ascending: false });
+
+      const { data: mem } = await supabase
+        .from("user_teams")
+        .select("team_id, role, status, team:teams(id, name)")
+        .eq("user_id", uid)
+        .neq("role", "owner")
+        .eq("status", "active")
+        .order("joined_at", { ascending: false });
+
+      setOwned(own || []);
+      setMemberOf((mem || []).map((m) => ({ ...m.team, role: m.role })));
     } catch (e) {
-      alert(e.message || "Failed to create team");
-    } finally {
-      setCreating(false);
+      alert(e.message || "Failed to leave team");
     }
   }
 
-  if (loading) return <div className="p-6">Loading...</div>;
+  if (loading) return <div className="p-6">Loading…</div>;
 
   return (
     <div className="p-6 space-y-8">
-      <header className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
-        <div>
-          <h1 className="text-2xl font-semibold flex items-center gap-2">
-            <Users className="w-6 h-6" /> My Teams
-          </h1>
-          <p className="text-sm text-gray-500">Create or switch between teams you own or belong to.</p>
-        </div>
-        <form onSubmit={createTeam} className="flex items-center gap-2">
-          <input
-            value={teamName}
-            onChange={(e) => setTeamName(e.target.value)}
-            placeholder="New team name"
-            className="border rounded-lg px-3 py-2 w-56"
-          />
-          <button
-            disabled={creating || !teamName.trim()}
-            className="inline-flex items-center gap-2 rounded-xl px-4 py-2 border hover:bg-gray-50 disabled:opacity-50"
-          >
-            <Plus className="w-4 h-4" /> Create Team
-          </button>
-        </form>
+      <header className="flex items-center justify-between">
+        <h1 className="text-2xl font-semibold flex items-center gap-2">
+          <Users className="w-6 h-6" /> My Teams
+        </h1>
+        <button
+          onClick={() => nav("/app/team/create")}
+          className="inline-flex items-center gap-2 rounded-xl border px-3 py-2 hover:bg-white/5"
+        >
+          <Plus className="w-4 h-4" /> Create Team
+        </button>
       </header>
 
-      <section>
-        <h2 className="text-lg font-medium mb-3">Teams I Own</h2>
+      {/* Teams I Own */}
+      <section className="border rounded-2xl p-4">
+        <div className="flex items-center gap-2 text-sm text-gray-400">
+          <Crown className="w-4 h-4" /> Teams I Own
+        </div>
         {owned.length === 0 ? (
-          <div className="text-sm text-gray-500">You don’t own any teams yet.</div>
+          <div className="mt-3 text-gray-500">You don’t own any teams yet.</div>
         ) : (
-          <ul className="grid sm:grid-cols-2 lg:grid-cols-3 gap-4">
+          <ul className="mt-3 divide-y divide-white/10">
             {owned.map((t) => (
-              <li key={t.id} className="border rounded-2xl p-4 flex flex-col gap-3">
-                <div className="font-medium">{t.name}</div>
+              <li key={t.id} className="py-3 flex items-center justify-between">
+                <div>
+                  <div className="font-medium">{t.name}</div>
+                  <div className="text-xs text-gray-500">Owner</div>
+                </div>
                 <div className="flex gap-2">
-                  <button
-                    onClick={() => navigate(`/app/team/manage/${t.id}`)}
-                    className="px-3 py-2 rounded-xl border hover:bg-gray-50"
+                  <Link
+                    to={`/app/team/${t.id}/dashboard`}
+                    className="rounded-xl border px-3 py-1.5 hover:bg-white/5 text-sm"
+                  >
+                    Dashboard
+                  </Link>
+                  <Link
+                    to={`/app/team/manage/${t.id}`}
+                    className="rounded-xl border px-3 py-1.5 hover:bg-white/5 text-sm"
                   >
                     Manage
-                  </button>
-                  <button
-                    onClick={() => navigate(`/app/team/${t.id}/dashboard`)}
-                    className="px-3 py-2 rounded-xl border hover:bg-gray-50 inline-flex items-center gap-1"
-                  >
-                    Dashboard <ArrowRight className="w-4 h-4" />
-                  </button>
+                  </Link>
                 </div>
               </li>
             ))}
@@ -112,21 +118,36 @@ export default function MyTeams() {
         )}
       </section>
 
-      <section>
-        <h2 className="text-lg font-medium mb-3">Teams I’m In</h2>
+      {/* Teams I'm In */}
+      <section className="border rounded-2xl p-4">
+        <div className="flex items-center gap-2 text-sm text-gray-400">
+          <LogOut className="w-4 h-4" /> Teams I’m In
+        </div>
         {memberOf.length === 0 ? (
-          <div className="text-sm text-gray-500">You’re not a member of any other teams.</div>
+          <div className="mt-3 text-gray-500">You’re not a member of any teams yet.</div>
         ) : (
-          <ul className="grid sm:grid-cols-2 lg:grid-cols-3 gap-4">
+          <ul className="mt-3 divide-y divide-white/10">
             {memberOf.map((t) => (
-              <li key={t.id} className="border rounded-2xl p-4 flex items-center justify-between">
-                <div className="font-medium">{t.name}</div>
-                <button
-                  onClick={() => navigate(`/app/team/${t.id}/dashboard`)}
-                  className="px-3 py-2 rounded-xl border hover:bg-gray-50 inline-flex items-center gap-1"
-                >
-                  Open <ArrowRight className="w-4 h-4" />
-                </button>
+              <li key={t.id} className="py-3 flex items-center justify-between">
+                <div>
+                  <div className="font-medium">{t.name}</div>
+                  <div className="text-xs text-gray-500">Role: {t.role || "member"}</div>
+                </div>
+                <div className="flex gap-2">
+                  <Link
+                    to={`/app/team/${t.id}/dashboard`}
+                    className="rounded-xl border px-3 py-1.5 hover:bg-white/5 text-sm"
+                  >
+                    Open
+                  </Link>
+                  <button
+                    onClick={() => leave(t.id)}
+                    className="rounded-xl border border-red-500/50 text-red-400 px-3 py-1.5 hover:bg-red-500/10 text-sm"
+                    title="Leave this team"
+                  >
+                    Leave Team
+                  </button>
+                </div>
               </li>
             ))}
           </ul>
