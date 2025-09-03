@@ -17,6 +17,7 @@ export const supabase = createClient(supabaseUrl, supabaseAnonKey, {
     persistSession: true,        // keep session in storage
     autoRefreshToken: true,      // refresh tokens automatically
     detectSessionInUrl: true,    // parse OAuth callbacks
+    multiTab: true,              // ✅ keep session in sync across tabs/routes
     storageKey: "remiecrm.auth", // avoid collisions across apps/domains
   },
 });
