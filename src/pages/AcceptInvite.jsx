@@ -1,23 +1,20 @@
 // File: src/pages/AcceptInvite.jsx
 import { useEffect, useState } from "react";
-import { useParams, Link, useNavigate, useLocation } from "react-router-dom";
+import { useParams, Link, useNavigate } from "react-router-dom";
 import { supabase } from "../lib/supabaseClient";
-import { callFn, getCurrentUserId } from "../lib/teamApi";
 
 export default function AcceptInvite() {
   const { token } = useParams();
   const nav = useNavigate();
-  const loc = useLocation();
 
-  const [status, setStatus] = useState("checking"); // checking | need_auth | accepting | success | error
+  const [phase, setPhase] = useState("checking"); // checking | need_auth | accepting | success | error
   const [errorMsg, setErrorMsg] = useState("");
 
-  // Build this page's URL for ?next=
   const selfUrl = `/invite/${token}`;
 
   useEffect(() => {
     if (!token) {
-      setStatus("error");
+      setPhase("error");
       setErrorMsg("Missing invite token.");
       return;
     }
@@ -26,68 +23,96 @@ export default function AcceptInvite() {
     localStorage.setItem("pending_invite_token", token);
 
     (async () => {
-      // Check current session
-      const { data: sessionRes } = await supabase.auth.getSession();
-      const session = sessionRes?.session;
+      const { data } = await supabase.auth.getUser();
+      const user = data?.user;
 
-      if (!session?.user?.id) {
-        setStatus("need_auth");
+      if (!user) {
+        setPhase("need_auth");
         return;
       }
 
-      // Already signed in → accept now
-      await acceptNow();
+      // already signed in → accept now
+      acceptNow(user);
     })();
 
-    // If auth state changes (e.g., user logs in in this tab), try again
-    const { data: sub } = supabase.auth.onAuthStateChange(async (event) => {
+    // If auth state changes (user logs in), try again
+    const { data: sub } = supabase.auth.onAuthStateChange(async (event, session) => {
       if (event === "SIGNED_IN") {
         const saved = localStorage.getItem("pending_invite_token");
-        if (saved === token) {
-          await acceptNow();
+        if (saved === token && session?.user) {
+          acceptNow(session.user);
         }
       }
     });
 
-    return () => sub?.subscription?.unsubscribe?.();
+    return () => {
+      sub?.subscription?.unsubscribe?.();
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [token]);
 
-  async function acceptNow() {
+  async function acceptNow(user) {
     try {
-      setStatus("accepting");
+      setPhase("accepting");
       setErrorMsg("");
 
-      // Get user id (fallback to session if helper fails)
-      let uid = null;
-      try {
-        uid = await getCurrentUserId();
-      } catch {}
-      if (!uid) {
-        const { data: s } = await supabase.auth.getSession();
-        uid = s?.session?.user?.id || null;
-      }
-      if (!uid) {
-        setStatus("need_auth");
+      // Get access token + confirm uid
+      const { data: s } = await supabase.auth.getSession();
+      const accessToken = s?.session?.access_token || null;
+      const uid = user?.id;
+
+      if (!accessToken || !uid) {
+        setPhase("need_auth");
         return;
       }
 
-      // Call the function to accept
-      const res = await callFn("accept-invite", { token });
-      if (!res || !res.team_id) {
-        throw new Error(res?.error || "Unable to accept invite.");
+      // Call Netlify function directly with proper auth headers
+      const resp = await fetch("/.netlify/functions/accept-invite", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${accessToken}`,
+          "X-User-Id": uid,
+        },
+        body: JSON.stringify({ token }),
+      });
+
+      // Try to parse JSON either way
+      let payload = null;
+      try {
+        payload = await resp.json();
+      } catch {
+        /* no-op */
       }
 
-      // Cleanup + go to team
+      if (!resp.ok) {
+        // Handle common auth cases
+        if (resp.status === 401 || resp.status === 403) {
+          setPhase("need_auth");
+          setErrorMsg(payload?.message || "Please log in to accept this invite.");
+          return;
+        }
+        setPhase("error");
+        setErrorMsg(payload?.message || payload?.error || `Join failed (HTTP ${resp.status}).`);
+        return;
+      }
+
+      const teamId = payload?.team_id || payload?.teamId;
+      if (!teamId) {
+        setPhase("error");
+        setErrorMsg("Invite accepted but team id missing.");
+        return;
+      }
+
+      // Cleanup + redirect
       localStorage.removeItem("pending_invite_token");
-      setStatus("success");
+      setPhase("success");
       setTimeout(() => {
-        nav(`/app/team/${res.team_id}/dashboard`, { replace: true });
-      }, 500);
+        nav(`/app/team/${teamId}/dashboard`, { replace: true });
+      }, 400);
     } catch (e) {
-      setStatus("error");
-      // try to surface server messages (e.g., 401/403/409 strings)
-      setErrorMsg(e?.message || "Failed to accept invite.");
+      setPhase("error");
+      setErrorMsg(e?.message || "Unexpected error while accepting the invite.");
     }
   }
 
@@ -96,15 +121,12 @@ export default function AcceptInvite() {
       <div className="w-full max-w-md rounded-2xl border border-white/10 bg-white/5 p-6 space-y-4">
         <h1 className="text-xl font-semibold">Join Team</h1>
 
-        {status === "checking" && (
-          <p className="text-white/70">Checking invite…</p>
-        )}
+        {phase === "checking" && <p className="text-white/70">Checking invite…</p>}
 
-        {status === "need_auth" && (
+        {phase === "need_auth" && (
           <div className="space-y-3">
-            <p className="text-white/70">
-              You need to log in (or sign up) to accept this invite.
-            </p>
+            {errorMsg && <p className="text-red-400">{errorMsg}</p>}
+            <p className="text-white/70">You need to log in (or sign up) to accept this invite.</p>
             <div className="flex gap-2">
               <Link
                 to={`/login?next=${encodeURIComponent(selfUrl)}`}
@@ -120,27 +142,28 @@ export default function AcceptInvite() {
               </Link>
             </div>
             <p className="text-xs text-white/40">
-              After you finish, you’ll come back here to join the team.
+              After you finish, you’ll come back here automatically to join the team.
             </p>
           </div>
         )}
 
-        {status === "accepting" && (
-          <p className="text-white/70">Accepting your invite…</p>
-        )}
+        {phase === "accepting" && <p className="text-white/70">Accepting your invite…</p>}
 
-        {status === "success" && (
-          <p className="text-green-400">Success! Redirecting to your team…</p>
-        )}
+        {phase === "success" && <p className="text-green-400">Success! Redirecting…</p>}
 
-        {status === "error" && (
+        {phase === "error" && (
           <div className="space-y-3">
-            <p className="text-red-400">
-              {errorMsg || "Something went wrong while accepting the invite."}
-            </p>
+            <p className="text-red-400">{errorMsg || "Something went wrong."}</p>
             <div className="flex gap-2">
               <button
-                onClick={acceptNow}
+                onClick={async () => {
+                  const { data } = await supabase.auth.getUser();
+                  if (!data?.user) {
+                    setPhase("need_auth");
+                    return;
+                  }
+                  acceptNow(data.user);
+                }}
                 className="rounded-xl border border-white/15 px-4 py-2 hover:bg-white/10"
               >
                 Try again
