@@ -278,6 +278,7 @@ export default function LeadsPage() {
         faceAmount: soldPayload.faceAmount || "",
         premium: soldPayload.premium || "",
         monthlyPayment: soldPayload.monthlyPayment || "",
+        policyNumber: soldPayload.policyNumber || "",
         startDate: soldPayload.startDate || "",
         name: soldPayload.name || base.name || "",
         phone: soldPayload.phone || base.phone || "",
@@ -447,6 +448,7 @@ export default function LeadsPage() {
               <Th>Face</Th>
               <Th>Premium</Th>
               <Th>Monthly</Th>
+              <Th>Policy #</Th>
               <Th>Start</Th>
               <Th>Actions</Th>
             </tr>
@@ -473,6 +475,7 @@ export default function LeadsPage() {
                 <Td>{p.sold?.faceAmount || "—"}</Td>
                 <Td>{p.sold?.premium || "—"}</Td>
                 <Td>{p.sold?.monthlyPayment || "—"}</Td>
+                <Td>{p.sold?.policyNumber || "—"}</Td>
                 <Td>{p.sold?.startDate || "—"}</Td>
                 <Td>
                   <div className="flex items-center gap-2">
@@ -495,7 +498,7 @@ export default function LeadsPage() {
             ))}
             {visible.length === 0 && (
               <tr>
-                <td colSpan={15} className="p-6 text-center text-white/60">
+                <td colSpan={16} className="p-6 text-center text-white/60">
                   No records yet. Import a CSV or add leads.
                 </td>
               </tr>
@@ -530,6 +533,7 @@ function SoldDrawer({ initial, allClients, onClose, onSave }) {
     faceAmount: initial?.sold?.faceAmount || "",
     premium: initial?.sold?.premium || "",
     monthlyPayment: initial?.sold?.monthlyPayment || "",
+    policyNumber: initial?.sold?.policyNumber || "",
     startDate: initial?.sold?.startDate || "",
     // Address
     street: initial?.sold?.address?.street || "",
@@ -594,7 +598,7 @@ function SoldDrawer({ initial, allClients, onClose, onSave }) {
                    className="inp" placeholder="jane@example.com" />
           </Field>
 
-        {/* sold fields */}
+          {/* sold fields */}
           <Field label="Carrier sold">
             <input value={form.carrier} onChange={(e)=>setForm({...form, carrier:e.target.value})}
                    className="inp" placeholder="Mutual of Omaha" />
@@ -606,6 +610,10 @@ function SoldDrawer({ initial, allClients, onClose, onSave }) {
           <Field label="Premium sold">
             <input value={form.premium} onChange={(e)=>setForm({...form, premium:e.target.value})}
                    className="inp" placeholder="3,000" />
+          </Field>
+          <Field label="Policy number">
+            <input value={form.policyNumber} onChange={(e)=>setForm({...form, policyNumber:e.target.value})}
+                   className="inp" placeholder="ABC123456789" />
           </Field>
           <Field label="Monthly payment">
             <input value={form.monthlyPayment} onChange={(e)=>setForm({...form, monthlyPayment:e.target.value})}
