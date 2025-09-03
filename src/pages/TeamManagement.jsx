@@ -61,23 +61,22 @@ export default function TeamManagement() {
       setLoading(false);
     })();
 
-    // 👇 refresh seats when user returns from Stripe portal
+    // refresh seats when user returns from Stripe portal
     const onFocus = () => { refreshSeatCounts(); };
     window.addEventListener("focus", onFocus);
     return () => window.removeEventListener("focus", onFocus);
     // eslint-disable-next-line
   }, [teamId]);
 
+  // ✅ CHANGED: load members via server function (service role), so RLS can't block owner
   async function refreshMembers() {
-    const { data: rows } = await supabase
-      .from("user_teams")
-      .select(`
-        user_id, role, status, joined_at,
-        profile:profiles(id, full_name, email)
-      `)
-      .eq("team_id", teamId)
-      .in("status", ["active", "invited"]);
-    setMembers(rows || []);
+    try {
+      const res = await callFn("list-members", { team_id: teamId });
+      setMembers(res?.members || []);
+    } catch (e) {
+      console.warn("[TeamManagement] list-members failed:", e?.message || e);
+      setMembers([]); // fallback
+    }
   }
 
   async function refreshSeatCounts() {
@@ -131,7 +130,7 @@ export default function TeamManagement() {
     }
   }
 
-  // 👇 Static portal link
+  // Static portal link
   function openBillingPortal() {
     window.location.href = "https://billing.stripe.com/p/login/00w9AV5CGaQ61oqc0Q8Ra00";
   }
@@ -255,7 +254,7 @@ export default function TeamManagement() {
               }}
               className="px-3 py-2 rounded-xl border hover:bg-gray-50 inline-flex items-center gap-2"
             >
-              <Copy className="w-4 w-4" /> Copy
+              <Copy className="w-4 h-4" /> Copy
             </button>
             {copyOk && <span className="text-green-600 inline-flex items-center gap-1"><Check className="w-4 h-4" /> Copied</span>}
           </div>
@@ -279,7 +278,7 @@ export default function TeamManagement() {
             <tbody>
               {members.map((m) => (
                 <tr key={m.user_id} className="border-t">
-                  <td className="py-2 pr-3">{m.profile?.full_name || m.user_id.slice(0, 6)}</td>
+                  <td className="py-2 pr-3">{m.profile?.full_name || m.user_id?.slice(0, 6) || "—"}</td>
                   <td className="py-2 pr-3">{m.profile?.email || "—"}</td>
                   <td className="py-2 pr-3">{m.role}</td>
                   <td className="py-2 pr-3">{m.status}</td>
