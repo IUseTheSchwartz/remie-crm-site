@@ -488,9 +488,9 @@ function Drawer({
             onClick={() => {
               const iso = followPick ? new Date(followPick).toISOString() : null;
               onNextFollowUp(person, iso);
-              // NEW: write a note when follow-up is saved/cleared
+              // COPY TWEAK: explicitly say scheduled date & time
               const msg = iso
-                ? `Next follow-up set: ${fmtDateTime(iso)}.`
+                ? `Follow-up scheduled for ${fmtDateTime(iso)}.`
                 : "Next follow-up cleared.";
               onAddNote(person.id, msg);
             }}
@@ -591,7 +591,6 @@ function Drawer({
                       quote: q,
                     },
                   });
-                  // NEW: write a note when quote is saved
                   const msg = `Quoted ${q.carrier || "—"} | Face: ${q.face || "—"} | Premium: ${q.premium || "—"}.`;
                   onAddNote(person.id, msg);
                 }}
@@ -614,7 +613,6 @@ function Drawer({
                       pending: { reason: pendingReason },
                     },
                   });
-                  // NEW (nice-to-have): note for pending reason as well
                   const msg = `Pending reason saved: ${pendingReason || "—"}.`;
                   onAddNote(person.id, msg);
                 }}
