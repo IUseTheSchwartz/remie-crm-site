@@ -488,6 +488,11 @@ function Drawer({
             onClick={() => {
               const iso = followPick ? new Date(followPick).toISOString() : null;
               onNextFollowUp(person, iso);
+              // NEW: write a note when follow-up is saved/cleared
+              const msg = iso
+                ? `Next follow-up set: ${fmtDateTime(iso)}.`
+                : "Next follow-up cleared.";
+              onAddNote(person.id, msg);
             }}
             className="rounded-lg border border-white/15 px-3 py-1.5 text-xs hover:bg-white/10"
           >
@@ -576,15 +581,19 @@ function Drawer({
               </div>
               <button
                 onClick={() => {
+                  const q = { ...quote };
                   onUpdate({
                     ...person,
                     stage: "quoted",
                     stage_changed_at: nowIso(),
                     pipeline: {
                       ...(person.pipeline || {}),
-                      quote: { ...quote },
+                      quote: q,
                     },
                   });
+                  // NEW: write a note when quote is saved
+                  const msg = `Quoted ${q.carrier || "—"} | Face: ${q.face || "—"} | Premium: ${q.premium || "—"}.`;
+                  onAddNote(person.id, msg);
                 }}
                 className="mt-1 inline-flex items-center gap-2 rounded-lg border border-white/15 px-2 py-1 text-xs hover:bg-white/10"
               >
@@ -605,6 +614,9 @@ function Drawer({
                       pending: { reason: pendingReason },
                     },
                   });
+                  // NEW (nice-to-have): note for pending reason as well
+                  const msg = `Pending reason saved: ${pendingReason || "—"}.`;
+                  onAddNote(person.id, msg);
                 }}
                 className="mt-1 inline-flex items-center gap-2 rounded-lg border border-white/15 px-2 py-1 text-xs hover:bg-white/10"
               >
