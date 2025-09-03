@@ -10,7 +10,7 @@ import ToolsPage from "./pages/ToolsPage.jsx";
 import MessagesPage from "./pages/MessagesPage.jsx";
 import MailingPage from "./pages/MailingPage.jsx";
 import MessagingSettings from "./pages/MessagingSettings.jsx";
-import SupportPage from "./pages/SupportPage.jsx";
+import SupportPage from "./pages/SupportPage.jsx"; 
 import TermsPage from "./pages/legal/Terms.jsx";       // NEW
 import PrivacyPage from "./pages/legal/Privacy.jsx";   // NEW
 
@@ -40,10 +40,8 @@ export const routes = [
   // Support (very bottom under Agent section)
   { key: "support", path: "/app/support", label: "Support", component: SupportPage, showInSidebar: true, group: "agent" },
 
-  // ---- Team section (NEW divider below the Agent section) ----
+  // ---- Team section (NEW divider below Support) ----
   { key: "my-teams", path: "/app/teams", label: "My Teams", component: MyTeams, showInSidebar: true, group: "teams" },
-
-  // Hidden (still need routes for navigation)
   { key: "team-manage", path: "/app/team/manage/:teamId", label: "Manage Team", component: TeamManagement, showInSidebar: false, group: "teams" },
   { key: "team-dashboard", path: "/app/team/:teamId/dashboard", label: "Team Dashboard", component: TeamDashboard, showInSidebar: false, group: "teams" },
 
