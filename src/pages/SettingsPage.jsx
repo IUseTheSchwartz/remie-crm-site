@@ -1,12 +1,15 @@
 // File: src/pages/Settings.jsx
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useState } from "react";
 import { supabase } from "../lib/supabaseClient.js";
+import { useAuth } from "../auth.jsx";
 
 // --- Calendly OAuth constants ---
 const CALENDLY_AUTH_HOST = "https://auth.calendly.com";
 
 export default function Settings() {
-  const [user, setUser] = useState(null);
+  // ✅ read user from global AuthProvider (keeps in sync across tabs/routes)
+  const { user, ready } = useAuth();
+
   const [sub, setSub] = useState(null);
   const [loadingSub, setLoadingSub] = useState(true);
 
@@ -23,41 +26,35 @@ export default function Settings() {
     (typeof window !== "undefined" ? window.location.origin : "");
   const redirectUri = `${siteUrl}/.netlify/functions/calendly-auth-callback`;
 
+  // Load subscription only when auth is hydrated and a user exists
   useEffect(() => {
-    let ignore = false;
-
-    async function load() {
-      const { data, error } = await supabase.auth.getUser();
-      if (error) {
-        console.error(error);
-        return;
-      }
-      if (ignore) return;
-      setUser(data.user || null);
-
-      if (data.user?.id) {
-        setLoadingSub(true);
-        const { data: subData, error: subErr } = await supabase
-          .from("subscriptions")
-          .select("*")
-          .eq("user_id", data.user.id)
-          .maybeSingle();
-
-        if (!ignore) {
-          if (subErr) console.error(subErr);
-          setSub(subData || null);
-          setLoadingSub(false);
-        }
-      } else {
-        setLoadingSub(false);
-      }
+    if (!ready) return; // still hydrating session
+    if (!user?.id) {
+      setSub(null);
+      setLoadingSub(false);
+      return;
     }
 
-    load();
+    let cancelled = false;
+    (async () => {
+      setLoadingSub(true);
+      const { data: subData, error: subErr } = await supabase
+        .from("subscriptions")
+        .select("*")
+        .eq("user_id", user.id)
+        .maybeSingle();
+
+      if (!cancelled) {
+        if (subErr) console.error(subErr);
+        setSub(subData || null);
+        setLoadingSub(false);
+      }
+    })();
+
     return () => {
-      ignore = true;
+      cancelled = true;
     };
-  }, []);
+  }, [ready, user]);
 
   const onChangePassword = async (e) => {
     e.preventDefault();
@@ -152,7 +149,7 @@ export default function Settings() {
         <div className="space-y-2">
           <div>
             <div className="text-sm text-gray-500">Email</div>
-            <div className="font-medium">{user?.email || "—"}</div>
+            <div className="font-medium">{ready ? (user?.email || "—") : "…"}</div>
           </div>
         </div>
       </section>
