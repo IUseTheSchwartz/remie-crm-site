@@ -276,8 +276,11 @@ export default function TeamManagement() {
             <tbody>
               {members.map((m) => {
                 const email = m?.profile?.email || "—";
-                const name = m?.profile?.full_name || (email !== "—" ? email.split("@")[0] : (m.user_id?.slice(0, 6) || "—"));
+                const name =
+                  m?.profile?.full_name ||
+                  (email !== "—" ? email.split("@")[0] : (m.user_id?.slice(0, 6) || "—"));
                 const statusText = m?.display_status || m?.status || "—";
+
                 return (
                   <tr key={m.user_id} className="border-t">
                     <td className="py-2 pr-3">{name}</td>
