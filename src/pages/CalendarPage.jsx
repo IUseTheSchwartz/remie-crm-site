@@ -1,6 +1,6 @@
 // File: src/pages/CalendarPage.jsx
 import { useEffect, useState } from "react";
-import { supabase } from "./lib/supabaseClient.js";
+import { supabase } from "../lib/supabaseClient.js";
 
 export default function CalendarPage() {
   const [userId, setUserId] = useState(null);
