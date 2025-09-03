@@ -343,16 +343,32 @@ function AppLayout() {
           <div className="font-semibold">{BRAND.name}</div>
         </a>
         <nav className="p-3 space-y-1 text-sm">
-          {routes.filter(r => r.showInSidebar && r.group !== "agent").map(r => (
-            <DashLink key={r.path} to={r.path}>{r.label}</DashLink>
-          ))}
+          {/* MAIN (everything not in 'agent' or 'teams') */}
+          {routes
+            .filter(r => r.showInSidebar && r.group !== "agent" && r.group !== "teams")
+            .map(r => (
+              <DashLink key={r.path} to={r.path}>{r.label}</DashLink>
+            ))}
 
+          {/* Divider before Agent block */}
           <div className="pt-2 mt-2 border-t border-white/10" />
-          <ViewAgentSiteLink />
 
-          {routes.filter(r => r.showInSidebar && r.group === "agent").map(r => (
-            <DashLink key={r.path} to={r.path}>{r.label}</DashLink>
-          ))}
+          {/* Agent */}
+          <ViewAgentSiteLink />
+          {routes
+            .filter(r => r.showInSidebar && r.group === "agent")
+            .map(r => (
+              <DashLink key={r.path} to={r.path}>{r.label}</DashLink>
+            ))}
+
+          {/* NEW Divider below Agent, then Teams */}
+          <div className="pt-2 mt-2 border-t border-white/10" />
+
+          {routes
+            .filter(r => r.showInSidebar && r.group === "teams")
+            .map(r => (
+              <DashLink key={r.path} to={r.path}>{r.label}</DashLink>
+            ))}
         </nav>
       </aside>
 
