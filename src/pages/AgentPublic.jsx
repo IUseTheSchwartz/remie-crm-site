@@ -298,8 +298,15 @@ export default function AgentPublic() {
               )}
             </div>
           </div>
-          <div className="mt-6 text-center text-[11px] text-white/50">
-            © {new Date().getFullYear()} Remie CRM — Agent page
+
+          {/* Footer with legal links */}
+          <div className="mt-6 text-center text-[11px] text-white/50 space-y-2">
+            <div>© {new Date().getFullYear()} Remie CRM — Agent page</div>
+            <div className="space-x-3">
+              <a href="/legal/terms" className="hover:text-white">Terms of Service</a>
+              <span className="text-white/30">•</span>
+              <a href="/legal/privacy" className="hover:text-white">Privacy Policy</a>
+            </div>
           </div>
         </div>
       </section>
