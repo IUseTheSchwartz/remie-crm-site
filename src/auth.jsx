@@ -1,34 +1,40 @@
 // File: src/auth.jsx
 import { createContext, useContext, useEffect, useMemo, useState } from "react";
-// ⬇️ Make sure this path matches your actual file location:
-import { supabase } from "./lib/supabaseClient.js"; // <-- if yours is ./supabaseClient, change this line
+import { supabase } from "./lib/supabaseClient.js"; // single canonical client
 
-const AuthContext = createContext(null);
+const AuthContext = createContext({ user: null, session: null, ready: false });
 
 export function AuthProvider({ children }) {
-  const [user, setUser] = useState(null);   // full Supabase user or null
-  const [ready, setReady] = useState(false); // true once we've checked at least once
+  const [session, setSession] = useState(null);
+  const [user, setUser] = useState(null);
+  const [ready, setReady] = useState(false);
 
   async function refreshSession() {
-    const { data: { session } = {} } = await supabase.auth.getSession();
-    setUser(session?.user ?? null);
+    const { data, error } = await supabase.auth.getSession();
+    if (error) {
+      // Optional: log or surface
+      console.warn("[auth] getSession error:", error);
+    }
+    setSession(data?.session || null);
+    setUser(data?.session?.user || null);
     setReady(true);
   }
 
   useEffect(() => {
     let cancelled = false;
 
-    // Initial snapshot
+    // 1) Initial restore (faster & more reliable than getUser on first paint)
     refreshSession();
 
-    // Subscribe to auth changes (also fires on token refresh)
-    const { data: sub } = supabase.auth.onAuthStateChange((_event, session) => {
+    // 2) Stay in sync with any changes (token refresh, sign-in/out, other tabs)
+    const { data: sub } = supabase.auth.onAuthStateChange((_event, newSession) => {
       if (cancelled) return;
-      setUser(session?.user ?? null);
+      setSession(newSession || null);
+      setUser(newSession?.user || null);
       setReady(true);
     });
 
-    // Re-hydrate when tab regains focus or becomes visible
+    // 3) Re-hydrate when the tab regains focus or becomes visible
     const onFocus = () => refreshSession();
     const onVisible = () => {
       if (document.visibilityState === "visible") refreshSession();
@@ -44,6 +50,7 @@ export function AuthProvider({ children }) {
     };
   }, []);
 
+  // Simple helpers (optional)
   const signup = async ({ email, password }) => {
     const { error } = await supabase.auth.signUp({ email, password });
     if (error) throw error;
@@ -52,11 +59,10 @@ export function AuthProvider({ children }) {
   };
 
   const login = async ({ email, password }) => {
-    const { data, error } = await supabase.auth.signInWithPassword({ email, password });
+    const { error } = await supabase.auth.signInWithPassword({ email, password });
     if (error) throw error;
-    // data.user may be null if email confirmation is required; refresh to be sure
     await refreshSession();
-    return data.user ?? null;
+    return true;
   };
 
   const logout = async () => {
@@ -65,8 +71,8 @@ export function AuthProvider({ children }) {
   };
 
   const value = useMemo(
-    () => ({ user, ready, signup, login, logout }),
-    [user, ready]
+    () => ({ user, session, ready, signup, login, logout }),
+    [user, session, ready]
   );
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
