@@ -1,15 +1,24 @@
 // File: netlify/functions/accept-invite.js
-import { supaAdmin, getUserIdFromEvent, syncStripeSeatsForTeam } from "./_shared.js";
+// (only showing the important differences from your current version)
+import { createClient } from "@supabase/supabase-js";
+
+function makeSupaAdmin() {
+  const key =
+    process.env.SUPABASE_SERVICE_ROLE || process.env.SUPABASE_SERVICE_ROLE_KEY;
+  return createClient(process.env.SUPABASE_URL, key);
+}
 
 export async function handler(event) {
   try {
-    if (event.httpMethod !== "POST") return { statusCode: 405, body: "Method not allowed" };
+    if (event.httpMethod !== "POST")
+      return { statusCode: 405, body: "Method not allowed" };
+
+    const supa = makeSupaAdmin();
+    const userId = event.headers["x-user-id"];
+    if (!userId) return { statusCode: 401, body: "Not authenticated" };
 
     const { token } = JSON.parse(event.body || "{}");
     if (!token) return { statusCode: 400, body: "Missing token" };
-
-    const supa = supaAdmin();
-    const userId = getUserIdFromEvent(event);
 
     const { data: invite, error: iErr } = await supa
       .from("team_invites")
@@ -21,6 +30,20 @@ export async function handler(event) {
     if (invite.used_at) return { statusCode: 400, body: "Invite already used" };
     if (new Date(invite.expires_at).getTime() < Date.now())
       return { statusCode: 400, body: "Invite expired" };
+
+    // Check capacity BEFORE adding member
+    const { data: counts } = await supa
+      .from("team_seat_counts")
+      .select("seats_purchased, seats_used, seats_available")
+      .eq("team_id", invite.team_id)
+      .single();
+
+    if (!counts || counts.seats_available <= 0) {
+      return {
+        statusCode: 409,
+        body: "No seats available. Ask the team owner to purchase more seats.",
+      };
+    }
 
     // Upsert member
     await supa.from("user_teams").upsert({
@@ -36,9 +59,7 @@ export async function handler(event) {
       .update({ used_at: new Date().toISOString() })
       .eq("id", invite.id);
 
-    // BILLING: sync seats (quantity = active members)
-    await syncStripeSeatsForTeam(supa, invite.team_id);
-
+    // Done — seats_used will reflect the new member via the view
     return { statusCode: 200, body: JSON.stringify({ ok: true, team_id: invite.team_id }) };
   } catch (e) {
     console.error("accept-invite error:", e);
