@@ -25,6 +25,10 @@ import { supabase } from "./lib/supabaseClient.js";
 // Routes config (component refs, no JSX inside)
 import { routes } from "./routesConfig.js";
 
+// ✅ NEW: import real legal pages
+import TermsPage from "./pages/legal/Terms.jsx";
+import PrivacyPage from "./pages/legal/Privacy.jsx";
+
 // Brand / theme
 const BRAND = {
   name: "Remie CRM",
@@ -210,33 +214,6 @@ function LandingPage() {
   );
 }
 
-// ---------- Simple Legal Pages ----------
-function TermsPage() {
-  return (
-    <div className="min-h-screen bg-neutral-950 text-white">
-      <div className="mx-auto max-w-3xl px-6 py-10">
-        <h1 className="text-2xl font-semibold">Terms of Service</h1>
-        <p className="mt-3 text-sm text-white/70">
-          These are placeholder terms. Replace with your actual Terms of Service content.
-        </p>
-      </div>
-    </div>
-  );
-}
-
-function PrivacyPage() {
-  return (
-    <div className="min-h-screen bg-neutral-950 text-white">
-      <div className="mx-auto max-w-3xl px-6 py-10">
-        <h1 className="text-2xl font-semibold">Privacy Policy</h1>
-        <p className="mt-3 text-sm text-white/70">
-          This is a placeholder privacy policy. Replace with your actual Privacy Policy content.
-        </p>
-      </div>
-    </div>
-  );
-}
-
 // ---------- Sidebar Link ----------
 function DashLink({ to, children }) {
   return (
@@ -393,8 +370,10 @@ function AppLayout() {
 
         <div className="p-4">
           <Routes>
+            {/* ✅ Real legal routes */}
             <Route path="/legal/terms" element={<TermsPage />} />
             <Route path="/legal/privacy" element={<PrivacyPage />} />
+
             {routes.map((r) => {
               const C = r.component;
               return r.index
