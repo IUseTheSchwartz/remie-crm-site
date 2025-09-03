@@ -22,7 +22,6 @@ export async function handler(event) {
     const supa = makeSupaAdmin();
     const stripe = new Stripe(process.env.STRIPE_SECRET_KEY);
 
-    // Verify ownership & get customer id
     const { data: team, error } = await supa
       .from("teams")
       .select("owner_id, stripe_customer_id")
