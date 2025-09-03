@@ -3,7 +3,7 @@ import { useEffect, useMemo, useState } from "react";
 import { useParams, Link } from "react-router-dom";
 import { supabase } from "../lib/supabaseClient";
 import { getCurrentUserId, callFn } from "../lib/teamApi";
-import { Users, Copy, Trash2, Check, Shield, Plus } from "lucide-react";
+import { Users, Copy, Trash2, Check, Shield, Plus, CreditCard } from "lucide-react";
 
 export default function TeamManagement() {
   const { teamId } = useParams();
@@ -130,6 +130,22 @@ export default function TeamManagement() {
     }
   }
 
+  async function openBillingPortal() {
+    try {
+      const res = await callFn("create-billing-portal-session", {
+        team_id: teamId,
+        return_url: window.location.origin + `/app/team/manage/${teamId}`,
+      });
+      if (res?.url) {
+        window.location.href = res.url; // redirect to Stripe Billing Portal
+      } else {
+        alert("Could not open billing portal.");
+      }
+    } catch (e) {
+      alert(e.message || "Failed to open billing portal");
+    }
+  }
+
   if (loading) return <div className="p-6">Loading...</div>;
   if (!team) return <div className="p-6">Team not found.</div>;
   if (!isOwner)
@@ -192,6 +208,13 @@ export default function TeamManagement() {
               title="Update billing quantity in Stripe"
             >
               Update Seats
+            </button>
+            <button
+              onClick={openBillingPortal}
+              className="inline-flex items-center gap-2 px-4 py-2 rounded-xl border hover:bg-gray-50"
+              title="Add a card or manage your subscription in Stripe"
+            >
+              <CreditCard className="w-4 h-4" /> Buy / Manage Seats
             </button>
           </div>
         </div>
