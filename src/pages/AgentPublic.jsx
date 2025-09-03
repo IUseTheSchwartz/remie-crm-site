@@ -185,7 +185,10 @@ export default function AgentPublic() {
           <div className="grid gap-6 sm:grid-cols-2 lg:grid-cols-4">
             {BROKERAGE_STATS.map((s) => (
               <div key={s.label} className="text-center">
-                <div className="text-2xl font-extrabold tracking-tight text-amber-300">{s.value}</div>
+                {/* Gradient numbers */}
+                <div className="text-2xl font-extrabold tracking-tight bg-gradient-to-r from-indigo-400 via-fuchsia-400 to-rose-400 bg-clip-text text-transparent">
+                  {s.value}
+                </div>
                 <div className="mt-1 text-sm text-white/70">{s.label}</div>
               </div>
             ))}
