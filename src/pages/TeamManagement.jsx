@@ -3,7 +3,7 @@ import { useEffect, useMemo, useState } from "react";
 import { useParams, Link } from "react-router-dom";
 import { supabase } from "../lib/supabaseClient";
 import { getCurrentUserId, callFn } from "../lib/teamApi";
-import { Users, Copy, Trash2, Check, Shield, Plus, CreditCard } from "lucide-react";
+import { Users, Copy, Trash2, Check, Shield, Plus, CreditCard, RefreshCw } from "lucide-react";
 
 export default function TeamManagement() {
   const { teamId } = useParams();
@@ -15,11 +15,11 @@ export default function TeamManagement() {
   const [copyOk, setCopyOk] = useState(false);
   const [loading, setLoading] = useState(true);
 
-  // seats UI
+  // seats UI (purchased comes from Stripe; used/available from DB)
   const [seatsPurchased, setSeatsPurchased] = useState(0);
   const [seatsUsed, setSeatsUsed] = useState(0);
   const [seatsAvailable, setSeatsAvailable] = useState(0);
-  const [updatingSeats, setUpdatingSeats] = useState(false);
+  const [syncing, setSyncing] = useState(false);
   const seatPrice = 50; // USD per month
 
   const isOwner = useMemo(() => me && team && team.owner_id === me, [me, team]);
@@ -73,7 +73,7 @@ export default function TeamManagement() {
   async function createInvite() {
     try {
       if (seatsAvailable <= 0) {
-        alert("No seats available. Increase seats first.");
+        alert("No seats available. Click Buy Seats to add more.");
         return;
       }
       const res = await callFn("create-invite", { team_id: teamId });
@@ -89,7 +89,7 @@ export default function TeamManagement() {
     try {
       await callFn("remove-member", { team_id: teamId, user_id: userId });
       await refreshMembers();
-      await refreshSeatCounts(); // usage drops
+      await refreshSeatCounts();
     } catch (e) {
       alert(e.message || "Remove failed");
     }
@@ -106,30 +106,6 @@ export default function TeamManagement() {
     }
   }
 
-  async function updateSeats(nextSeats) {
-    try {
-      setUpdatingSeats(true);
-      const seats = Number(nextSeats);
-      if (Number.isNaN(seats) || seats < 0) {
-        alert("Invalid seat count");
-        return;
-      }
-      const res = await callFn("update-seats", { team_id: teamId, seats });
-      if (res?.seatCounts) {
-        setSeatsPurchased(res.seatCounts.seats_purchased || 0);
-        setSeatsUsed(res.seatCounts.seats_used || 0);
-        setSeatsAvailable(res.seatCounts.seats_available || 0);
-      } else {
-        await refreshSeatCounts();
-      }
-      alert("Seats updated. Billing will reflect the new quantity ($50 per seat).");
-    } catch (e) {
-      alert(e.message || "Failed to update seats");
-    } finally {
-      setUpdatingSeats(false);
-    }
-  }
-
   async function openBillingPortal() {
     try {
       const res = await callFn("create-billing-portal-session", {
@@ -137,12 +113,30 @@ export default function TeamManagement() {
         return_url: window.location.origin + `/app/team/manage/${teamId}`,
       });
       if (res?.url) {
-        window.location.href = res.url; // redirect to Stripe Billing Portal
+        window.location.href = res.url;
       } else {
         alert("Could not open billing portal.");
       }
     } catch (e) {
       alert(e.message || "Failed to open billing portal");
+    }
+  }
+
+  async function syncSeatsFromStripe() {
+    try {
+      setSyncing(true);
+      const res = await callFn("sync-seats-now", { team_id: teamId });
+      if (res?.seatCounts) {
+        setSeatsPurchased(res.seatCounts.seats_purchased || 0);
+        setSeatsUsed(res.seatCounts.seats_used || 0);
+        setSeatsAvailable(res.seatCounts.seats_available || 0);
+      } else {
+        await refreshSeatCounts();
+      }
+    } catch (e) {
+      alert(e.message || "Failed to refresh seats");
+    } finally {
+      setSyncing(false);
     }
   }
 
@@ -165,7 +159,7 @@ export default function TeamManagement() {
         <h1 className="text-2xl font-semibold flex items-center gap-2">
           <Users className="w-6 h-6" /> Manage Team
         </h1>
-        <p className="text-sm text-gray-500">Buy seats, invite members, and manage your team.</p>
+        <p className="text-sm text-gray-500">Buy seats in Stripe, then invite members to fill them.</p>
       </header>
 
       {/* Team name */}
@@ -183,7 +177,7 @@ export default function TeamManagement() {
         </div>
       </section>
 
-      {/* Seats purchase / management */}
+      {/* Seats (Portal + Refresh) */}
       <section className="border rounded-2xl p-4 space-y-3">
         <div className="flex items-center justify-between">
           <div>
@@ -191,30 +185,23 @@ export default function TeamManagement() {
             <div className="text-lg font-semibold">
               {seatsPurchased} purchased • {seatsUsed} used • {seatsAvailable} available
             </div>
-            <div className="text-xs text-gray-500">Billing: ${seatPrice} × purchased seats (owner not billed as a seat).</div>
+            <div className="text-xs text-gray-500">Billing: ${seatPrice}/seat/month (owner not billed as a seat).</div>
           </div>
           <div className="flex items-center gap-2">
-            <input
-              type="number"
-              min={seatsUsed}
-              value={seatsPurchased}
-              onChange={(e) => setSeatsPurchased(parseInt(e.target.value || "0", 10))}
-              className="w-24 border rounded-lg px-3 py-2"
-            />
-            <button
-              disabled={updatingSeats}
-              onClick={() => updateSeats(seatsPurchased)}
-              className="px-4 py-2 rounded-xl border hover:bg-gray-50 disabled:opacity-50"
-              title="Update billing quantity in Stripe"
-            >
-              Update Seats
-            </button>
             <button
               onClick={openBillingPortal}
               className="inline-flex items-center gap-2 px-4 py-2 rounded-xl border hover:bg-gray-50"
-              title="Add a card or manage your subscription in Stripe"
+              title="Open Stripe to buy or reduce seats and add/update your card"
             >
-              <CreditCard className="w-4 h-4" /> Buy / Manage Seats
+              <CreditCard className="w-4 h-4" /> Buy Seats
+            </button>
+            <button
+              onClick={syncSeatsFromStripe}
+              disabled={syncing}
+              className="inline-flex items-center gap-2 px-3 py-2 rounded-xl border hover:bg-gray-50 disabled:opacity-50"
+              title="Refresh seat count from Stripe"
+            >
+              <RefreshCw className={`w-4 h-4 ${syncing ? "animate-spin" : ""}`} /> Refresh
             </button>
           </div>
         </div>
