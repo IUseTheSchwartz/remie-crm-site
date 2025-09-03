@@ -1,6 +1,6 @@
 // File: src/pages/Settings.jsx
 import { useEffect, useMemo, useState } from "react";
-import { supabase } from "../supabaseClient";
+import { supabase } from "../lib/supabaseClient.js";
 
 // --- Calendly OAuth constants ---
 const CALENDLY_AUTH_HOST = "https://auth.calendly.com";
