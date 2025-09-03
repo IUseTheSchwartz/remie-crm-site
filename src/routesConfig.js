@@ -10,7 +10,9 @@ import ToolsPage from "./pages/ToolsPage.jsx";
 import MessagesPage from "./pages/MessagesPage.jsx";
 import MailingPage from "./pages/MailingPage.jsx";
 import MessagingSettings from "./pages/MessagingSettings.jsx";
-import SupportPage from "./pages/SupportPage.jsx"; // NEW
+import SupportPage from "./pages/SupportPage.jsx"; 
+import TermsPage from "./pages/legal/Terms.jsx";       // NEW
+import PrivacyPage from "./pages/legal/Privacy.jsx";   // NEW
 
 export const routes = [
   // Main section
@@ -32,4 +34,8 @@ export const routes = [
 
   // Support (very bottom under Agent section)
   { key: "support", path: "/app/support", label: "Support", component: SupportPage, showInSidebar: true, group: "agent" },
+
+  // Legal pages (linked from footers only, not sidebar)
+  { key: "terms",   path: "/legal/terms",   label: "Terms of Service", component: TermsPage,   showInSidebar: false, group: "legal" },
+  { key: "privacy", path: "/legal/privacy", label: "Privacy Policy",   component: PrivacyPage, showInSidebar: false, group: "legal" },
 ];
