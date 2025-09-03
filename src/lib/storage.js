@@ -2,9 +2,8 @@
 
 // LocalStorage keys (swap to Supabase later)
 const KEYS = {
-  leads: "remie_leads_v1",           // raw leads / prospects
-  clients: "remie_clients_v1",       // unified list (leads + sold)
-  leadsApiKey: "remie_leads_api_key_v1", // vendor API key for auto-import
+  leads: "remie_leads_v1",     // raw leads / prospects
+  clients: "remie_clients_v1", // unified list (leads + sold)
 };
 
 /* ---------------------------
@@ -30,24 +29,6 @@ export function loadClients() {
 }
 export function saveClients(clients) {
   localStorage.setItem(KEYS.clients, JSON.stringify(clients));
-}
-
-/* ---------------------------
-   API Key helpers
-----------------------------*/
-export function loadLeadsApiKey() {
-  try {
-    return localStorage.getItem(KEYS.leadsApiKey) || "";
-  } catch {
-    return "";
-  }
-}
-export function saveLeadsApiKey(value = "") {
-  if (typeof value !== "string") value = String(value ?? "");
-  localStorage.setItem(KEYS.leadsApiKey, value.trim());
-}
-export function clearLeadsApiKey() {
-  localStorage.removeItem(KEYS.leadsApiKey);
 }
 
 /* ---------------------------
@@ -168,5 +149,4 @@ export function removeById(arr = [], id) {
 export function clearAllLocal() {
   localStorage.removeItem(KEYS.leads);
   localStorage.removeItem(KEYS.clients);
-  localStorage.removeItem(KEYS.leadsApiKey);
 }
