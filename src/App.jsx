@@ -25,7 +25,7 @@ import { supabase } from "./lib/supabaseClient.js";
 // Routes config (component refs, no JSX inside)
 import { routes } from "./routesConfig.js";
 
-// ✅ NEW: import real legal pages
+// ✅ Legal pages
 import TermsPage from "./pages/legal/Terms.jsx";
 import PrivacyPage from "./pages/legal/Privacy.jsx";
 
@@ -42,7 +42,7 @@ const PLANS = [
     name: "Mail List",
     blurb: "Hands-off client touchpoints with auto birthday & holiday mailers.",
     monthly: 100,
-    yearly: null, // no annual plan
+    yearly: null,
     buyUrl: {
       monthly: "https://buy.stripe.com/7sY9AV7KO9M22su2qg8Ra09",
     },
@@ -59,7 +59,7 @@ const PLANS = [
     name: "Remie CRM",
     blurb: "All-in-one CRM for agents — pipeline, dialer, automations, and more.",
     monthly: 280,
-    yearly: 250, // per-month shown when “Annual” is selected; billed annually
+    yearly: 250,
     buyUrl: {
       monthly: "https://buy.stripe.com/28E4gB8OScYeffg2qg8Ra07",
       annual: "https://buy.stripe.com/5kQ28tfdg2jA0km7KA8Ra0a",
@@ -87,11 +87,9 @@ const PLANS = [
 function LandingPage() {
   const [annual, setAnnual] = useState(true);
 
-  // Show annual price if available and annual is toggled; otherwise monthly
   const displayPrice = (plan) =>
     annual && plan.yearly != null ? plan.yearly : plan.monthly;
 
-  // Choose the correct Stripe link; if annual not available, fall back to monthly
   const buyHref = (plan) =>
     annual && plan.buyUrl?.annual ? plan.buyUrl.annual : plan.buyUrl?.monthly;
 
@@ -136,13 +134,14 @@ function LandingPage() {
         </div>
       </section>
 
+      {/* Pricing */}
       <section id="pricing" className="relative z-10 mx-auto max-w-7xl px-6 py-14">
         <div className="mx-auto max-w-2xl text-center">
           <h2 className="text-3xl font-semibold tracking-tight sm:text-4xl">Simple, transparent pricing</h2>
           <p className="mt-2 text-white/70">Switch between monthly and annual billing. Annual saves around 20% where available.</p>
           <div className="mt-6 inline-flex items-center gap-2 rounded-full border border-white/15 bg-white/5 p-1 text-sm">
             <button onClick={() => setAnnual(false)} className={`rounded-full px-3 py-1 ${!annual ? "bg-white text-black" : "text-white/80"}`}>Monthly</button>
-            <button onClick={() => setAnnual(true)} className={`rounded-full px-3 py-1 ${annual ? "bg-white text-black" : "text-white/80"}`} title="Some plans may not have an annual option">Annual</button>
+            <button onClick={() => setAnnual(true)} className={`rounded-full px-3 py-1 ${annual ? "bg-white text-black" : "text-white/80"}`}>Annual</button>
           </div>
         </div>
 
@@ -153,8 +152,7 @@ function LandingPage() {
             const href = buyHref(plan);
 
             return (
-              <div
-                key={plan.name}
+              <div key={plan.name}
                 className={`relative rounded-3xl border ${
                   plan.highlighted ? "border-white/30 bg-white/[0.06]" : "border-white/10 bg-white/[0.04]"
                 } p-6 ring-1 ${
@@ -177,7 +175,9 @@ function LandingPage() {
                 <ul className="mt-6 space-y-2 text-sm">
                   {plan.features.map((f) => (
                     <li key={f} className="flex items-start gap-2">
-                      <span className="mt-0.5 rounded-full bg-white/10 p-1 ring-1 ring-white/10"><Check className="h-3.5 w-3.5" /></span>
+                      <span className="mt-0.5 rounded-full bg-white/10 p-1 ring-1 ring-white/10">
+                        <Check className="h-3.5 w-3.5" />
+                      </span>
                       <span>{f}</span>
                     </li>
                   ))}
@@ -196,7 +196,6 @@ function LandingPage() {
             );
           })}
         </div>
-
         <p className="mt-6 text-center text-xs text-white/50">Prices in USD. Annual pricing shows per-month equivalent, billed annually (where available).</p>
       </section>
 
@@ -370,10 +369,6 @@ function AppLayout() {
 
         <div className="p-4">
           <Routes>
-            {/* ✅ Real legal routes */}
-            <Route path="/legal/terms" element={<TermsPage />} />
-            <Route path="/legal/privacy" element={<PrivacyPage />} />
-
             {routes.map((r) => {
               const C = r.component;
               return r.index
@@ -395,9 +390,11 @@ export default function App() {
         <Route path="/" element={<LandingPage />} />
         <Route path="/login" element={<LoginPage />} />
         <Route path="/signup" element={<SignupPage />} />
-
-        {/* public agent page */}
         <Route path="/a/:slug" element={<AgentPublic />} />
+
+        {/* ✅ Legal pages are global */}
+        <Route path="/legal/terms" element={<TermsPage />} />
+        <Route path="/legal/privacy" element={<PrivacyPage />} />
 
         <Route element={<ProtectedRoute />}>
           <Route path="/app/*" element={<AppLayout />} />
