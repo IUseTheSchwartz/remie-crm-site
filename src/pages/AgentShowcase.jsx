@@ -68,6 +68,7 @@ export default function AgentShowcase() {
   // publish
   const [published, setPublished] = useState(false);
 
+  // shared saving flag used by step 1 & 2 buttons
   const [loading, setLoading] = useState(false);
 
   /* ---------- Load existing ---------- */
@@ -116,43 +117,51 @@ export default function AgentShowcase() {
     })();
   }, []);
 
-  /* ---------- Step 1: Save profile ---------- */
+  /* ---------- Step 1: Save profile (fixed) ---------- */
   async function saveProfile() {
+    if (loading) return; // prevent double submit
     setLoading(true);
     try {
       const { data: auth } = await supabase.auth.getUser();
       const uid = auth?.user?.id;
       if (!uid) throw new Error("Please log in");
 
-      const { error } = await supabase.from("agent_profiles").upsert(
-        {
-          user_id: uid,
-          slug,
-          full_name: fullName,
-          email,
-          phone,
-          short_bio: shortBio,
-          npn,
-          calendly_url: calendlyUrl || null, // NEW
-          published,
-          headshot_url: headshotUrl || null,
-          updated_at: new Date().toISOString(),
-        },
-        { onConflict: "user_id" }
-      );
-      if (error) throw error;
+      const payload = {
+        user_id: uid,
+        slug,
+        full_name: fullName,
+        email,
+        phone,
+        short_bio: shortBio,
+        npn,
+        calendly_url: calendlyUrl || null, // NEW
+        published,
+        headshot_url: headshotUrl || null,
+        updated_at: new Date().toISOString(),
+      };
 
-      setStep(2);
+      // IMPORTANT: return a row so the promise resolves cleanly & UI advances
+      const { data, error } = await supabase
+        .from("agent_profiles")
+        .upsert(payload, { onConflict: "user_id" })
+        .select()
+        .single();
+
+      if (error) throw error;
+      if (!data) throw new Error("Save failed. Please try again.");
+
+      setStep(2); // advance
     } catch (e) {
       console.error(e);
-      alert(e.message);
+      alert(e.message || "Something went wrong saving your profile.");
     } finally {
-      setLoading(false);
+      setLoading(false); // always clear spinner
     }
   }
 
   /* ---------- Step 2: Upload headshot ---------- */
   async function uploadHeadshot() {
+    if (loading) return; // prevent double submit
     if (!headshotFile) {
       alert("Choose an image first");
       return;
@@ -182,7 +191,7 @@ export default function AgentShowcase() {
 
       const { error: updErr } = await supabase
         .from("agent_profiles")
-        .update({ headshot_url: publicUrl })
+        .update({ headshot_url: publicUrl, updated_at: new Date().toISOString() })
         .eq("user_id", uid);
       if (updErr) throw updErr;
 
@@ -279,9 +288,11 @@ export default function AgentShowcase() {
       }
 
       if (rowsToUpsert.length) {
+        // return rows so the client is never “waiting” on an empty body
         const { error: upErr } = await supabase
           .from("agent_states")
-          .upsert(rowsToUpsert, { onConflict: "user_id,state_code" });
+          .upsert(rowsToUpsert, { onConflict: "user_id,state_code" })
+          .select();
         if (upErr) throw upErr;
       }
 
@@ -314,7 +325,7 @@ export default function AgentShowcase() {
 
       const { error } = await supabase
         .from("agent_profiles")
-        .update({ published: val })
+        .update({ published: val, updated_at: new Date().toISOString() })
         .eq("user_id", uid);
       if (error) throw error;
 
