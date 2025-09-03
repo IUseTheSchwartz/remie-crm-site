@@ -1,3 +1,4 @@
+// File: src/pages/MessagingSettings.jsx
 import { useEffect, useState } from "react";
 import { supabase } from "../lib/supabaseClient";
 import { Phone, CreditCard, Check, Loader2 } from "lucide-react";
@@ -11,7 +12,13 @@ export default function MessagingSettings() {
   const [topping, setTopping] = useState(false);
   const [userId, setUserId] = useState(null);
 
+  // NEW: custom amount state
+  const [customUsd, setCustomUsd] = useState(""); // string input
+  const [customMsg, setCustomMsg] = useState(""); // validation/output message
+
   const balanceDollars = (balanceCents / 100).toFixed(2);
+  const MIN_CENTS = 100;   // $1
+  const MAX_CENTS = 50000; // $500
 
   useEffect(() => {
     let mounted = true;
@@ -101,6 +108,7 @@ export default function MessagingSettings() {
   }
 
   async function addFunds(amountCents) {
+    setCustomMsg("");
     setTopping(true);
     try {
       const res = await fetch("/.netlify/functions/create-checkout-session", {
@@ -117,6 +125,22 @@ export default function MessagingSettings() {
     } finally {
       setTopping(false);
     }
+  }
+
+  // NEW: handle custom top-up
+  function addCustom() {
+    setCustomMsg("");
+    const n = Number(customUsd);
+    if (!Number.isFinite(n)) {
+      setCustomMsg("Enter a valid dollar amount.");
+      return;
+    }
+    const cents = Math.round(n * 100);
+    if (cents < MIN_CENTS || cents > MAX_CENTS) {
+      setCustomMsg("Amount must be between $1 and $500.");
+      return;
+    }
+    addFunds(cents);
   }
 
   if (loading) {
@@ -185,7 +209,7 @@ export default function MessagingSettings() {
 
       {/* Wallet block */}
       <section className="rounded-2xl border border-white/10 bg-white/[0.03] p-4">
-        <div className="flex items-center justify-between">
+        <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
           <div>
             <div className="text-sm text-white/60">Text balance</div>
             <div className="text-xl font-semibold">${balanceDollars}</div>
@@ -193,23 +217,77 @@ export default function MessagingSettings() {
               Texts are billed per segment. Reply STOP to opt out is appended when needed.
             </div>
           </div>
-          <div className="flex gap-2">
-            <button
-              onClick={() => addFunds(2000)}
-              disabled={topping}
-              className="inline-flex items-center gap-1 rounded-lg border border-white/15 bg-white/5 px-3 py-2 text-sm hover:bg-white/10 disabled:opacity-50"
-              title="Add $20"
-            >
-              <CreditCard className="h-4 w-4" /> +$20
-            </button>
-            <button
-              onClick={() => addFunds(5000)}
-              disabled={topping}
-              className="inline-flex items-center gap-1 rounded-lg border border-white/15 bg-white/5 px-3 py-2 text-sm hover:bg-white/10 disabled:opacity-50"
-              title="Add $50"
-            >
-              <CreditCard className="h-4 w-4" /> +$50
-            </button>
+
+          <div className="flex flex-col gap-2 md:items-end">
+            {/* Quick add buttons (now 5/10/20/50) */}
+            <div className="flex flex-wrap gap-2">
+              <button
+                onClick={() => addFunds(500)}
+                disabled={topping}
+                className="inline-flex items-center gap-1 rounded-lg border border-white/15 bg-white/5 px-3 py-2 text-sm hover:bg-white/10 disabled:opacity-50"
+                title="Add $5"
+              >
+                <CreditCard className="h-4 w-4" /> +$5
+              </button>
+              <button
+                onClick={() => addFunds(1000)}
+                disabled={topping}
+                className="inline-flex items-center gap-1 rounded-lg border border-white/15 bg-white/5 px-3 py-2 text-sm hover:bg-white/10 disabled:opacity-50"
+                title="Add $10"
+              >
+                <CreditCard className="h-4 w-4" /> +$10
+              </button>
+              <button
+                onClick={() => addFunds(2000)}
+                disabled={topping}
+                className="inline-flex items-center gap-1 rounded-lg border border-white/15 bg-white/5 px-3 py-2 text-sm hover:bg-white/10 disabled:opacity-50"
+                title="Add $20"
+              >
+                <CreditCard className="h-4 w-4" /> +$20
+              </button>
+              <button
+                onClick={() => addFunds(5000)}
+                disabled={topping}
+                className="inline-flex items-center gap-1 rounded-lg border border-white/15 bg-white/5 px-3 py-2 text-sm hover:bg-white/10 disabled:opacity-50"
+                title="Add $50"
+              >
+                <CreditCard className="h-4 w-4" /> +$50
+              </button>
+            </div>
+
+            {/* Custom amount input */}
+            <div className="flex items-center gap-2">
+              <label className="text-xs text-white/60">Custom:</label>
+              <div className="flex items-center gap-2">
+                <div className="relative">
+                  <span className="pointer-events-none absolute left-2 top-1.5 text-sm text-white/50">$</span>
+                  <input
+                    type="number"
+                    inputMode="decimal"
+                    min="1"
+                    max="500"
+                    step="1"
+                    value={customUsd}
+                    onChange={(e) => setCustomUsd(e.target.value)}
+                    placeholder="e.g. 7"
+                    className="w-24 rounded-lg border border-white/15 bg-white/5 pl-5 pr-3 py-2 text-sm outline-none focus:ring-1 focus:ring-indigo-400/50"
+                  />
+                </div>
+                <button
+                  onClick={addCustom}
+                  disabled={topping}
+                  className="inline-flex items-center gap-1 rounded-lg border border-white/15 bg-white/5 px-3 py-2 text-sm hover:bg-white/10 disabled:opacity-50"
+                  title="Add custom amount"
+                >
+                  <CreditCard className="h-4 w-4" /> Add
+                </button>
+              </div>
+              {customMsg && <div className="text-xs text-amber-300">{customMsg}</div>}
+            </div>
+
+            <div className="text-[11px] text-white/40">
+              Allowed custom range: $1–$500
+            </div>
           </div>
         </div>
       </section>
