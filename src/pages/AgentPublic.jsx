@@ -1,6 +1,6 @@
 // File: src/pages/AgentPublic.jsx
 import { useEffect, useState } from "react";
-import { useParams, Link } from "react-router-dom"; // ⬅️ added Link
+import { useParams, Link } from "react-router-dom";
 import { supabase } from "../lib/supabaseClient";
 import { ExternalLink, Phone, Mail, Shield } from "lucide-react";
 
@@ -23,6 +23,13 @@ const REGULATOR_LINKS = {
   CA: "https://www.insurance.ca.gov/0200-industry/0008-education-provider/producer-licensing.cfm",
 };
 
+const BROKERAGE_STATS = [
+  { value: "1 MILLION+", label: "Families Helped" },
+  { value: "$150 BILLION", label: "Life Insurance In Place" },
+  { value: "$800 MILLION", label: "Premium Sold Per Year" },
+  { value: "29,000+", label: "Professional Agents" },
+];
+
 export default function AgentPublic() {
   const { slug } = useParams();
   const [profile, setProfile] = useState(null);
@@ -30,8 +37,7 @@ export default function AgentPublic() {
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState("");
 
-  // <-- Change this to the path you save the image under /public
-  const bannerSrc = "/brokerage-stats.png";
+  const heroGradient = "bg-gradient-to-br from-indigo-600/20 via-fuchsia-500/10 to-rose-500/10";
 
   useEffect(() => {
     let mounted = true;
@@ -78,8 +84,6 @@ export default function AgentPublic() {
       mounted = false;
     };
   }, [slug]);
-
-  const heroGradient = "bg-gradient-to-br from-indigo-600/20 via-fuchsia-500/10 to-rose-500/10";
 
   if (loading) {
     return (
@@ -140,17 +144,13 @@ export default function AgentPublic() {
           </div>
 
           <div className="space-y-3">
-            {/* Name, Broker, NPN, Phone */}
             <h1 className="text-3xl font-semibold tracking-tight">{profile.full_name}</h1>
             <div className="text-white/70">
               Licensed Broker {profile.npn ? <>· NPN: <span className="text-white">{profile.npn}</span></> : null}
             </div>
             {profile.phone && <div className="text-white/70">Phone: <span className="text-white">{profile.phone}</span></div>}
-
-            {/* Bio */}
             {profile.short_bio && <p className="text-white/70 max-w-2xl">{profile.short_bio}</p>}
 
-            {/* Contact Buttons */}
             <div className="flex flex-wrap gap-3 pt-2">
               {callHref && (
                 <a href={callHref} className="inline-flex items-center gap-2 rounded-xl border border-white/15 bg-white/5 px-3 py-2 text-sm hover:bg-white/10">
@@ -178,18 +178,32 @@ export default function AgentPublic() {
         </div>
       </section>
 
-      {/* NEW: Brokerage stats banner (above Licensed States) */}
-      <section className="mx-auto max-w-6xl px-4 pb-8">
-        <div className="overflow-hidden rounded-2xl border border-white/10 bg-white/[0.03] ring-1 ring-white/5">
-          <div className="relative">
-            <img
-              src={bannerSrc}
-              alt="Our brokerage stats"
-              className="w-full h-auto object-cover"
-            />
-            {/* subtle brand-tinted overlay so it matches your color scheme */}
-            <div className="pointer-events-none absolute inset-0 bg-gradient-to-br from-indigo-500/10 via-fuchsia-500/10 to-rose-500/10 mix-blend-soft-light" />
+      {/* Brokerage stats */}
+      <section className="mx-auto max-w-6xl px-4 pb-10">
+        <div className="rounded-2xl border border-white/10 bg-white/[0.03] p-6 ring-1 ring-white/5">
+          <div className="text-center text-xs tracking-widest text-white/60 mb-4">OUR BROKERAGE</div>
+          <div className="grid gap-6 sm:grid-cols-2 lg:grid-cols-4">
+            {BROKERAGE_STATS.map((s) => (
+              <div key={s.label} className="text-center">
+                <div className="text-2xl font-extrabold tracking-tight text-amber-300">{s.value}</div>
+                <div className="mt-1 text-sm text-white/70">{s.label}</div>
+              </div>
+            ))}
           </div>
+        </div>
+      </section>
+
+      {/* Carrier logos (single image) */}
+      <section className="mx-auto max-w-6xl px-4 pb-12">
+        <h2 className="text-center text-xl font-semibold">
+          As a broker, we shop multiple A-rated carriers to find your best fit.
+        </h2>
+        <div className="mt-6 flex justify-center">
+          <img
+            src="/carriers/carriers.png"
+            alt="Our carriers"
+            className="max-w-full h-auto"
+          />
         </div>
       </section>
 
@@ -299,7 +313,7 @@ export default function AgentPublic() {
             </div>
           </div>
 
-          {/* ✅ Footer with legal links */}
+          {/* Footer */}
           <div className="mt-6 text-center text-[11px] text-white/50 space-y-2">
             <div>© {new Date().getFullYear()} Remie CRM — Agent page</div>
             <div className="space-x-3">
