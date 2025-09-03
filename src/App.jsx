@@ -18,6 +18,7 @@ import { AuthProvider, useAuth } from "./auth.jsx";
 import LoginPage from "./pages/LoginPage.jsx";
 import SignupPage from "./pages/SignupPage.jsx";
 import AgentPublic from "./pages/AgentPublic.jsx";
+import AcceptInvite from "./pages/AcceptInvite.jsx"; // ✅ NEW
 
 // Supabase
 import { supabase } from "./lib/supabaseClient.js";
@@ -407,6 +408,7 @@ export default function App() {
         <Route path="/login" element={<LoginPage />} />
         <Route path="/signup" element={<SignupPage />} />
         <Route path="/a/:slug" element={<AgentPublic />} />
+        <Route path="/invite/:token" element={<AcceptInvite />} /> {/* ✅ NEW public invite route */}
 
         {/* ✅ Legal pages are global */}
         <Route path="/legal/terms" element={<TermsPage />} />
