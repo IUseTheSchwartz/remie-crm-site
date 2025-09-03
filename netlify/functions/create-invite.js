@@ -4,7 +4,9 @@ import { supaAdmin, getUserIdFromEvent } from "./_shared.js";
 
 export async function handler(event) {
   try {
-    if (event.httpMethod !== "POST") return { statusCode: 405, body: "Method not allowed" };
+    if (event.httpMethod !== "POST") {
+      return { statusCode: 405, body: "Method not allowed" };
+    }
 
     const { team_id, email } = JSON.parse(event.body || "{}");
     if (!team_id) return { statusCode: 400, body: "Missing team_id" };
@@ -18,9 +20,11 @@ export async function handler(event) {
       .select("id, owner_id, name")
       .eq("id", team_id)
       .single();
+
     if (tErr || !team) return { statusCode: 404, body: "Team not found" };
     if (team.owner_id !== userId) return { statusCode: 403, body: "Not team owner" };
 
+    // token + expiry (7 days)
     const token = crypto.randomBytes(16).toString("hex");
     const expiresAt = new Date(Date.now() + 7 * 24 * 3600 * 1000).toISOString();
 
@@ -31,8 +35,13 @@ export async function handler(event) {
       .single();
     if (iErr) throw iErr;
 
-    // Frontend route you’ll handle:
-    const acceptUrl = `${process.env.PUBLIC_APP_URL || "https://your-app.com"}/accept-invite?token=${token}`;
+    // Build public accept URL for your app (uses /invite/:token)
+    const base =
+      process.env.PUBLIC_APP_URL ||
+      process.env.URL || // Netlify deploy URL fallback
+      "http://localhost:8888";
+    const acceptUrl = `${base.replace(/\/+$/, "")}/invite/${token}`;
+
     return { statusCode: 200, body: JSON.stringify({ invite, acceptUrl }) };
   } catch (e) {
     console.error("create-invite error:", e);
