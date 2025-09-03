@@ -60,6 +60,11 @@ export default function TeamManagement() {
 
       setLoading(false);
     })();
+
+    // 👇 refresh seats when user returns from Stripe portal
+    const onFocus = () => { refreshSeatCounts(); };
+    window.addEventListener("focus", onFocus);
+    return () => window.removeEventListener("focus", onFocus);
     // eslint-disable-next-line
   }, [teamId]);
 
@@ -86,7 +91,6 @@ export default function TeamManagement() {
       // DB values (no bonus included)
       setSeatsPurchased(counts.seats_purchased || 0);
       setSeatsUsed(counts.seats_used || 0);
-      // Keep the DB-available (not used directly for enforcement in UI, but OK to display)
       setSeatsAvailable(counts.seats_available || 0);
     }
   }
@@ -127,20 +131,9 @@ export default function TeamManagement() {
     }
   }
 
-  async function openBillingPortal() {
-    try {
-      const res = await callFn("create-billing-portal-session", {
-        team_id: teamId,
-        return_url: window.location.origin + `/app/team/manage/${teamId}`,
-      });
-      if (res?.url) {
-        window.location.href = res.url;
-      } else {
-        alert("Could not open billing portal.");
-      }
-    } catch (e) {
-      alert(e.message || "Failed to open billing portal");
-    }
+  // 👇 Static portal link
+  function openBillingPortal() {
+    window.location.href = "https://billing.stripe.com/p/login/00w9AV5CGaQ61oqc0Q8Ra00";
   }
 
   async function syncSeatsFromStripe() {
@@ -238,7 +231,7 @@ export default function TeamManagement() {
         </div>
       </section>
 
-      {/* Invite flow (consumes effective available seats) */}
+      {/* Invite flow */}
       <section className="border rounded-2xl p-4">
         <div className="flex items-center justify-between">
           <div className="font-medium">Invite Members</div>
@@ -262,7 +255,7 @@ export default function TeamManagement() {
               }}
               className="px-3 py-2 rounded-xl border hover:bg-gray-50 inline-flex items-center gap-2"
             >
-              <Copy className="w-4 h-4" /> Copy
+              <Copy className="w-4 w-4" /> Copy
             </button>
             {copyOk && <span className="text-green-600 inline-flex items-center gap-1"><Check className="w-4 h-4" /> Copied</span>}
           </div>
