@@ -5,9 +5,14 @@ import { supabase } from "../lib/supabaseClient";
 import { getCurrentUserId, callFn } from "../lib/teamApi";
 import { Users, Copy, Trash2, Check, Shield, Plus, CreditCard, RefreshCw } from "lucide-react";
 
+const BONUS_EMAIL = "jacobprieto@gmail.com";
+const BONUS_SEATS = 10;
+const SEAT_PRICE = 50; // USD per month
+
 export default function TeamManagement() {
   const { teamId } = useParams();
   const [me, setMe] = useState(null);
+  const [myEmail, setMyEmail] = useState("");
   const [team, setTeam] = useState(null);
   const [name, setName] = useState("");
   const [members, setMembers] = useState([]);
@@ -15,21 +20,33 @@ export default function TeamManagement() {
   const [copyOk, setCopyOk] = useState(false);
   const [loading, setLoading] = useState(true);
 
-  // seats UI (purchased comes from Stripe; used/available from DB)
-  const [seatsPurchased, setSeatsPurchased] = useState(0);
-  const [seatsUsed, setSeatsUsed] = useState(0);
-  const [seatsAvailable, setSeatsAvailable] = useState(0);
+  // seats from DB (paid + usage)
+  const [seatsPurchased, setSeatsPurchased] = useState(0); // paid seats from DB (no bonus)
+  const [seatsUsed, setSeatsUsed] = useState(0);           // active members (owner not counted)
+  const [seatsAvailable, setSeatsAvailable] = useState(0); // DB's available (no bonus)
   const [syncing, setSyncing] = useState(false);
-  const seatPrice = 50; // USD per month
 
   const isOwner = useMemo(() => me && team && team.owner_id === me, [me, team]);
+  const ownerGetsBonus = isOwner && myEmail.toLowerCase() === BONUS_EMAIL.toLowerCase();
+
+  // Effective numbers used by UI logic
+  const effectivePurchased = Math.max(seatsPurchased + (ownerGetsBonus ? BONUS_SEATS : 0), 0);
+  const effectiveAvailable = Math.max(effectivePurchased - seatsUsed, 0);
 
   useEffect(() => {
     (async () => {
       setLoading(true);
+
+      // who am I?
       const uid = await getCurrentUserId();
       setMe(uid);
 
+      // my email (from auth)
+      const { data: auth } = await supabase.auth.getUser();
+      const email = auth?.user?.email || "";
+      setMyEmail(email);
+
+      // team record
       const { data: t } = await supabase
         .from("teams")
         .select("*")
@@ -40,6 +57,7 @@ export default function TeamManagement() {
 
       await refreshMembers();
       await refreshSeatCounts();
+
       setLoading(false);
     })();
     // eslint-disable-next-line
@@ -63,16 +81,19 @@ export default function TeamManagement() {
       .select("*")
       .eq("team_id", teamId)
       .single();
+
     if (counts) {
+      // DB values (no bonus included)
       setSeatsPurchased(counts.seats_purchased || 0);
       setSeatsUsed(counts.seats_used || 0);
+      // Keep the DB-available (not used directly for enforcement in UI, but OK to display)
       setSeatsAvailable(counts.seats_available || 0);
     }
   }
 
   async function createInvite() {
     try {
-      if (seatsAvailable <= 0) {
+      if (effectiveAvailable <= 0) {
         alert("No seats available. Click Buy Seats to add more.");
         return;
       }
@@ -177,15 +198,25 @@ export default function TeamManagement() {
         </div>
       </section>
 
-      {/* Seats (Portal + Refresh) */}
+      {/* Seats (Billing Portal + Refresh) */}
       <section className="border rounded-2xl p-4 space-y-3">
         <div className="flex items-center justify-between">
           <div>
             <div className="text-sm text-gray-600">Seats</div>
-            <div className="text-lg font-semibold">
-              {seatsPurchased} purchased • {seatsUsed} used • {seatsAvailable} available
+            <div className="text-lg font-semibold flex items-center gap-2">
+              <span>
+                {effectivePurchased} purchased
+                {ownerGetsBonus && (
+                  <span className="ml-2 text-xs px-2 py-0.5 rounded-full bg-white/10">
+                    includes +{BONUS_SEATS} free
+                  </span>
+                )}
+              </span>
+              <span>• {seatsUsed} used • {effectiveAvailable} available</span>
             </div>
-            <div className="text-xs text-gray-500">Billing: ${seatPrice}/seat/month (owner not billed as a seat).</div>
+            <div className="text-xs text-gray-500">
+              Billing: ${SEAT_PRICE}/seat/month (owner not billed as a seat). Only paid seats are billed; free seats are not charged.
+            </div>
           </div>
           <div className="flex items-center gap-2">
             <button
@@ -207,7 +238,7 @@ export default function TeamManagement() {
         </div>
       </section>
 
-      {/* Invite flow (consumes available seats) */}
+      {/* Invite flow (consumes effective available seats) */}
       <section className="border rounded-2xl p-4">
         <div className="flex items-center justify-between">
           <div className="font-medium">Invite Members</div>
