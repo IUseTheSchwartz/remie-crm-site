@@ -19,6 +19,9 @@ import {
   deleteLeadServer,
 } from "../lib/supabaseLeads.js";
 
+// ✅ NEW: Supabase browser client (used for read + realtime)
+import { supabase } from "../lib/supabaseClient.js";
+
 // ✅ NEW: Google Sheets connector (per-user webhook generator + Apps Script)
 import GoogleSheetsConnector from "../components/GoogleSheetsConnector.jsx";
 
@@ -145,6 +148,89 @@ export default function LeadsPage() {
     setLeads(loadLeads());
     setClients(loadClients());
   }, []);
+
+  // ✅ NEW: one-time server pull → merge without duplicates (id/email/phone)
+  useEffect(() => {
+    (async () => {
+      try {
+        const { data: authData } = await supabase.auth.getUser();
+        const userId = authData?.user?.id;
+        if (!userId) return;
+
+        const { data: rows, error } = await supabase
+          .from("leads")
+          .select("*")
+          .eq("user_id", userId)
+          .order("created_at", { ascending: false });
+
+        if (error || !rows?.length) return;
+
+        const byId = new Set([...clients, ...leads].map(r => r.id));
+        const emails = new Set([...clients, ...leads].map(r => normEmail(r.email)).filter(Boolean));
+        const phones = new Set([...clients, ...leads].map(r => onlyDigits(r.phone)).filter(Boolean));
+
+        const incoming = rows.filter(r => {
+          const idDup = byId.has(r.id);
+          const eDup = r.email && emails.has(normEmail(r.email));
+          const pDup = r.phone && phones.has(onlyDigits(r.phone));
+          return !(idDup || eDup || pDup);
+        });
+
+        if (incoming.length) {
+          const newLeads = [...incoming, ...leads];
+          const newClients = [...incoming, ...clients];
+          saveLeads(newLeads);
+          saveClients(newClients);
+          setLeads(newLeads);
+          setClients(newClients);
+        }
+      } catch (e) {
+        console.error("Initial server pull failed:", e);
+      }
+    })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [/* run once on mount */]);
+
+  // ✅ NEW: realtime inserts → ignore duplicates (id/email/phone)
+  useEffect(() => {
+    let channel;
+    (async () => {
+      try {
+        const { data: authData } = await supabase.auth.getUser();
+        const userId = authData?.user?.id;
+        if (!userId) return;
+
+        channel = supabase
+          .channel("leads_inserts")
+          .on(
+            "postgres_changes",
+            { event: "INSERT", schema: "public", table: "leads", filter: `user_id=eq.${userId}` },
+            (payload) => {
+              const row = payload.new;
+
+              const idDup = [...leads, ...clients].some(x => x.id === row.id);
+              const eDup = row.email && [...leads, ...clients].some(x => normEmail(x.email) === normEmail(row.email));
+              const pDup = row.phone && [...leads, ...clients].some(x => onlyDigits(x.phone) === onlyDigits(row.phone));
+              if (idDup || eDup || pDup) return; // ignore
+
+              const newLeads = [row, ...leads];
+              const newClients = [row, ...clients];
+              saveLeads(newLeads);
+              saveClients(newClients);
+              setLeads(newLeads);
+              setClients(newClients);
+              setServerMsg("✅ New lead arrived (deduped)");
+            }
+          )
+          .subscribe();
+      } catch (e) {
+        console.error("Realtime subscribe failed:", e);
+      }
+    })();
+
+    return () => { if (channel) supabase.removeChannel(channel); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [leads, clients]);
 
   // Merge clients + leads into a deduped "Leads" view (formerly "Clients")
   const allClients = useMemo(() => {
