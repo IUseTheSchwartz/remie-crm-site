@@ -2,8 +2,10 @@
 const crypto = require("crypto");
 
 let supabase;
-try { supabase = require("./_supabase").supabase; }
-catch {
+try {
+  // Prefer your existing helper if you have one
+  supabase = require("./_supabase").supabase;
+} catch {
   const { createClient } = require("@supabase/supabase-js");
   supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_ROLE);
 }
@@ -17,12 +19,17 @@ function timingSafeEqual(a, b) {
 
 exports.handler = async (event) => {
   try {
-    if (event.httpMethod !== "POST") return { statusCode: 405, body: "Method Not Allowed" };
+    if (event.httpMethod !== "POST") {
+      return { statusCode: 405, body: "Method Not Allowed" };
+    }
 
     const webhookId =
       (event.queryStringParameters && event.queryStringParameters.id) ||
-      event.headers["x-webhook-id"] || event.headers["X-Webhook-Id"];
-    if (!webhookId) return { statusCode: 400, body: "Missing webhook id" };
+      event.headers["x-webhook-id"] ||
+      event.headers["X-Webhook-Id"];
+    if (!webhookId) {
+      return { statusCode: 400, body: "Missing webhook id" };
+    }
 
     // Fetch per-user secret & user_id
     const { data: rows, error } = await supabase
@@ -31,17 +38,30 @@ exports.handler = async (event) => {
       .eq("id", webhookId)
       .limit(1);
 
-    if (error || !rows?.length) return { statusCode: 404, body: "Webhook not found" };
+    if (error || !rows?.length) {
+      return { statusCode: 404, body: "Webhook not found" };
+    }
+
     const wh = rows[0];
-    if (!wh.active) return { statusCode: 403, body: "Webhook disabled" };
+    if (!wh.active) {
+      return { statusCode: 403, body: "Webhook disabled" };
+    }
 
     // Verify HMAC
     const providedSig = event.headers["x-signature"] || event.headers["X-Signature"];
-    if (!providedSig) return { statusCode: 401, body: "Missing signature" };
+    if (!providedSig) {
+      return { statusCode: 401, body: "Missing signature" };
+    }
 
     const rawBody = event.body || "";
-    const computed = crypto.createHmac("sha256", wh.secret).update(rawBody, "utf8").digest("base64");
-    if (!timingSafeEqual(computed, providedSig)) return { statusCode: 401, body: "Invalid signature" };
+    const computed = crypto
+      .createHmac("sha256", wh.secret)
+      .update(rawBody, "utf8")
+      .digest("base64");
+
+    if (!timingSafeEqual(computed, providedSig)) {
+      return { statusCode: 401, body: "Invalid signature" };
+    }
 
     // Parse & map
     const p = JSON.parse(rawBody);
@@ -51,21 +71,30 @@ exports.handler = async (event) => {
       phone: (p.phone || "").trim(),
       email: (p.email || "").trim(),
       state: (p.state || "").trim(),
-      source: (p.source || "GoogleSheet").trim(),
+      source: "GoogleSheet", // always set, no column needed in sheet
       notes: p.notes || "",
       status: "lead",
       imported_via: "gsheet",
       created_at: p.created_at || new Date().toISOString(),
     };
+
     if (!lead.name && !lead.phone && !lead.email) {
       return { statusCode: 400, body: "Empty lead payload" };
     }
 
-    const { data, error: insErr } = await supabase.from("leads").insert([lead]).select("id");
-    if (insErr) { console.error(insErr); return { statusCode: 500, body: "DB insert failed" }; }
+    const { data, error: insErr } = await supabase
+      .from("leads")
+      .insert([lead])
+      .select("id");
 
-    // touch last_used_at (optional)
-    await supabase.from("user_inbound_webhooks")
+    if (insErr) {
+      console.error("Insert error:", insErr);
+      return { statusCode: 500, body: "DB insert failed" };
+    }
+
+    // Update last_used_at
+    await supabase
+      .from("user_inbound_webhooks")
       .update({ last_used_at: new Date().toISOString() })
       .eq("id", webhookId);
 
