@@ -138,6 +138,9 @@ export default function LeadsPage() {
   // NEW: lightweight server status
   const [serverMsg, setServerMsg] = useState("");
 
+  // ✅ NEW: toggle for the connector panel
+  const [showConnector, setShowConnector] = useState(false);
+
   useEffect(() => {
     setLeads(loadLeads());
     setClients(loadClients());
@@ -391,6 +394,18 @@ export default function LeadsPage() {
           ))}
         </div>
 
+        {/* ✅ NEW: toggle button (to the LEFT of Import CSV) */}
+        <button
+          onClick={() => setShowConnector(s => !s)}
+          className="rounded-xl border border-white/15 bg-white/5 px-3 py-2 text-sm"
+          aria-expanded={showConnector}
+          aria-controls="auto-import-panel"
+          title="Setup Google Sheets auto-import"
+        >
+          {showConnector ? "Close setup" : "Setup auto import leads"}
+        </button>
+
+        {/* existing buttons */}
         <label className="ml-auto inline-flex items-center gap-2 rounded-xl border border-white/15 bg-white/5 px-3 py-2 text-sm cursor-pointer">
           <input
             type="file"
@@ -423,10 +438,15 @@ export default function LeadsPage() {
         </div>
       )}
 
-      {/* ✅ NEW: Google Sheets connector panel (per-user) */}
-      <div className="my-4">
-        <GoogleSheetsConnector />
-      </div>
+      {/* ✅ NEW: Collapsible connector panel */}
+      {showConnector && (
+        <div
+          id="auto-import-panel"
+          className="my-4 rounded-2xl border border-white/15 bg-white/[0.03] p-4"
+        >
+          <GoogleSheetsConnector />
+        </div>
+      )}
 
       {/* Search */}
       <div className="flex items-center gap-3">
