@@ -3,9 +3,12 @@ const crypto = require("crypto");
 
 let supabase;
 try {
+  // If you have a local helper, it must export CommonJS: module.exports = { supabase }
   supabase = require("./_supabase").supabase;
 } catch {
-  const { createClient } = require("@supabase/supabase-js");
+  // ✅ CommonJS-friendly way to load the ESM supabase-js v2 package
+  const supabasePkg = require("@supabase/supabase-js");
+  const { createClient } = supabasePkg;
   supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_ROLE);
 }
 
@@ -16,6 +19,7 @@ function timingSafeEqual(a, b) {
   return crypto.timingSafeEqual(A, B);
 }
 
+// Coerce any value to a safe string
 function S(v) {
   if (v === null || v === undefined) return "";
   if (typeof v === "string") return v.trim();
@@ -44,7 +48,7 @@ exports.handler = async (event) => {
       event.headers["x-webhook-id"] || event.headers["X-Webhook-Id"];
     if (!webhookId) return { statusCode: 400, body: "Missing webhook id" };
 
-    // Look up the per-user secret and their user_id
+    // Look up per-user secret + user id
     const { data: rows, error } = await supabase
       .from("user_inbound_webhooks")
       .select("id, user_id, secret, active")
@@ -68,14 +72,13 @@ exports.handler = async (event) => {
     try { p = JSON.parse(rawBody); }
     catch { return { statusCode: 400, body: "Invalid JSON" }; }
 
-    // Minimal payload that matches your schema: user_id + common fields
+    // Minimal payload to satisfy your schema
     const lead = {
-      user_id: wh.user_id,           // <-- REQUIRED by your table
+      user_id: wh.user_id,         // required by your table
       name:  S(p.name),
       phone: S(p.phone),
       email: S(p.email),
       state: S(p.state),
-      status: "lead",                // remove if your table doesn't have this column
       created_at: p.created_at ? S(p.created_at) : new Date().toISOString(),
     };
 
@@ -94,7 +97,7 @@ exports.handler = async (event) => {
       return { statusCode: 500, body: "DB insert failed" };
     }
 
-    // Optional: mark last used
+    // Optional: heartbeat
     await supabase
       .from("user_inbound_webhooks")
       .update({ last_used_at: new Date().toISOString() })
