@@ -2,7 +2,7 @@
 const crypto = require("crypto");
 const { getServiceClient } = require("./_supabase");
 
-// Create service client (uses SUPABASE_URL + SUPABASE_SERVICE_ROLE(_KEY))
+// Create service client (uses SUPABASE_URL + SUPABASE_SERVICE_ROLE or SUPABASE_SERVICE_ROLE_KEY)
 const supabase = getServiceClient();
 
 function timingSafeEqual(a, b) {
@@ -12,7 +12,7 @@ function timingSafeEqual(a, b) {
   return crypto.timingSafeEqual(A, B);
 }
 
-// Safe string coercion
+// Coerce to trimmed string; empty -> ""
 function S(v) {
   if (v === null || v === undefined) return "";
   if (typeof v === "string") return v.trim();
@@ -20,6 +20,32 @@ function S(v) {
   if (typeof v === "boolean") return v ? "true" : "false";
   if (v instanceof Date) return v.toISOString();
   try { return String(v).trim(); } catch { return ""; }
+}
+
+// Return undefined if blank (so we omit the column entirely)
+function U(v) {
+  const s = S(v);
+  return s === "" ? undefined : s;
+}
+
+// Try to normalize a date-like string to YYYY-MM-DD; return undefined if invalid
+function toYMD(v) {
+  const s = S(v);
+  if (!s) return undefined;
+  if (/^\d{4}-\d{2}-\d{2}$/.test(s)) return s; // already ISO date
+  const m = s.match(/^(\d{1,2})[\/\-\.](\d{1,2})[\/\-\.](\d{2,4})$/);
+  if (m) {
+    let mm = parseInt(m[1], 10), dd = parseInt(m[2], 10), yy = String(m[3]);
+    if (yy.length === 2) yy = (yy >= "50" ? "19" : "20") + yy; // naive century
+    if (mm >= 1 && mm <= 12 && dd >= 1 && dd <= 31) {
+      const ymd = `${yy}-${String(mm).padStart(2, "0")}-${String(dd).padStart(2, "0")}`;
+      const d = new Date(ymd + "T00:00:00Z");
+      if (!Number.isNaN(d.getTime())) return ymd;
+    }
+  }
+  const d = new Date(s);
+  if (!Number.isNaN(d.getTime())) return d.toISOString().slice(0, 10);
+  return undefined;
 }
 
 function getRawBody(event) {
@@ -67,29 +93,56 @@ exports.handler = async (event) => {
     try { p = JSON.parse(rawBody); }
     catch { return { statusCode: 400, body: "Invalid JSON" }; }
 
-    // Payload with your extended columns
+    // Build record (omit blank extras)
     const lead = {
-      user_id: wh.user_id,           // REQUIRED by your table
-      name:  S(p.name),
-      phone: S(p.phone),
-      email: S(p.email),
-      state: S(p.state),
-
-      // extras (must exist as columns in public.leads):
-      notes:             S(p.notes),
-      dob:               S(p.dob),
-      beneficiary:       S(p.beneficiary),
-      beneficiary_name:  S(p.beneficiary_name),
-      company:           S(p.company),
-      gender:            S(p.gender),
-
-      created_at: p.created_at ? S(p.created_at) : new Date().toISOString(),
+      user_id: wh.user_id,
+      name:  U(p.name) ?? null,
+      phone: U(p.phone) ?? null,
+      email: U(p.email) ?? null,
+      state: U(p.state) ?? null,
+      created_at: U(p.created_at) || new Date().toISOString(),
     };
+
+    const extras = {
+      notes:            U(p.notes),
+      beneficiary:      U(p.beneficiary),
+      beneficiary_name: U(p.beneficiary_name),
+      company:          U(p.company),
+      gender:           U(p.gender),
+    };
+    const dobYMD = toYMD(p.dob);
+    if (dobYMD) extras.dob = dobYMD;
+    for (const [k, v] of Object.entries(extras)) {
+      if (v !== undefined) lead[k] = v;
+    }
 
     // Require at least one identifier
     if (!lead.name && !lead.phone && !lead.email) {
       return { statusCode: 400, body: "Empty lead payload" };
     }
+
+    // ---------- DEDUPE GUARD (10-minute window) ----------
+    // If email or phone present, check recent inserts to avoid duplicates
+    const orFilters = [];
+    if (lead.email) orFilters.push(`email.eq.${encodeURIComponent(lead.email)}`);
+    if (lead.phone) orFilters.push(`phone.eq.${encodeURIComponent(lead.phone)}`);
+
+    if (orFilters.length) {
+      const cutoffISO = new Date(Date.now() - 10 * 60 * 1000).toISOString(); // 10 minutes ago
+      const { data: existing, error: qErr } = await supabase
+        .from("leads")
+        .select("id, created_at")
+        .eq("user_id", wh.user_id)
+        .gte("created_at", cutoffISO)
+        .or(orFilters.join(","))
+        .limit(1);
+
+      if (!qErr && existing && existing.length) {
+        // treat as success; return existing id
+        return { statusCode: 200, body: JSON.stringify({ ok: true, id: existing[0].id, deduped: true }) };
+      }
+    }
+    // ------------------------------------------------------
 
     const { data, error: insErr } = await supabase
       .from("leads")
@@ -98,10 +151,11 @@ exports.handler = async (event) => {
 
     if (insErr) {
       console.error("Insert error:", insErr);
-      return { statusCode: 500, body: "DB insert failed" };
+      // surface DB error to help diagnose quickly
+      return { statusCode: 500, body: JSON.stringify({ ok: false, error: insErr }) };
     }
 
-    // Update last_used_at for the webhook
+    // Update last_used_at for the webhook (non-blocking)
     await supabase
       .from("user_inbound_webhooks")
       .update({ last_used_at: new Date().toISOString() })
