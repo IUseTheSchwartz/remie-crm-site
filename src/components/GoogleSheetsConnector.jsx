@@ -1,5 +1,6 @@
 // File: src/components/GoogleSheetsConnector.jsx
 import React, { useEffect, useMemo, useState } from "react";
+import { supabase } from "../lib/supabaseClient"; // ✅ add your browser Supabase client
 
 const API_PATH = "/.netlify/functions/user-webhook"; // ← adjust if your endpoint differs
 
@@ -14,7 +15,18 @@ export default function GoogleSheetsConnector() {
       try {
         setLoading(true);
         setErr("");
-        const res = await fetch(`${API_PATH}`, { credentials: "include" });
+
+        // ✅ Get Supabase access token
+        const { data: ses } = await supabase.auth.getSession();
+        const token = ses?.session?.access_token;
+        if (!token) throw new Error("Please sign in to set up Google Sheets import.");
+
+        const res = await fetch(`${API_PATH}`, {
+          method: "GET",
+          headers: {
+            Authorization: `Bearer ${token}`, // ✅ send token
+          },
+        });
         if (!res.ok) throw new Error(`Fetch webhook failed (${res.status})`);
         const json = await res.json();
         if (!cancelled) setHook({ id: json.id, secret: json.secret });
@@ -31,10 +43,18 @@ export default function GoogleSheetsConnector() {
     try {
       setLoading(true);
       setErr("");
+
+      // ✅ Get fresh token (session may rotate)
+      const { data: ses } = await supabase.auth.getSession();
+      const token = ses?.session?.access_token;
+      if (!token) throw new Error("Not signed in.");
+
       const res = await fetch(`${API_PATH}`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
-        credentials: "include",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${token}`, // ✅ send token
+        },
         body: JSON.stringify({ rotate: true }),
       });
       if (!res.ok) throw new Error(`Rotate failed (${res.status})`);
