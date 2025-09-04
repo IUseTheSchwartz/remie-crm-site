@@ -24,6 +24,7 @@ exports.handler = async (event) => {
       event.headers["x-webhook-id"] || event.headers["X-Webhook-Id"];
     if (!webhookId) return { statusCode: 400, body: "Missing webhook id" };
 
+    // Fetch per-user secret & user_id
     const { data: rows, error } = await supabase
       .from("user_inbound_webhooks")
       .select("id, user_id, secret, active")
@@ -34,6 +35,7 @@ exports.handler = async (event) => {
     const wh = rows[0];
     if (!wh.active) return { statusCode: 403, body: "Webhook disabled" };
 
+    // Verify HMAC
     const providedSig = event.headers["x-signature"] || event.headers["X-Signature"];
     if (!providedSig) return { statusCode: 401, body: "Missing signature" };
 
@@ -41,21 +43,20 @@ exports.handler = async (event) => {
     const computed = crypto.createHmac("sha256", wh.secret).update(rawBody, "utf8").digest("base64");
     if (!timingSafeEqual(computed, providedSig)) return { statusCode: 401, body: "Invalid signature" };
 
-    const payload = JSON.parse(rawBody);
-
+    // Parse & map
+    const p = JSON.parse(rawBody);
     const lead = {
       owner_user_id: wh.user_id,
-      name: (payload.name || "").trim(),
-      phone: (payload.phone || "").trim(),
-      email: (payload.email || "").trim(),
-      state: (payload.state || "").trim(),
-      source: (payload.source || "GoogleSheet").trim(),
-      notes: payload.notes || "",
+      name: (p.name || "").trim(),
+      phone: (p.phone || "").trim(),
+      email: (p.email || "").trim(),
+      state: (p.state || "").trim(),
+      source: (p.source || "GoogleSheet").trim(),
+      notes: p.notes || "",
       status: "lead",
       imported_via: "gsheet",
-      created_at: payload.created_at || new Date().toISOString(),
+      created_at: p.created_at || new Date().toISOString(),
     };
-
     if (!lead.name && !lead.phone && !lead.email) {
       return { statusCode: 400, body: "Empty lead payload" };
     }
@@ -63,8 +64,8 @@ exports.handler = async (event) => {
     const { data, error: insErr } = await supabase.from("leads").insert([lead]).select("id");
     if (insErr) { console.error(insErr); return { statusCode: 500, body: "DB insert failed" }; }
 
-    await supabase
-      .from("user_inbound_webhooks")
+    // touch last_used_at (optional)
+    await supabase.from("user_inbound_webhooks")
       .update({ last_used_at: new Date().toISOString() })
       .eq("id", webhookId);
 
