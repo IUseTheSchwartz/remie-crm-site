@@ -61,49 +61,130 @@ export default function GoogleSheetsConnector() {
     if (!hook) return "";
     return `/**
  * Google Sheets → Remie CRM (per-user)
- * 1) Run setupConfig() once (authorize)
- * 2) Add Trigger: onAnyChange (From spreadsheet → On change)
+ * How to set up:
+ * 1) Paste this file in Extensions → Apps Script.
+ * 2) Run setupConfig() once and approve permissions.
+ * 3) Add trigger: From spreadsheet → On change → onAnyChange.
+ *    (Optional) Add time-driven trigger: syncNewRows every 1–5 minutes.
  */
+
 const WEBHOOK_URL_PROP = "WEBHOOK_URL";
 const WEBHOOK_SECRET_PROP = "WEBHOOK_SECRET";
-const HEADER_ROW_INDEX = 1;
+const HEADER_ROW_INDEX = 1;       // headers are on row 1
 const STATE_LAST_ROW = "LAST_POSTED_ROW";
 
+/** 🔧 Fill these in (already set for you) and run setupConfig() once. */
 function setupConfig() {
   const props = PropertiesService.getScriptProperties();
-  props.setProperty(WEBHOOK_URL_PROP, "${webhookUrl}");
-  props.setProperty(WEBHOOK_SECRET_PROP, "${hook.secret}");
+
+  // ✅ Your Netlify function webhook URL with ?id=...
+  props.setProperty(
+    WEBHOOK_URL_PROP,
+    "https://remiecrm.com/.netlify/functions/gsheet-webhook?id=wh_u_ce23951f1112a5c4"
+  );
+
+  // ✅ Your exact webhook secret
+  props.setProperty(
+    WEBHOOK_SECRET_PROP,
+    "G8WUZ36r2SMw267bjYHZi0e+N2aolIb7fv2O6Tp3Nww="
+  );
+
+  // Reset the pointer so the next run starts from the first data row
   props.deleteProperty(STATE_LAST_ROW);
-  Logger.log("Config saved.");
+  Logger.log("Config saved. Now add the trigger: From spreadsheet → On change → onAnyChange.");
 }
 
-function onAnyChange(e) { try { postNewRowsSinceLastPointer(); } catch (err) { console.error(err); } }
+/** Trigger: From spreadsheet → On change */
+function onAnyChange(e) {
+  try { postNewRowsSinceLastPointer(); } catch (err) { console.error(err); }
+}
+
+/** Optional: Time-driven (backup) */
 function syncNewRows() { postNewRowsSinceLastPointer(); }
 
+/** Core: read new rows after last pointer, normalize, sign, POST to webhook */
 function postNewRowsSinceLastPointer() {
   const ss = SpreadsheetApp.getActiveSpreadsheet();
   const sheet = ss.getActiveSheet();
-  const props = PropertiesService.getScriptProperties();
 
+  const props = PropertiesService.getScriptProperties();
   const url = props.getProperty(WEBHOOK_URL_PROP);
   const secret = props.getProperty(WEBHOOK_SECRET_PROP);
   if (!url || !secret) throw new Error("Missing URL/SECRET. Run setupConfig().");
 
   const lastPosted = parseInt(props.getProperty(STATE_LAST_ROW) || String(HEADER_ROW_INDEX), 10);
   const lastRow = sheet.getLastRow();
-  if (lastRow <= HEADER_ROW_INDEX || lastRow <= lastPosted) return;
+  if (lastRow <= HEADER_ROW_INDEX || lastRow <= lastPosted) return; // nothing new
 
   const lastCol = sheet.getLastColumn();
-  const headers = sheet.getRange(HEADER_ROW_INDEX, 1, 1, lastCol).getValues()[0].map(h => String(h || "").trim());
-  const rows = sheet.getRange(lastPosted + 1, 1, lastRow - lastPosted, lastCol).getValues();
+  const headers = sheet.getRange(HEADER_ROW_INDEX, 1, 1, lastCol).getValues()[0]
+    .map(h => String(h || "").trim());
 
-  rows.forEach((rowVals, idx) => {
-    const record = {};
-    headers.forEach((h, i) => { if (h) record[h.toLowerCase()] = rowVals[i]; });
-    if (!record.created_at) record.created_at = new Date().toISOString();
+  // lowercase index: "first name" -> column position
+  const idx = {};
+  headers.forEach((h, i) => { if (h) idx[h.toLowerCase()] = i; });
+
+  // Common aliases → canonical keys expected by your webhook
+  const A = {
+    name:        ["name","full name","fullname","full_name"],
+    first:       ["first","first name","firstname","given name","given_name","fname","first_name"],
+    last:        ["last","last name","lastname","surname","family name","lname","last_name","family_name"],
+    email:       ["email","e-mail","email address","mail","email_address"],
+    phone:       ["phone","phone number","mobile","cell","tel","telephone","number","phone_number"],
+    notes:       ["notes","note","comments","comment","details"],
+    company:     ["company","business","organization","organisation"],
+    dob:         ["dob","date of birth","birthdate","birth date","d.o.b.","date"],
+    state:       ["state","st","us state","residence state"],
+    beneficiary: ["beneficiary","beneficiary type"],
+    beneficiary_name: ["beneficiary name","beneficiary_name","beneficiary full name"],
+    gender:      ["gender","sex"]
+  };
+
+  const getVal = (rowVals, keys) => {
+    for (const k of keys) {
+      const pos = idx[k];
+      if (pos !== undefined) {
+        const v = rowVals[pos];
+        if (v !== null && v !== "") return v;
+      }
+    }
+    return "";
+  };
+
+  // All new rows after the pointer
+  const range = sheet.getRange(lastPosted + 1, 1, lastRow - lastPosted, lastCol);
+  const rows = range.getValues();
+
+  rows.forEach((rowVals, i) => {
+    // Build canonical record
+    const first = String(getVal(rowVals, A.first) || "").trim();
+    const last  = String(getVal(rowVals, A.last) || "").trim();
+    const nameFromFull = String(getVal(rowVals, A.name) || "").trim();
+    const name = (nameFromFull || `${first} ${last}`.trim()).trim();
+
+    // Coerce everything to string (Apps Script may produce numbers/dates)
+    const record = {
+      name: name,
+      phone: String(getVal(rowVals, A.phone) || ""),
+      email: String(getVal(rowVals, A.email) || ""),
+      state: String(getVal(rowVals, A.state) || ""),
+      notes: String(getVal(rowVals, A.notes) || ""),
+      dob: String(getVal(rowVals, A.dob) || ""),
+      beneficiary: String(getVal(rowVals, A.beneficiary) || ""),
+      beneficiary_name: String(getVal(rowVals, A.beneficiary_name) || ""),
+      gender: String(getVal(rowVals, A.gender) || ""),
+      company: String(getVal(rowVals, A.company) || ""),
+      created_at: new Date().toISOString(),
+    };
+
+    // If row is truly empty (no identifiers), skip
+    if (!record.name && !record.phone && !record.email) return;
 
     const body = JSON.stringify(record);
-    const sig = Utilities.base64Encode(Utilities.computeHmacSha256Signature(body, secret));
+    const sig = Utilities.base64Encode(
+      Utilities.computeHmacSha256Signature(body, secret)
+    );
+
     const res = UrlFetchApp.fetch(url, {
       method: "post",
       contentType: "application/json",
@@ -111,14 +192,18 @@ function postNewRowsSinceLastPointer() {
       headers: { "X-Signature": sig },
       muteHttpExceptions: true,
     });
+
     const code = res.getResponseCode();
     if (code >= 200 && code < 300) {
-      props.setProperty(STATE_LAST_ROW, String(lastPosted + idx + 1));
+      // advance pointer for each successful row
+      props.setProperty(STATE_LAST_ROW, String(lastPosted + i + 1));
     } else {
+      // keep pointer on failure so the row can retry on next run
       console.error("Webhook failed", code, res.getContentText());
     }
   });
-}`;
+}
+`;
   }, [hook, webhookUrl]);
 
   if (loading) {
