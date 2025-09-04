@@ -16,22 +16,16 @@ function timingSafeEqual(a, b) {
   return crypto.timingSafeEqual(A, B);
 }
 
-// Safely coerce any value (number, boolean, object) to a trimmed string
+// Coerce any value to a safe string
 function S(v) {
   if (v === null || v === undefined) return "";
   if (typeof v === "string") return v.trim();
-  if (typeof v === "number") return String(v); // numbers like 15551234
+  if (typeof v === "number") return String(v);
   if (typeof v === "boolean") return v ? "true" : "false";
   if (v instanceof Date) return v.toISOString();
-  try {
-    // handles arrays/objects (e.g., Apps Script weirdness)
-    return String(v).trim();
-  } catch {
-    return "";
-  }
+  try { return String(v).trim(); } catch { return ""; }
 }
 
-// Handle possible base64-encoded bodies (some hosts set isBase64Encoded)
 function getRawBody(event) {
   let raw = event.body || "";
   if (event.isBase64Encoded) {
@@ -82,14 +76,13 @@ exports.handler = async (event) => {
       phone: S(p.phone),
       email: S(p.email),
       state: S(p.state),
-      source: "GoogleSheet", // always set; no sheet column needed
+      source: "GoogleSheet", // fixed label; no sheet column needed
       notes: S(p.notes),
-      status: "lead",
-      imported_via: "gsheet",
+      status: "lead",        // keep if your table has this column
       created_at: p.created_at ? S(p.created_at) : new Date().toISOString(),
     };
 
-    // Require at least one identifying field
+    // Require at least one identifier
     if (!lead.name && !lead.phone && !lead.email) {
       return { statusCode: 400, body: "Empty lead payload" };
     }
