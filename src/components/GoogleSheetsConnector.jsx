@@ -1,8 +1,8 @@
 // File: src/components/GoogleSheetsConnector.jsx
 import React, { useEffect, useMemo, useState } from "react";
-import { supabase } from "../lib/supabaseClient"; // ✅ add your browser Supabase client
+import { supabase } from "../lib/supabaseClient"; // your browser Supabase client
 
-const API_PATH = "/.netlify/functions/user-webhook"; // ← adjust if your endpoint differs
+const API_PATH = "/.netlify/functions/user-webhook"; // server path (primary), will fallback if 401
 
 export default function GoogleSheetsConnector() {
   const [hook, setHook] = useState({ id: "", secret: "" });
@@ -12,26 +12,39 @@ export default function GoogleSheetsConnector() {
   useEffect(() => {
     let cancelled = false;
     (async () => {
+      setLoading(true);
+      setErr("");
       try {
-        setLoading(true);
-        setErr("");
-
-        // ✅ Get Supabase access token
+        // Try server first (sends Bearer token)
         const { data: ses } = await supabase.auth.getSession();
         const token = ses?.session?.access_token;
         if (!token) throw new Error("Please sign in to set up Google Sheets import.");
 
-        const res = await fetch(`${API_PATH}`, {
+        const res = await fetch(API_PATH, {
           method: "GET",
-          headers: {
-            Authorization: `Bearer ${token}`, // ✅ send token
-          },
+          headers: { Authorization: `Bearer ${token}` },
         });
-        if (!res.ok) throw new Error(`Fetch webhook failed (${res.status})`);
-        const json = await res.json();
-        if (!cancelled) setHook({ id: json.id, secret: json.secret });
+
+        if (res.ok) {
+          const json = await res.json();
+          if (!cancelled) setHook({ id: json.id, secret: json.secret });
+        } else {
+          // If unauthorized/missing endpoint, fall back to client-side Supabase
+          if (res.status === 401 || res.status === 404) {
+            const got = await loadOrCreateWebhookViaSupabase();
+            if (!cancelled) setHook(got);
+          } else {
+            throw new Error(`Fetch webhook failed (${res.status})`);
+          }
+        }
       } catch (e) {
-        if (!cancelled) setErr(e.message || String(e));
+        // Final fallback: try client-side once if we haven’t yet
+        try {
+          const got = await loadOrCreateWebhookViaSupabase();
+          if (!cancelled) setHook(got);
+        } catch (ee) {
+          if (!cancelled) setErr((e?.message || e) + "");
+        }
       } finally {
         if (!cancelled) setLoading(false);
       }
@@ -39,27 +52,68 @@ export default function GoogleSheetsConnector() {
     return () => { cancelled = true; };
   }, []);
 
-  async function rotateSecret() {
-    try {
-      setLoading(true);
-      setErr("");
+  async function loadOrCreateWebhookViaSupabase() {
+    // Requires RLS policy: user can select/insert/update where user_id = auth.uid()
+    // 1) read existing
+    const { data: rows, error: selErr } = await supabase
+      .from("user_inbound_webhooks")
+      .select("id, secret, active")
+      .eq("active", true)
+      .limit(1);
 
-      // ✅ Get fresh token (session may rotate)
+    if (selErr) throw selErr;
+
+    if (rows && rows.length) {
+      return { id: rows[0].id, secret: rows[0].secret };
+    }
+
+    // 2) create new
+    const id = makeWebhookId();
+    const secret = b64Secret(32);
+    const { error: insErr } = await supabase
+      .from("user_inbound_webhooks")
+      .insert([{ id, secret, active: true }]);
+    if (insErr) throw insErr;
+
+    return { id, secret };
+  }
+
+  async function rotateSecret() {
+    setLoading(true);
+    setErr("");
+    try {
+      // Try server rotate first
       const { data: ses } = await supabase.auth.getSession();
       const token = ses?.session?.access_token;
       if (!token) throw new Error("Not signed in.");
 
-      const res = await fetch(`${API_PATH}`, {
+      const res = await fetch(API_PATH, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          Authorization: `Bearer ${token}`, // ✅ send token
+          Authorization: `Bearer ${token}`,
         },
         body: JSON.stringify({ rotate: true }),
       });
-      if (!res.ok) throw new Error(`Rotate failed (${res.status})`);
-      const json = await res.json();
-      setHook({ id: json.id, secret: json.secret });
+
+      if (res.ok) {
+        const json = await res.json();
+        setHook({ id: json.id, secret: json.secret });
+        return;
+      }
+
+      // Fallback: rotate via Supabase directly
+      const secret = b64Secret(32);
+      const { data, error } = await supabase
+        .from("user_inbound_webhooks")
+        .update({ secret })
+        .eq("id", hook.id)
+        .eq("active", true)
+        .select("id, secret")
+        .limit(1);
+
+      if (error) throw error;
+      setHook({ id: data?.[0]?.id || hook.id, secret: data?.[0]?.secret || secret });
     } catch (e) {
       setErr(e.message || String(e));
     } finally {
@@ -69,12 +123,12 @@ export default function GoogleSheetsConnector() {
 
   const webhookUrl = useMemo(() => {
     return hook.id
-      ? `https://remiecrm.com/.netlify/functions/gsheet-webhook?id=${hook.id}`
+      ? `${window.location.origin}/.netlify/functions/gsheet-webhook?id=${hook.id}`
       : "—";
   }, [hook.id]);
 
   const scriptText = useMemo(() => {
-    // ⚠️ This is the exact working Apps Script you provided, with id/secret injected.
+    // EXACT script you supplied, with id/secret injected
     return `/**
  * Google Sheets → Remie CRM (per-user)
  * How to set up:
@@ -301,4 +355,19 @@ function postNewRowsSinceLastPointer() {
       </p>
     </div>
   );
+}
+
+/* ---------------- helpers ---------------- */
+
+function b64Secret(bytes = 32) {
+  const buf = new Uint8Array(bytes);
+  crypto.getRandomValues(buf);
+  let s = "";
+  buf.forEach((b) => (s += String.fromCharCode(b)));
+  return btoa(s);
+}
+
+function makeWebhookId() {
+  const rnd = crypto.randomUUID().replace(/-/g, "");
+  return `wh_u_${rnd.slice(0, 8)}${rnd.slice(8, 16)}`;
 }
