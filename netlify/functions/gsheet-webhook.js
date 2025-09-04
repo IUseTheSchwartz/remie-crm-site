@@ -16,7 +16,6 @@ function timingSafeEqual(a, b) {
   return crypto.timingSafeEqual(A, B);
 }
 
-// Coerce any value to a safe string
 function S(v) {
   if (v === null || v === undefined) return "";
   if (typeof v === "string") return v.trim();
@@ -46,7 +45,6 @@ exports.handler = async (event) => {
       event.headers["X-Webhook-Id"];
     if (!webhookId) return { statusCode: 400, body: "Missing webhook id" };
 
-    // Lookup per-user secret & user
     const { data: rows, error } = await supabase
       .from("user_inbound_webhooks")
       .select("id, user_id, secret, active")
@@ -57,7 +55,6 @@ exports.handler = async (event) => {
     const wh = rows[0];
     if (!wh.active) return { statusCode: 403, body: "Webhook disabled" };
 
-    // Verify HMAC
     const providedSig = event.headers["x-signature"] || event.headers["X-Signature"];
     if (!providedSig) return { statusCode: 401, body: "Missing signature" };
 
@@ -65,7 +62,6 @@ exports.handler = async (event) => {
     const computed = crypto.createHmac("sha256", wh.secret).update(rawBody, "utf8").digest("base64");
     if (!timingSafeEqual(computed, providedSig)) return { statusCode: 401, body: "Invalid signature" };
 
-    // Parse & normalize payload
     let p;
     try { p = JSON.parse(rawBody); }
     catch { return { statusCode: 400, body: "Invalid JSON" }; }
@@ -76,13 +72,11 @@ exports.handler = async (event) => {
       phone: S(p.phone),
       email: S(p.email),
       state: S(p.state),
-      source: "GoogleSheet", // fixed label; no sheet column needed
       notes: S(p.notes),
-      status: "lead",        // keep if your table has this column
+      status: "lead",  // drop this too if your table doesn't have it
       created_at: p.created_at ? S(p.created_at) : new Date().toISOString(),
     };
 
-    // Require at least one identifier
     if (!lead.name && !lead.phone && !lead.email) {
       return { statusCode: 400, body: "Empty lead payload" };
     }
@@ -97,7 +91,6 @@ exports.handler = async (event) => {
       return { statusCode: 500, body: "DB insert failed" };
     }
 
-    // Touch last_used_at (optional)
     await supabase
       .from("user_inbound_webhooks")
       .update({ last_used_at: new Date().toISOString() })
