@@ -19,6 +19,9 @@ import {
   deleteLeadServer,
 } from "../lib/supabaseLeads.js";
 
+// ✅ NEW: Google Sheets connector (per-user webhook generator + Apps Script)
+import GoogleSheetsConnector from "../components/GoogleSheetsConnector.jsx";
+
 const TEMPLATE_HEADERS = ["name","phone","email"]; // minimal CSV template
 
 // ---- Header alias helpers ---------------------------------------------------
@@ -419,6 +422,11 @@ export default function LeadsPage() {
           {serverMsg}
         </div>
       )}
+
+      {/* ✅ NEW: Google Sheets connector panel (per-user) */}
+      <div className="my-4">
+        <GoogleSheetsConnector />
+      </div>
 
       {/* Search */}
       <div className="flex items-center gap-3">
