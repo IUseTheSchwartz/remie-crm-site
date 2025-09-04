@@ -1,16 +1,9 @@
 // netlify/functions/gsheet-webhook.js
 const crypto = require("crypto");
+const { getServiceClient } = require("./_supabase");
 
-let supabase;
-try {
-  // If you have a local helper, it must export CommonJS: module.exports = { supabase }
-  supabase = require("./_supabase").supabase;
-} catch {
-  // ✅ CommonJS-friendly way to load the ESM supabase-js v2 package
-  const supabasePkg = require("@supabase/supabase-js");
-  const { createClient } = supabasePkg;
-  supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_ROLE);
-}
+// Create service client (uses SUPABASE_URL + SUPABASE_SERVICE_ROLE_KEY)
+const supabase = getServiceClient();
 
 function timingSafeEqual(a, b) {
   const A = Buffer.from(a || "", "utf8");
@@ -19,7 +12,7 @@ function timingSafeEqual(a, b) {
   return crypto.timingSafeEqual(A, B);
 }
 
-// Coerce any value to a safe string
+// Safe string coercion (handles numbers, booleans, dates)
 function S(v) {
   if (v === null || v === undefined) return "";
   if (typeof v === "string") return v.trim();
@@ -29,6 +22,7 @@ function S(v) {
   try { return String(v).trim(); } catch { return ""; }
 }
 
+// Handle possible base64-encoded bodies
 function getRawBody(event) {
   let raw = event.body || "";
   if (event.isBase64Encoded) {
@@ -43,19 +37,21 @@ exports.handler = async (event) => {
       return { statusCode: 405, body: "Method Not Allowed" };
     }
 
+    // Webhook id from query or header
     const webhookId =
       (event.queryStringParameters && event.queryStringParameters.id) ||
-      event.headers["x-webhook-id"] || event.headers["X-Webhook-Id"];
+      event.headers["x-webhook-id"] ||
+      event.headers["X-Webhook-Id"];
     if (!webhookId) return { statusCode: 400, body: "Missing webhook id" };
 
     // Look up per-user secret + user id
-    const { data: rows, error } = await supabase
+    const { data: rows, error: hookErr } = await supabase
       .from("user_inbound_webhooks")
       .select("id, user_id, secret, active")
       .eq("id", webhookId)
       .limit(1);
 
-    if (error || !rows?.length) return { statusCode: 404, body: "Webhook not found" };
+    if (hookErr || !rows?.length) return { statusCode: 404, body: "Webhook not found" };
     const wh = rows[0];
     if (!wh.active) return { statusCode: 403, body: "Webhook disabled" };
 
@@ -67,18 +63,19 @@ exports.handler = async (event) => {
     const computed = crypto.createHmac("sha256", wh.secret).update(rawBody, "utf8").digest("base64");
     if (!timingSafeEqual(computed, providedSig)) return { statusCode: 401, body: "Invalid signature" };
 
-    // Parse & normalize
+    // Parse payload
     let p;
     try { p = JSON.parse(rawBody); }
     catch { return { statusCode: 400, body: "Invalid JSON" }; }
 
-    // Minimal payload to satisfy your schema
+    // Minimal payload that matches your schema (no source/imported_via)
     const lead = {
-      user_id: wh.user_id,         // required by your table
+      user_id: wh.user_id,                 // REQUIRED by your table
       name:  S(p.name),
       phone: S(p.phone),
       email: S(p.email),
       state: S(p.state),
+      // notes/dob/etc. omitted unless you confirm those columns exist as nullable
       created_at: p.created_at ? S(p.created_at) : new Date().toISOString(),
     };
 
@@ -97,7 +94,7 @@ exports.handler = async (event) => {
       return { statusCode: 500, body: "DB insert failed" };
     }
 
-    // Optional: heartbeat
+    // Optional: update last_used_at for visibility in your UI
     await supabase
       .from("user_inbound_webhooks")
       .update({ last_used_at: new Date().toISOString() })
