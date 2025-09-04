@@ -28,23 +28,49 @@ function U(v) {
   return s === "" ? undefined : s;
 }
 
-// Try to normalize a date-like string to YYYY-MM-DD; return undefined if invalid
-function toYMD(v) {
-  const s = S(v);
+// 🔁 CHANGED: Normalize any date-like input to MM/DD/YYYY (string). Return undefined if invalid.
+function toMDY(v) {
+  if (v == null) return undefined;
+
+  // Direct Date object
+  if (v instanceof Date && !Number.isNaN(v.getTime())) {
+    const mm = String(v.getMonth() + 1).padStart(2, "0");
+    const dd = String(v.getDate()).padStart(2, "0");
+    const yy = v.getFullYear();
+    return `${mm}/${dd}/${yy}`;
+  }
+
+  const s = String(v).trim();
   if (!s) return undefined;
-  if (/^\d{4}-\d{2}-\d{2}$/.test(s)) return s; // already ISO date
-  const m = s.match(/^(\d{1,2})[\/\-\.](\d{1,2})[\/\-\.](\d{2,4})$/);
-  if (m) {
-    let mm = parseInt(m[1], 10), dd = parseInt(m[2], 10), yy = String(m[3]);
+
+  // If already YYYY-MM-DD → convert to MM/DD/YYYY
+  const iso = s.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (iso) {
+    const [, y, m, d] = iso;
+    return `${m}/${d}/${y}`;
+  }
+
+  // Common US formats: M/D/YYYY or M/D/YY (also -, . separators)
+  const us = s.match(/^(\d{1,2})[\/\-.](\d{1,2})[\/\-.](\d{2,4})$/);
+  if (us) {
+    let mm = parseInt(us[1], 10);
+    let dd = parseInt(us[2], 10);
+    let yy = us[3];
     if (yy.length === 2) yy = (yy >= "50" ? "19" : "20") + yy; // naive century
     if (mm >= 1 && mm <= 12 && dd >= 1 && dd <= 31) {
-      const ymd = `${yy}-${String(mm).padStart(2, "0")}-${String(dd).padStart(2, "0")}`;
-      const d = new Date(ymd + "T00:00:00Z");
-      if (!Number.isNaN(d.getTime())) return ymd;
+      return `${String(mm).padStart(2, "0")}/${String(dd).padStart(2, "0")}/${yy}`;
     }
   }
+
+  // Fallback: Date.parse() for verbose strings like "Sun May 04 1952 ..."
   const d = new Date(s);
-  if (!Number.isNaN(d.getTime())) return d.toISOString().slice(0, 10);
+  if (!Number.isNaN(d.getTime())) {
+    const mm = String(d.getMonth() + 1).padStart(2, "0");
+    const dd = String(d.getDate()).padStart(2, "0");
+    const yy = d.getFullYear();
+    return `${mm}/${dd}/${yy}`;
+  }
+
   return undefined;
 }
 
@@ -110,8 +136,11 @@ exports.handler = async (event) => {
       company:          U(p.company),
       gender:           U(p.gender),
     };
-    const dobYMD = toYMD(p.dob);
-    if (dobYMD) extras.dob = dobYMD;
+
+    // 🔁 CHANGED: use MM/DD/YYYY
+    const dobMDY = toMDY(p.dob);
+    if (dobMDY) extras.dob = dobMDY;
+
     for (const [k, v] of Object.entries(extras)) {
       if (v !== undefined) lead[k] = v;
     }
