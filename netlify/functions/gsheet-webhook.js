@@ -3,7 +3,6 @@ const crypto = require("crypto");
 
 let supabase;
 try {
-  // Prefer your existing helper if you have one
   supabase = require("./_supabase").supabase;
 } catch {
   const { createClient } = require("@supabase/supabase-js");
@@ -17,6 +16,30 @@ function timingSafeEqual(a, b) {
   return crypto.timingSafeEqual(A, B);
 }
 
+// Safely coerce any value (number, boolean, object) to a trimmed string
+function S(v) {
+  if (v === null || v === undefined) return "";
+  if (typeof v === "string") return v.trim();
+  if (typeof v === "number") return String(v); // numbers like 15551234
+  if (typeof v === "boolean") return v ? "true" : "false";
+  if (v instanceof Date) return v.toISOString();
+  try {
+    // handles arrays/objects (e.g., Apps Script weirdness)
+    return String(v).trim();
+  } catch {
+    return "";
+  }
+}
+
+// Handle possible base64-encoded bodies (some hosts set isBase64Encoded)
+function getRawBody(event) {
+  let raw = event.body || "";
+  if (event.isBase64Encoded) {
+    try { raw = Buffer.from(raw, "base64").toString("utf8"); } catch {}
+  }
+  return raw;
+}
+
 exports.handler = async (event) => {
   try {
     if (event.httpMethod !== "POST") {
@@ -27,57 +50,46 @@ exports.handler = async (event) => {
       (event.queryStringParameters && event.queryStringParameters.id) ||
       event.headers["x-webhook-id"] ||
       event.headers["X-Webhook-Id"];
-    if (!webhookId) {
-      return { statusCode: 400, body: "Missing webhook id" };
-    }
+    if (!webhookId) return { statusCode: 400, body: "Missing webhook id" };
 
-    // Fetch per-user secret & user_id
+    // Lookup per-user secret & user
     const { data: rows, error } = await supabase
       .from("user_inbound_webhooks")
       .select("id, user_id, secret, active")
       .eq("id", webhookId)
       .limit(1);
 
-    if (error || !rows?.length) {
-      return { statusCode: 404, body: "Webhook not found" };
-    }
-
+    if (error || !rows?.length) return { statusCode: 404, body: "Webhook not found" };
     const wh = rows[0];
-    if (!wh.active) {
-      return { statusCode: 403, body: "Webhook disabled" };
-    }
+    if (!wh.active) return { statusCode: 403, body: "Webhook disabled" };
 
     // Verify HMAC
     const providedSig = event.headers["x-signature"] || event.headers["X-Signature"];
-    if (!providedSig) {
-      return { statusCode: 401, body: "Missing signature" };
-    }
+    if (!providedSig) return { statusCode: 401, body: "Missing signature" };
 
-    const rawBody = event.body || "";
-    const computed = crypto
-      .createHmac("sha256", wh.secret)
-      .update(rawBody, "utf8")
-      .digest("base64");
+    const rawBody = getRawBody(event);
+    const computed = crypto.createHmac("sha256", wh.secret).update(rawBody, "utf8").digest("base64");
+    if (!timingSafeEqual(computed, providedSig)) return { statusCode: 401, body: "Invalid signature" };
 
-    if (!timingSafeEqual(computed, providedSig)) {
-      return { statusCode: 401, body: "Invalid signature" };
-    }
+    // Parse & normalize payload
+    let p;
+    try { p = JSON.parse(rawBody); }
+    catch { return { statusCode: 400, body: "Invalid JSON" }; }
 
-    // Parse & map
-    const p = JSON.parse(rawBody);
     const lead = {
       owner_user_id: wh.user_id,
-      name: (p.name || "").trim(),
-      phone: (p.phone || "").trim(),
-      email: (p.email || "").trim(),
-      state: (p.state || "").trim(),
-      source: "GoogleSheet", // always set, no column needed in sheet
-      notes: p.notes || "",
+      name:  S(p.name),
+      phone: S(p.phone),
+      email: S(p.email),
+      state: S(p.state),
+      source: "GoogleSheet", // always set; no sheet column needed
+      notes: S(p.notes),
       status: "lead",
       imported_via: "gsheet",
-      created_at: p.created_at || new Date().toISOString(),
+      created_at: p.created_at ? S(p.created_at) : new Date().toISOString(),
     };
 
+    // Require at least one identifying field
     if (!lead.name && !lead.phone && !lead.email) {
       return { statusCode: 400, body: "Empty lead payload" };
     }
@@ -92,7 +104,7 @@ exports.handler = async (event) => {
       return { statusCode: 500, body: "DB insert failed" };
     }
 
-    // Update last_used_at
+    // Touch last_used_at (optional)
     await supabase
       .from("user_inbound_webhooks")
       .update({ last_used_at: new Date().toISOString() })
