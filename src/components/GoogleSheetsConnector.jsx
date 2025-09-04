@@ -1,64 +1,60 @@
-import { useEffect, useMemo, useState } from "react";
-import { supabase } from "../lib/supabaseClient";
+// File: src/components/GoogleSheetsConnector.jsx
+import React, { useEffect, useMemo, useState } from "react";
 
-function randomId(prefix="wh_u_") {
-  const arr = new Uint8Array(8);
-  crypto.getRandomValues(arr);
-  return prefix + Array.from(arr).map(b => b.toString(16).padStart(2,"0")).join("");
-}
-function randomSecretB64() {
-  const arr = new Uint8Array(32);
-  crypto.getRandomValues(arr);
-  return btoa(String.fromCharCode(...arr));
-}
+const API_PATH = "/.netlify/functions/user-webhook"; // ← adjust if your endpoint differs
 
 export default function GoogleSheetsConnector() {
-  const [user, setUser] = useState(null);
-  const [hook, setHook] = useState(null);
+  const [hook, setHook] = useState({ id: "", secret: "" });
   const [loading, setLoading] = useState(true);
+  const [err, setErr] = useState("");
 
-  // get current user
   useEffect(() => {
-    supabase.auth.getUser().then(({ data }) => setUser(data?.user || null));
+    let cancelled = false;
+    (async () => {
+      try {
+        setLoading(true);
+        setErr("");
+        const res = await fetch(`${API_PATH}`, { credentials: "include" });
+        if (!res.ok) throw new Error(`Fetch webhook failed (${res.status})`);
+        const json = await res.json();
+        if (!cancelled) setHook({ id: json.id, secret: json.secret });
+      } catch (e) {
+        if (!cancelled) setErr(e.message || String(e));
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    })();
+    return () => { cancelled = true; };
   }, []);
 
-  // fetch existing hook for this user (if any)
-  useEffect(() => {
-    if (!user) return;
-    (async () => {
-      const { data, error } = await supabase
-        .from("user_inbound_webhooks")
-        .select("id, secret, active, last_used_at")
-        .eq("user_id", user.id)
-        .limit(1);
-      if (!error) setHook(data?.[0] || null);
+  async function rotateSecret() {
+    try {
+      setLoading(true);
+      setErr("");
+      const res = await fetch(`${API_PATH}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify({ rotate: true }),
+      });
+      if (!res.ok) throw new Error(`Rotate failed (${res.status})`);
+      const json = await res.json();
+      setHook({ id: json.id, secret: json.secret });
+    } catch (e) {
+      setErr(e.message || String(e));
+    } finally {
       setLoading(false);
-    })();
-  }, [user]);
-
-  async function createHook() {
-    if (!user) return;
-    setLoading(true);
-    const id = randomId();
-    const secret = randomSecretB64();
-    const { data, error } = await supabase
-      .from("user_inbound_webhooks")
-      .insert([{ id, user_id: user.id, secret }])
-      .select("id, secret, active, last_used_at")
-      .single();
-    if (error) {
-      alert("Could not create webhook: " + error.message);
-    } else {
-      setHook(data);
     }
-    setLoading(false);
   }
 
-  const fnUrlBase = `${window.location.origin}/.netlify/functions/gsheet-webhook`;
-  const webhookUrl = hook ? `${fnUrlBase}?id=${hook.id}` : "";
+  const webhookUrl = useMemo(() => {
+    return hook.id
+      ? `https://remiecrm.com/.netlify/functions/gsheet-webhook?id=${hook.id}`
+      : "—";
+  }, [hook.id]);
 
-  const appsScript = useMemo(() => {
-    if (!hook) return "";
+  const scriptText = useMemo(() => {
+    // ⚠️ This is the exact working Apps Script you provided, with id/secret injected.
     return `/**
  * Google Sheets → Remie CRM (per-user)
  * How to set up:
@@ -70,7 +66,7 @@ export default function GoogleSheetsConnector() {
 
 const WEBHOOK_URL_PROP = "WEBHOOK_URL";
 const WEBHOOK_SECRET_PROP = "WEBHOOK_SECRET";
-const HEADER_ROW_INDEX = 1;       // headers are on row 1
+const HEADER_ROW_INDEX = 1; // headers are on row 1
 const STATE_LAST_ROW = "LAST_POSTED_ROW";
 
 /** 🔧 Fill these in (already set for you) and run setupConfig() once. */
@@ -80,13 +76,13 @@ function setupConfig() {
   // ✅ Your Netlify function webhook URL with ?id=...
   props.setProperty(
     WEBHOOK_URL_PROP,
-    "https://remiecrm.com/.netlify/functions/gsheet-webhook?id=wh_u_ce23951f1112a5c4"
+    "${webhookUrl}"
   );
 
   // ✅ Your exact webhook secret
   props.setProperty(
     WEBHOOK_SECRET_PROP,
-    "G8WUZ36r2SMw267bjYHZi0e+N2aolIb7fv2O6Tp3Nww="
+    "${hook.secret}"
   );
 
   // Reset the pointer so the next run starts from the first data row
@@ -160,7 +156,7 @@ function postNewRowsSinceLastPointer() {
     const first = String(getVal(rowVals, A.first) || "").trim();
     const last  = String(getVal(rowVals, A.last) || "").trim();
     const nameFromFull = String(getVal(rowVals, A.name) || "").trim();
-    const name = (nameFromFull || `${first} ${last}`.trim()).trim();
+    const name = (nameFromFull || \`\${first} \${last}\`.trim()).trim();
 
     // Coerce everything to string (Apps Script may produce numbers/dates)
     const record = {
@@ -202,55 +198,87 @@ function postNewRowsSinceLastPointer() {
       console.error("Webhook failed", code, res.getContentText());
     }
   });
-}
-`;
-  }, [hook, webhookUrl]);
+}`.trim();
+  }, [hook.secret, webhookUrl]);
 
-  if (loading) {
-    return <div className="p-4 border rounded-lg">Loading Google Sheets connector…</div>;
+  function copy(text) {
+    navigator.clipboard.writeText(text);
   }
 
   return (
-    <div className="p-4 border rounded-lg space-y-3">
-      <div className="text-lg font-semibold">Google Sheets Import</div>
+    <div className="space-y-4 text-sm">
+      <h2 className="text-lg font-semibold">Google Sheets Import</h2>
 
-      {!hook && (
-        <button
-          onClick={createHook}
-          className="px-3 py-2 rounded-xl bg-black text-white shadow"
-        >
-          Generate My Webhook
-        </button>
-      )}
-
-      {hook && (
-        <div className="space-y-2">
-          <div className="text-sm">
-            <b>Webhook URL:</b> <code className="break-all">{webhookUrl}</code>
-          </div>
-          <div className="text-sm">
-            <b>Secret:</b> <code className="break-all">{hook.secret}</code>
-          </div>
-
-          <ol className="list-decimal ml-6 text-sm space-y-1">
-            <li>Open your Google Sheet → <b>Extensions → Apps Script</b>.</li>
-            <li>Paste the script below, then run <code>setupConfig()</code> once and approve permissions.</li>
-            <li>Go to <b>Triggers</b> → add trigger for <code>onAnyChange</code> → “From spreadsheet / On change”.</li>
-            <li>Headers needed in row 1: <code>name, phone, email</code> (at least one of these). Optional: <code>state, notes, created_at</code>.</li>
-            <li>Add a test row — it’ll appear in your CRM automatically.</li>
-          </ol>
-
-          <textarea
-            readOnly
-            value={appsScript}
-            className="w-full h-80 p-2 border rounded-md"
-          />
-
-          <div className="text-xs text-gray-500">
-            Tip: You can rotate or disable this webhook later by deleting and regenerating it.
-          </div>
+      {err && (
+        <div className="rounded-md border border-amber-500/40 bg-amber-500/10 p-2 text-amber-200">
+          {err}
         </div>
       )}
+
+      <div className="flex flex-wrap items-center gap-2">
+        <button
+          onClick={() => copy(webhookUrl)}
+          className="rounded-md border border-white/15 bg-white/5 px-3 py-1"
+          disabled={!hook.id || loading}
+          title="Copy Webhook URL"
+        >
+          Copy Webhook URL
+        </button>
+        <button
+          onClick={() => copy(hook.secret)}
+          className="rounded-md border border-white/15 bg-white/5 px-3 py-1"
+          disabled={!hook.secret || loading}
+          title="Copy Secret"
+        >
+          Copy Secret
+        </button>
+        <button
+          onClick={() => copy(scriptText)}
+          className="rounded-md border border-white/15 bg-white/5 px-3 py-1"
+          disabled={loading || !hook.id}
+          title="Copy Apps Script"
+        >
+          Copy Apps Script
+        </button>
+        <button
+          onClick={rotateSecret}
+          className="rounded-md border border-rose-500/40 bg-rose-500/10 px-3 py-1"
+          disabled={loading || !hook.id}
+          title="Rotate secret"
+        >
+          Rotate secret
+        </button>
+      </div>
+
+      <div className="rounded-xl border border-white/10 bg-white/[0.04] p-3">
+        <p className="mb-2">
+          <strong>Webhook URL:</strong>{" "}
+          <span className="break-all">{webhookUrl}</span>
+        </p>
+        <p>
+          <strong>Secret:</strong>{" "}
+          <span className="break-all">{hook.secret || "—"}</span>
+        </p>
+      </div>
+
+      <ol className="list-decimal list-inside space-y-1">
+        <li>Open your Google Sheet → <em>Extensions → Apps Script</em>.</li>
+        <li>Paste the script below, then run <code>setupConfig()</code> once and authorize.</li>
+        <li>Go to <em>Triggers</em> → add trigger for <code>onAnyChange</code> → “From spreadsheet / On change”.</li>
+        <li>
+          Headers in row&nbsp;1: <code>name</code>, <code>phone</code>, <code>email</code> (any one is fine).
+          Optional: <code>state</code>, <code>notes</code>, <code>dob</code>, <code>company</code>, etc.
+        </li>
+        <li>Add a test row — it’ll appear in your CRM automatically.</li>
+      </ol>
+
+      <pre className="mt-3 max-h-[420px] overflow-auto rounded-lg border border-white/10 bg-black/40 p-3 text-xs text-white">
+        {scriptText}
+      </pre>
+
+      <p className="text-xs text-white/50">
+        Tip: You can rotate or disable this webhook later by clicking “Rotate secret”.
+      </p>
     </div>
   );
 }
