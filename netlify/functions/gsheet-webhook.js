@@ -41,10 +41,10 @@ exports.handler = async (event) => {
 
     const webhookId =
       (event.queryStringParameters && event.queryStringParameters.id) ||
-      event.headers["x-webhook-id"] ||
-      event.headers["X-Webhook-Id"];
+      event.headers["x-webhook-id"] || event.headers["X-Webhook-Id"];
     if (!webhookId) return { statusCode: 400, body: "Missing webhook id" };
 
+    // Look up the per-user secret and their user_id
     const { data: rows, error } = await supabase
       .from("user_inbound_webhooks")
       .select("id, user_id, secret, active")
@@ -55,6 +55,7 @@ exports.handler = async (event) => {
     const wh = rows[0];
     if (!wh.active) return { statusCode: 403, body: "Webhook disabled" };
 
+    // Verify HMAC
     const providedSig = event.headers["x-signature"] || event.headers["X-Signature"];
     if (!providedSig) return { statusCode: 401, body: "Missing signature" };
 
@@ -62,21 +63,23 @@ exports.handler = async (event) => {
     const computed = crypto.createHmac("sha256", wh.secret).update(rawBody, "utf8").digest("base64");
     if (!timingSafeEqual(computed, providedSig)) return { statusCode: 401, body: "Invalid signature" };
 
+    // Parse & normalize
     let p;
     try { p = JSON.parse(rawBody); }
     catch { return { statusCode: 400, body: "Invalid JSON" }; }
 
+    // Minimal payload that matches your schema: user_id + common fields
     const lead = {
-      owner_user_id: wh.user_id,
+      user_id: wh.user_id,           // <-- REQUIRED by your table
       name:  S(p.name),
       phone: S(p.phone),
       email: S(p.email),
       state: S(p.state),
-      notes: S(p.notes),
-      status: "lead",  // drop this too if your table doesn't have it
+      status: "lead",                // remove if your table doesn't have this column
       created_at: p.created_at ? S(p.created_at) : new Date().toISOString(),
     };
 
+    // Require at least one identifier
     if (!lead.name && !lead.phone && !lead.email) {
       return { statusCode: 400, body: "Empty lead payload" };
     }
@@ -91,6 +94,7 @@ exports.handler = async (event) => {
       return { statusCode: 500, body: "DB insert failed" };
     }
 
+    // Optional: mark last used
     await supabase
       .from("user_inbound_webhooks")
       .update({ last_used_at: new Date().toISOString() })
