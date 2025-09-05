@@ -1,8 +1,10 @@
 // File: src/lib/stats.js
 // Stats + grouping helpers for dashboard and reports.
-// Combines real SOLD data + real LEAD creations (by timestamp). Optional MOCK remains empty.
+// NOW: Lead counts come directly from Supabase `leads.created_at`
+// Keeps a synchronous `dashboardSnapshot()` (cached) + async `refreshDashboardSnapshot()`.
 
-import { loadClients, loadLeads } from "./storage.js";
+import { supabase } from "../lib/supabaseClient.js";
+import { loadClients } from "./storage.js";
 
 /* -----------------------------------------------
    Number parsing
@@ -17,7 +19,7 @@ function parseNumber(x) {
 
 /* -----------------------------------------------
    SOLD data source (real, from local storage)
-   We use sold.startDate as the event date and sold.premium for sums.
+   Uses sold.startDate as event date and sold.premium for sums.
 -------------------------------------------------*/
 export function getSoldEventsFromStorage() {
   const clients = loadClients();
@@ -35,46 +37,6 @@ export function getSoldEventsFromStorage() {
     id: c.id,
   }));
 }
-
-/* -----------------------------------------------
-   LEADS data source (real, from local storage)
-   Counts a lead when it has a creation timestamp.
-   Accepted fields: created_at (preferred), createdAt, added_at, addedAt
--------------------------------------------------*/
-function leadCreatedAt(lead) {
-  const raw =
-    lead?.created_at ??
-    lead?.createdAt ??
-    lead?.added_at ??
-    lead?.addedAt ??
-    null;
-  if (!raw) return null;
-  const dt = new Date(raw);
-  return isNaN(dt) ? null : dt;
-}
-
-export function getLeadEventsFromStorage() {
-  const leads = (loadLeads && typeof loadLeads === "function") ? loadLeads() : [];
-  const events = [];
-  for (const L of leads) {
-    const dt = leadCreatedAt(L);
-    if (!dt) continue; // skip leads without a reliable timestamp
-    events.push({
-      type: "lead",
-      date: dt.toISOString(),
-      id: L.id,
-      name: L.name || "",
-      email: L.email || "",
-      phone: L.phone || "",
-    });
-  }
-  return events;
-}
-
-/* -----------------------------------------------
-   DEMO activity (optional). Keep empty.
--------------------------------------------------*/
-const MOCK = [];
 
 /* -----------------------------------------------
    Time helpers
@@ -139,18 +101,6 @@ export function filterRange(items, from, to) {
 }
 
 /* -----------------------------------------------
-   Combine sources for a single timeline
-   - LEADS (real) for lead counts
-   - MOCK (optional)
-   - SOLD (real) for policy_closed + premium
--------------------------------------------------*/
-function timeline() {
-  const leads = getLeadEventsFromStorage();
-  const sold = getSoldEventsFromStorage();
-  return [...leads, ...MOCK, ...sold];
-}
-
-/* -----------------------------------------------
    Grouping (Month → Weeks → Days) with SOLD lists
 -------------------------------------------------*/
 function soldList(items) {
@@ -165,7 +115,7 @@ function soldList(items) {
     }));
 }
 
-export function groupByMonth(items = timeline()) {
+export function groupByMonth(items) {
   const m = new Map();
   for (const it of items) {
     const d = new Date(it.date);
@@ -222,27 +172,113 @@ function groupDays(items) {
     }));
 }
 
+/* ===============================================
+   SUPABASE LEAD COUNTS (created_at)
+   - Queries counts for Today / This Week / This Month
+   - Optional scoping via options: { team_id, user_id, extraFilters }
+   - Uses count-only HEAD selects for efficiency
+=================================================*/
+async function countLeadsBetween(startISO, endISO, options = {}) {
+  let q = supabase
+    .from("leads")
+    .select("*", { count: "exact", head: true })
+    .gte("created_at", startISO)
+    .lte("created_at", endISO);
+
+  // Optional scoping (uncomment / adapt to your schema)
+  if (options.team_id) q = q.eq("team_id", options.team_id);
+  if (options.user_id) q = q.eq("user_id", options.user_id);
+
+  if (options.extraFilters && typeof options.extraFilters === "function") {
+    q = options.extraFilters(q);
+  }
+
+  const { count, error } = await q;
+  if (error) {
+    console.error("[stats] Supabase lead count error:", error);
+    return 0;
+  }
+  return count || 0;
+}
+
 /* -----------------------------------------------
-   Dashboard snapshot (Today / This Week / This Month / All-time)
+   Timeline builder (SOLD real; LEADS counted via Supabase)
+   We keep SOLD events (for reports lists) from storage (as before).
+   Lead counts are fetched separately; we don't need to materialize
+   each lead row into the timeline for the dashboard counters.
 -------------------------------------------------*/
-export function dashboardSnapshot(now = new Date(), items = timeline()) {
-  const today = startOfDay(now);
+function buildSoldTimeline() {
+  const sold = getSoldEventsFromStorage();
+  return sold; // Only sold events here.
+}
+
+/* -----------------------------------------------
+   Cached dashboard snapshot
+   - `dashboardSnapshot()` returns the last cache (sync)
+   - `refreshDashboardSnapshot()` fetches live counts (async)
+-------------------------------------------------*/
+const ZERO = { leads: 0, appointments: 0, clients: 0, closed: 0, premium: 0 };
+
+let _cache = {
+  today: { ...ZERO },
+  thisWeek: { ...ZERO },
+  thisMonth: { ...ZERO },
+  allTime: { ...ZERO },
+  _updatedAt: null,
+};
+
+export function dashboardSnapshot() {
+  return _cache;
+}
+
+export async function refreshDashboardSnapshot(options = {}, now = new Date()) {
+  // Time bounds
+  const end = now;
+  const todayStart = startOfDay(now);
   const weekStart = startOfWeek(now);
   const monthStart = startOfMonth(now);
 
-  const dayItems = filterRange(items, today, now);
-  const weekItems = filterRange(items, weekStart, now);
-  const monthItems = filterRange(items, monthStart, now);
+  // Count leads directly in Supabase
+  const [todayLeads, weekLeads, monthLeads, allLeads] = await Promise.all([
+    countLeadsBetween(todayStart.toISOString(), end.toISOString(), options),
+    countLeadsBetween(weekStart.toISOString(), end.toISOString(), options),
+    countLeadsBetween(monthStart.toISOString(), end.toISOString(), options),
+    // All-time: from very early date
+    countLeadsBetween("1970-01-01T00:00:00.000Z", end.toISOString(), options),
+  ]);
 
-  return {
-    today: getTotals(dayItems),
-    thisWeek: getTotals(weekItems),
-    thisMonth: getTotals(monthItems),
-    allTime: getTotals(items),
+  // SOLD timeline (unchanged)
+  const soldTimeline = buildSoldTimeline();
+
+  const dayItems = filterRange(soldTimeline, todayStart, end);
+  const weekItems = filterRange(soldTimeline, weekStart, end);
+  const monthItems = filterRange(soldTimeline, monthStart, end);
+
+  const todayTotals = getTotals(dayItems);
+  const weekTotals = getTotals(weekItems);
+  const monthTotals = getTotals(monthItems);
+  const allTotals = getTotals(soldTimeline);
+
+  // Inject Supabase lead counts into the totals
+  todayTotals.leads = todayLeads;
+  weekTotals.leads = weekLeads;
+  monthTotals.leads = monthLeads;
+  allTotals.leads = allLeads;
+
+  _cache = {
+    today: todayTotals,
+    thisWeek: weekTotals,
+    thisMonth: monthTotals,
+    allTime: allTotals,
+    _updatedAt: new Date().toISOString(),
   };
+
+  return _cache;
 }
 
-// Helper for Weekly tab label suffix in ReportsPage
+/* -----------------------------------------------
+   Helper for Weekly tab label suffix in ReportsPage
+-------------------------------------------------*/
 export function monthFromWeekKey(weekKey) {
   const d = new Date(weekKey);
   return d.toLocaleDateString(undefined, { month: "short", year: "numeric" });
