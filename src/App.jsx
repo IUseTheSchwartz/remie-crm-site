@@ -40,25 +40,8 @@ const BRAND = {
 // ---------- Pricing cards data ----------
 const PLANS = [
   {
-    name: "Mail List",
-    blurb: "Hands-off client touchpoints with auto birthday & holiday mailers.",
-    monthly: 100,
-    yearly: null,
-    buyUrl: {
-      monthly: "https://buy.stripe.com/7sY9AV7KO9M22su2qg8Ra09",
-    },
-    features: [
-      "Automatic birthday letters for each contact",
-      "Automatic holiday greetings",
-      "Upload CSV and set-it-and-forget-it",
-      "Custom message templates",
-      "Activity log",
-    ],
-    ctaNote: "Stay top-of-mind",
-  },
-  {
     name: "Remie CRM",
-    blurb: "All-in-one CRM for agents — pipeline, dialer, automations, and more.",
+    blurb: "All-in-one CRM for agents — pipeline, automations, and more.",
     monthly: 280,
     yearly: 250,
     buyUrl: {
@@ -73,7 +56,6 @@ const PLANS = [
       "Tasks & reminders",
       "Notes & files on contacts",
       "Shared inbox & calendars",
-      "Power dialer & call queues",
       "No-show rescue campaigns",
       "Quote & application hub (beta)",
       "Bootcamp + ongoing trainings",
@@ -124,12 +106,11 @@ function LandingPage() {
             Close more policies. Not tabs.
           </motion.h1>
           <p className="mt-4 text-lg text-white/70">
-            Choose the plan that fits your workflow—stay in touch automatically,
-            run a clean solo pipeline, or plug your whole team into one system.
+            Choose the plan that fits your workflow—run a clean solo pipeline or plug your whole team into one system.
           </p>
           <div className="mt-6 flex items-center justify-center gap-6 text-xs text-white/60">
             <span className="inline-flex items-center gap-1"><Star className="h-4 w-4" /> Concierge migration (Remie CRM)</span>
-            <span className="inline-flex items-center gap-1"><Phone className="h-4 w-4" /> Click-to-call & power dialer</span>
+            <span className="inline-flex items-center gap-1"><Phone className="h-4 w-4" /> Click-to-call</span>
             <span className="inline-flex items-center gap-1"><Shield className="h-4 w-4" /> Bootcamp for new features</span>
           </div>
         </div>
