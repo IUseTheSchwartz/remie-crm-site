@@ -43,21 +43,73 @@ export async function handler(event) {
 
     // ---------- Helpers (kept + extended) ----------
 
+    // NEW: Resolve app user id using subscription/customer metadata, then fallback to email
+    async function resolveAppUserId({ sub = null, customerId = null, session = null }) {
+      try {
+        // 1) Prefer metadata (existing behavior)
+        let appUserId = sub?.metadata?.app_user_id || session?.metadata?.app_user_id || null;
+
+        // 2) Fallback to Customer metadata
+        if (!appUserId && customerId) {
+          try {
+            const customer = await stripe.customers.retrieve(customerId);
+            appUserId = customer?.metadata?.user_id || null;
+
+            // 3) Final fallback: look up profiles by email if still unknown
+            if (!appUserId) {
+              const email =
+                customer?.email ||
+                session?.customer_details?.email ||
+                session?.customer_email ||
+                null;
+
+              if (email && supabase) {
+                // normalize email for lookup
+                const emailLc = email.trim().toLowerCase();
+
+                const { data: match, error: mErr } = await supabase
+                  .from(TABLE)
+                  .select(`${COLS.id}, email`)
+                  .eq("email", emailLc)
+                  .limit(2);
+
+                if (mErr) {
+                  console.warn("[Webhook] email match lookup error:", mErr?.message || mErr);
+                } else if (Array.isArray(match) && match.length === 1) {
+                  appUserId = match[0][COLS.id];
+                } else if (Array.isArray(match) && match.length > 1) {
+                  console.warn(
+                    "[Webhook] Multiple profiles share email—cannot resolve uniquely:",
+                    emailLc
+                  );
+                }
+              }
+            }
+          } catch (e) {
+            console.warn("[Webhook] resolveAppUserId: could not retrieve customer", e?.message || e);
+          }
+        }
+
+        return appUserId || null;
+      } catch (e) {
+        console.warn("[Webhook] resolveAppUserId error:", e?.message || e);
+        return null;
+      }
+    }
+
     // Persist subscription status for your user
     async function recordSubscription(sub) {
       const status = sub.status; // 'trialing', 'active', 'past_due', 'canceled', 'unpaid', maybe 'paused'
       const customerId = sub.customer;
       const trialEnd = sub.trial_end ? new Date(sub.trial_end * 1000).toISOString() : null;
 
-      // Prefer subscription metadata; fall back to customer metadata
-      let appUserId = sub.metadata?.app_user_id || null;
-      if (!appUserId && customerId) {
-        try {
-          const customer = await stripe.customers.retrieve(customerId);
-          appUserId = customer?.metadata?.user_id || null;
-        } catch (e) {
-          console.warn("[Webhook] Could not fetch customer to read metadata", e?.message || e);
-        }
+      // Prefer subscription metadata; fall back to customer metadata; NEW: fall back to email
+      let appUserId =
+        sub.metadata?.app_user_id ||
+        null;
+
+      if (!appUserId) {
+        appUserId = await resolveAppUserId({ sub, customerId });
       }
 
       console.log("[Billing] recordSubscription", { appUserId, customerId, status, trialEnd });
@@ -82,10 +134,17 @@ export async function handler(event) {
     async function recordCheckoutSession(session) {
       try {
         const customerId = session.customer;
-        const appUserId =
+
+        // As before:
+        let appUserId =
           session.metadata?.app_user_id ||
           session.subscription_metadata?.app_user_id ||
           null;
+
+        // NEW: email-based fallback if still missing
+        if (!appUserId) {
+          appUserId = await resolveAppUserId({ session, customerId });
+        }
 
         if (!supabase || !appUserId || !customerId) return;
 
@@ -170,42 +229,12 @@ export async function handler(event) {
       console.log("[Wallet] Credited", amountCents, "cents to", userId, "from session", session.id);
     }
 
-    // NEW (additive): sync team seats from subscription quantity
-    async function syncSeatsFromStripeSubscription(sub) {
-      try {
-        if (!supabase) return;
-
-        // Find the seat line item on this subscription
-        const seatItem = (sub.items?.data || []).find(
-          (it) => it.price?.id === process.env.STRIPE_PRICE_SEAT_50
-        );
-        if (!seatItem) return; // nothing to sync if the seat price isn't on the sub
-
-        const quantity = seatItem.quantity || 0;
-
-        // Update the team row with this subscription id
-        const { error } = await supabase
-          .from("teams")
-          .update({ seats_purchased: quantity })
-          .eq("stripe_subscription_id", sub.id);
-
-        if (error) {
-          console.warn("[Webhook] Could not sync seats_purchased:", error.message);
-        } else {
-          console.log("[Webhook] Synced seats_purchased =", quantity, "for sub", sub.id);
-        }
-      } catch (e) {
-        console.warn("[Webhook] syncSeatsFromStripeSubscription error:", e?.message || e);
-      }
-    }
-
     // ---------- Event routing (kept + extended) ----------
     switch (evt.type) {
       case "customer.subscription.created":
       case "customer.subscription.updated":
       case "customer.subscription.deleted":
         await recordSubscription(evt.data.object);
-        await syncSeatsFromStripeSubscription(evt.data.object); // NEW: additive, keeps DB in sync with Stripe seats
         break;
 
       case "checkout.session.completed": {
