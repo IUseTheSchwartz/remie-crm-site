@@ -39,6 +39,35 @@ export async function handler(event) {
       return { statusCode: 401, body: "Not authenticated" };
     }
 
+    // ---- PLAN GATE: user must have their OWN CRM subscription ----
+    // Allowed statuses for *personal* plan (NOT team membership)
+    const OK = new Set(["active", "trialing"]);
+    let planStatus = null;
+    let userEmail = null;
+    let stripeCustomerId = null;
+
+    try {
+      const { data: prof } = await supa
+        .from("profiles")
+        .select("id, email, plan_status, stripe_customer_id")
+        .eq("id", userId)
+        .maybeSingle();
+      planStatus = (prof?.plan_status || "").toLowerCase();
+      userEmail = prof?.email || null;
+      stripeCustomerId = prof?.stripe_customer_id || null;
+    } catch (e) {
+      // ignore
+    }
+
+    if (!OK.has(planStatus)) {
+      // 403 keeps semantics consistent; frontend can show nice message
+      return {
+        statusCode: 403,
+        body:
+          "Creating a team requires an active Remie CRM subscription on your own account.",
+      };
+    }
+
     // ---- Parse ----
     let name = "";
     try {
@@ -51,55 +80,38 @@ export async function handler(event) {
       return { statusCode: 400, body: "Missing team name" };
     }
 
-    // ---- Get or create Stripe customer for this user ----
-    // Prefer profiles.stripe_customer_id if present.
-    let stripeCustomerId = null;
-    let userEmail = null;
-
-    try {
-      const { data: prof } = await supa
-        .from("profiles")
-        .select("id, email, stripe_customer_id")
-        .eq("id", userId)
-        .maybeSingle();
-
-      stripeCustomerId = prof?.stripe_customer_id || null;
-      userEmail = prof?.email || null;
-    } catch (e) {
-      console.warn("[create-team] profiles lookup failed (continuing):", e?.message || e);
-    }
-
+    // ---- Ensure Stripe customer (for this OWNER) ----
     if (!stripeCustomerId) {
-      // Optional fallback: read email from auth.users
+      // fallback: try to read auth.users for email
       if (!userEmail) {
         try {
           const { data: authUser } = await supa.auth.admin.getUserById(userId);
           userEmail = authUser?.user?.email || null;
-        } catch (e) {
-          console.warn("[create-team] auth.users lookup failed (continuing):", e?.message || e);
+        } catch {
+          /* noop */
         }
       }
-
-      // Create customer
       const customer = await stripe.customers.create({
         email: userEmail || undefined,
-        metadata: { user_id: userId }, // your webhook can read this
+        metadata: { user_id: userId },
       });
       stripeCustomerId = customer.id;
 
-      // Best-effort writeback
+      // Write back
       try {
         await supa
           .from("profiles")
           .update({ stripe_customer_id: stripeCustomerId })
           .eq("id", userId);
       } catch (e) {
-        console.warn("[create-team] could not update profiles.stripe_customer_id:", e?.message || e);
+        console.warn(
+          "[create-team] could not update profiles.stripe_customer_id:",
+          e?.message || e
+        );
       }
     }
 
     // ---- Create subscription with seat price (quantity 0) ----
-    // Owner NOT included → start at 0 seats. Members add +1 each.
     let subscription;
     try {
       subscription = await stripe.subscriptions.create({
@@ -107,12 +119,18 @@ export async function handler(event) {
         items: [{ price: process.env.STRIPE_PRICE_SEAT_50, quantity: 0 }],
         payment_behavior: "default_incomplete",
         collection_method: "charge_automatically",
-        metadata: { app_user_id: userId }, // stays compatible with your webhook
+        metadata: { app_user_id: userId },
         expand: ["latest_invoice.payment_intent"],
       });
     } catch (e) {
-      console.error("[create-team] Stripe subscription error:", e?.message || e);
-      return { statusCode: 400, body: `Stripe error: ${e?.message || "create subscription failed"}` };
+      console.error(
+        "[create-team] Stripe subscription error:",
+        e?.message || e
+      );
+      return {
+        statusCode: 400,
+        body: `Stripe error: ${e?.message || "create subscription failed"}`,
+      };
     }
 
     // ---- Create team ----
@@ -131,22 +149,34 @@ export async function handler(event) {
       if (error) throw error;
       team = data;
     } catch (e) {
-      console.error("[create-team] Supabase insert teams failed:", e?.message || e);
+      console.error(
+        "[create-team] Supabase insert teams failed:",
+        e?.message || e
+      );
       return { statusCode: 500, body: "Failed to create team record" };
     }
 
-    // ---- Add owner membership ----
+    // ---- Add owner membership (owner is NOT billed as a seat) ----
     try {
       const { error } = await supa
         .from("user_teams")
-        .insert({ user_id: userId, team_id: team.id, role: "owner", status: "active" });
+        .upsert({
+          user_id: userId,
+          team_id: team.id,
+          role: "owner",
+          status: "active",
+          email: userEmail || null, // optional denormalized email
+          joined_at: new Date().toISOString(),
+        }, { onConflict: "team_id,user_id" });
       if (error) throw error;
     } catch (e) {
-      console.error("[create-team] Supabase insert user_teams failed:", e?.message || e);
+      console.error(
+        "[create-team] Supabase upsert user_teams failed:",
+        e?.message || e
+      );
       return { statusCode: 500, body: "Failed to join team as owner" };
     }
 
-    // Optional: return client_secret if you want to show payment confirmation UI
     const clientSecret =
       subscription?.latest_invoice?.payment_intent?.client_secret || null;
 
