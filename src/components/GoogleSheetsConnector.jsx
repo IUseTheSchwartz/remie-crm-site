@@ -1,8 +1,24 @@
 // File: src/components/GoogleSheetsConnector.jsx
 import React, { useEffect, useMemo, useState } from "react";
-import { supabase } from "../lib/supabaseClient"; // your browser Supabase client
+import { supabase } from "../lib/supabaseClient"; // browser Supabase client
 
-const API_PATH = "/.netlify/functions/user-webhook"; // server path (primary), will fallback if 401
+const API_PATH = "/.netlify/functions/user-webhook";
+
+/** Always send a fresh Bearer token; refresh once if needed. */
+async function authFetch(url, options = {}) {
+  // Try to get a session; refresh if it looks empty
+  let { data } = await supabase.auth.getSession();
+  if (!data?.session) {
+    await supabase.auth.refreshSession();
+    ({ data } = await supabase.auth.getSession());
+  }
+  const token = data?.session?.access_token || "";
+  const headers = {
+    ...(options.headers || {}),
+    ...(token ? { Authorization: `Bearer ${token}` } : {}),
+  };
+  return fetch(url, { ...options, headers, credentials: "omit" });
+}
 
 export default function GoogleSheetsConnector() {
   const [hook, setHook] = useState({ id: "", secret: "" });
@@ -15,35 +31,27 @@ export default function GoogleSheetsConnector() {
       setLoading(true);
       setErr("");
       try {
-        // Try server first (sends Bearer token)
-        const { data: ses } = await supabase.auth.getSession();
-        const token = ses?.session?.access_token;
-        if (!token) throw new Error("Please sign in to set up Google Sheets import.");
-
-        const res = await fetch(API_PATH, {
-          method: "GET",
-          headers: { Authorization: `Bearer ${token}` },
-        });
+        // 1) Try the Netlify function with Bearer auth
+        const res = await authFetch(API_PATH, { method: "GET" });
 
         if (res.ok) {
           const json = await res.json();
           if (!cancelled) setHook({ id: json.id, secret: json.secret });
+        } else if (res.status === 401 || res.status === 404) {
+          // 2) Fallback: create/read directly via Supabase (RLS must allow it)
+          const got = await loadOrCreateWebhookViaSupabase();
+          if (!cancelled) setHook(got);
         } else {
-          // If unauthorized/missing endpoint, fall back to client-side Supabase
-          if (res.status === 401 || res.status === 404) {
-            const got = await loadOrCreateWebhookViaSupabase();
-            if (!cancelled) setHook(got);
-          } else {
-            throw new Error(`Fetch webhook failed (${res.status})`);
-          }
+          const text = await safeText(res);
+          throw new Error(`Fetch webhook failed (${res.status}) ${text}`);
         }
       } catch (e) {
-        // Final fallback: try client-side once if we haven’t yet
+        // 3) Final fallback attempt via Supabase (in case the fetch path failed)
         try {
           const got = await loadOrCreateWebhookViaSupabase();
           if (!cancelled) setHook(got);
         } catch (ee) {
-          if (!cancelled) setErr((e?.message || e) + "");
+          if (!cancelled) setErr(`${e?.message || e} | ${ee?.message || ee}`);
         }
       } finally {
         if (!cancelled) setLoading(false);
@@ -53,21 +61,16 @@ export default function GoogleSheetsConnector() {
   }, []);
 
   async function loadOrCreateWebhookViaSupabase() {
-    // Requires RLS policy: user can select/insert/update where user_id = auth.uid()
-    // 1) read existing
+    // READ existing
     const { data: rows, error: selErr } = await supabase
       .from("user_inbound_webhooks")
       .select("id, secret, active")
       .eq("active", true)
       .limit(1);
-
     if (selErr) throw selErr;
+    if (rows && rows.length) return { id: rows[0].id, secret: rows[0].secret };
 
-    if (rows && rows.length) {
-      return { id: rows[0].id, secret: rows[0].secret };
-    }
-
-    // 2) create new
+    // CREATE new
     const id = makeWebhookId();
     const secret = b64Secret(32);
     const { error: insErr } = await supabase
@@ -82,17 +85,10 @@ export default function GoogleSheetsConnector() {
     setLoading(true);
     setErr("");
     try {
-      // Try server rotate first
-      const { data: ses } = await supabase.auth.getSession();
-      const token = ses?.session?.access_token;
-      if (!token) throw new Error("Not signed in.");
-
-      const res = await fetch(API_PATH, {
+      // Prefer rotating via the function (so server can log/update last_used_at etc.)
+      const res = await authFetch(API_PATH, {
         method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${token}`,
-        },
+        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ rotate: true }),
       });
 
@@ -102,7 +98,7 @@ export default function GoogleSheetsConnector() {
         return;
       }
 
-      // Fallback: rotate via Supabase directly
+      // Fallback: rotate directly via Supabase
       const secret = b64Secret(32);
       const { data, error } = await supabase
         .from("user_inbound_webhooks")
@@ -111,7 +107,6 @@ export default function GoogleSheetsConnector() {
         .eq("active", true)
         .select("id, secret")
         .limit(1);
-
       if (error) throw error;
       setHook({ id: data?.[0]?.id || hook.id, secret: data?.[0]?.secret || secret });
     } catch (e) {
@@ -128,7 +123,6 @@ export default function GoogleSheetsConnector() {
   }, [hook.id]);
 
   const scriptText = useMemo(() => {
-    // EXACT script you supplied, with id/secret injected
     return `/**
  * Google Sheets → Remie CRM (per-user)
  * How to set up:
@@ -137,7 +131,6 @@ export default function GoogleSheetsConnector() {
  * 3) Add trigger: From spreadsheet → On change → onAnyChange.
  *    (Optional) Add time-driven trigger: syncNewRows every 1–5 minutes.
  */
-
 const WEBHOOK_URL_PROP = "WEBHOOK_URL";
 const WEBHOOK_SECRET_PROP = "WEBHOOK_SECRET";
 const HEADER_ROW_INDEX = 1; // headers are on row 1
@@ -146,29 +139,13 @@ const STATE_LAST_ROW = "LAST_POSTED_ROW";
 /** 🔧 Fill these in (already set for you) and run setupConfig() once. */
 function setupConfig() {
   const props = PropertiesService.getScriptProperties();
-
-  // ✅ Your Netlify function webhook URL with ?id=...
-  props.setProperty(
-    WEBHOOK_URL_PROP,
-    "${webhookUrl}"
-  );
-
-  // ✅ Your exact webhook secret
-  props.setProperty(
-    WEBHOOK_SECRET_PROP,
-    "${hook.secret}"
-  );
-
-  // Reset the pointer so the next run starts from the first data row
+  props.setProperty(WEBHOOK_URL_PROP, "${webhookUrl}");
+  props.setProperty(WEBHOOK_SECRET_PROP, "${hook.secret}");
   props.deleteProperty(STATE_LAST_ROW);
   Logger.log("Config saved. Now add the trigger: From spreadsheet → On change → onAnyChange.");
 }
-
 /** Trigger: From spreadsheet → On change */
-function onAnyChange(e) {
-  try { postNewRowsSinceLastPointer(); } catch (err) { console.error(err); }
-}
-
+function onAnyChange(e) { try { postNewRowsSinceLastPointer(); } catch (err) { console.error(err); } }
 /** Optional: Time-driven (backup) */
 function syncNewRows() { postNewRowsSinceLastPointer(); }
 
@@ -176,65 +153,43 @@ function syncNewRows() { postNewRowsSinceLastPointer(); }
 function postNewRowsSinceLastPointer() {
   const ss = SpreadsheetApp.getActiveSpreadsheet();
   const sheet = ss.getActiveSheet();
-
   const props = PropertiesService.getScriptProperties();
   const url = props.getProperty(WEBHOOK_URL_PROP);
   const secret = props.getProperty(WEBHOOK_SECRET_PROP);
   if (!url || !secret) throw new Error("Missing URL/SECRET. Run setupConfig().");
-
   const lastPosted = parseInt(props.getProperty(STATE_LAST_ROW) || String(HEADER_ROW_INDEX), 10);
   const lastRow = sheet.getLastRow();
-  if (lastRow <= HEADER_ROW_INDEX || lastRow <= lastPosted) return; // nothing new
-
+  if (lastRow <= HEADER_ROW_INDEX || lastRow <= lastPosted) return;
   const lastCol = sheet.getLastColumn();
-  const headers = sheet.getRange(HEADER_ROW_INDEX, 1, 1, lastCol).getValues()[0]
-    .map(h => String(h || "").trim());
-
-  // lowercase index: "first name" -> column position
-  const idx = {};
-  headers.forEach((h, i) => { if (h) idx[h.toLowerCase()] = i; });
-
-  // Common aliases → canonical keys expected by your webhook
+  const headers = sheet.getRange(HEADER_ROW_INDEX, 1, 1, lastCol).getValues()[0].map(h => String(h || "").trim());
+  const idx = {}; headers.forEach((h, i) => { if (h) idx[h.toLowerCase()] = i; });
   const A = {
-    name:        ["name","full name","fullname","full_name"],
-    first:       ["first","first name","firstname","given name","given_name","fname","first_name"],
-    last:        ["last","last name","lastname","surname","family name","lname","last_name","family_name"],
-    email:       ["email","e-mail","email address","mail","email_address"],
-    phone:       ["phone","phone number","mobile","cell","tel","telephone","number","phone_number"],
-    notes:       ["notes","note","comments","comment","details"],
-    company:     ["company","business","organization","organisation"],
-    dob:         ["dob","date of birth","birthdate","birth date","d.o.b.","date"],
-    state:       ["state","st","us state","residence state"],
-    beneficiary: ["beneficiary","beneficiary type"],
-    beneficiary_name: ["beneficiary name","beneficiary_name","beneficiary full name"],
-    gender:      ["gender","sex"]
+    name:["name","full name","fullname","full_name"],
+    first:["first","first name","firstname","given name","given_name","fname","first_name"],
+    last:["last","last name","lastname","surname","family name","lname","last_name","family_name"],
+    email:["email","e-mail","email address","mail","email_address"],
+    phone:["phone","phone number","mobile","cell","tel","telephone","number","phone_number"],
+    notes:["notes","note","comments","comment","details"],
+    company:["company","business","organization","organisation"],
+    dob:["dob","date of birth","birthdate","birth date","d.o.b.","date"],
+    state:["state","st","us state","residence state"],
+    beneficiary:["beneficiary","beneficiary type"],
+    beneficiary_name:["beneficiary name","beneficiary_name","beneficiary full name"],
+    gender:["gender","sex"]
   };
-
   const getVal = (rowVals, keys) => {
-    for (const k of keys) {
-      const pos = idx[k];
-      if (pos !== undefined) {
-        const v = rowVals[pos];
-        if (v !== null && v !== "") return v;
-      }
-    }
+    for (const k of keys) { const pos = idx[k]; if (pos !== undefined) { const v = rowVals[pos]; if (v !== null && v !== "") return v; } }
     return "";
   };
-
-  // All new rows after the pointer
   const range = sheet.getRange(lastPosted + 1, 1, lastRow - lastPosted, lastCol);
   const rows = range.getValues();
-
   rows.forEach((rowVals, i) => {
-    // Build canonical record
     const first = String(getVal(rowVals, A.first) || "").trim();
     const last  = String(getVal(rowVals, A.last) || "").trim();
     const nameFromFull = String(getVal(rowVals, A.name) || "").trim();
     const name = (nameFromFull || \`\${first} \${last}\`.trim()).trim();
-
-    // Coerce everything to string (Apps Script may produce numbers/dates)
     const record = {
-      name: name,
+      name,
       phone: String(getVal(rowVals, A.phone) || ""),
       email: String(getVal(rowVals, A.email) || ""),
       state: String(getVal(rowVals, A.state) || ""),
@@ -246,15 +201,9 @@ function postNewRowsSinceLastPointer() {
       company: String(getVal(rowVals, A.company) || ""),
       created_at: new Date().toISOString(),
     };
-
-    // If row is truly empty (no identifiers), skip
     if (!record.name && !record.phone && !record.email) return;
-
     const body = JSON.stringify(record);
-    const sig = Utilities.base64Encode(
-      Utilities.computeHmacSha256Signature(body, secret)
-    );
-
+    const sig = Utilities.base64Encode(Utilities.computeHmacSha256Signature(body, secret));
     const res = UrlFetchApp.fetch(url, {
       method: "post",
       contentType: "application/json",
@@ -262,13 +211,10 @@ function postNewRowsSinceLastPointer() {
       headers: { "X-Signature": sig },
       muteHttpExceptions: true,
     });
-
     const code = res.getResponseCode();
     if (code >= 200 && code < 300) {
-      // advance pointer for each successful row
       props.setProperty(STATE_LAST_ROW, String(lastPosted + i + 1));
     } else {
-      // keep pointer on failure so the row can retry on next run
       console.error("Webhook failed", code, res.getContentText());
     }
   });
@@ -358,6 +304,10 @@ function postNewRowsSinceLastPointer() {
 }
 
 /* ---------------- helpers ---------------- */
+
+async function safeText(res) {
+  try { return await res.text(); } catch { return ""; }
+}
 
 function b64Secret(bytes = 32) {
   const buf = new Uint8Array(bytes);
