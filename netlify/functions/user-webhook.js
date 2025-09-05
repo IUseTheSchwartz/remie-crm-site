@@ -2,15 +2,12 @@
 // Purpose: UI <-> DB for per-user webhook (create/read/rotate)
 // Auth: expects Authorization: Bearer <Supabase JWT> from supabase.auth.getSession()
 
-const { createClient } = require("@supabase/supabase-js");
+const crypto = require("crypto");
+const { getAnonClient } = require("./_supabase");
 
-const supabaseAnon = createClient(
-  process.env.SUPABASE_URL,
-  process.env.SUPABASE_ANON_KEY,
-  { auth: { persistSession: false, autoRefreshToken: false } }
-);
+const supabase = getAnonClient();
 
-function json(statusCode, body, extraHeaders = {}) {
+function json(statusCode, body) {
   return {
     statusCode,
     headers: {
@@ -18,7 +15,6 @@ function json(statusCode, body, extraHeaders = {}) {
       "Access-Control-Allow-Origin": "*",
       "Access-Control-Allow-Headers": "Content-Type, Authorization",
       "Access-Control-Allow-Methods": "GET,POST,OPTIONS",
-      ...extraHeaders,
     },
     body: JSON.stringify(body),
   };
@@ -26,15 +22,14 @@ function json(statusCode, body, extraHeaders = {}) {
 
 function randSecret(len = 40) {
   const bytes = new Uint8Array(len);
-  require("crypto").webcrypto.getRandomValues(bytes);
+  crypto.webcrypto.getRandomValues(bytes);
   return Buffer.from(bytes)
     .toString("base64")
     .replace(/[^a-zA-Z0-9]/g, "")
     .slice(0, 40);
 }
-
 function makeWebhookId() {
-  return `wh_u_${require("crypto").randomUUID().replace(/-/g, "")}`;
+  return `wh_u_${crypto.randomUUID().replace(/-/g, "")}`;
 }
 
 exports.handler = async (event) => {
@@ -45,13 +40,14 @@ exports.handler = async (event) => {
     const token = auth.startsWith("Bearer ") ? auth.slice(7) : null;
     if (!token) return json(401, { error: "Missing auth" });
 
-    const { data: userRes, error: userErr } = await supabaseAnon.auth.getUser(token);
-    if (userErr || !userRes?.user) return json(401, { error: "Invalid token" });
+    // Verify user from JWT
+    const { data: userRes, error: uerr } = await supabase.auth.getUser(token);
+    if (uerr || !userRes?.user) return json(401, { error: "Invalid token" });
     const user_id = userRes.user.id;
 
     if (event.httpMethod === "GET") {
-      // fetch existing active webhook or create a new one
-      const { data: rows, error: selErr } = await supabaseAnon
+      // Return existing active webhook or create a new one
+      const { data: rows, error: selErr } = await supabase
         .from("user_inbound_webhooks")
         .select("id, secret, active")
         .eq("user_id", user_id)
@@ -67,12 +63,11 @@ exports.handler = async (event) => {
       const id = makeWebhookId();
       const secret = randSecret();
 
-      const { error: insErr } = await supabaseAnon
+      const { error: insErr } = await supabase
         .from("user_inbound_webhooks")
         .insert([{ id, user_id, secret, active: true }]);
 
       if (insErr) return json(400, { error: insErr.message });
-
       return json(200, { id, secret });
     }
 
@@ -81,7 +76,7 @@ exports.handler = async (event) => {
       try { body = JSON.parse(event.body || "{}"); } catch {}
       if (body.rotate) {
         const newSecret = randSecret();
-        const { data, error: upErr } = await supabaseAnon
+        const { data, error: upErr } = await supabase
           .from("user_inbound_webhooks")
           .update({ secret: newSecret })
           .eq("user_id", user_id)
