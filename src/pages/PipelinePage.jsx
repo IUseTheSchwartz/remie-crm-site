@@ -221,7 +221,7 @@ export default function PipelinePage() {
   function notesFor(id) {
     return (notesMap[id] || []).slice().sort((a,b) => new Date(b.created_at) - new Date(a.created_at));
   }
-  function addNote(id, body, auto = false) {
+  function addNoteProp(id, body, auto = false) {
     if (!id || !body) return;
     const m = loadNotesMap();
     const arr = m[id] || [];
@@ -304,7 +304,7 @@ export default function PipelinePage() {
           onUpdate={(p) => { updatePerson(p); updatePipelineServer(p).catch(()=>{}); }}
           onNextFollowUp={setNextFollowUp}
           notes={notesFor(selected.id)}
-          onAddNote={(pid, body) => addNote(pid, body, false)}
+          onAddNote={(pid, body) => addNoteProp(pid, body, false)}
           onDeleteNote={(pid, noteId) => deleteNote(pid, noteId)}
           onPinNote={(pid, noteId, pinned) => pinNote(pid, noteId, pinned)}
         />
@@ -413,7 +413,7 @@ function Drawer({
       className={`rounded-full px-3 py-1 text-xs border ${
         selectedStage === id
           ? "bg-white text-black border-white/10"
-          : "bg-white/5 text-white border-white/15 hover:bg-white/10"
+          : "bg白/5 text-white border-white/15 hover:bg-white/10"
       }`}
     >
       {children}
@@ -522,7 +522,7 @@ function Drawer({
               <div className="mt-1 grid gap-2">
                 {notes.map(n => (
                   <div key={n.id} className="rounded-lg border border-white/10 bg-black/30 p-2">
-                    <div className="mb-1 flex items-center justify-between text-xs text-white/60">
+                    <div className="mb-1 flex items-center justify-between text-xs text白/60">
                       <span>{new Date(n.created_at).toLocaleString()}</span>
                       <div className="flex items-center gap-3">
                         <button
@@ -586,7 +586,7 @@ function Drawer({
                   onUpdate(next);               // local
                   updatePipelineServer(next).catch(()=>{}); // server
                   const msg = `Quoted ${q.carrier || "—"} | Face: ${q.face || "—"} | Premium: ${q.premium || "—"}.`;
-                  addNote(person.id, msg);
+                  onAddNote(person.id, msg);    // ✅ FIX: use prop to update UI state
                 }}
                 className="mt-1 inline-flex items-center gap-2 rounded-lg border border-white/15 px-2 py-1 text-xs hover:bg-white/10"
               >
@@ -607,7 +607,7 @@ function Drawer({
                   onUpdate(next);
                   updatePipelineServer(next).catch(()=>{});
                   const msg = `Pending reason saved: ${pendingReason || "—"}.`;
-                  addNote(person.id, msg);
+                  onAddNote(person.id, msg);    // ✅ FIX: use prop to update UI state
                 }}
                 className="mt-1 inline-flex items-center gap-2 rounded-lg border border-white/15 px-2 py-1 text-xs hover:bg-white/10"
               >
