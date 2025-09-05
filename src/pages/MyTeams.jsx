@@ -3,13 +3,16 @@ import { useEffect, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { supabase } from "../lib/supabaseClient";
 import { getCurrentUserId, callFn } from "../lib/teamApi";
-import { Users, Crown, LogOut, Plus } from "lucide-react";
+import { Users, Crown, LogOut, Plus, Lock } from "lucide-react";
+
+const OK_PLAN = new Set(["active", "trialing"]); // who can create teams
 
 export default function MyTeams() {
   const [me, setMe] = useState(null);
   const [owned, setOwned] = useState([]);
   const [memberOf, setMemberOf] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [planStatus, setPlanStatus] = useState("");
   const nav = useNavigate();
 
   useEffect(() => {
@@ -17,6 +20,18 @@ export default function MyTeams() {
       setLoading(true);
       const uid = await getCurrentUserId();
       setMe(uid);
+
+      // Personal plan (not team)
+      try {
+        const { data: prof } = await supabase
+          .from("profiles")
+          .select("plan_status")
+          .eq("id", uid)
+          .maybeSingle();
+        setPlanStatus((prof?.plan_status || "").toLowerCase());
+      } catch {
+        setPlanStatus("");
+      }
 
       // Teams I own
       const { data: own } = await supabase
@@ -67,6 +82,8 @@ export default function MyTeams() {
     }
   }
 
+  const canCreateTeam = OK_PLAN.has(planStatus);
+
   if (loading) return <div className="p-6">Loading…</div>;
 
   return (
@@ -75,12 +92,34 @@ export default function MyTeams() {
         <h1 className="text-2xl font-semibold flex items-center gap-2">
           <Users className="w-6 h-6" /> My Teams
         </h1>
-        <button
-          onClick={() => nav("/app/team/create")}
-          className="inline-flex items-center gap-2 rounded-xl border px-3 py-2 hover:bg-white/5"
-        >
-          <Plus className="w-4 h-4" /> Create Team
-        </button>
+
+        {canCreateTeam ? (
+          <button
+            onClick={() => nav("/app/team/create")}
+            className="inline-flex items-center gap-2 rounded-xl border px-3 py-2 hover:bg-white/5"
+          >
+            <Plus className="w-4 h-4" /> Create Team
+          </button>
+        ) : (
+          <div className="flex items-center gap-2">
+            <button
+              disabled
+              className="inline-flex items-center gap-2 rounded-xl border border-white/15 px-3 py-2 text-white/50 cursor-not-allowed"
+              title="A personal Remie CRM subscription is required to create a team."
+            >
+              <Lock className="w-4 h-4" /> Create Team
+            </button>
+            <a
+              href="https://buy.stripe.com/28E4gB8OScYeffg2qg8Ra07"
+              target="_blank"
+              rel="noreferrer"
+              className="text-sm underline text-white/70 hover:text-white"
+              title="Buy Remie CRM to create your own team"
+            >
+              Buy Remie CRM
+            </a>
+          </div>
+        )}
       </header>
 
       {/* Teams I Own */}
