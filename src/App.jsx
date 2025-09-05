@@ -10,12 +10,14 @@ import {
   Star,
   CreditCard,
   ExternalLink,
+  StickyNote,
+  CheckCircle2,
 } from "lucide-react";
 
 import ProtectedRoute from "./components/ProtectedRoute.jsx";
 import { AuthProvider, useAuth } from "./auth.jsx";
 import LoginPage from "./pages/LoginPage.jsx";
-import SignupPage from "./pages/LoginPage.jsx";
+import SignupPage from "./pages/SignupPage.jsx";
 import AgentPublic from "./pages/AgentPublic.jsx";
 import AcceptInvite from "./pages/AcceptInvite.jsx"; // ✅ NEW
 
@@ -63,6 +65,165 @@ const PLANS = [
     highlighted: true,
   },
 ];
+
+/* --------------------------- Mini Pipeline Demo ---------------------------- */
+
+const DEMO_STAGES = [
+  { id: "no_pickup", label: "No Pickup" },
+  { id: "answered", label: "Answered" },
+  { id: "quoted", label: "Quoted" },
+];
+
+const DEMO_STYLE = {
+  no_pickup: "bg-white/10 text-white/80",
+  answered: "bg-sky-500/15 text-sky-300",
+  quoted: "bg-amber-500/15 text-amber-300",
+};
+
+function PipelineDemo() {
+  const [cards, setCards] = useState([
+    { id: "d1", name: "Alex M.", stage: "no_pickup", notes: [] },
+    { id: "d2", name: "Jordan M.", stage: "answered", notes: [] },
+    { id: "d3", name: "Taylor R.", stage: "quoted", notes: [] },
+  ]);
+  const [activeNote, setActiveNote] = useState({});
+
+  const move = (id, dir = 1) => {
+    setCards((prev) =>
+      prev.map((c) => {
+        if (c.id !== id) return c;
+        const idx = DEMO_STAGES.findIndex((s) => s.id === c.stage);
+        const nextIdx = Math.max(0, Math.min(DEMO_STAGES.length - 1, idx + dir));
+        return { ...c, stage: DEMO_STAGES[nextIdx].id };
+      })
+    );
+  };
+
+  const setStage = (id, stage) => {
+    setCards((prev) => prev.map((c) => (c.id === id ? { ...c, stage } : c)));
+  };
+
+  const addNote = (id) => {
+    const text = (activeNote[id] || "").trim();
+    if (!text) return;
+    setCards((prev) =>
+      prev.map((c) =>
+        c.id === id ? { ...c, notes: [{ body: text, ts: new Date().toISOString() }, ...c.notes] } : c
+      )
+    );
+    setActiveNote((n) => ({ ...n, [id]: "" }));
+  };
+
+  const StageBadge = ({ stage }) => (
+    <span className={`rounded-full px-2 py-0.5 text-xs ${DEMO_STYLE[stage] || "bg-white/10 text-white/80"}`}>
+      {DEMO_STAGES.find((s) => s.id === stage)?.label || "No Pickup"}
+    </span>
+  );
+
+  return (
+    <div className="rounded-3xl border border-white/10 bg-white/[0.04] p-4 ring-1 ring-white/5">
+      <div className="mb-3 flex items-center justify-between">
+        <div className="text-sm font-medium">Pipeline Demo (no signup)</div>
+        <div className="text-xs text-white/60">Try changing stages & adding notes</div>
+      </div>
+
+      <div className="grid gap-4 md:grid-cols-3">
+        {DEMO_STAGES.map((stage) => (
+          <div key={stage.id} className="rounded-2xl border border-white/10 bg-white/[0.03] p-2">
+            <div className="flex items-center justify-between px-2 pb-2">
+              <div className="text-sm font-medium">{stage.label}</div>
+            </div>
+            <div className="space-y-2">
+              {cards
+                .filter((c) => c.stage === stage.id)
+                .map((c) => (
+                  <motion.div
+                    key={c.id}
+                    initial={{ opacity: 0, y: 6 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    className="rounded-xl border border-white/10 bg-black/40 p-3"
+                  >
+                    <div className="flex items-start justify-between gap-2">
+                      <div className="font-medium truncate">{c.name}</div>
+                      <StageBadge stage={c.stage} />
+                    </div>
+
+                    <div className="mt-2 flex flex-wrap gap-2">
+                      {/* Stage picker */}
+                      <select
+                        value={c.stage}
+                        onChange={(e) => setStage(c.id, e.target.value)}
+                        className="rounded-md border border-white/10 bg-white/5 px-2 py-1 text-xs"
+                      >
+                        {DEMO_STAGES.map((s) => (
+                          <option key={s.id} value={s.id}>
+                            {s.label}
+                          </option>
+                        ))}
+                      </select>
+
+                      <button
+                        onClick={() => move(c.id, +1)}
+                        className="inline-flex items-center gap-1 rounded-md border border-white/15 px-2 py-1 text-xs hover:bg-white/10"
+                        title="Move to next stage"
+                      >
+                        <CheckCircle2 className="h-3.5 w-3.5" />
+                        Advance
+                      </button>
+                    </div>
+
+                    {/* Notes */}
+                    <div className="mt-3">
+                      <div className="text-xs text-white/60 mb-1">Add a note</div>
+                      <div className="flex gap-2">
+                        <input
+                          value={activeNote[c.id] || ""}
+                          onChange={(e) => setActiveNote((n) => ({ ...n, [c.id]: e.target.value }))}
+                          placeholder="e.g., Sent quote for $45/mo"
+                          className="w-full rounded-lg border border-white/10 bg-black/40 px-2 py-1 text-xs outline-none focus:ring-2 focus:ring-indigo-500/40"
+                        />
+                        <button
+                          onClick={() => addNote(c.id)}
+                          className="inline-flex items-center gap-1 rounded-md border border-white/15 px-2 py-1 text-xs hover:bg-white/10"
+                        >
+                          <StickyNote className="h-3.5 w-3.5" />
+                          Add
+                        </button>
+                      </div>
+
+                      <div className="mt-2 space-y-1">
+                        {c.notes.length === 0 ? (
+                          <div className="text-xs text-white/40">No notes yet.</div>
+                        ) : (
+                          c.notes.map((n, i) => (
+                            <div key={i} className="rounded-md border border-white/10 bg-black/30 p-2">
+                              <div className="text-[11px] text-white/50 mb-1">
+                                {new Date(n.ts).toLocaleString()}
+                              </div>
+                              <div className="text-xs">{n.body}</div>
+                            </div>
+                          ))
+                        )}
+                      </div>
+                    </div>
+                  </motion.div>
+                ))}
+
+              {/* Empty state */}
+              {cards.filter((c) => c.stage === stage.id).length === 0 && (
+                <div className="rounded-xl border border-dashed border-white/10 p-4 text-center text-xs text-white/50">
+                  No cards in this stage
+                </div>
+              )}
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+/* ------------------------------- Main Landing ------------------------------ */
 
 // ---------- Landing Page ----------
 function LandingPage() {
@@ -113,7 +274,7 @@ function LandingPage() {
         </div>
       </section>
 
-      {/* Pricing + Showcase */}
+      {/* Pricing + Demo */}
       <section id="pricing" className="relative z-10 mx-auto max-w-7xl px-6 py-14">
         <div className="mx-auto max-w-2xl text-center">
           <h2 className="text-3xl font-semibold tracking-tight sm:text-4xl">Simple, transparent pricing</h2>
@@ -124,7 +285,7 @@ function LandingPage() {
           </div>
         </div>
 
-        {/* Left: plan card, Right: video showcase */}
+        {/* Left: plan card, Right: interactive pipeline demo */}
         <div className="mt-10 grid gap-6 md:grid-cols-2 items-start">
           {/* Plan card (left-aligned) */}
           {PLANS.map((plan) => {
@@ -177,24 +338,8 @@ function LandingPage() {
             );
           })}
 
-          {/* Video showcase (right) */}
-          <div className="rounded-3xl border border-white/10 bg-white/[0.04] p-4 ring-1 ring-white/5">
-            <div className="rounded-2xl overflow-hidden border border-white/10 bg-black/60">
-              <video
-                className="w-full h-full"
-                controls
-                playsInline
-                preload="metadata"
-                poster="/videos/remie-poster.jpg"
-              >
-                <source src="/videos/remie-showcase.mp4" type="video/mp4" />
-                Your browser does not support the video tag.
-              </video>
-            </div>
-            <div className="mt-3 text-sm text-white/70">
-              Quick tour: building a pipeline, automations, and the agent site in minutes.
-            </div>
-          </div>
+          {/* Interactive pipeline demo (right) */}
+          <PipelineDemo />
         </div>
 
         <p className="mt-6 text-center text-xs text-white/50">Prices in USD. Annual pricing shows per-month equivalent, billed annually (where available).</p>
