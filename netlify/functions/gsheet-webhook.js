@@ -28,7 +28,7 @@ function U(v) {
   return s === "" ? undefined : s;
 }
 
-// 🔁 CHANGED: Normalize any date-like input to MM/DD/YYYY (string). Return undefined if invalid.
+// 🔁 Normalize any date-like input to MM/DD/YYYY (string). Return undefined if invalid.
 function toMDY(v) {
   if (v == null) return undefined;
 
@@ -120,13 +120,22 @@ exports.handler = async (event) => {
     catch { return { statusCode: 400, body: "Invalid JSON" }; }
 
     // Build record (omit blank extras)
+    const nowIso = new Date().toISOString();
     const lead = {
       user_id: wh.user_id,
       name:  U(p.name) ?? null,
       phone: U(p.phone) ?? null,
       email: U(p.email) ?? null,
       state: U(p.state) ?? null,
-      created_at: U(p.created_at) || new Date().toISOString(),
+      created_at: U(p.created_at) || nowIso,
+
+      // ✅ Option A: pipeline-safe defaults so webhook rows don't break or reset stages
+      stage: "no_pickup",
+      stage_changed_at: nowIso,
+      priority: "medium",
+      call_attempts: 0,
+      last_outcome: "",
+      pipeline: {},
     };
 
     const extras = {
@@ -137,7 +146,7 @@ exports.handler = async (event) => {
       gender:           U(p.gender),
     };
 
-    // 🔁 CHANGED: use MM/DD/YYYY
+    // Keep DOB as MM/DD/YYYY string
     const dobMDY = toMDY(p.dob);
     if (dobMDY) extras.dob = dobMDY;
 
@@ -151,7 +160,6 @@ exports.handler = async (event) => {
     }
 
     // ---------- DEDUPE GUARD (10-minute window) ----------
-    // If email or phone present, check recent inserts to avoid duplicates
     const orFilters = [];
     if (lead.email) orFilters.push(`email.eq.${encodeURIComponent(lead.email)}`);
     if (lead.phone) orFilters.push(`phone.eq.${encodeURIComponent(lead.phone)}`);
