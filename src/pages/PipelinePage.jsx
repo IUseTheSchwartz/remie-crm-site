@@ -10,11 +10,10 @@ import {
   loadClients, saveClients,
   normalizePerson
 } from "../lib/storage.js";
-import { upsertLeadServer } from "../lib/supabaseLeads.js";
+import { upsertLeadServer, updatePipelineServer } from "../lib/supabaseLeads.js";
 
 /* ---------------------------------- Config --------------------------------- */
 
-// Display order
 const STAGES = [
   { id: "no_pickup",     label: "No Pickup",     hint: "No answer / left VM" },
   { id: "answered",      label: "Answered",      hint: "Reached the lead" },
@@ -24,13 +23,11 @@ const STAGES = [
   { id: "app_submitted", label: "App Submitted", hint: "Fully submitted" },
 ];
 
-// 2 rows × 3 columns
 const ROWS = [
   ["no_pickup", "answered", "quoted"],
   ["app_started", "app_pending", "app_submitted"],
 ];
 
-// visual tags
 const STAGE_STYLE = {
   no_pickup:     "bg-white/10 text-white/80",
   answered:      "bg-sky-500/15 text-sky-300",
@@ -40,19 +37,15 @@ const STAGE_STYLE = {
   app_submitted: "bg-emerald-500/15 text-emerald-300",
 };
 
-// Card geometry (for scroll area height)
-const CARD_H = 150;    // must match .h-[150px] on Card
-const GAP_Y = 8;       // space-y-2 = 0.5rem = 8px
-const MAX_VISIBLE = 5; // show 5 cards then scroll
-const SCROLL_H = CARD_H * MAX_VISIBLE + GAP_Y * (MAX_VISIBLE - 1); // ~760px
+const CARD_H = 150;
+const GAP_Y = 8;
+const MAX_VISIBLE = 5;
+const SCROLL_H = CARD_H * MAX_VISIBLE + GAP_Y * (MAX_VISIBLE - 1);
 
 /* ------------------------------- Notes storage ----------------------------- */
 
 const NOTES_KEY = "remie_notes_v1";
-function loadNotesMap() {
-  try { return JSON.parse(localStorage.getItem(NOTES_KEY) || "{}"); }
-  catch { return {}; }
-}
+function loadNotesMap() { try { return JSON.parse(localStorage.getItem(NOTES_KEY) || "{}"); } catch { return {}; } }
 function saveNotesMap(m) { localStorage.setItem(NOTES_KEY, JSON.stringify(m)); }
 
 /* ------------------------------ Helper functions --------------------------- */
@@ -123,12 +116,10 @@ export default function PipelinePage() {
   const [notesMap, setNotesMap] = useState(loadNotesMap());
   const [showFilters, setShowFilters] = useState(false);
 
-  // Lock background scroll while drawer is open
   useEffect(() => {
     const body = document.body;
     const prev = body.style.overflow;
-    if (selected) body.style.overflow = "hidden";
-    else body.style.overflow = prev || "";
+    body.style.overflow = selected ? "hidden" : (prev || "");
     return () => { body.style.overflow = prev || ""; };
   }, [selected]);
 
@@ -213,14 +204,14 @@ export default function PipelinePage() {
     const withStage = { ...person, stage: safe, stage_changed_at: nowIso() };
     updatePerson(withStage);
     autoNoteForStageChange(person, safe);
-    // persist to Supabase (non-blocking)
-    upsertLeadServer(withStage).catch(()=>{});
+    // persist to Supabase (resolve row id by id/email/phone)
+    updatePipelineServer(withStage).catch(()=>{});
   }
 
   function setNextFollowUp(person, dateIso) {
     const withNext = { ...person, next_follow_up_at: dateIso || null };
     updatePerson(withNext);
-    upsertLeadServer(withNext).catch(()=>{});
+    updatePipelineServer(withNext).catch(()=>{});
   }
 
   function openCard(p) { setSelected(p); }
@@ -285,7 +276,7 @@ export default function PipelinePage() {
         </div>
       </div>
 
-      {/* Board — 2 rows of 3 columns, each lane scrolls */}
+      {/* Board */}
       <div className="grid gap-4">
         {ROWS.map((row, i) => (
           <div key={i} className="grid gap-4 md:grid-cols-3">
@@ -310,7 +301,7 @@ export default function PipelinePage() {
           person={selected}
           onClose={() => setSelected(null)}
           onSetStage={setStage}
-          onUpdate={(p) => { updatePerson(p); upsertLeadServer(p).catch(()=>{}); }}
+          onUpdate={(p) => { updatePerson(p); updatePipelineServer(p).catch(()=>{}); }}
           onNextFollowUp={setNextFollowUp}
           notes={notesFor(selected.id)}
           onAddNote={(pid, body) => addNote(pid, body, false)}
@@ -334,7 +325,6 @@ function Lane({ stage, people, onOpen }) {
         </div>
       </div>
 
-      {/* Scrollable list showing ~5 cards; vertical scroll only inside the lane */}
       <div
         className="space-y-2 overflow-y-auto overscroll-contain pr-1"
         style={{ maxHeight: `${SCROLL_H}px` }}
@@ -593,10 +583,10 @@ function Drawer({
                     stage_changed_at: nowIso(),
                     pipeline: { ...(person.pipeline || {}), quote: q },
                   };
-                  onUpdate(next);
+                  onUpdate(next);               // local
+                  updatePipelineServer(next).catch(()=>{}); // server
                   const msg = `Quoted ${q.carrier || "—"} | Face: ${q.face || "—"} | Premium: ${q.premium || "—"}.`;
-                  onAddNote(person.id, msg);
-                  upsertLeadServer(next).catch(()=>{});
+                  addNote(person.id, msg);
                 }}
                 className="mt-1 inline-flex items-center gap-2 rounded-lg border border-white/15 px-2 py-1 text-xs hover:bg-white/10"
               >
@@ -615,9 +605,9 @@ function Drawer({
                     pipeline: { ...(person.pipeline || {}), pending: { reason: pendingReason } },
                   };
                   onUpdate(next);
+                  updatePipelineServer(next).catch(()=>{});
                   const msg = `Pending reason saved: ${pendingReason || "—"}.`;
-                  onAddNote(person.id, msg);
-                  upsertLeadServer(next).catch(()=>{});
+                  addNote(person.id, msg);
                 }}
                 className="mt-1 inline-flex items-center gap-2 rounded-lg border border-white/15 px-2 py-1 text-xs hover:bg-white/10"
               >
@@ -629,7 +619,6 @@ function Drawer({
 
         <style>{`.inp{width:100%; border-radius:.75rem; border:1px solid rgba(255,255,255,.1); background:#00000066; padding:.45rem .6rem; outline:none}
         .inp:focus{box-shadow:0 0 0 2px rgba(99,102,241,.4)}
-        /* Optional: nicer thin scrollbar for lanes */
         .overscroll-contain::-webkit-scrollbar{width:8px}
         .overscroll-contain::-webkit-scrollbar-thumb{background:rgba(255,255,255,.15); border-radius:8px}
         .overscroll-contain::-webkit-scrollbar-track{background:transparent}`}</style>
@@ -652,14 +641,17 @@ function labelForStage(id) {
   return m[id] || "No Pickup";
 }
 
-function autoNoteForStageChange(person, newStage) {
-  const stageLabel = labelForStage(newStage);
-  const msg = `Stage set to: ${stageLabel}.`;
+function addNote(id, body) {
   try {
-    const m = loadNotesMap();
-    const arr = m[person.id] || [];
-    arr.push({ id: crypto.randomUUID(), body: msg, auto: true, pinned: false, created_at: nowIso() });
-    m[person.id] = arr;
-    saveNotesMap(m);
+    const m = JSON.parse(localStorage.getItem("remie_notes_v1") || "{}");
+    const arr = m[id] || [];
+    arr.push({ id: crypto.randomUUID(), body, auto: true, pinned: false, created_at: new Date().toISOString() });
+    m[id] = arr;
+    localStorage.setItem("remie_notes_v1", JSON.stringify(m));
   } catch {}
+}
+
+function autoNoteForStageChange(person, newStage) {
+  const msg = `Stage set to: ${labelForStage(newStage)}.`;
+  addNote(person.id, msg);
 }
