@@ -131,6 +131,36 @@ const buildGender = (row, map) => pick(row, map.gender);
 const onlyDigits = (s) => String(s || "").replace(/\D+/g, "");
 const normEmail  = (s) => String(s || "").trim().toLowerCase();
 
+// ✅ NEW: Keep current stage if this person already exists locally
+function preserveStage(existingList, incoming) {
+  // Prefer id match
+  if (incoming.id) {
+    const byId = existingList.find(x => x.id === incoming.id);
+    if (byId) {
+      return {
+        stage: byId.stage,
+        stage_changed_at: byId.stage_changed_at,
+        ...incoming,
+        stage: incoming.stage ?? byId.stage,
+      };
+    }
+  }
+  // Fallback to email/phone match
+  const e = (incoming.email || "").trim().toLowerCase();
+  const p = String(incoming.phone || "").replace(/\D+/g, "");
+  const match = existingList.find(x =>
+    (e && (x.email || "").trim().toLowerCase() === e) ||
+    (p && String(x.phone || "").replace(/\D+/g, "") === p)
+  );
+  if (!match) return incoming;
+  return {
+    stage: match.stage,
+    stage_changed_at: match.stage_changed_at,
+    ...incoming,
+    stage: incoming.stage ?? match.stage,
+  };
+}
+
 export default function LeadsPage() {
   const [tab, setTab] = useState("clients"); // 'clients' | 'sold'  (label "Leads" for 'clients')
   const [leads, setLeads] = useState([]);
@@ -294,11 +324,14 @@ export default function LeadsPage() {
           const beneficiary_name = buildBeneficiaryName(r, map);
           const gender = buildGender(r, map);
 
-          const person = normalizePerson({
+          let person = normalizePerson({
             name, phone, email, notes,
             status: "lead",
             dob, state, beneficiary, beneficiary_name, gender,
           });
+
+          // ✅ preserve existing stage if we already have this person
+          person = preserveStage([...clients, ...leads], person);
 
           // require at least some identifier
           if (!(person.name || person.phone || person.email)) continue;
@@ -364,6 +397,8 @@ export default function LeadsPage() {
 
     const updated = {
       ...base,
+      // ✅ preserve pipeline stage (don’t reset when saving SOLD)
+      stage: base.stage || "no_pickup",
       status: "sold",
       sold: {
         carrier: soldPayload.carrier || "",
@@ -712,7 +747,7 @@ function SoldDrawer({ initial, allClients, onClose, onSave }) {
                    className="inp" placeholder="jane@example.com" />
           </Field>
 
-          {/* sold fields */}
+        {/* sold fields */}
           <Field label="Carrier sold">
             <input value={form.carrier} onChange={(e)=>setForm({...form, carrier:e.target.value})}
                    className="inp" placeholder="Mutual of Omaha" />
