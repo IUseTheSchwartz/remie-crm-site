@@ -13,8 +13,11 @@ const COLS = {
   stripeCustomerId: "stripe_customer_id",
 };
 
-// ---- New: wallet table name (no schema changes required) ----
+// ---- Wallet table (kept) ----
 const WALLET_TABLE = "user_wallets";
+
+// ---- Existing subscriptions table name (we will upsert into this) ----
+const SUBS_TABLE = "subscriptions";
 
 // Supabase client (supports either env var name for service role)
 const SERVICE_ROLE =
@@ -43,19 +46,29 @@ export async function handler(event) {
 
     // ---------- Helpers (kept + extended) ----------
 
-    // NEW: Resolve app user id using subscription/customer metadata, then fallback to email
+    /**
+     * Resolve your app user id.
+     * Order of preference:
+     * 1) sub.metadata.app_user_id or session.metadata.app_user_id
+     * 2) stripe customer metadata.user_id
+     * 3) fallback: look up profiles by customer email (exact single match)
+     */
     async function resolveAppUserId({ sub = null, customerId = null, session = null }) {
       try {
-        // 1) Prefer metadata (existing behavior)
-        let appUserId = sub?.metadata?.app_user_id || session?.metadata?.app_user_id || null;
+        // 1) from subscription/session metadata
+        let appUserId =
+          sub?.metadata?.app_user_id ||
+          session?.metadata?.app_user_id ||
+          session?.subscription_metadata?.app_user_id ||
+          null;
 
-        // 2) Fallback to Customer metadata
+        // 2) from customer metadata
         if (!appUserId && customerId) {
           try {
             const customer = await stripe.customers.retrieve(customerId);
             appUserId = customer?.metadata?.user_id || null;
 
-            // 3) Final fallback: look up profiles by email if still unknown
+            // 3) fallback: email match
             if (!appUserId) {
               const email =
                 customer?.email ||
@@ -64,9 +77,7 @@ export async function handler(event) {
                 null;
 
               if (email && supabase) {
-                // normalize email for lookup
                 const emailLc = email.trim().toLowerCase();
-
                 const { data: match, error: mErr } = await supabase
                   .from(TABLE)
                   .select(`${COLS.id}, email`)
@@ -86,7 +97,7 @@ export async function handler(event) {
               }
             }
           } catch (e) {
-            console.warn("[Webhook] resolveAppUserId: could not retrieve customer", e?.message || e);
+            console.warn("[Webhook] resolveAppUserId: customer retrieve failed", e?.message || e);
           }
         }
 
@@ -97,23 +108,102 @@ export async function handler(event) {
       }
     }
 
-    // Persist subscription status for your user
+    /**
+     * NEW: Upsert into your existing `subscriptions` table.
+     * This tries two common schemas:
+     *  A) columns like: id (PK), customer_id, app_user_id, status, price_id, quantity, period bounds, trial_end, etc.
+     *  B) columns like: stripe_subscription_id (unique), stripe_customer_id, user_id, status, price_id, product_id, cancel_at_period_end, trial_end, etc.
+     * If the first upsert fails due to a column mismatch, we try the second.
+     */
+    async function upsertIntoSubscriptions(sub) {
+      if (!supabase) return;
+
+      const customerId = sub.customer || null;
+      const appUserId = await resolveAppUserId({ sub, customerId });
+
+      const firstItem = Array.isArray(sub.items?.data) ? sub.items.data[0] : null;
+      const price = firstItem?.price || null;
+      const priceId = price?.id || null;
+      const productId = price?.product || null;
+      const qty = firstItem?.quantity ?? null;
+
+      // Convert seconds -> ISO
+      const iso = (ts) => (ts ? new Date(ts * 1000).toISOString() : null);
+
+      // Variant A (id as PK)
+      const payloadA = {
+        id: sub.id,
+        customer_id: customerId,
+        app_user_id: appUserId, // may be null if unresolved
+        status: sub.status,
+        price_id: priceId,
+        quantity: qty,
+        current_period_start: iso(sub.current_period_start),
+        current_period_end: iso(sub.current_period_end),
+        cancel_at: iso(sub.cancel_at),
+        canceled_at: iso(sub.canceled_at),
+        trial_end: iso(sub.trial_end),
+        raw: sub, // if you have a jsonb 'raw' column
+      };
+
+      // Variant B (stripe_subscription_id as unique/PK; user_id naming)
+      const payloadB = {
+        stripe_subscription_id: sub.id,
+        stripe_customer_id: customerId,
+        user_id: appUserId, // may be null if unresolved
+        status: sub.status,
+        price_id: priceId,
+        product_id: productId,
+        cancel_at_period_end: sub.cancel_at_period_end ?? null,
+        current_period_start: iso(sub.current_period_start),
+        current_period_end: iso(sub.current_period_end),
+        trial_end: iso(sub.trial_end),
+      };
+
+      // Try A first (primary key 'id')
+      try {
+        const { error: aErr } = await supabase
+          .from(SUBS_TABLE)
+          .upsert(payloadA); // relies on PK 'id' if present
+        if (aErr) throw aErr;
+
+        console.log("[Webhook] subscriptions upsert (A) ok:", sub.id, "user:", appUserId);
+        return;
+      } catch (e) {
+        console.warn("[Webhook] subscriptions upsert (A) failed, trying (B):", e?.message || e);
+      }
+
+      // Try B next (unique 'stripe_subscription_id')
+      try {
+        const { error: bErr } = await supabase
+          .from(SUBS_TABLE)
+          .upsert(payloadB, { onConflict: "stripe_subscription_id" });
+        if (bErr) throw bErr;
+
+        console.log("[Webhook] subscriptions upsert (B) ok:", sub.id, "user:", appUserId);
+      } catch (e) {
+        console.error("[Webhook] subscriptions upsert failed (both attempts):", e?.message || e);
+      }
+    }
+
+    // Persist subscription status for your user (kept; adds email fallback + subscriptions upsert)
     async function recordSubscription(sub) {
       const status = sub.status; // 'trialing', 'active', 'past_due', 'canceled', 'unpaid', maybe 'paused'
       const customerId = sub.customer;
       const trialEnd = sub.trial_end ? new Date(sub.trial_end * 1000).toISOString() : null;
 
-      // Prefer subscription metadata; fall back to customer metadata; NEW: fall back to email
-      let appUserId =
-        sub.metadata?.app_user_id ||
-        null;
-
+      // Prefer subscription metadata; NEW: fall back to email if needed
+      let appUserId = sub.metadata?.app_user_id || null;
       if (!appUserId) {
         appUserId = await resolveAppUserId({ sub, customerId });
       }
 
       console.log("[Billing] recordSubscription", { appUserId, customerId, status, trialEnd });
 
+      // NEW: always upsert subscriptions table, even if appUserId is null (we still save the sub)
+      await upsertIntoSubscriptions(sub);
+
+      // Keep your original profiles update
       if (!supabase || !appUserId) return;
 
       const payload = {
@@ -130,12 +220,11 @@ export async function handler(event) {
       }
     }
 
-    // Capture checkout completion to store customer id
+    // Capture checkout completion to store customer id (kept; adds email fallback)
     async function recordCheckoutSession(session) {
       try {
         const customerId = session.customer;
 
-        // As before:
         let appUserId =
           session.metadata?.app_user_id ||
           session.subscription_metadata?.app_user_id ||
@@ -163,7 +252,7 @@ export async function handler(event) {
       }
     }
 
-    // NEW: Credit SMS wallet for one-time top-ups created by create-checkout-session
+    // NEW: Credit SMS wallet for one-time top-ups created by create-checkout-session (kept)
     async function creditWalletTopup(session) {
       if (!supabase) return;
 
@@ -187,7 +276,6 @@ export async function handler(event) {
       }
 
       // Idempotency (lightweight): try to record the event id; if table not present, continue.
-      let canProcess = true;
       try {
         const { error } = await supabase
           .from("webhook_events")
@@ -196,15 +284,11 @@ export async function handler(event) {
             { onConflict: "id" }
           );
         if (error) {
-          // If the table doesn't exist, we continue (best-effort). For stronger guarantees,
-          // create table webhook_events(id text primary key, type text, created_at timestamptz).
           console.warn("[Wallet] webhook_events upsert error (non-fatal):", error.message);
         }
       } catch {
         // no-op
       }
-
-      if (!canProcess) return;
 
       // Credit (upsert if wallet row doesn't exist)
       const { data: wallet } = await supabase
