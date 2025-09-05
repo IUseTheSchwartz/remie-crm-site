@@ -131,34 +131,16 @@ const buildGender = (row, map) => pick(row, map.gender);
 const onlyDigits = (s) => String(s || "").replace(/\D+/g, "");
 const normEmail  = (s) => String(s || "").trim().toLowerCase();
 
-// ✅ NEW: Keep current stage if this person already exists locally
+/** ✅ Preserve local pipeline fields if they already exist for this id */
 function preserveStage(existingList, incoming) {
-  // Prefer id match
-  if (incoming.id) {
-    const byId = existingList.find(x => x.id === incoming.id);
-    if (byId) {
-      return {
-        stage: byId.stage,
-        stage_changed_at: byId.stage_changed_at,
-        ...incoming,
-        stage: incoming.stage ?? byId.stage,
-      };
-    }
+  const found = existingList.find(x => x.id === incoming.id);
+  if (!found) return incoming;
+  const keep = { ...incoming };
+  const F = ["stage","stage_changed_at","next_follow_up_at","last_outcome","call_attempts","priority","pipeline"];
+  for (const k of F) {
+    if (found[k] !== undefined && found[k] !== null) keep[k] = found[k];
   }
-  // Fallback to email/phone match
-  const e = (incoming.email || "").trim().toLowerCase();
-  const p = String(incoming.phone || "").replace(/\D+/g, "");
-  const match = existingList.find(x =>
-    (e && (x.email || "").trim().toLowerCase() === e) ||
-    (p && String(x.phone || "").replace(/\D+/g, "") === p)
-  );
-  if (!match) return incoming;
-  return {
-    stage: match.stage,
-    stage_changed_at: match.stage_changed_at,
-    ...incoming,
-    stage: incoming.stage ?? match.stage,
-  };
+  return keep;
 }
 
 export default function LeadsPage() {
@@ -199,12 +181,16 @@ export default function LeadsPage() {
         const emails = new Set([...clients, ...leads].map(r => normEmail(r.email)).filter(Boolean));
         const phones = new Set([...clients, ...leads].map(r => onlyDigits(r.phone)).filter(Boolean));
 
-        const incoming = rows.filter(r => {
-          const idDup = byId.has(r.id);
-          const eDup = r.email && emails.has(normEmail(r.email));
-          const pDup = r.phone && phones.has(onlyDigits(r.phone));
-          return !(idDup || eDup || pDup);
-        });
+        const existingAll = [...clients, ...leads];
+
+        const incoming = rows
+          .filter(r => {
+            const idDup = byId.has(r.id);
+            const eDup = r.email && emails.has(normEmail(r.email));
+            const pDup = r.phone && phones.has(onlyDigits(r.phone));
+            return !(idDup || eDup || pDup);
+          })
+          .map(r => preserveStage(existingAll, r));
 
         if (incoming.length) {
           const newLeads = [...incoming, ...leads];
@@ -236,7 +222,7 @@ export default function LeadsPage() {
             "postgres_changes",
             { event: "INSERT", schema: "public", table: "leads", filter: `user_id=eq.${userId}` },
             (payload) => {
-              const row = payload.new;
+              const row = preserveStage([...leads, ...clients], payload.new);
 
               const idDup = [...leads, ...clients].some(x => x.id === row.id);
               const eDup = row.email && [...leads, ...clients].some(x => normEmail(x.email) === normEmail(row.email));
@@ -324,14 +310,11 @@ export default function LeadsPage() {
           const beneficiary_name = buildBeneficiaryName(r, map);
           const gender = buildGender(r, map);
 
-          let person = normalizePerson({
+          const person = normalizePerson({
             name, phone, email, notes,
             status: "lead",
             dob, state, beneficiary, beneficiary_name, gender,
           });
-
-          // ✅ preserve existing stage if we already have this person
-          person = preserveStage([...clients, ...leads], person);
 
           // require at least some identifier
           if (!(person.name || person.phone || person.email)) continue;
@@ -397,8 +380,6 @@ export default function LeadsPage() {
 
     const updated = {
       ...base,
-      // ✅ preserve pipeline stage (don’t reset when saving SOLD)
-      stage: base.stage || "no_pickup",
       status: "sold",
       sold: {
         carrier: soldPayload.carrier || "",
@@ -747,7 +728,7 @@ function SoldDrawer({ initial, allClients, onClose, onSave }) {
                    className="inp" placeholder="jane@example.com" />
           </Field>
 
-        {/* sold fields */}
+          {/* sold fields */}
           <Field label="Carrier sold">
             <input value={form.carrier} onChange={(e)=>setForm({...form, carrier:e.target.value})}
                    className="inp" placeholder="Mutual of Omaha" />
