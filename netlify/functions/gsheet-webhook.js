@@ -129,7 +129,7 @@ exports.handler = async (event) => {
       state: U(p.state) ?? null,
       created_at: U(p.created_at) || nowIso,
 
-      // ✅ Option A: pipeline-safe defaults so webhook rows don't break or reset stages
+      // ✅ pipeline-safe defaults
       stage: "no_pickup",
       stage_changed_at: nowIso,
       priority: "medium",
@@ -146,7 +146,6 @@ exports.handler = async (event) => {
       gender:           U(p.gender),
     };
 
-    // Keep DOB as MM/DD/YYYY string
     const dobMDY = toMDY(p.dob);
     if (dobMDY) extras.dob = dobMDY;
 
@@ -154,7 +153,6 @@ exports.handler = async (event) => {
       if (v !== undefined) lead[k] = v;
     }
 
-    // Require at least one identifier
     if (!lead.name && !lead.phone && !lead.email) {
       return { statusCode: 400, body: "Empty lead payload" };
     }
@@ -165,7 +163,7 @@ exports.handler = async (event) => {
     if (lead.phone) orFilters.push(`phone.eq.${encodeURIComponent(lead.phone)}`);
 
     if (orFilters.length) {
-      const cutoffISO = new Date(Date.now() - 10 * 60 * 1000).toISOString(); // 10 minutes ago
+      const cutoffISO = new Date(Date.now() - 10 * 60 * 1000).toISOString();
       const { data: existing, error: qErr } = await supabase
         .from("leads")
         .select("id, created_at")
@@ -175,7 +173,6 @@ exports.handler = async (event) => {
         .limit(1);
 
       if (!qErr && existing && existing.length) {
-        // treat as success; return existing id
         return { statusCode: 200, body: JSON.stringify({ ok: true, id: existing[0].id, deduped: true }) };
       }
     }
@@ -188,9 +185,19 @@ exports.handler = async (event) => {
 
     if (insErr) {
       console.error("Insert error:", insErr);
-      // surface DB error to help diagnose quickly
       return { statusCode: 500, body: JSON.stringify({ ok: false, error: insErr }) };
     }
+
+    const insertedId = data?.[0]?.id || null;
+
+    // Verify immediately
+    const { data: verifyRow, error: verifyErr } = await supabase
+      .from("leads")
+      .select("id, created_at")
+      .eq("id", insertedId)
+      .maybeSingle();
+
+    const projectRef = (process.env.SUPABASE_URL || "").match(/https?:\/\/([^.]+)\.supabase\.co/i)?.[1] || "unknown";
 
     // Update last_used_at for the webhook (non-blocking)
     await supabase
@@ -198,7 +205,15 @@ exports.handler = async (event) => {
       .update({ last_used_at: new Date().toISOString() })
       .eq("id", webhookId);
 
-    return { statusCode: 200, body: JSON.stringify({ ok: true, id: data?.[0]?.id }) };
+    return {
+      statusCode: 200,
+      body: JSON.stringify({
+        ok: true,
+        id: insertedId,
+        verify_found: !!verifyRow && !verifyErr,
+        project_ref: projectRef,
+      }),
+    };
   } catch (e) {
     console.error(e);
     return { statusCode: 500, body: "Server error" };
