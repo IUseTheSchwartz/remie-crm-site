@@ -6,7 +6,6 @@ import {
   Check,
   Zap,
   LogOut,
-  Phone,
   Shield,
   Star,
   CreditCard,
@@ -51,7 +50,6 @@ const PLANS = [
     features: [
       "Lead inbox & drag-and-drop pipeline",
       "Two-way texting & email",
-      "Click-to-call dialing",
       "Simple automations",
       "Tasks & reminders",
       "Notes & files on contacts",
@@ -106,11 +104,10 @@ function LandingPage() {
             Close more policies. Not tabs.
           </motion.h1>
           <p className="mt-4 text-lg text-white/70">
-            Choose the plan that fits your workflow—run a clean solo pipeline or plug your whole team into one system.
+            Manage your pipeline, automate follow-ups, and keep everything in one place.
           </p>
           <div className="mt-6 flex items-center justify-center gap-6 text-xs text-white/60">
             <span className="inline-flex items-center gap-1"><Star className="h-4 w-4" /> Concierge migration (Remie CRM)</span>
-            <span className="inline-flex items-center gap-1"><Phone className="h-4 w-4" /> Click-to-call</span>
             <span className="inline-flex items-center gap-1"><Shield className="h-4 w-4" /> Bootcamp for new features</span>
           </div>
         </div>
