@@ -1,29 +1,31 @@
 // File: src/lib/stats.js
 // Stats + grouping helpers for dashboard and reports.
-// Combines demo "activity" for leads/appointments with real SOLD data from storage.
+// Combines real SOLD data + real LEAD creations (by timestamp). Optional MOCK remains empty.
 
-import { loadClients } from "./storage.js";
+import { loadClients, loadLeads } from "./storage.js";
 
 /* -----------------------------------------------
-   SOLD data source (real, from local storage)
-   We use sold.startDate as the event date and sold.premium for sums.
+   Number parsing
 -------------------------------------------------*/
 function parseNumber(x) {
   if (x == null) return 0;
   if (typeof x === "number") return x;
-  // remove $ , and spaces
   const n = String(x).replace(/[$,\s]/g, "");
   const v = parseFloat(n);
   return Number.isFinite(v) ? v : 0;
 }
 
+/* -----------------------------------------------
+   SOLD data source (real, from local storage)
+   We use sold.startDate as the event date and sold.premium for sums.
+-------------------------------------------------*/
 export function getSoldEventsFromStorage() {
   const clients = loadClients();
   const sold = clients.filter((c) => c.status === "sold" && c.sold);
   return sold.map((c) => ({
     type: "policy_closed",
     date: c.sold.startDate || new Date().toISOString(),
-    premium: parseNumber(c.sold.premium), // one-time or annual premium you recorded
+    premium: parseNumber(c.sold.premium),
     name: c.sold.name || c.name || "",
     email: c.sold.email || c.email || "",
     phone: c.sold.phone || c.phone || "",
@@ -35,10 +37,44 @@ export function getSoldEventsFromStorage() {
 }
 
 /* -----------------------------------------------
-   DEMO activity (optional). Leave empty to avoid fake numbers.
-   If you still want demo leads/appointments, you can re-add a generator.
+   LEADS data source (real, from local storage)
+   Counts a lead when it has a creation timestamp.
+   Accepted fields: created_at (preferred), createdAt, added_at, addedAt
 -------------------------------------------------*/
-const MOCK = []; // keep empty so nothing shows unless you import/save data
+function leadCreatedAt(lead) {
+  const raw =
+    lead?.created_at ??
+    lead?.createdAt ??
+    lead?.added_at ??
+    lead?.addedAt ??
+    null;
+  if (!raw) return null;
+  const dt = new Date(raw);
+  return isNaN(dt) ? null : dt;
+}
+
+export function getLeadEventsFromStorage() {
+  const leads = (loadLeads && typeof loadLeads === "function") ? loadLeads() : [];
+  const events = [];
+  for (const L of leads) {
+    const dt = leadCreatedAt(L);
+    if (!dt) continue; // skip leads without a reliable timestamp
+    events.push({
+      type: "lead",
+      date: dt.toISOString(),
+      id: L.id,
+      name: L.name || "",
+      email: L.email || "",
+      phone: L.phone || "",
+    });
+  }
+  return events;
+}
+
+/* -----------------------------------------------
+   DEMO activity (optional). Keep empty.
+-------------------------------------------------*/
+const MOCK = [];
 
 /* -----------------------------------------------
    Time helpers
@@ -90,7 +126,7 @@ export function getTotals(items) {
     appointments: c.appointment,
     clients: c.client_created,
     closed: c.policy_closed,
-    premium: c.premium, // NEW
+    premium: c.premium,
   };
 }
 
@@ -104,12 +140,14 @@ export function filterRange(items, from, to) {
 
 /* -----------------------------------------------
    Combine sources for a single timeline
-   - MOCK (optional) for leads/appointments
+   - LEADS (real) for lead counts
+   - MOCK (optional)
    - SOLD (real) for policy_closed + premium
 -------------------------------------------------*/
 function timeline() {
+  const leads = getLeadEventsFromStorage();
   const sold = getSoldEventsFromStorage();
-  return [...MOCK, ...sold];
+  return [...leads, ...MOCK, ...sold];
 }
 
 /* -----------------------------------------------
@@ -143,7 +181,7 @@ export function groupByMonth(items = timeline()) {
         key,
         label: fmtMonth(monthDate),
         totals: getTotals(arr),
-        sold: soldList(arr), // list of sold clients in this month
+        sold: soldList(arr),
         weeks: groupWeeks(arr),
       };
     });
