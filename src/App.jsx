@@ -124,7 +124,8 @@ function LandingPage() {
           </div>
         </div>
 
-        <div className="mt-10 grid gap-6 md:grid-cols-2">
+        {/* Center the single plan */}
+        <div className="mt-10 flex justify-center">
           {PLANS.map((plan) => {
             const isAnnualShown = annual && plan.yearly != null;
             const price = displayPrice(plan);
@@ -132,7 +133,7 @@ function LandingPage() {
 
             return (
               <div key={plan.name}
-                className={`relative rounded-3xl border ${
+                className={`relative w-full max-w-md rounded-3xl border ${
                   plan.highlighted ? "border-white/30 bg-white/[0.06]" : "border-white/10 bg-white/[0.04]"
                 } p-6 ring-1 ${
                   plan.highlighted ? BRAND.accentRing : "ring-white/5"
