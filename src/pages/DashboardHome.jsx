@@ -1,6 +1,8 @@
 // File: src/pages/DashboardHome.jsx
+import { useEffect, useState } from "react";
 import NumberCard from "../components/NumberCard.jsx";
-import { dashboardSnapshot } from "../lib/stats.js";
+import { dashboardSnapshot, refreshDashboardSnapshot } from "../lib/stats.js";
+import { supabase } from "../lib/supabaseClient.js";
 
 function Card({ title, children }) {
   return (
@@ -12,9 +14,55 @@ function Card({ title, children }) {
 }
 
 export default function DashboardHome() {
-  const snap = dashboardSnapshot();
+  // read cached snapshot immediately to avoid layout shift
+  const [snap, setSnap] = useState(dashboardSnapshot());
+
+  useEffect(() => {
+    let isMounted = true;
+
+    // Initial fetch from Supabase
+    refreshDashboardSnapshot()
+      .then((data) => isMounted && setSnap(data))
+      .catch(console.error);
+
+    // Realtime: update when a new lead row is inserted
+    const channel = supabase
+      .channel("leads-dashboard")
+      .on(
+        "postgres_changes",
+        { event: "INSERT", schema: "public", table: "leads" },
+        () => {
+          refreshDashboardSnapshot().then((data) => {
+            if (isMounted) setSnap(data);
+          });
+        }
+      )
+      .subscribe((status) => {
+        if (status === "CHANNEL_ERROR") {
+          console.warn("[DashboardHome] Realtime channel error for leads-dashboard");
+        }
+      });
+
+    // Optional: polling fallback every 60s (remove if not needed)
+    const poll = setInterval(() => {
+      refreshDashboardSnapshot()
+        .then((data) => isMounted && setSnap(data))
+        .catch(() => {});
+    }, 60000);
+
+    return () => {
+      isMounted = false;
+      clearInterval(poll);
+      supabase.removeChannel(channel);
+    };
+  }, []);
+
   const money = (n) =>
-    Intl.NumberFormat(undefined, { style: "currency", currency: "USD", maximumFractionDigits: 0 }).format(n || 0);
+    Intl.NumberFormat(undefined, {
+      style: "currency",
+      currency: "USD",
+      maximumFractionDigits: 0,
+    }).format(n || 0);
 
   const kpi = [
     { label: "Closed (today)", value: snap.today.closed, sub: `This month: ${snap.thisMonth.closed}` },
