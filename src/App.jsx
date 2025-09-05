@@ -69,22 +69,36 @@ const PLANS = [
 /* --------------------------- Mini Pipeline Demo ---------------------------- */
 
 const DEMO_STAGES = [
-  { id: "no_pickup", label: "No Pickup" },
-  { id: "answered", label: "Answered" },
-  { id: "quoted", label: "Quoted" },
+  { id: "no_pickup",     label: "No Pickup" },
+  { id: "answered",      label: "Answered" },
+  { id: "quoted",        label: "Quoted" },
+  { id: "app_started",   label: "App Started" },
+  { id: "app_pending",   label: "App Pending" },
+  { id: "app_submitted", label: "App Submitted" },
+];
+
+const DEMO_ROWS = [
+  ["no_pickup", "answered", "quoted"],
+  ["app_started", "app_pending", "app_submitted"],
 ];
 
 const DEMO_STYLE = {
-  no_pickup: "bg-white/10 text-white/80",
-  answered: "bg-sky-500/15 text-sky-300",
-  quoted: "bg-amber-500/15 text-amber-300",
+  no_pickup:     "bg-white/10 text-white/80",
+  answered:      "bg-sky-500/15 text-sky-300",
+  quoted:        "bg-amber-500/15 text-amber-300",
+  app_started:   "bg-indigo-500/15 text-indigo-300",
+  app_pending:   "bg-fuchsia-500/15 text-fuchsia-300",
+  app_submitted: "bg-emerald-500/15 text-emerald-300",
 };
 
 function PipelineDemo() {
   const [cards, setCards] = useState([
-    { id: "d1", name: "Alex M.", stage: "no_pickup", notes: [] },
-    { id: "d2", name: "Jordan M.", stage: "answered", notes: [] },
-    { id: "d3", name: "Taylor R.", stage: "quoted", notes: [] },
+    { id: "d1", name: "Alex M.",   stage: "no_pickup",     notes: [] },
+    { id: "d2", name: "Jordan M.", stage: "answered",      notes: [] },
+    { id: "d3", name: "Taylor R.", stage: "quoted",        notes: [] },
+    { id: "d4", name: "Sam K.",    stage: "app_started",   notes: [] },
+    { id: "d5", name: "Jamie L.",  stage: "app_pending",   notes: [] },
+    { id: "d6", name: "Chris D.",  stage: "app_submitted", notes: [] },
   ]);
   const [activeNote, setActiveNote] = useState({});
 
@@ -92,9 +106,10 @@ function PipelineDemo() {
     setCards((prev) =>
       prev.map((c) => {
         if (c.id !== id) return c;
-        const idx = DEMO_STAGES.findIndex((s) => s.id === c.stage);
-        const nextIdx = Math.max(0, Math.min(DEMO_STAGES.length - 1, idx + dir));
-        return { ...c, stage: DEMO_STAGES[nextIdx].id };
+        const order = DEMO_STAGES.map((s) => s.id);
+        const idx = order.indexOf(c.stage);
+        const nextIdx = Math.max(0, Math.min(order.length - 1, idx + dir));
+        return { ...c, stage: order[nextIdx] };
       })
     );
   };
@@ -127,95 +142,101 @@ function PipelineDemo() {
         <div className="text-xs text-white/60">Try changing stages & adding notes</div>
       </div>
 
-      <div className="grid gap-4 md:grid-cols-3">
-        {DEMO_STAGES.map((stage) => (
-          <div key={stage.id} className="rounded-2xl border border-white/10 bg-white/[0.03] p-2">
-            <div className="flex items-center justify-between px-2 pb-2">
-              <div className="text-sm font-medium">{stage.label}</div>
-            </div>
-            <div className="space-y-2">
-              {cards
-                .filter((c) => c.stage === stage.id)
-                .map((c) => (
-                  <motion.div
-                    key={c.id}
-                    initial={{ opacity: 0, y: 6 }}
-                    animate={{ opacity: 1, y: 0 }}
-                    className="rounded-xl border border-white/10 bg-black/40 p-3"
-                  >
-                    <div className="flex items-start justify-between gap-2">
-                      <div className="font-medium truncate">{c.name}</div>
-                      <StageBadge stage={c.stage} />
-                    </div>
-
-                    <div className="mt-2 flex flex-wrap gap-2">
-                      {/* Stage picker */}
-                      <select
-                        value={c.stage}
-                        onChange={(e) => setStage(c.id, e.target.value)}
-                        className="rounded-md border border-white/10 bg-white/5 px-2 py-1 text-xs"
-                      >
-                        {DEMO_STAGES.map((s) => (
-                          <option key={s.id} value={s.id}>
-                            {s.label}
-                          </option>
-                        ))}
-                      </select>
-
-                      <button
-                        onClick={() => move(c.id, +1)}
-                        className="inline-flex items-center gap-1 rounded-md border border-white/15 px-2 py-1 text-xs hover:bg-white/10"
-                        title="Move to next stage"
-                      >
-                        <CheckCircle2 className="h-3.5 w-3.5" />
-                        Advance
-                      </button>
-                    </div>
-
-                    {/* Notes */}
-                    <div className="mt-3">
-                      <div className="text-xs text-white/60 mb-1">Add a note</div>
-                      <div className="flex gap-2">
-                        <input
-                          value={activeNote[c.id] || ""}
-                          onChange={(e) => setActiveNote((n) => ({ ...n, [c.id]: e.target.value }))}
-                          placeholder="e.g., Sent quote for $45/mo"
-                          className="w-full rounded-lg border border-white/10 bg-black/40 px-2 py-1 text-xs outline-none focus:ring-2 focus:ring-indigo-500/40"
-                        />
-                        <button
-                          onClick={() => addNote(c.id)}
-                          className="inline-flex items-center gap-1 rounded-md border border-white/15 px-2 py-1 text-xs hover:bg-white/10"
-                        >
-                          <StickyNote className="h-3.5 w-3.5" />
-                          Add
-                        </button>
-                      </div>
-
-                      <div className="mt-2 space-y-1">
-                        {c.notes.length === 0 ? (
-                          <div className="text-xs text-white/40">No notes yet.</div>
-                        ) : (
-                          c.notes.map((n, i) => (
-                            <div key={i} className="rounded-md border border-white/10 bg-black/30 p-2">
-                              <div className="text-[11px] text-white/50 mb-1">
-                                {new Date(n.ts).toLocaleString()}
-                              </div>
-                              <div className="text-xs">{n.body}</div>
-                            </div>
-                          ))
-                        )}
-                      </div>
-                    </div>
-                  </motion.div>
-                ))}
-
-              {/* Empty state */}
-              {cards.filter((c) => c.stage === stage.id).length === 0 && (
-                <div className="rounded-xl border border-dashed border-white/10 p-4 text-center text-xs text-white/50">
-                  No cards in this stage
+      <div className="grid gap-4">
+        {DEMO_ROWS.map((row, i) => (
+          <div key={i} className="grid gap-4 md:grid-cols-3">
+            {row.map((stageId) => (
+              <div key={stageId} className="rounded-2xl border border-white/10 bg-white/[0.03] p-2">
+                <div className="flex items-center justify-between px-2 pb-2">
+                  <div className="text-sm font-medium">
+                    {DEMO_STAGES.find((s) => s.id === stageId)?.label}
+                  </div>
                 </div>
-              )}
-            </div>
+                <div className="space-y-2">
+                  {cards
+                    .filter((c) => c.stage === stageId)
+                    .map((c) => (
+                      <motion.div
+                        key={c.id}
+                        initial={{ opacity: 0, y: 6 }}
+                        animate={{ opacity: 1, y: 0 }}
+                        className="rounded-xl border border-white/10 bg-black/40 p-3"
+                      >
+                        <div className="flex items-start justify-between gap-2">
+                          <div className="font-medium truncate">{c.name}</div>
+                          <StageBadge stage={c.stage} />
+                        </div>
+
+                        <div className="mt-2 flex flex-wrap gap-2">
+                          {/* Stage picker */}
+                          <select
+                            value={c.stage}
+                            onChange={(e) => setStage(c.id, e.target.value)}
+                            className="rounded-md border border-white/10 bg-white/5 px-2 py-1 text-xs"
+                          >
+                            {DEMO_STAGES.map((s) => (
+                              <option key={s.id} value={s.id}>
+                                {s.label}
+                              </option>
+                            ))}
+                          </select>
+
+                          <button
+                            onClick={() => move(c.id, +1)}
+                            className="inline-flex items-center gap-1 rounded-md border border-white/15 px-2 py-1 text-xs hover:bg-white/10"
+                            title="Move to next stage"
+                          >
+                            <CheckCircle2 className="h-3.5 w-3.5" />
+                            Advance
+                          </button>
+                        </div>
+
+                        {/* Notes */}
+                        <div className="mt-3">
+                          <div className="text-xs text-white/60 mb-1">Add a note</div>
+                          <div className="flex gap-2">
+                            <input
+                              value={activeNote[c.id] || ""}
+                              onChange={(e) => setActiveNote((n) => ({ ...n, [c.id]: e.target.value }))}
+                              placeholder="e.g., Sent quote for $45/mo"
+                              className="w-full rounded-lg border border-white/10 bg-black/40 px-2 py-1 text-xs outline-none focus:ring-2 focus:ring-indigo-500/40"
+                            />
+                            <button
+                              onClick={() => addNote(c.id)}
+                              className="inline-flex items-center gap-1 rounded-md border border-white/15 px-2 py-1 text-xs hover:bg-white/10"
+                            >
+                              <StickyNote className="h-3.5 w-3.5" />
+                              Add
+                            </button>
+                          </div>
+
+                          <div className="mt-2 space-y-1">
+                            {c.notes.length === 0 ? (
+                              <div className="text-xs text-white/40">No notes yet.</div>
+                            ) : (
+                              c.notes.map((n, i) => (
+                                <div key={i} className="rounded-md border border-white/10 bg-black/30 p-2">
+                                  <div className="text-[11px] text-white/50 mb-1">
+                                    {new Date(n.ts).toLocaleString()}
+                                  </div>
+                                  <div className="text-xs">{n.body}</div>
+                                </div>
+                              ))
+                            )}
+                          </div>
+                        </div>
+                      </motion.div>
+                    ))}
+
+                  {/* Empty state */}
+                  {cards.filter((c) => c.stage === stageId).length === 0 && (
+                    <div className="rounded-xl border border-dashed border-white/10 p-4 text-center text-xs text-white/50">
+                      No cards in this stage
+                    </div>
+                  )}
+                </div>
+              </div>
+            ))}
           </div>
         ))}
       </div>
