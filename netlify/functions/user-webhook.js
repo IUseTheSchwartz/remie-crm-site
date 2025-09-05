@@ -1,79 +1,105 @@
-// File: netlify/functions/user-webhook.js
-// Creates/gets a per-user webhook (and rotates on POST {rotate:true})
-// Requires a Supabase JWT in Authorization: Bearer <token>
-const crypto = require("crypto");
-const { getServiceClient, getUserFromRequest } = require("./_supabase");
+// netlify/functions/user-webhook.js
+// Purpose: UI <-> DB for per-user webhook (create/read/rotate)
+// Auth: expects Authorization: Bearer <Supabase JWT> from supabase.auth.getSession()
 
-const supabase = getServiceClient();
+const { createClient } = require("@supabase/supabase-js");
+
+const supabaseAnon = createClient(
+  process.env.SUPABASE_URL,
+  process.env.SUPABASE_ANON_KEY,
+  { auth: { persistSession: false, autoRefreshToken: false } }
+);
+
+function json(statusCode, body, extraHeaders = {}) {
+  return {
+    statusCode,
+    headers: {
+      "Content-Type": "application/json",
+      "Access-Control-Allow-Origin": "*",
+      "Access-Control-Allow-Headers": "Content-Type, Authorization",
+      "Access-Control-Allow-Methods": "GET,POST,OPTIONS",
+      ...extraHeaders,
+    },
+    body: JSON.stringify(body),
+  };
+}
+
+function randSecret(len = 40) {
+  const bytes = new Uint8Array(len);
+  require("crypto").webcrypto.getRandomValues(bytes);
+  return Buffer.from(bytes)
+    .toString("base64")
+    .replace(/[^a-zA-Z0-9]/g, "")
+    .slice(0, 40);
+}
+
+function makeWebhookId() {
+  return `wh_u_${require("crypto").randomUUID().replace(/-/g, "")}`;
+}
 
 exports.handler = async (event) => {
-  try {
-    // Build a Headers object so getUserFromRequest(req).headers.get("authorization") works
-    const headers = new Headers(event.headers || {});
-    const user = await getUserFromRequest({ headers });
-    if (!user) return { statusCode: 401, body: "Unauthorized" };
+  if (event.httpMethod === "OPTIONS") return json(200, { ok: true });
 
-    const userId = user.id;
+  try {
+    const auth = event.headers.authorization || "";
+    const token = auth.startsWith("Bearer ") ? auth.slice(7) : null;
+    if (!token) return json(401, { error: "Missing auth" });
+
+    const { data: userRes, error: userErr } = await supabaseAnon.auth.getUser(token);
+    if (userErr || !userRes?.user) return json(401, { error: "Invalid token" });
+    const user_id = userRes.user.id;
 
     if (event.httpMethod === "GET") {
-      const { data, error } = await supabase
+      // fetch existing active webhook or create a new one
+      const { data: rows, error: selErr } = await supabaseAnon
         .from("user_inbound_webhooks")
-        .select("id, secret")
-        .eq("user_id", userId)
+        .select("id, secret, active")
+        .eq("user_id", user_id)
         .eq("active", true)
         .limit(1);
 
-      if (error) throw error;
+      if (selErr) return json(400, { error: selErr.message });
 
-      if (data && data.length) {
-        return {
-          statusCode: 200,
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify(data[0]),
-        };
+      if (rows && rows.length) {
+        return json(200, { id: rows[0].id, secret: rows[0].secret });
       }
 
-      // create new
-      const id = `wh_${crypto.randomBytes(8).toString("hex")}`;
-      const secret = crypto.randomBytes(32).toString("base64");
-      const { error: insErr } = await supabase
+      const id = makeWebhookId();
+      const secret = randSecret();
+
+      const { error: insErr } = await supabaseAnon
         .from("user_inbound_webhooks")
-        .insert([{ id, user_id: userId, secret, active: true }]);
+        .insert([{ id, user_id, secret, active: true }]);
 
-      if (insErr) throw insErr;
+      if (insErr) return json(400, { error: insErr.message });
 
-      return {
-        statusCode: 200,
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ id, secret }),
-      };
+      return json(200, { id, secret });
     }
 
     if (event.httpMethod === "POST") {
-      const body = JSON.parse(event.body || "{}");
-      if (!body.rotate) return { statusCode: 400, body: "Bad request" };
+      let body = {};
+      try { body = JSON.parse(event.body || "{}"); } catch {}
+      if (body.rotate) {
+        const newSecret = randSecret();
+        const { data, error: upErr } = await supabaseAnon
+          .from("user_inbound_webhooks")
+          .update({ secret: newSecret })
+          .eq("user_id", user_id)
+          .eq("active", true)
+          .select("id, secret")
+          .limit(1);
 
-      const secret = crypto.randomBytes(32).toString("base64");
-      const { data, error } = await supabase
-        .from("user_inbound_webhooks")
-        .update({ secret })
-        .eq("user_id", userId)
-        .eq("active", true)
-        .select("id, secret")
-        .limit(1);
-
-      if (error) throw error;
-
-      return {
-        statusCode: 200,
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify(data[0]),
-      };
+        if (upErr) return json(400, { error: upErr.message });
+        const row = data?.[0];
+        if (!row) return json(404, { error: "No active webhook" });
+        return json(200, { id: row.id, secret: row.secret });
+      }
+      return json(400, { error: "Unsupported action" });
     }
 
-    return { statusCode: 405, body: "Method Not Allowed" };
+    return json(405, { error: "Method not allowed" });
   } catch (e) {
-    console.error(e);
-    return { statusCode: 500, body: "Server error" };
+    console.error("user-webhook error:", e);
+    return json(500, { error: "Server error" });
   }
 };
