@@ -10,6 +10,7 @@ import {
   loadClients, saveClients,
   normalizePerson
 } from "../lib/storage.js";
+import { upsertLeadServer } from "../lib/supabaseLeads.js";
 
 /* ---------------------------------- Config --------------------------------- */
 
@@ -209,12 +210,17 @@ export default function PipelinePage() {
 
   function setStage(person, stage) {
     const safe = STAGE_STYLE[stage] ? stage : "no_pickup";
-    updatePerson({ ...person, stage: safe, stage_changed_at: nowIso() });
+    const withStage = { ...person, stage: safe, stage_changed_at: nowIso() };
+    updatePerson(withStage);
     autoNoteForStageChange(person, safe);
+    // persist to Supabase (non-blocking)
+    upsertLeadServer(withStage).catch(()=>{});
   }
 
   function setNextFollowUp(person, dateIso) {
-    updatePerson({ ...person, next_follow_up_at: dateIso || null });
+    const withNext = { ...person, next_follow_up_at: dateIso || null };
+    updatePerson(withNext);
+    upsertLeadServer(withNext).catch(()=>{});
   }
 
   function openCard(p) { setSelected(p); }
@@ -304,7 +310,7 @@ export default function PipelinePage() {
           person={selected}
           onClose={() => setSelected(null)}
           onSetStage={setStage}
-          onUpdate={updatePerson}
+          onUpdate={(p) => { updatePerson(p); upsertLeadServer(p).catch(()=>{}); }}
           onNextFollowUp={setNextFollowUp}
           notes={notesFor(selected.id)}
           onAddNote={(pid, body) => addNote(pid, body, false)}
@@ -488,7 +494,6 @@ function Drawer({
             onClick={() => {
               const iso = followPick ? new Date(followPick).toISOString() : null;
               onNextFollowUp(person, iso);
-              // COPY TWEAK: explicitly say scheduled date & time
               const msg = iso
                 ? `Follow-up scheduled for ${fmtDateTime(iso)}.`
                 : "Next follow-up cleared.";
@@ -582,17 +587,16 @@ function Drawer({
               <button
                 onClick={() => {
                   const q = { ...quote };
-                  onUpdate({
+                  const next = {
                     ...person,
                     stage: "quoted",
                     stage_changed_at: nowIso(),
-                    pipeline: {
-                      ...(person.pipeline || {}),
-                      quote: q,
-                    },
-                  });
+                    pipeline: { ...(person.pipeline || {}), quote: q },
+                  };
+                  onUpdate(next);
                   const msg = `Quoted ${q.carrier || "—"} | Face: ${q.face || "—"} | Premium: ${q.premium || "—"}.`;
                   onAddNote(person.id, msg);
+                  upsertLeadServer(next).catch(()=>{});
                 }}
                 className="mt-1 inline-flex items-center gap-2 rounded-lg border border-white/15 px-2 py-1 text-xs hover:bg-white/10"
               >
@@ -604,17 +608,16 @@ function Drawer({
                 value={pendingReason} onChange={(e)=>setPendingReason(e.target.value)} />
               <button
                 onClick={() => {
-                  onUpdate({
+                  const next = {
                     ...person,
                     stage: "app_pending",
                     stage_changed_at: nowIso(),
-                    pipeline: {
-                      ...(person.pipeline || {}),
-                      pending: { reason: pendingReason },
-                    },
-                  });
+                    pipeline: { ...(person.pipeline || {}), pending: { reason: pendingReason } },
+                  };
+                  onUpdate(next);
                   const msg = `Pending reason saved: ${pendingReason || "—"}.`;
                   onAddNote(person.id, msg);
+                  upsertLeadServer(next).catch(()=>{});
                 }}
                 className="mt-1 inline-flex items-center gap-2 rounded-lg border border-white/15 px-2 py-1 text-xs hover:bg-white/10"
               >
