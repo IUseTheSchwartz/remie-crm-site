@@ -15,7 +15,7 @@ import {
 import ProtectedRoute from "./components/ProtectedRoute.jsx";
 import { AuthProvider, useAuth } from "./auth.jsx";
 import LoginPage from "./pages/LoginPage.jsx";
-import SignupPage from "./pages/SignupPage.jsx";
+import SignupPage from "./pages/LoginPage.jsx";
 import AgentPublic from "./pages/AgentPublic.jsx";
 import AcceptInvite from "./pages/AcceptInvite.jsx"; // ✅ NEW
 
@@ -113,7 +113,7 @@ function LandingPage() {
         </div>
       </section>
 
-      {/* Pricing */}
+      {/* Pricing + Showcase */}
       <section id="pricing" className="relative z-10 mx-auto max-w-7xl px-6 py-14">
         <div className="mx-auto max-w-2xl text-center">
           <h2 className="text-3xl font-semibold tracking-tight sm:text-4xl">Simple, transparent pricing</h2>
@@ -124,8 +124,9 @@ function LandingPage() {
           </div>
         </div>
 
-        {/* Center the single plan */}
-        <div className="mt-10 flex justify-center">
+        {/* Left: plan card, Right: video showcase */}
+        <div className="mt-10 grid gap-6 md:grid-cols-2 items-start">
+          {/* Plan card (left-aligned) */}
           {PLANS.map((plan) => {
             const isAnnualShown = annual && plan.yearly != null;
             const price = displayPrice(plan);
@@ -133,7 +134,7 @@ function LandingPage() {
 
             return (
               <div key={plan.name}
-                className={`relative w-full max-w-md rounded-3xl border ${
+                className={`relative rounded-3xl border ${
                   plan.highlighted ? "border-white/30 bg-white/[0.06]" : "border-white/10 bg-white/[0.04]"
                 } p-6 ring-1 ${
                   plan.highlighted ? BRAND.accentRing : "ring-white/5"
@@ -175,7 +176,27 @@ function LandingPage() {
               </div>
             );
           })}
+
+          {/* Video showcase (right) */}
+          <div className="rounded-3xl border border-white/10 bg-white/[0.04] p-4 ring-1 ring-white/5">
+            <div className="rounded-2xl overflow-hidden border border-white/10 bg-black/60">
+              <video
+                className="w-full h-full"
+                controls
+                playsInline
+                preload="metadata"
+                poster="/videos/remie-poster.jpg"
+              >
+                <source src="/videos/remie-showcase.mp4" type="video/mp4" />
+                Your browser does not support the video tag.
+              </video>
+            </div>
+            <div className="mt-3 text-sm text-white/70">
+              Quick tour: building a pipeline, automations, and the agent site in minutes.
+            </div>
+          </div>
         </div>
+
         <p className="mt-6 text-center text-xs text-white/50">Prices in USD. Annual pricing shows per-month equivalent, billed annually (where available).</p>
       </section>
 
