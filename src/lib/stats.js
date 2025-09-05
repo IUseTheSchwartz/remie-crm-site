@@ -1,7 +1,7 @@
 // File: src/lib/stats.js
 // Stats + grouping helpers for dashboard and reports.
-// NOW: Lead counts come directly from Supabase `leads.created_at`
-// Keeps a synchronous `dashboardSnapshot()` (cached) + async `refreshDashboardSnapshot()`.
+// Dashboard lead counts come from Supabase (created_at).
+// Reports stays synchronous and defaults to SOLD-only timeline so it won't white-screen.
 
 import { supabase } from "../lib/supabaseClient.js";
 import { loadClients } from "./storage.js";
@@ -19,7 +19,6 @@ function parseNumber(x) {
 
 /* -----------------------------------------------
    SOLD data source (real, from local storage)
-   Uses sold.startDate as event date and sold.premium for sums.
 -------------------------------------------------*/
 export function getSoldEventsFromStorage() {
   const clients = loadClients();
@@ -81,8 +80,8 @@ function countByType(items) {
   return c;
 }
 
-export function getTotals(items) {
-  const c = countByType(items);
+export function getTotals(items = []) {
+  const c = countByType(items || []);
   return {
     leads: c.lead,
     appointments: c.appointment,
@@ -92,19 +91,33 @@ export function getTotals(items) {
   };
 }
 
-export function filterRange(items, from, to) {
+export function filterRange(items = [], from, to) {
   const a = +from, b = +to;
-  return items.filter((x) => {
+  return (items || []).filter((x) => {
     const t = +new Date(x.date);
     return t >= a && t <= b;
   });
 }
 
 /* -----------------------------------------------
+   Reports timeline (sync)
+   - Keep SOLD events so Reports renders without async
+-------------------------------------------------*/
+function buildSoldTimeline() {
+  return getSoldEventsFromStorage();
+}
+
+// ✅ restore the old API: Reports calls groupByMonth() with no args
+// so we provide a default timeline() that is synchronous.
+function timeline() {
+  return buildSoldTimeline();
+}
+
+/* -----------------------------------------------
    Grouping (Month → Weeks → Days) with SOLD lists
 -------------------------------------------------*/
-function soldList(items) {
-  return items
+function soldList(items = []) {
+  return (items || [])
     .filter((x) => x.type === "policy_closed")
     .map((x) => ({
       id: x.id,
@@ -115,9 +128,9 @@ function soldList(items) {
     }));
 }
 
-export function groupByMonth(items) {
+export function groupByMonth(items = timeline()) {
   const m = new Map();
-  for (const it of items) {
+  for (const it of (items || [])) {
     const d = new Date(it.date);
     const key = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
     if (!m.has(key)) m.set(key, []);
@@ -137,9 +150,9 @@ export function groupByMonth(items) {
     });
 }
 
-function groupWeeks(items) {
+function groupWeeks(items = []) {
   const w = new Map();
-  for (const it of items) {
+  for (const it of (items || [])) {
     const key = getWeekKey(it.date); // Monday start
     if (!w.has(key)) w.set(key, []);
     w.get(key).push(it);
@@ -155,9 +168,9 @@ function groupWeeks(items) {
     }));
 }
 
-function groupDays(items) {
+function groupDays(items = []) {
   const d = new Map();
-  for (const it of items) {
+  for (const it of (items || [])) {
     const day = new Date(it.date).toISOString().slice(0, 10);
     if (!d.has(day)) d.set(day, []);
     d.get(day).push(it);
@@ -173,10 +186,8 @@ function groupDays(items) {
 }
 
 /* ===============================================
-   SUPABASE LEAD COUNTS (created_at)
-   - Queries counts for Today / This Week / This Month
-   - Optional scoping via options: { team_id, user_id, extraFilters }
-   - Uses count-only HEAD selects for efficiency
+   SUPABASE LEAD COUNTS for DASHBOARD (created_at)
+   - Async refresh updates a cached snapshot
 =================================================*/
 async function countLeadsBetween(startISO, endISO, options = {}) {
   let q = supabase
@@ -185,10 +196,8 @@ async function countLeadsBetween(startISO, endISO, options = {}) {
     .gte("created_at", startISO)
     .lte("created_at", endISO);
 
-  // Optional scoping (uncomment / adapt to your schema)
   if (options.team_id) q = q.eq("team_id", options.team_id);
   if (options.user_id) q = q.eq("user_id", options.user_id);
-
   if (options.extraFilters && typeof options.extraFilters === "function") {
     q = options.extraFilters(q);
   }
@@ -201,22 +210,6 @@ async function countLeadsBetween(startISO, endISO, options = {}) {
   return count || 0;
 }
 
-/* -----------------------------------------------
-   Timeline builder (SOLD real; LEADS counted via Supabase)
-   We keep SOLD events (for reports lists) from storage (as before).
-   Lead counts are fetched separately; we don't need to materialize
-   each lead row into the timeline for the dashboard counters.
--------------------------------------------------*/
-function buildSoldTimeline() {
-  const sold = getSoldEventsFromStorage();
-  return sold; // Only sold events here.
-}
-
-/* -----------------------------------------------
-   Cached dashboard snapshot
-   - `dashboardSnapshot()` returns the last cache (sync)
-   - `refreshDashboardSnapshot()` fetches live counts (async)
--------------------------------------------------*/
 const ZERO = { leads: 0, appointments: 0, clients: 0, closed: 0, premium: 0 };
 
 let _cache = {
@@ -232,34 +225,30 @@ export function dashboardSnapshot() {
 }
 
 export async function refreshDashboardSnapshot(options = {}, now = new Date()) {
-  // Time bounds
   const end = now;
   const todayStart = startOfDay(now);
   const weekStart = startOfWeek(now);
   const monthStart = startOfMonth(now);
 
-  // Count leads directly in Supabase
   const [todayLeads, weekLeads, monthLeads, allLeads] = await Promise.all([
     countLeadsBetween(todayStart.toISOString(), end.toISOString(), options),
     countLeadsBetween(weekStart.toISOString(), end.toISOString(), options),
     countLeadsBetween(monthStart.toISOString(), end.toISOString(), options),
-    // All-time: from very early date
     countLeadsBetween("1970-01-01T00:00:00.000Z", end.toISOString(), options),
   ]);
 
-  // SOLD timeline (unchanged)
+  // SOLD timeline (reports still sync)
   const soldTimeline = buildSoldTimeline();
 
   const dayItems = filterRange(soldTimeline, todayStart, end);
   const weekItems = filterRange(soldTimeline, weekStart, end);
   const monthItems = filterRange(soldTimeline, monthStart, end);
-
   const todayTotals = getTotals(dayItems);
   const weekTotals = getTotals(weekItems);
   const monthTotals = getTotals(monthItems);
   const allTotals = getTotals(soldTimeline);
 
-  // Inject Supabase lead counts into the totals
+  // Inject Supabase lead counts
   todayTotals.leads = todayLeads;
   weekTotals.leads = weekLeads;
   monthTotals.leads = monthLeads;
