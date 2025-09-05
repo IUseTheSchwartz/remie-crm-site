@@ -50,16 +50,18 @@ const PLANS = [
       annual: "https://buy.stripe.com/5kQ28tfdg2jA0km7KA8Ra0a",
     },
     features: [
-      "Lead inbox & drag-and-drop pipeline",
-      "Two-way texting & email",
-      "Simple automations",
-      "Tasks & reminders",
+      "automated message system",
+      "appointment tracker",
+      "personalized agent website",
       "Notes & files on contacts",
-      "Shared inbox & calendars",
+      "easy to use pipeline",
       "No-show rescue campaigns",
-      "Quote & application hub (beta)",
-      "Bootcamp + ongoing trainings",
-      "Concierge migration",
+      "Agent tools",
+      "Automated Client Mail(coming soon)",
+      "pay per text 1cent",
+      "Team integration (create your own team)",
+      "Personal Stat Tracker",
+      "Team Stat Tracker+leaderboard",
     ],
     ctaNote: "Best for agents & small teams",
     highlighted: true,
@@ -300,7 +302,7 @@ function LandingPage() {
         <div className="mx-auto max-w-2xl text-center">
           <h2 className="text-3xl font-semibold tracking-tight sm:text-4xl">Simple, transparent pricing</h2>
           <p className="mt-2 text-white/70">Switch between monthly and annual billing. Annual saves around 20% where available.</p>
-          <div className="mt-6 inline-flex items-center gap-2 rounded-full border border-white/15 bg-white/5 p-1 text-sm">
+        <div className="mt-6 inline-flex items-center gap-2 rounded-full border border-white/15 bg-white/5 p-1 text-sm">
             <button onClick={() => setAnnual(false)} className={`rounded-full px-3 py-1 ${!annual ? "bg-white text-black" : "text-white/80"}`}>Monthly</button>
             <button onClick={() => setAnnual(true)} className={`rounded-full px-3 py-1 ${annual ? "bg-white text-black" : "text-white/80"}`}>Annual</button>
           </div>
