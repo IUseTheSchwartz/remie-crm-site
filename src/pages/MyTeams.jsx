@@ -19,6 +19,7 @@ export default function MyTeams() {
   const [planExpiresAt, setPlanExpiresAt] = useState(null);      // profiles.plan_expires_at (if used)
   const [stripeStatus, setStripeStatus] = useState("");          // subscriptions.status (Stripe)
 
+  const [creating, setCreating] = useState(false);               // NEW: creating flag
   const nav = useNavigate();
 
   useEffect(() => {
@@ -80,28 +81,60 @@ export default function MyTeams() {
     })();
   }, []);
 
+  async function refreshLists() {
+    const uid = me;
+    if (!uid) return;
+
+    const { data: own } = await supabase
+      .from("teams")
+      .select("id, name, created_at")
+      .eq("owner_id", uid)
+      .order("created_at", { ascending: false });
+
+    const { data: mem } = await supabase
+      .from("user_teams")
+      .select("team_id, role, status, team:teams(id, name)")
+      .eq("user_id", uid)
+      .neq("role", "owner")
+      .eq("status", "active")
+      .order("joined_at", { ascending: false });
+
+    setOwned(own || []);
+    setMemberOf((mem || []).map((m) => ({ ...m.team, role: m.role })));
+  }
+
+  // NEW: call your Netlify function to create the team, then navigate to Manage page
+  async function handleCreateTeam() {
+    const name = prompt("Team name?");
+    if (!name || !name.trim()) return;
+
+    setCreating(true);
+    try {
+      const res = await callFn("create-team", { name: name.trim() });
+      // Accept common shapes from the function
+      if (!res) throw new Error("No response from create-team.");
+      if (res.error) throw new Error(res.error);
+      if (res.ok === false) throw new Error(res.message || "Failed to create team.");
+
+      const teamId =
+        res.team_id || res.teamId || res.id || res.team?.id;
+
+      if (!teamId) throw new Error("Team created but no team_id returned.");
+
+      await refreshLists();
+      nav(`/app/team/manage/${teamId}`);
+    } catch (e) {
+      alert(e.message || "Failed to create team.");
+    } finally {
+      setCreating(false);
+    }
+  }
+
   async function leave(teamId) {
     if (!confirm("Leave this team? You’ll lose access immediately.")) return;
     try {
       await callFn("leave-team", { team_id: teamId });
-      // refresh lists
-      const uid = me;
-      const { data: own } = await supabase
-        .from("teams")
-        .select("id, name, created_at")
-        .eq("owner_id", uid)
-        .order("created_at", { ascending: false });
-
-      const { data: mem } = await supabase
-        .from("user_teams")
-        .select("team_id, role, status, team:teams(id, name)")
-        .eq("user_id", uid)
-        .neq("role", "owner")
-        .eq("status", "active")
-        .order("joined_at", { ascending: false });
-
-      setOwned(own || []);
-      setMemberOf((mem || []).map((m) => ({ ...m.team, role: m.role })));
+      await refreshLists();
     } catch (e) {
       alert(e.message || "Failed to leave team");
     }
@@ -125,10 +158,12 @@ export default function MyTeams() {
 
         {canCreateTeam ? (
           <button
-            onClick={() => nav("/app/team/create")}
-            className="inline-flex items-center gap-2 rounded-xl border px-3 py-2 hover:bg-white/5"
+            onClick={handleCreateTeam}
+            disabled={creating}
+            className="inline-flex items-center gap-2 rounded-xl border px-3 py-2 hover:bg-white/5 disabled:opacity-60"
+            title="Create a team"
           >
-            <Plus className="w-4 h-4" /> Create Team
+            <Plus className="w-4 h-4" /> {creating ? "Creating…" : "Create Team"}
           </button>
         ) : (
           <div className="flex items-center gap-2">
