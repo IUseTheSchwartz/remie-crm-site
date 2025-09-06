@@ -32,6 +32,7 @@ function U(v) {
 function toMDY(v) {
   if (v == null) return undefined;
 
+  // Direct Date object
   if (v instanceof Date && !Number.isNaN(v.getTime())) {
     const mm = String(v.getMonth() + 1).padStart(2, "0");
     const dd = String(v.getDate()).padStart(2, "0");
@@ -42,12 +43,14 @@ function toMDY(v) {
   const s = String(v).trim();
   if (!s) return undefined;
 
+  // If already YYYY-MM-DD → convert to MM/DD/YYYY
   const iso = s.match(/^(\d{4})-(\d{2})-(\d{2})$/);
   if (iso) {
     const [, y, m, d] = iso;
     return `${m}/${d}/${y}`;
   }
 
+  // Common US formats: M/D/YYYY or M/D/YY (also -, . separators)
   const us = s.match(/^(\d{1,2})[\/\-.](\d{1,2})[\/\-.](\d{2,4})$/);
   if (us) {
     let mm = parseInt(us[1], 10);
@@ -59,6 +62,7 @@ function toMDY(v) {
     }
   }
 
+  // Fallback: Date.parse() for verbose strings like "Sun May 04 1952 ..."
   const d = new Date(s);
   if (!Number.isNaN(d.getTime())) {
     const mm = String(d.getMonth() + 1).padStart(2, "0");
@@ -140,7 +144,7 @@ exports.handler = async (event) => {
       beneficiary_name: U(p.beneficiary_name),
       company:          U(p.company),
       gender:           U(p.gender),
-      military_branch:  U(p.military_branch), // ← NEW
+      military_branch:  U(p.military_branch),
     };
 
     const dobMDY = toMDY(p.dob);
@@ -187,6 +191,15 @@ exports.handler = async (event) => {
 
     const insertedId = data?.[0]?.id || null;
 
+    // Verify immediately
+    const { data: verifyRow, error: verifyErr } = await supabase
+      .from("leads")
+      .select("id, created_at")
+      .eq("id", insertedId)
+      .maybeSingle();
+
+    const projectRef = (process.env.SUPABASE_URL || "").match(/https?:\/\/([^.]+)\.supabase\.co/i)?.[1] || "unknown";
+
     // Update last_used_at for the webhook (non-blocking)
     await supabase
       .from("user_inbound_webhooks")
@@ -198,6 +211,8 @@ exports.handler = async (event) => {
       body: JSON.stringify({
         ok: true,
         id: insertedId,
+        verify_found: !!verifyRow && !verifyErr,
+        project_ref: projectRef,
       }),
     };
   } catch (e) {
