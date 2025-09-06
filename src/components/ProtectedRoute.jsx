@@ -15,7 +15,7 @@ function TeamAccessBanner({ teamName }) {
   );
 }
 
-export default function ProtectedRoute({ requireAdmin = false }) {
+export default function ProtectedRoute({ requireAdmin = false, children }) {
   const { user, ready } = useAuth();
   const loc = useLocation();
 
@@ -96,7 +96,8 @@ export default function ProtectedRoute({ requireAdmin = false }) {
       );
     }
     if (!isAdmin) return <Navigate to="/app" replace />;
-    return <Outlet />;
+    // Render children when used as a wrapper; fall back to nested routing
+    return <>{children ?? <Outlet />}</>;
   }
 
   // --- Normal path (non-admin routes): keep existing team/subscription logic ---
@@ -113,15 +114,11 @@ export default function ProtectedRoute({ requireAdmin = false }) {
     return (
       <>
         <TeamAccessBanner teamName={teamName} />
-        <Outlet />
+        {children ?? <Outlet />}
       </>
     );
   }
 
   // Logged in but not a team member → enforce personal subscription (unchanged)
-  return (
-    <SubscriptionGate>
-      <Outlet />
-    </SubscriptionGate>
-  );
+  return <SubscriptionGate>{children ?? <Outlet />}</SubscriptionGate>;
 }
