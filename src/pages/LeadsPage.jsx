@@ -12,22 +12,43 @@ import {
   schedulePolicyKickoffEmail
 } from "../lib/automation.js";
 
-// NEW: Supabase write-through helpers
+// Supabase helpers
 import {
   upsertLeadServer,
   upsertManyLeadsServer,
   deleteLeadServer,
 } from "../lib/supabaseLeads.js";
 
-// ✅ NEW: Supabase browser client (used for read + realtime)
+// Supabase browser client (read + realtime)
 import { supabase } from "../lib/supabaseClient.js";
 
-// ✅ NEW: Google Sheets connector (per-user webhook generator + Apps Script)
+// Google Sheets connector
 import GoogleSheetsConnector from "../components/GoogleSheetsConnector.jsx";
 
 const TEMPLATE_HEADERS = ["name","phone","email"]; // minimal CSV template
 
-// ---- Header alias helpers ---------------------------------------------------
+/* ---------------- Stage labels/styles (match PipelinePage) ------------------ */
+const STAGE_STYLE = {
+  no_pickup:     "bg-white/10 text-white/80",
+  answered:      "bg-sky-500/15 text-sky-300",
+  quoted:        "bg-amber-500/15 text-amber-300",
+  app_started:   "bg-indigo-500/15 text-indigo-300",
+  app_pending:   "bg-fuchsia-500/15 text-fuchsia-300",
+  app_submitted: "bg-emerald-500/15 text-emerald-300",
+};
+function labelForStage(id) {
+  const m = {
+    no_pickup: "No Pickup",
+    answered: "Answered",
+    quoted: "Quoted",
+    app_started: "App Started",
+    app_pending: "App Pending",
+    app_submitted: "App Submitted",
+  };
+  return m[id] || "No Pickup";
+}
+
+/* --------------------------- Header alias helpers --------------------------- */
 const H = {
   first: [
     "first","first name","firstname","given name","given_name","fname","first_name"
@@ -136,7 +157,7 @@ const buildMilitaryBranch = (row, map) => pick(row, map.military_branch);
 const onlyDigits = (s) => String(s || "").replace(/\D+/g, "");
 const normEmail  = (s) => String(s || "").trim().toLowerCase();
 
-/** ✅ Preserve local pipeline fields if they already exist for this id */
+/** Preserve local pipeline fields if they already exist for this id */
 function preserveStage(existingList, incoming) {
   const found = existingList.find(x => x.id === incoming.id);
   if (!found) return incoming;
@@ -155,10 +176,10 @@ export default function LeadsPage() {
   const [selected, setSelected] = useState(null);
   const [filter, setFilter] = useState("");
 
-  // NEW: lightweight server status
+  // Lightweight server status
   const [serverMsg, setServerMsg] = useState("");
 
-  // ✅ NEW: toggle for the connector panel
+  // Toggle for the connector panel
   const [showConnector, setShowConnector] = useState(false);
 
   useEffect(() => {
@@ -166,7 +187,7 @@ export default function LeadsPage() {
     setClients(loadClients());
   }, []);
 
-  // ✅ NEW: one-time server pull → merge without duplicates (id/email/phone)
+  // One-time server pull → merge without duplicates (id/email/phone)
   useEffect(() => {
     (async () => {
       try {
@@ -212,7 +233,7 @@ export default function LeadsPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [/* run once on mount */]);
 
-  // ✅ NEW: realtime inserts → ignore duplicates (id/email/phone)
+  // Realtime inserts → ignore duplicates (id/email/phone)
   useEffect(() => {
     let channel;
     (async () => {
@@ -268,8 +289,8 @@ export default function LeadsPage() {
     const q = filter.trim().toLowerCase();
     return q
       ? src.filter(r =>
-          [r.name, r.email, r.phone, r.state, r.gender, r.beneficiary_name, r.military_branch]
-            .some(v => (v||"").toLowerCase().includes(q)))
+          [r.name, r.email, r.phone, r.state, r.gender, r.beneficiary_name, r.military_branch, labelForStage(r.stage)]
+            .some(v => (v||"").toString().toLowerCase().includes(q)))
       : src;
   }, [tab, allClients, onlySold, filter]);
 
@@ -316,9 +337,10 @@ export default function LeadsPage() {
           const gender = buildGender(r, map);
           const military_branch = buildMilitaryBranch(r, map);
 
+          // ✅ Default stage for new imports (no "status: 'lead'")
           const person = normalizePerson({
             name, phone, email, notes,
-            status: "lead",
+            stage: "no_pickup",
             dob, state, beneficiary, beneficiary_name, gender, military_branch,
           });
 
@@ -502,7 +524,7 @@ export default function LeadsPage() {
           ))}
         </div>
 
-        {/* ✅ NEW: toggle button (to the LEFT of Import CSV) */}
+        {/* Toggle button (to the LEFT of Import CSV) */}
         <button
           onClick={() => setShowConnector(s => !s)}
           className="rounded-xl border border-white/15 bg-white/5 px-3 py-2 text-sm"
@@ -539,14 +561,14 @@ export default function LeadsPage() {
         </button>
       </div>
 
-      {/* NEW: server status line (non-blocking) */}
+      {/* Server status line (non-blocking) */}
       {serverMsg && (
         <div className="rounded-xl border border-white/10 bg-white/[0.04] px-3 py-2 text-sm text-white/80">
           {serverMsg}
         </div>
       )}
 
-      {/* ✅ NEW: Collapsible connector panel */}
+      {/* Collapsible connector panel */}
       {showConnector && (
         <div
           id="auto-import-panel"
@@ -580,7 +602,7 @@ export default function LeadsPage() {
               <Th>Beneficiary Name</Th>
               <Th>Gender</Th>
               <Th>Military Branch</Th>
-              <Th>Status</Th>
+              <Th>Stage</Th>
               <Th>Carrier</Th>
               <Th>Face</Th>
               <Th>Premium</Th>
@@ -591,49 +613,59 @@ export default function LeadsPage() {
             </tr>
           </thead>
           <tbody>
-            {visible.map((p) => (
-              <tr key={p.id} className="border-t border-white/10">
-                <Td>{p.name || "—"}</Td>
-                <Td>{p.phone || "—"}</Td>
-                <Td>{p.email || "—"}</Td>
-                <Td>{p.dob || "—"}</Td>
-                <Td>{p.state || "—"}</Td>
-                <Td>{p.beneficiary || "—"}</Td>
-                <Td>{p.beneficiary_name || "—"}</Td>
-                <Td>{p.gender || "—"}</Td>
-                <Td>{p.military_branch || "—"}</Td>
-                <Td>
-                  <span className={`rounded-full px-2 py-0.5 text-xs ${
-                    p.status === "sold" ? "bg-emerald-500/15 text-emerald-300" : "bg-white/10 text-white/80"
-                  }`}>
-                    {p.status}
-                  </span>
-                </Td>
-                <Td>{p.sold?.carrier || "—"}</Td>
-                <Td>{p.sold?.faceAmount || "—"}</Td>
-                <Td>{p.sold?.premium || "—"}</Td>
-                <Td>{p.sold?.monthlyPayment || "—"}</Td>
-                <Td>{p.sold?.policyNumber || "—"}</Td>
-                <Td>{p.sold?.startDate || "—"}</Td>
-                <Td>
-                  <div className="flex items-center gap-2">
-                    <button
-                      onClick={() => openAsSold(p)}
-                      className="rounded-lg border border-white/15 px-2 py-1 hover:bg-white/10"
-                    >
-                      Mark as SOLD
-                    </button>
-                    <button
-                      onClick={() => removeOne(p.id)}
-                      className="rounded-lg border border-rose-500/40 bg-rose-500/10 px-2 py-1 hover:bg-rose-500/20"
-                      title="Delete (local + Supabase)"
-                    >
-                      Delete
-                    </button>
-                  </div>
-                </Td>
-              </tr>
-            ))}
+            {visible.map((p) => {
+              const isSold = p.status === "sold";
+              const stageId = p.stage || "no_pickup";
+              const stageLabel = labelForStage(stageId);
+              const stageClass = STAGE_STYLE[stageId] || "bg-white/10 text-white/80";
+              return (
+                <tr key={p.id} className="border-t border-white/10">
+                  <Td>{p.name || "—"}</Td>
+                  <Td>{p.phone || "—"}</Td>
+                  <Td>{p.email || "—"}</Td>
+                  <Td>{p.dob || "—"}</Td>
+                  <Td>{p.state || "—"}</Td>
+                  <Td>{p.beneficiary || "—"}</Td>
+                  <Td>{p.beneficiary_name || "—"}</Td>
+                  <Td>{p.gender || "—"}</Td>
+                  <Td>{p.military_branch || "—"}</Td>
+                  <Td>
+                    {isSold ? (
+                      <span className="rounded-full bg-emerald-500/15 px-2 py-0.5 text-xs text-emerald-300">
+                        Sold
+                      </span>
+                    ) : (
+                      <span className={`rounded-full px-2 py-0.5 text-xs ${stageClass}`}>
+                        {stageLabel}
+                      </span>
+                    )}
+                  </Td>
+                  <Td>{p.sold?.carrier || "—"}</Td>
+                  <Td>{p.sold?.faceAmount || "—"}</Td>
+                  <Td>{p.sold?.premium || "—"}</Td>
+                  <Td>{p.sold?.monthlyPayment || "—"}</Td>
+                  <Td>{p.sold?.policyNumber || "—"}</Td>
+                  <Td>{p.sold?.startDate || "—"}</Td>
+                  <Td>
+                    <div className="flex items-center gap-2">
+                      <button
+                        onClick={() => openAsSold(p)}
+                        className="rounded-lg border border-white/15 px-2 py-1 hover:bg-white/10"
+                      >
+                        Mark as SOLD
+                      </button>
+                      <button
+                        onClick={() => removeOne(p.id)}
+                        className="rounded-lg border border-rose-500/40 bg-rose-500/10 px-2 py-1 hover:bg-rose-500/20"
+                        title="Delete (local + Supabase)"
+                      >
+                        Delete
+                      </button>
+                    </div>
+                  </Td>
+                </tr>
+              );
+            })}
             {visible.length === 0 && (
               <tr>
                 <td colSpan={17} className="p-6 text-center text-white/60">
