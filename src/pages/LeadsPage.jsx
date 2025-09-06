@@ -67,8 +67,7 @@ const H = {
     "gender","sex"
   ],
   military_branch: [
-    "military branch","branch","service branch","military","armed forces branch",
-    "army","navy","air force","space force","marines","marine corps","coast guard","usmc","usa","usn","usaf","usafc","uscg","ussf"
+    "military","military branch","branch","service branch"
   ],
 };
 
@@ -320,8 +319,7 @@ export default function LeadsPage() {
           const person = normalizePerson({
             name, phone, email, notes,
             status: "lead",
-            dob, state, beneficiary, beneficiary_name, gender,
-            military_branch,
+            dob, state, beneficiary, beneficiary_name, gender, military_branch,
           });
 
           // require at least some identifier
