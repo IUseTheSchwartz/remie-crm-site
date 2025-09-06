@@ -4,7 +4,7 @@ import { Routes, Route, Link, Navigate, useNavigate } from "react-router-dom";
 import { motion } from "framer-motion";
 import {
   Check,
-  Zap,
+  Zap,            // (left as-is; no longer used after swap, safe to keep)
   LogOut,
   Shield,
   Star,
@@ -17,7 +17,7 @@ import {
 import ProtectedRoute from "./components/ProtectedRoute.jsx";
 import { AuthProvider, useAuth } from "./auth.jsx";
 import LoginPage from "./pages/LoginPage.jsx";
-import SignupPage from "./pages/LoginPage.jsx"; // <-- NOTE: keep your original import if this was a typo; using what you had
+import SignupPage from "./pages/LoginPage.jsx"; // <-- keeping exactly what you had
 import AgentPublic from "./pages/AgentPublic.jsx";
 import AcceptInvite from "./pages/AcceptInvite.jsx"; // ✅ NEW
 
@@ -30,6 +30,9 @@ import { routes } from "./routesConfig.js";
 // ✅ Legal pages
 import TermsPage from "./pages/legal/Terms.jsx";
 import PrivacyPage from "./pages/legal/Privacy.jsx";
+
+// ✅ New logo image (place your PNG at src/assets/logo.png)
+import Logo from "./assets/logo.png";
 
 // Brand / theme
 const BRAND = {
@@ -268,7 +271,8 @@ function LandingPage() {
         <nav className="mx-auto flex max-w-7xl items-center justify-between px-6 py-4">
           <div className="flex items-centered gap-3">
             <div className={`grid h-9 w-9 place-items-center rounded-2xl bg-gradient-to-br ${BRAND.primary} ring-1 ring-white/10`}>
-              <Zap className="h-5 w-5" />
+              {/* 🔄 swapped Zap for your new logo */}
+              <img src={Logo} alt="Logo" className="h-5 w-5" />
             </div>
             <span className="font-semibold tracking-tight">{BRAND.name}</span>
           </div>
@@ -548,7 +552,8 @@ function AppLayout() {
           className="p-4 flex items-center gap-3 border-b border-white/10"
         >
           <div className={`grid h-9 w-9 place-items-center rounded-2xl bg-gradient-to-br ${BRAND.primary} ring-1 ring-white/10`}>
-            <Zap className="h-5 w-5" />
+            {/* 🔄 swapped Zap for your new logo */}
+            <img src={Logo} alt="Logo" className="h-5 w-5" />
           </div>
           <div className="font-semibold">{BRAND.name}</div>
         </a>
