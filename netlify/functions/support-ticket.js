@@ -1,17 +1,6 @@
 // netlify/functions/support-ticket.js
-import { ServerClient } from "postmark";
 
-// Node 18+ has global fetch; Netlify uses Node 20 per your netlify.toml
-
-const {
-  POSTMARK_SERVER_TOKEN,
-  SUPPORT_FROM_EMAIL,
-  SUPPORT_TO_EMAIL,
-  SUPABASE_URL,
-  SUPABASE_SERVICE_ROLE,
-} = process.env;
-
-const postmark = new ServerClient(POSTMARK_SERVER_TOKEN);
+const { SUPABASE_URL, SUPABASE_SERVICE_ROLE } = process.env;
 
 export const handler = async (event) => {
   if (event.httpMethod !== "POST") {
@@ -31,7 +20,7 @@ export const handler = async (event) => {
       meta = {},
     } = payload;
 
-    // 1) Save to Supabase (via PostgREST)
+    // Save ticket to Supabase
     const insertRes = await fetch(`${SUPABASE_URL}/rest/v1/support_tickets`, {
       method: "POST",
       headers: {
@@ -57,42 +46,8 @@ export const handler = async (event) => {
       const text = await insertRes.text();
       throw new Error(`Supabase insert failed: ${insertRes.status} ${text}`);
     }
+
     const [ticket] = await insertRes.json();
-
-    // 2) Email notification (optional—skips if missing envs)
-    if (POSTMARK_SERVER_TOKEN && SUPPORT_FROM_EMAIL && SUPPORT_TO_EMAIL) {
-      await postmark.sendEmail({
-        From: SUPPORT_FROM_EMAIL,
-        To: SUPPORT_TO_EMAIL,
-        MessageStream: "outbound",
-        ReplyTo: email || SUPPORT_FROM_EMAIL,
-        Subject: `[Support] ${subject || "(no subject)"} • ${severity}`,
-        TextBody:
-`New support ticket
-
-ID: ${ticket.id}
-Severity: ${severity}
-From: ${name} <${email}>
-Path: ${path}
-
-Message:
-${message}
-
-Meta:
-${JSON.stringify(meta, null, 2)}
-`,
-        HtmlBody:
-`<h2>New support ticket</h2>
-<p><b>ID:</b> ${ticket.id}</p>
-<p><b>Severity:</b> ${severity}</p>
-<p><b>From:</b> ${escapeHtml(name)} &lt;${escapeHtml(email)}&gt;</p>
-<p><b>Path:</b> ${escapeHtml(path || "-")}</p>
-<p><b>Message:</b></p>
-<pre>${escapeHtml(message || "")}</pre>
-<p><b>Meta:</b></p>
-<pre>${escapeHtml(JSON.stringify(meta || {}, null, 2))}</pre>`,
-      });
-    }
 
     return {
       statusCode: 200,
@@ -107,10 +62,3 @@ ${JSON.stringify(meta, null, 2)}
     };
   }
 };
-
-function escapeHtml(s) {
-  return String(s)
-    .replaceAll("&", "&amp;")
-    .replaceAll("<", "&lt;")
-    .replaceAll(">", "&gt;");
-}
