@@ -4,18 +4,9 @@ import { createClient } from "@supabase/supabase-js";
 
 const stripe = new Stripe(process.env.STRIPE_SECRET_KEY);
 
-// ---- profiles mapping (kept) ----
-const TABLE = "profiles";
-const COLS = {
-  id: "id",
-  planStatus: "plan_status",
-  trialEnd: "trial_end",
-  stripeCustomerId: "stripe_customer_id",
-};
-
-// Existing tables
-const SUBS_TABLE = "subscriptions";   // your existing schema
-const WALLET_TABLE = "user_wallets";  // unchanged
+// ---- Your tables ----
+const SUBS_TABLE = "subscriptions";    // what SubscriptionGate reads
+const WALLET_TABLE = "user_wallets";   // your existing wallet table (kept)
 
 // Supabase admin client
 const SERVICE_ROLE =
@@ -27,7 +18,7 @@ const supabase =
 
 export async function handler(event) {
   try {
-    // --- sanity ---
+    // Basic env checks
     if (!process.env.STRIPE_WEBHOOK_SECRET) {
       console.warn("[Webhook] Missing STRIPE_WEBHOOK_SECRET");
       return { statusCode: 500, body: "Missing webhook secret" };
@@ -37,7 +28,7 @@ export async function handler(event) {
       return { statusCode: 500, body: "Supabase not configured" };
     }
 
-    // ✅ Netlify body handling
+    // ✅ Netlify body handling (may arrive base64-encoded)
     const rawBody = event.isBase64Encoded
       ? Buffer.from(event.body || "", "base64").toString("utf8")
       : event.body;
@@ -57,23 +48,23 @@ export async function handler(event) {
     // ---------- helpers ----------
     const iso = (tsSec) => (tsSec ? new Date(tsSec * 1000).toISOString() : null);
 
-    // Resolve your app user id:
+    // Resolve your Supabase user id (uuid in auth.users)
     // 1) sub/session metadata.app_user_id
     // 2) stripe customer.metadata.user_id
-    // 3) fallback: profiles.email == customer email (exact single match)
-    async function resolveAppUserId({ sub = null, customerId = null, session = null }) {
+    // 3) fallback: email match in auth.users.email (single exact match)
+    async function resolveUserId({ sub = null, customerId = null, session = null }) {
       try {
-        let appUserId =
+        let userId =
           sub?.metadata?.app_user_id ||
           session?.metadata?.app_user_id ||
           session?.subscription_metadata?.app_user_id ||
           null;
 
-        if (!appUserId && customerId) {
+        if (!userId && customerId) {
           const customer = await stripe.customers.retrieve(customerId);
-          appUserId = customer?.metadata?.user_id || null;
+          userId = customer?.metadata?.user_id || null;
 
-          if (!appUserId) {
+          if (!userId) {
             const email =
               customer?.email ||
               session?.customer_details?.email ||
@@ -83,33 +74,33 @@ export async function handler(event) {
             if (email) {
               const emailLc = email.trim().toLowerCase();
               const { data: match } = await supabase
-                .from(TABLE)
-                .select(`${COLS.id}, email`)
+                .from("auth.users") // query system view via RPC would need auth; this is a shortcut:
+                .select("id, email") // NOTE: if this select fails due to RLS, remove the email fallback
                 .eq("email", emailLc)
                 .limit(2);
 
+              // If your project blocks selecting from auth.users, remove this block
               if (Array.isArray(match) && match.length === 1) {
-                appUserId = match[0][COLS.id];
+                userId = match[0].id;
               }
             }
           }
         }
-        return appUserId || null;
+        return userId || null;
       } catch {
         return null;
       }
     }
 
-    // Get a human-friendly plan name (best-effort)
+    // Best-effort plan name (optional prettiness)
     async function getPlanName(sub) {
       try {
         const firstItem = Array.isArray(sub.items?.data) ? sub.items.data[0] : null;
         if (!firstItem) return null;
         const price = firstItem.price;
         if (!price) return null;
-        if (price.nickname) return price.nickname; // often “Monthly” etc.
+        if (price.nickname) return price.nickname;
 
-        // try to pull product name
         if (price.product) {
           const product =
             typeof price.product === "string"
@@ -123,25 +114,22 @@ export async function handler(event) {
       }
     }
 
-    // Upsert exactly into your subscriptions table schema
-    async function upsertSubscriptionRow(sub) {
+    // Upsert into your subscriptions table ONLY
+    async function upsertSubscription(sub) {
       const customerId = sub.customer || null;
-      const userId = await resolveAppUserId({ sub, customerId });
-
+      const userId = await resolveUserId({ sub, customerId });
       const plan_name = await getPlanName(sub);
+
       const payload = {
-        user_id: userId,                         // uuid (nullable if unresolved)
-        id: sub.id,                              // ok to store stripe sub id here (you had this column)
-        status: sub.status,                      // text
-        plan_name: plan_name,                    // text
-        stripe_customer_id: customerId,          // text
-        stripe_subscription_id: sub.id,          // text (unique)
-        current_period_end: iso(sub.current_period_end), // timestamptz
-        updated_at: new Date().toISOString(),    // timestamptz
+        user_id: userId,                         // what your gate checks
+        plan_name: plan_name,                    // optional
+        status: sub.status,                      // active|trialing|...
+        stripe_customer_id: customerId,
+        stripe_subscription_id: sub.id,          // PRIMARY KEY / UNIQUE in SQL below
+        current_period_end: iso(sub.current_period_end),
+        updated_at: new Date().toISOString(),
       };
 
-      // If your table expects created_at on first insert, Postgres default handles it.
-      // We use onConflict by stripe_subscription_id (as you indicated).
       const { error } = await supabase
         .from(SUBS_TABLE)
         .upsert(payload, { onConflict: "stripe_subscription_id" });
@@ -153,74 +141,7 @@ export async function handler(event) {
       }
     }
 
-    // Keep your original profiles update (plan_status, trial_end, stripe_customer_id)
-    async function recordSubscription(sub) {
-      await upsertSubscriptionRow(sub); // always record row in subscriptions
-
-      const status = sub.status;
-      const customerId = sub.customer;
-      const trialEnd = iso(sub.trial_end);
-
-      let appUserId = sub.metadata?.app_user_id || null;
-      if (!appUserId) appUserId = await resolveAppUserId({ sub, customerId });
-
-      console.log("[Billing] recordSubscription", {
-        appUserId,
-        customerId,
-        status,
-        trialEnd,
-      });
-
-      if (!appUserId) return; // can't update profiles without user
-
-      const payload = {
-        [COLS.planStatus]: status,
-        [COLS.trialEnd]: trialEnd,
-        [COLS.stripeCustomerId]: customerId,
-      };
-
-      const { error } = await supabase
-        .from(TABLE)
-        .update(payload)
-        .eq(COLS.id, appUserId);
-
-      if (error) {
-        console.error("[Webhook] profiles update error:", error);
-      } else {
-        console.log("[Webhook] Updated plan for user:", appUserId);
-      }
-    }
-
-    // Link stripe_customer_id on checkout completion (kept)
-    async function recordCheckoutSession(session) {
-      try {
-        const customerId = session.customer;
-
-        let appUserId =
-          session.metadata?.app_user_id ||
-          session.subscription_metadata?.app_user_id ||
-          null;
-
-        if (!appUserId) appUserId = await resolveAppUserId({ session, customerId });
-
-        if (!supabase || !appUserId || !customerId) return;
-
-        const { error } = await supabase
-          .from(TABLE)
-          .update({ [COLS.stripeCustomerId]: customerId })
-          .eq(COLS.id, appUserId);
-
-        if (error) {
-          console.error("[Webhook] Supabase customer link error:", error);
-        } else {
-          console.log("[Webhook] Linked stripe_customer_id for", appUserId);
-        }
-      } catch (e) {
-        console.warn("[Webhook] recordCheckoutSession error:", e?.message || e);
-      }
-    }
-
-    // Wallet top-up (kept)
+    // Wallet top-up (kept exactly as behavior)
     async function creditWalletTopup(session) {
       const purpose =
         session.metadata?.purpose ||
@@ -239,7 +160,7 @@ export async function handler(event) {
         return;
       }
 
-      // lightweight idempotency
+      // Idempotency best-effort (if you have webhook_events, otherwise ignore)
       try {
         await supabase
           .from("webhook_events")
@@ -248,7 +169,7 @@ export async function handler(event) {
             { onConflict: "id" }
           );
       } catch {
-        // ignore if table doesn't exist
+        // ignore if the table doesn't exist
       }
 
       const { data: wallet } = await supabase
@@ -273,16 +194,16 @@ export async function handler(event) {
       console.log("[Wallet] Credited", amountCents, "cents to", userId, "from session", session.id);
     }
 
-    // ---------- routing ----------
+    // ---------- route the event ----------
     switch (evt.type) {
       case "customer.subscription.created":
       case "customer.subscription.updated":
       case "customer.subscription.deleted":
-        await recordSubscription(evt.data.object);
+        await upsertSubscription(evt.data.object);
         break;
 
       case "checkout.session.completed":
-        await recordCheckoutSession(evt.data.object);
+        // We no longer update profiles here; nothing to do unless it's a wallet topup.
         await creditWalletTopup(evt.data.object);
         break;
 
