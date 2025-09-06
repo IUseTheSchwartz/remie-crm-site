@@ -144,6 +144,7 @@ exports.handler = async (event) => {
       beneficiary_name: U(p.beneficiary_name),
       company:          U(p.company),
       gender:           U(p.gender),
+      military_branch:  U(p.military_branch), // ← NEW
     };
 
     const dobMDY = toMDY(p.dob);
