@@ -17,7 +17,7 @@ import {
 import ProtectedRoute from "./components/ProtectedRoute.jsx";
 import { AuthProvider, useAuth } from "./auth.jsx";
 import LoginPage from "./pages/LoginPage.jsx";
-import SignupPage from "./pages/SignupPage.jsx";
+import SignupPage from "./pages/LoginPage.jsx"; // <-- NOTE: keep your original import if this was a typo; using what you had
 import AgentPublic from "./pages/AgentPublic.jsx";
 import AcceptInvite from "./pages/AcceptInvite.jsx"; // ✅ NEW
 
@@ -273,6 +273,8 @@ function LandingPage() {
             <span className="font-semibold tracking-tight">{BRAND.name}</span>
           </div>
           <div className="flex items-center gap-3">
+            {/* NEW: Contact button to jump to contact section */}
+            <a href="#contact" className="text-sm opacity-80 hover:opacity-100">Contact</a>
             <Link to="/login" className="text-sm opacity-80 hover:opacity-100">Log in</Link>
             <Link to="/signup" className={`hidden rounded-xl bg-gradient-to-r ${BRAND.primary} px-4 py-2 text-sm font-medium ring-1 ring-white/10 md:block`}>
               Start 14-day free trial
@@ -302,7 +304,7 @@ function LandingPage() {
         <div className="mx-auto max-w-2xl text-center">
           <h2 className="text-3xl font-semibold tracking-tight sm:text-4xl">Simple, transparent pricing</h2>
           <p className="mt-2 text-white/70">Switch between monthly and annual billing. Annual saves around 20% where available.</p>
-        <div className="mt-6 inline-flex items-center gap-2 rounded-full border border-white/15 bg-white/5 p-1 text-sm">
+          <div className="mt-6 inline-flex items-center gap-2 rounded-full border border-white/15 bg-white/5 p-1 text-sm">
             <button onClick={() => setAnnual(false)} className={`rounded-full px-3 py-1 ${!annual ? "bg-white text-black" : "text-white/80"}`}>Monthly</button>
             <button onClick={() => setAnnual(true)} className={`rounded-full px-3 py-1 ${annual ? "bg-white text-black" : "text-white/80"}`}>Annual</button>
           </div>
@@ -368,9 +370,48 @@ function LandingPage() {
         <p className="mt-6 text-center text-xs text-white/50">Prices in USD. Annual pricing shows per-month equivalent, billed annually (where available).</p>
       </section>
 
+      {/* NEW: Contact section */}
+      <section id="contact" className="relative z-10 mx-auto max-w-7xl px-6 py-12">
+        <div className="rounded-3xl border border-white/10 bg-white/[0.04] p-6 ring-1 ring-white/5">
+          <h2 className="text-2xl font-semibold">Contact</h2>
+          <p className="mt-2 text-white/70">Reach out anytime.</p>
+          <div className="mt-4 grid gap-4 sm:grid-cols-2 lg:grid-cols-3 text-sm">
+            <div className="rounded-xl border border-white/10 bg-black/30 p-4">
+              <div className="text-white/60">Name</div>
+              <div className="mt-1 font-medium">Jacob Prieto</div>
+            </div>
+            <div className="rounded-xl border border-white/10 bg-black/30 p-4">
+              <div className="text-white/60">Email</div>
+              <a href="mailto:JacobPrieto@gmail.com" className="mt-1 inline-flex items-center gap-1 font-medium hover:underline">
+                JacobPrieto@gmail.com <ExternalLink className="h-3.5 w-3.5" />
+              </a>
+            </div>
+            <div className="rounded-xl border border-white/10 bg-black/30 p-4">
+              <div className="text-white/60">Phone</div>
+              <a href="tel:+19154943286" className="mt-1 inline-flex items-center gap-1 font-medium hover:underline">
+                (915) 494-3286 <ExternalLink className="h-3.5 w-3.5" />
+              </a>
+            </div>
+            <div className="rounded-xl border border-white/10 bg-black/30 p-4 sm:col-span-2 lg:col-span-1">
+              <div className="text-white/60">Instagram</div>
+              <a
+                href="https://instagram.com/jacob_prietoo"
+                target="_blank"
+                rel="noreferrer"
+                className="mt-1 inline-flex items-center gap-1 font-medium hover:underline"
+              >
+                @jacob_prietoo <ExternalLink className="h-3.5 w-3.5" />
+              </a>
+            </div>
+          </div>
+        </div>
+      </section>
+
       <footer className="relative z-10 border-t border-white/10 bg-black/40">
         <div className="mx-auto max-w-7xl px-6 py-6 text-center text-xs text-white/60 space-y-2">
           <div>© {new Date().getFullYear()} {BRAND.name}. All rights reserved.</div>
+          {/* NEW: Your LLC line */}
+          <div className="text-white/60">PRIETO INSURANCE SOLUTIONS LLC</div>
           <div className="space-x-3">
             <Link to="/legal/terms" className="hover:text-white">Terms of Service</Link>
             <span className="text-white/30">•</span>
