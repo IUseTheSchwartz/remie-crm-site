@@ -55,7 +55,7 @@ export async function upsertLeadServer(lead) {
     beneficiary_name: lead.beneficiary_name || "",
     company: lead.company || "",
     gender: lead.gender || "",
-    military_branch: lead.military_branch || "",   // ← NEW
+    military_branch: lead.military_branch || "",
     sold: lead.sold || null,                    // jsonb
     // include pipeline fields if set
     stage: lead.stage ?? null,
@@ -93,7 +93,7 @@ export async function upsertManyLeadsServer(leads = []) {
     beneficiary_name: p.beneficiary_name || "",
     company: p.company || "",
     gender: p.gender || "",
-    military_branch: p.military_branch || "",     // ← NEW
+    military_branch: p.military_branch || "",
     sold: p.sold || null,
     stage: p.stage ?? null,
     stage_changed_at: p.stage_changed_at ?? null,
