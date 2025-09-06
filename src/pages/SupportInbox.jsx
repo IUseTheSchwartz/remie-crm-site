@@ -10,10 +10,33 @@ export default function SupportInbox() {
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState("");
 
-  // 👇 Debug: shows whether the app recognizes you as allowlisted admin
+  // Debug bits
   const { isAdmin, loading: adminLoading } = useIsAdminAllowlist();
+  const [meEmail, setMeEmail] = useState(null);
+  const [allowEmail, setAllowEmail] = useState(null);
+  const [allowErr, setAllowErr] = useState("");
+  const [projectUrl, setProjectUrl] = useState(import.meta.env.VITE_SUPABASE_URL || "(env missing)");
 
-  async function load() {
+  async function loadWhoAmI() {
+    const { data: { user }, error } = await supabase.auth.getUser();
+    if (!error) setMeEmail(user?.email ?? null);
+
+    // RLS allows selecting ONLY your own allowlist row; no filter needed.
+    const { data: meAllow, error: aErr } = await supabase
+      .from("admin_allowlist")
+      .select("email")
+      .maybeSingle();
+
+    if (aErr) {
+      setAllowErr(aErr.message || String(aErr));
+      setAllowEmail(null);
+    } else {
+      setAllowErr("");
+      setAllowEmail(meAllow?.email ?? null);
+    }
+  }
+
+  async function loadTickets() {
     setLoading(true);
     setErr("");
     const { data, error } = await supabase
@@ -33,13 +56,17 @@ export default function SupportInbox() {
   }
 
   useEffect(() => {
-    load();
+    // load identity + allowlist proof
+    loadWhoAmI();
+
+    // load tickets + subscribe for new ones
+    loadTickets();
     const ch = supabase
       .channel("support_tickets_all")
       .on(
         "postgres_changes",
         { event: "INSERT", schema: "public", table: "support_tickets" },
-        () => load()
+        () => loadTickets()
       )
       .subscribe();
     return () => {
@@ -52,9 +79,20 @@ export default function SupportInbox() {
       <h1 className="text-2xl font-semibold mb-2">Support Inbox</h1>
 
       {/* 🔍 Debug strip */}
-      <div className="text-xs text-gray-400 mb-4">
-        Admin allowlist: {adminLoading ? "checking…" : String(isAdmin)} • Tickets loaded: {tickets?.length ?? 0}
-        {err && <span className="text-red-400"> • Error: {err}</span>}
+      <div className="text-xs text-gray-400 mb-4 space-y-1">
+        <div>Project URL (env): {projectUrl}</div>
+        <div>Session email: {meEmail || "(none)"} </div>
+        <div>
+          Admin allowlist (hook): {adminLoading ? "checking…" : String(isAdmin)}
+        </div>
+        <div>
+          Allowlist row (RLS query): {allowErr ? (
+            <span className="text-red-400">error: {allowErr}</span>
+          ) : (
+            allowEmail || "(none)"
+          )}
+        </div>
+        <div>Tickets visible: {tickets?.length ?? 0}{err ? ` — error: ${err}` : ""}</div>
       </div>
 
       <div className="grid lg:grid-cols-2 gap-6">
