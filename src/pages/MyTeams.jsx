@@ -1,197 +1,189 @@
 // File: src/pages/MyTeams.jsx
-import { useEffect, useState } from "react";
-import { Link, useNavigate } from "react-router-dom";
-import { supabase } from "../lib/supabaseClient";
-import { getCurrentUserId, callFn } from "../lib/teamApi";
-import { Users, Crown, LogOut, Plus, Lock } from "lucide-react";
+import { useEffect, useMemo, useState } from "react";
+import { supabase } from "../lib/supabaseClient.js";
 
-const OK_PLAN = new Set(["active", "trialing"]); // who can create teams
+const ACTIVE_STATES = ["active", "trialing", "past_due"]; // treat past_due as a grace period
 
 export default function MyTeams() {
-  const [me, setMe] = useState(null);
-  const [owned, setOwned] = useState([]);
-  const [memberOf, setMemberOf] = useState([]);
   const [loading, setLoading] = useState(true);
-  const [planStatus, setPlanStatus] = useState("");
-  const nav = useNavigate();
+  const [subCheck, setSubCheck] = useState({ eligible: false, reason: "checking…" });
+  const [teams, setTeams] = useState([]);
+  const [creating, setCreating] = useState(false);
+
+  async function checkSubscriptionEligibility() {
+    const { data: auth } = await supabase.auth.getUser();
+    const uid = auth?.user?.id;
+    if (!uid) {
+      setSubCheck({ eligible: false, reason: "not signed in" });
+      return;
+    }
+
+    // 1) try Stripe-style table: subscriptions (single latest row)
+    let eligible = false;
+    let reason = "no subscription found";
+
+    // helper: normalize status
+    const isEligible = (status) => ACTIVE_STATES.includes((status || "").toLowerCase());
+
+    // Try common table names/columns, safely
+    try {
+      const { data: subRow, error: subErr } = await supabase
+        .from("subscriptions")
+        .select("status")
+        .eq("user_id", uid)
+        .order("created_at", { ascending: false })
+        .limit(1)
+        .maybeSingle();
+
+      if (!subErr && subRow?.status) {
+        eligible = isEligible(subRow.status);
+        reason = eligible ? "subscriptions.status=" + subRow.status : "subscriptions.status=" + subRow.status;
+      }
+    } catch (_) {
+      // ignore
+    }
+
+    // 2) fallback: profiles table fields (plan_status or subscription_status or plan_expires_at)
+    if (!eligible) {
+      try {
+        const { data: profileRow } = await supabase
+          .from("profiles")
+          .select("plan_status, subscription_status, plan_expires_at")
+          .eq("id", uid)
+          .maybeSingle();
+
+        const p = profileRow || {};
+        const byStatus =
+          isEligible(p.plan_status) || isEligible(p.subscription_status);
+
+        // consider plan_expires_at as active if in the future
+        const byExpiry =
+          p.plan_expires_at ? new Date(p.plan_expires_at).getTime() > Date.now() : false;
+
+        if (byStatus || byExpiry) {
+          eligible = true;
+          reason = byStatus
+            ? `profiles.status=${(p.plan_status || p.subscription_status || "").toString()}`
+            : "profiles.plan_expires_at in future";
+        } else if (p.plan_status || p.subscription_status || p.plan_expires_at) {
+          reason = `profiles indicates inactive`;
+        }
+      } catch (_) {
+        // ignore
+      }
+    }
+
+    setSubCheck({ eligible, reason });
+  }
+
+  async function loadTeams() {
+    const { data: auth } = await supabase.auth.getUser();
+    const uid = auth?.user?.id;
+    if (!uid) return;
+
+    const { data } = await supabase
+      .from("user_teams")
+      .select("team_id, role, status, teams(name)")
+      .eq("user_id", uid)
+      .order("created_at", { ascending: false });
+
+    setTeams(data || []);
+  }
 
   useEffect(() => {
     (async () => {
       setLoading(true);
-      const uid = await getCurrentUserId();
-      setMe(uid);
-
-      // Personal plan (not team)
-      try {
-        const { data: prof } = await supabase
-          .from("profiles")
-          .select("plan_status")
-          .eq("id", uid)
-          .maybeSingle();
-        setPlanStatus((prof?.plan_status || "").toLowerCase());
-      } catch {
-        setPlanStatus("");
-      }
-
-      // Teams I own
-      const { data: own } = await supabase
-        .from("teams")
-        .select("id, name, created_at")
-        .eq("owner_id", uid)
-        .order("created_at", { ascending: false });
-
-      // Teams I'm in (not owner)
-      const { data: mem } = await supabase
-        .from("user_teams")
-        .select("team_id, role, status, team:teams(id, name)")
-        .eq("user_id", uid)
-        .neq("role", "owner")
-        .eq("status", "active")
-        .order("joined_at", { ascending: false });
-
-      setOwned(own || []);
-      setMemberOf((mem || []).map((m) => ({ ...m.team, role: m.role })));
+      await Promise.all([checkSubscriptionEligibility(), loadTeams()]);
       setLoading(false);
     })();
   }, []);
 
-  async function leave(teamId) {
-    if (!confirm("Leave this team? You’ll lose access immediately.")) return;
+  async function handleCreateTeam() {
+    if (!subCheck.eligible || creating) return;
+
+    setCreating(true);
     try {
-      await callFn("leave-team", { team_id: teamId });
-      // refresh lists
-      const uid = me;
-      const { data: own } = await supabase
+      // Create a team row; adjust table/columns to your schema
+      const name = prompt("Team name?");
+      if (!name) return;
+
+      const { data: auth } = await supabase.auth.getUser();
+      const uid = auth?.user?.id;
+
+      // 1) create the team
+      const { data: team, error: teamErr } = await supabase
         .from("teams")
-        .select("id, name, created_at")
-        .eq("owner_id", uid)
-        .order("created_at", { ascending: false });
+        .insert({ name })
+        .select("id, name")
+        .single();
 
-      const { data: mem } = await supabase
+      if (teamErr) throw teamErr;
+
+      // 2) add the creator as owner in user_teams
+      const { error: linkErr } = await supabase
         .from("user_teams")
-        .select("team_id, role, status, team:teams(id, name)")
-        .eq("user_id", uid)
-        .neq("role", "owner")
-        .eq("status", "active")
-        .order("joined_at", { ascending: false });
+        .insert({
+          user_id: uid,
+          team_id: team.id,
+          role: "owner",
+          status: "active",
+        });
 
-      setOwned(own || []);
-      setMemberOf((mem || []).map((m) => ({ ...m.team, role: m.role })));
-    } catch (e) {
-      alert(e.message || "Failed to leave team");
+      if (linkErr) throw linkErr;
+
+      await loadTeams();
+      alert("Team created!");
+    } catch (err) {
+      console.error(err);
+      alert("Failed to create team: " + (err?.message || err));
+    } finally {
+      setCreating(false);
     }
   }
 
-  const canCreateTeam = OK_PLAN.has(planStatus);
-
-  if (loading) return <div className="p-6">Loading…</div>;
+  const canCreate = subCheck.eligible;
+  const gateText = useMemo(() => {
+    if (loading) return "Checking subscription…";
+    if (canCreate) return "";
+    return `Locked — ${subCheck.reason}`;
+  }, [loading, canCreate, subCheck.reason]);
 
   return (
-    <div className="p-6 space-y-8">
-      <header className="flex items-center justify-between">
-        <h1 className="text-2xl font-semibold flex items-center gap-2">
-          <Users className="w-6 h-6" /> My Teams
-        </h1>
+    <div className="p-6 max-w-3xl mx-auto">
+      <h1 className="text-2xl font-semibold mb-4">My Teams</h1>
 
-        {canCreateTeam ? (
-          <button
-            onClick={() => nav("/app/team/create")}
-            className="inline-flex items-center gap-2 rounded-xl border px-3 py-2 hover:bg-white/5"
-          >
-            <Plus className="w-4 h-4" /> Create Team
-          </button>
-        ) : (
-          <div className="flex items-center gap-2">
-            <button
-              disabled
-              className="inline-flex items-center gap-2 rounded-xl border border-white/15 px-3 py-2 text-white/50 cursor-not-allowed"
-              title="A personal Remie CRM subscription is required to create a team."
-            >
-              <Lock className="w-4 h-4" /> Create Team
-            </button>
-            <a
-              href="https://buy.stripe.com/28E4gB8OScYeffg2qg8Ra07"
-              target="_blank"
-              rel="noreferrer"
-              className="text-sm underline text-white/70 hover:text-white"
-              title="Buy Remie CRM to create your own team"
-            >
-              Buy Remie CRM
-            </a>
-          </div>
+      {/* Create Team */}
+      <div className="mb-6">
+        <button
+          onClick={handleCreateTeam}
+          disabled={!canCreate || creating}
+          className={`px-4 py-2 rounded ${
+            canCreate ? "bg-indigo-600 text-white" : "bg-gray-700 text-gray-400"
+          } disabled:opacity-60`}
+          title={canCreate ? "Create a team" : gateText}
+        >
+          {creating ? "Creating…" : "Create Team"}
+        </button>
+        {!canCreate && (
+          <div className="text-xs text-gray-400 mt-2">{gateText}</div>
         )}
-      </header>
+      </div>
 
-      {/* Teams I Own */}
-      <section className="border rounded-2xl p-4">
-        <div className="flex items-center gap-2 text-sm text-gray-400">
-          <Crown className="w-4 h-4" /> Teams I Own
-        </div>
-        {owned.length === 0 ? (
-          <div className="mt-3 text-gray-500">You don’t own any teams yet.</div>
+      {/* Existing teams */}
+      <div className="grid gap-2">
+        {teams.length === 0 ? (
+          <div className="text-sm text-gray-400">You’re not in any teams yet.</div>
         ) : (
-          <ul className="mt-3 divide-y divide-white/10">
-            {owned.map((t) => (
-              <li key={t.id} className="py-3 flex items-center justify-between">
-                <div>
-                  <div className="font-medium">{t.name}</div>
-                  <div className="text-xs text-gray-500">Owner</div>
-                </div>
-                <div className="flex gap-2">
-                  <Link
-                    to={`/app/team/${t.id}/dashboard`}
-                    className="rounded-xl border px-3 py-1.5 hover:bg-white/5 text-sm"
-                  >
-                    Dashboard
-                  </Link>
-                  <Link
-                    to={`/app/team/manage/${t.id}`}
-                    className="rounded-xl border px-3 py-1.5 hover:bg-white/5 text-sm"
-                  >
-                    Manage
-                  </Link>
-                </div>
-              </li>
-            ))}
-          </ul>
+          teams.map((t) => (
+            <div key={t.team_id} className="border rounded p-3">
+              <div className="font-medium">{t.teams?.name || "Team"}</div>
+              <div className="text-sm text-gray-400">
+                Role: {t.role} • Status: {t.status}
+              </div>
+            </div>
+          ))
         )}
-      </section>
-
-      {/* Teams I'm In */}
-      <section className="border rounded-2xl p-4">
-        <div className="flex items-center gap-2 text-sm text-gray-400">
-          <LogOut className="w-4 h-4" /> Teams I’m In
-        </div>
-        {memberOf.length === 0 ? (
-          <div className="mt-3 text-gray-500">You’re not a member of any teams yet.</div>
-        ) : (
-          <ul className="mt-3 divide-y divide-white/10">
-            {memberOf.map((t) => (
-              <li key={t.id} className="py-3 flex items-center justify-between">
-                <div>
-                  <div className="font-medium">{t.name}</div>
-                  <div className="text-xs text-gray-500">Role: {t.role || "member"}</div>
-                </div>
-                <div className="flex gap-2">
-                  <Link
-                    to={`/app/team/${t.id}/dashboard`}
-                    className="rounded-xl border px-3 py-1.5 hover:bg-white/5 text-sm"
-                  >
-                    Open
-                  </Link>
-                  <button
-                    onClick={() => leave(t.id)}
-                    className="rounded-xl border border-red-500/50 text-red-400 px-3 py-1.5 hover:bg-red-500/10 text-sm"
-                    title="Leave this team"
-                  >
-                    Leave Team
-                  </button>
-                </div>
-              </li>
-            ))}
-          </ul>
-        )}
-      </section>
+      </div>
     </div>
   );
 }
