@@ -130,7 +130,7 @@ export default function GoogleSheetsConnector() {
       : "—";
   }, [hook.id]);
 
-  // ---- Apps Script (adds military_branch support) ----
+  // ---- Apps Script (adds military_branch alias + field) ----
   const scriptText = useMemo(() => {
     const url = webhookUrl;
     const secret = hook.secret || "";
@@ -221,11 +221,7 @@ function postNewRowsSinceLastPointer() {
     beneficiary: ["beneficiary","beneficiary type"],
     beneficiary_name: ["beneficiary name","beneficiary_name","beneficiary full name"],
     gender:      ["gender","sex"],
-    // NEW: military branch aliases
-    military_branch: [
-      "military branch","branch","service branch","military","armed forces branch",
-      "usmc","marine corps","army","navy","air force","space force","coast guard"
-    ],
+    military_branch: ["military","military branch","branch","service branch"]
   };
 
   const getVal = (rowVals, keys) => {
@@ -268,8 +264,8 @@ function postNewRowsSinceLastPointer() {
       beneficiary: String(getVal(rowVals, A.beneficiary) || ""),
       beneficiary_name: String(getVal(rowVals, A.beneficiary_name) || ""),
       gender: String(getVal(rowVals, A.gender) || ""),
+      military_branch: String(getVal(rowVals, A.military_branch) || ""),
       company: String(getVal(rowVals, A.company) || ""),
-      military_branch: String(getVal(rowVals, A.military_branch) || ""), // ← NEW
       created_at: new Date().toISOString(),
     };
 
@@ -305,7 +301,6 @@ function postNewRowsSinceLastPointer() {
           props.setProperty(STATE_LAST_ROW, String(rowIndex));
         } else {
           console.error("2xx but no id/inserted/deduped flag; pointer NOT advanced for row", rowIndex);
-          // stop here so we retry this row next run
           break;
         }
       } catch (e) {
@@ -314,7 +309,6 @@ function postNewRowsSinceLastPointer() {
       }
     } else {
       console.error("Webhook failed for row", rowIndex, code, text);
-      // stop here so we retry this row next run
       break;
     }
   }
@@ -333,7 +327,6 @@ function testWebhookOnce() {
     phone: "555-000-0000",
     state: "TN",
     notes: "Single test from Apps Script",
-    military_branch: "Army", // test value
     created_at: new Date().toISOString(),
   };
 
