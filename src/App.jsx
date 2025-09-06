@@ -4,7 +4,7 @@ import { Routes, Route, Link, Navigate, useNavigate } from "react-router-dom";
 import { motion } from "framer-motion";
 import {
   Check,
-  Zap,            // (left as-is; no longer used after swap, safe to keep)
+  Zap, // kept as-is even though not used
   LogOut,
   Shield,
   Star,
@@ -17,7 +17,7 @@ import {
 import ProtectedRoute from "./components/ProtectedRoute.jsx";
 import { AuthProvider, useAuth } from "./auth.jsx";
 import LoginPage from "./pages/LoginPage.jsx";
-import SignupPage from "./pages/LoginPage.jsx"; // <-- keeping exactly what you had
+import SignupPage from "./pages/LoginPage.jsx"; // keeping exactly what you had
 import AgentPublic from "./pages/AgentPublic.jsx";
 import AcceptInvite from "./pages/AcceptInvite.jsx"; // ✅ NEW
 
@@ -31,7 +31,7 @@ import { routes } from "./routesConfig.js";
 import TermsPage from "./pages/legal/Terms.jsx";
 import PrivacyPage from "./pages/legal/Privacy.jsx";
 
-// ✅ New logo image (tight-cropped PNG placed at src/assets/logo-tight.png)
+// ✅ Logo (tight-cropped PNG)
 import Logo from "./assets/logo-tight.png";
 
 // Brand / theme
@@ -270,9 +270,9 @@ function LandingPage() {
       <header className="relative z-10 border-b border-white/10 backdrop-blur">
         <nav className="mx-auto flex max-w-7xl items-center justify-between px-6 py-4">
           <div className="flex items-centered gap-3">
-            <div className={`grid h-9 w-9 place-items-center rounded-2xl bg-gradient-to-br ${BRAND.primary} ring-1 ring-white/10`}>
-              {/* 🔄 swapped Zap for your new logo (bigger, tight-cropped) */}
-              <img src={Logo} alt="Logo" className="h-8 w-8 object-contain shrink-0" />
+            {/* ⬇️ No gradient/rounded background wrapper anymore */}
+            <div className="grid h-9 w-9 place-items-center">
+              <img src={Logo} alt="Logo" className="h-9 w-9 object-contain" />
             </div>
             <span className="font-semibold tracking-tight">{BRAND.name}</span>
           </div>
@@ -551,9 +551,9 @@ function AppLayout() {
           rel="noopener noreferrer"
           className="p-4 flex items-center gap-3 border-b border-white/10"
         >
-          <div className={`grid h-9 w-9 place-items-center rounded-2xl bg-gradient-to-br ${BRAND.primary} ring-1 ring-white/10`}>
-            {/* 🔄 swapped Zap for your new logo (bigger, tight-cropped) */}
-            <img src={Logo} alt="Logo" className="h-8 w-8 object-contain shrink-0" />
+          {/* ⬇️ No gradient/rounded background wrapper anymore */}
+          <div className="grid h-9 w-9 place-items-center">
+            <img src={Logo} alt="Logo" className="h-9 w-9 object-contain" />
           </div>
           <div className="font-semibold">{BRAND.name}</div>
         </a>
