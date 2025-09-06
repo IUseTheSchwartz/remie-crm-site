@@ -14,13 +14,51 @@ function assertEnv() {
   if (missing.length) throw new Error(`[ENV] Missing: ${missing.join(", ")}`);
 }
 
-function makeSupaAdmin() {
+function supaAdmin() {
   const key =
     process.env.SUPABASE_SERVICE_ROLE || process.env.SUPABASE_SERVICE_ROLE_KEY;
   return createClient(process.env.SUPABASE_URL, key);
 }
 
 const ACTIVE_SET = new Set(["active", "trialing"]);
+
+async function hasPersonalSubscription(supa, userId) {
+  // Primary path: direct user_id match
+  const { data: directRows, error: directErr } = await supa
+    .from("subscriptions")
+    .select("status, current_period_end")
+    .eq("user_id", userId)
+    .order("current_period_end", { ascending: false, nullsLast: true })
+    .limit(1);
+
+  if (!directErr && Array.isArray(directRows) && directRows.length) {
+    const status = (directRows[0].status || "").toLowerCase().trim();
+    if (ACTIVE_SET.has(status)) return true;
+  }
+
+  // Fallback: if user_id wasn’t backfilled yet, look up the customer mapping and check by stripe_customer_id
+  const { data: map, error: mapErr } = await supa
+    .from("user_stripe_customers")
+    .select("stripe_customer_id")
+    .eq("user_id", userId)
+    .maybeSingle();
+
+  if (!mapErr && map?.stripe_customer_id) {
+    const { data: byCus, error: byCusErr } = await supa
+      .from("subscriptions")
+      .select("status, current_period_end")
+      .eq("stripe_customer_id", map.stripe_customer_id)
+      .order("current_period_end", { ascending: false, nullsLast: true })
+      .limit(1);
+
+    if (!byCusErr && Array.isArray(byCus) && byCus.length) {
+      const status = (byCus[0].status || "").toLowerCase().trim();
+      if (ACTIVE_SET.has(status)) return true;
+    }
+  }
+
+  return false;
+}
 
 export async function handler(event) {
   try {
@@ -30,16 +68,13 @@ export async function handler(event) {
     assertEnv();
 
     const stripe = new Stripe(process.env.STRIPE_SECRET_KEY);
-    const supa = makeSupaAdmin();
+    const supa = supaAdmin();
 
-    // ---- Auth (via Netlify header from your frontend callFn) ----
+    // --- Auth from frontend header ---
     const userId = event.headers["x-user-id"];
-    if (!userId) {
-      console.error("[create-team] Missing X-User-Id header");
-      return { statusCode: 401, body: "Not authenticated" };
-    }
+    if (!userId) return { statusCode: 401, body: "Not authenticated" };
 
-    // ---- Parse ----
+    // --- Parse body ---
     let name = "";
     try {
       const body = JSON.parse(event.body || "{}");
@@ -47,78 +82,50 @@ export async function handler(event) {
     } catch {}
     if (!name) return { statusCode: 400, body: "Missing team name" };
 
-    // ---- NEW: Require personal subscription (seat members cannot create) ----
-    // We check your subscriptions table for a row tied to THIS user.
-    // status must be active/trialing (latest period wins).
-    const { data: subRow, error: subErr } = await supa
-      .from("subscriptions")
-      .select("status, current_period_end")
-      .eq("user_id", userId)
-      .order("current_period_end", { ascending: false })
-      .limit(1)
-      .maybeSingle();
-
-    if (subErr) {
-      console.warn("[create-team] subscriptions lookup error:", subErr.message || subErr);
-    }
-    const hasPersonalSub = !!subRow && ACTIVE_SET.has((subRow.status || "").toLowerCase());
-
-    if (!hasPersonalSub) {
-      // Seat-only users get blocked here; personal subscribers pass.
-      // Use a specific body so the client can show a friendly CTA.
-      return {
-        statusCode: 403,
-        body: JSON.stringify({ error: "needs_subscription" }),
-      };
+    // --- Require PERSONAL subscription (seats can use CRM but not create teams) ---
+    const ok = await hasPersonalSubscription(supa, userId);
+    if (!ok) {
+      // Keep a structured error so the client can show a friendly CTA
+      return { statusCode: 403, body: JSON.stringify({ error: "needs_subscription" }) };
     }
 
-    // ---- Get or create Stripe customer for this user (optional convenience) ----
+    // --- Get or create a Stripe customer for this owner (optional but nice to have) ---
     let stripeCustomerId = null;
-    let userEmail = null;
-
+    // If you have a profiles table, you can read a stored customer id (optional)
     try {
-      const { data: prof } = await supa
-        .from("profiles") // if you don't have profiles, you can remove this block
-        .select("id, email, stripe_customer_id")
-        .eq("id", userId)
+      const { data: map } = await supa
+        .from("user_stripe_customers")
+        .select("stripe_customer_id")
+        .eq("user_id", userId)
         .maybeSingle();
-
-      stripeCustomerId = prof?.stripe_customer_id || null;
-      userEmail = prof?.email || null;
-    } catch (e) {
-      // It's fine if you don't have profiles; we’ll just create a customer below
-      console.warn("[create-team] profiles lookup failed (continuing):", e?.message || e);
-    }
+      if (map?.stripe_customer_id) {
+        stripeCustomerId = map.stripe_customer_id;
+      }
+    } catch {}
 
     if (!stripeCustomerId) {
-      // As a fallback, try to read from auth admin (optional – safe to skip)
-      if (!userEmail) {
-        try {
-          const { data: authUser } = await supa.auth.admin.getUserById(userId);
-          userEmail = authUser?.user?.email || null;
-        } catch (e) {
-          console.warn("[create-team] auth.users lookup failed (continuing):", e?.message || e);
-        }
-      }
+      // As a fallback, try to pull email from auth.users and create the customer
+      let email = null;
+      try {
+        const { data: authUser } = await supa.auth.admin.getUserById(userId);
+        email = authUser?.user?.email || null;
+      } catch {}
 
       const customer = await stripe.customers.create({
-        email: userEmail || undefined,
+        email: email || undefined,
         metadata: { user_id: userId },
       });
       stripeCustomerId = customer.id;
 
-      // Best-effort link back if you do have a profiles table
+      // Store mapping for future lookups
       try {
         await supa
-          .from("profiles")
-          .update({ stripe_customer_id: stripeCustomerId })
-          .eq("id", userId);
-      } catch (e) {
-        // ignore if no profiles
-      }
+          .from("user_stripe_customers")
+          .upsert({ user_id: userId, stripe_customer_id: stripeCustomerId });
+      } catch {}
     }
 
-    // ---- Create Stripe subscription for seats with quantity 0 initially ----
+    // --- Create the team's seats subscription (qty 0; owner not counted as a seat) ---
     let subscription;
     try {
       subscription = await stripe.subscriptions.create({
@@ -131,10 +138,13 @@ export async function handler(event) {
       });
     } catch (e) {
       console.error("[create-team] Stripe subscription error:", e?.message || e);
-      return { statusCode: 400, body: `Stripe error: ${e?.message || "create subscription failed"}` };
+      return {
+        statusCode: 400,
+        body: `Stripe error: ${e?.message || "create subscription failed"}`,
+      };
     }
 
-    // ---- Create team ----
+    // --- Create team row ---
     let team;
     try {
       const { data, error } = await supa
@@ -154,7 +164,7 @@ export async function handler(event) {
       return { statusCode: 500, body: "Failed to create team record" };
     }
 
-    // ---- Add owner membership ----
+    // --- Add owner membership ---
     try {
       const { error } = await supa
         .from("user_teams")
