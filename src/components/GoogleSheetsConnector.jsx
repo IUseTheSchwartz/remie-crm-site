@@ -130,7 +130,7 @@ export default function GoogleSheetsConnector() {
       : "—";
   }, [hook.id]);
 
-  // ---- UPDATED: full Apps Script with chunking, backfill, safe pointer, helpers ----
+  // ---- Apps Script (adds military_branch support) ----
   const scriptText = useMemo(() => {
     const url = webhookUrl;
     const secret = hook.secret || "";
@@ -220,7 +220,12 @@ function postNewRowsSinceLastPointer() {
     state:       ["state","st","us state","residence state"],
     beneficiary: ["beneficiary","beneficiary type"],
     beneficiary_name: ["beneficiary name","beneficiary_name","beneficiary full name"],
-    gender:      ["gender","sex"]
+    gender:      ["gender","sex"],
+    // NEW: military branch aliases
+    military_branch: [
+      "military branch","branch","service branch","military","armed forces branch",
+      "usmc","marine corps","army","navy","air force","space force","coast guard"
+    ],
   };
 
   const getVal = (rowVals, keys) => {
@@ -264,6 +269,7 @@ function postNewRowsSinceLastPointer() {
       beneficiary_name: String(getVal(rowVals, A.beneficiary_name) || ""),
       gender: String(getVal(rowVals, A.gender) || ""),
       company: String(getVal(rowVals, A.company) || ""),
+      military_branch: String(getVal(rowVals, A.military_branch) || ""), // ← NEW
       created_at: new Date().toISOString(),
     };
 
@@ -327,6 +333,7 @@ function testWebhookOnce() {
     phone: "555-000-0000",
     state: "TN",
     notes: "Single test from Apps Script",
+    military_branch: "Army", // test value
     created_at: new Date().toISOString(),
   };
 
