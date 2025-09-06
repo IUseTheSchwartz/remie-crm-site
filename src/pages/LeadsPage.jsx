@@ -66,6 +66,10 @@ const H = {
   gender: [
     "gender","sex"
   ],
+  military_branch: [
+    "military branch","branch","service branch","military","armed forces branch",
+    "army","navy","air force","space force","marines","marine corps","coast guard","usmc","usa","usn","usaf","usafc","uscg","ussf"
+  ],
 };
 
 const norm = (s) => (s || "").toString().trim().toLowerCase();
@@ -92,6 +96,7 @@ function buildHeaderIndex(headers) {
     beneficiary: find(H.beneficiary),
     beneficiary_name: find(H.beneficiary_name),
     gender: find(H.gender),
+    military_branch: find(H.military_branch),
   };
 }
 
@@ -126,6 +131,7 @@ const buildState = (row, map) => pick(row, map.state).toUpperCase();
 const buildBeneficiary = (row, map) => pick(row, map.beneficiary);
 const buildBeneficiaryName = (row, map) => pick(row, map.beneficiary_name);
 const buildGender = (row, map) => pick(row, map.gender);
+const buildMilitaryBranch = (row, map) => pick(row, map.military_branch);
 
 // Dedupe helpers
 const onlyDigits = (s) => String(s || "").replace(/\D+/g, "");
@@ -263,7 +269,7 @@ export default function LeadsPage() {
     const q = filter.trim().toLowerCase();
     return q
       ? src.filter(r =>
-          [r.name, r.email, r.phone, r.state, r.gender, r.beneficiary_name]
+          [r.name, r.email, r.phone, r.state, r.gender, r.beneficiary_name, r.military_branch]
             .some(v => (v||"").toLowerCase().includes(q)))
       : src;
   }, [tab, allClients, onlySold, filter]);
@@ -309,11 +315,13 @@ export default function LeadsPage() {
           const beneficiary = buildBeneficiary(r, map);
           const beneficiary_name = buildBeneficiaryName(r, map);
           const gender = buildGender(r, map);
+          const military_branch = buildMilitaryBranch(r, map);
 
           const person = normalizePerson({
             name, phone, email, notes,
             status: "lead",
             dob, state, beneficiary, beneficiary_name, gender,
+            military_branch,
           });
 
           // require at least some identifier
@@ -573,6 +581,7 @@ export default function LeadsPage() {
               <Th>Beneficiary</Th>
               <Th>Beneficiary Name</Th>
               <Th>Gender</Th>
+              <Th>Military Branch</Th>
               <Th>Status</Th>
               <Th>Carrier</Th>
               <Th>Face</Th>
@@ -594,6 +603,7 @@ export default function LeadsPage() {
                 <Td>{p.beneficiary || "—"}</Td>
                 <Td>{p.beneficiary_name || "—"}</Td>
                 <Td>{p.gender || "—"}</Td>
+                <Td>{p.military_branch || "—"}</Td>
                 <Td>
                   <span className={`rounded-full px-2 py-0.5 text-xs ${
                     p.status === "sold" ? "bg-emerald-500/15 text-emerald-300" : "bg-white/10 text-white/80"
@@ -628,7 +638,7 @@ export default function LeadsPage() {
             ))}
             {visible.length === 0 && (
               <tr>
-                <td colSpan={16} className="p-6 text-center text-white/60">
+                <td colSpan={17} className="p-6 text-center text-white/60">
                   No records yet. Import a CSV or add leads.
                 </td>
               </tr>
