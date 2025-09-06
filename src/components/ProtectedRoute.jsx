@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import { useAuth } from "../auth";
 import SubscriptionGate from "./SubscriptionGate";
 import { supabase } from "../lib/supabaseClient";
+import useIsAdminAllowlist from "../lib/useIsAdminAllowlist.js";
 
 // Simple banner shown when access is via team membership
 function TeamAccessBanner({ teamName }) {
@@ -14,11 +15,14 @@ function TeamAccessBanner({ teamName }) {
   );
 }
 
-export default function ProtectedRoute() {
-  const { user, ready } = useAuth(); // ← unchanged
+export default function ProtectedRoute({ requireAdmin = false }) {
+  const { user, ready } = useAuth();
   const loc = useLocation();
 
-  // New: detect active team membership (owner or member)
+  // Admin allowlist state (only used when requireAdmin = true)
+  const { isAdmin, loading: adminLoading } = useIsAdminAllowlist();
+
+  // Detect active team membership (owner or member)
   const [teamGateChecked, setTeamGateChecked] = useState(false);
   const [teamOk, setTeamOk] = useState(false);
   const [teamName, setTeamName] = useState("");
@@ -36,8 +40,6 @@ export default function ProtectedRoute() {
       }
 
       try {
-        // Is this user an ACTIVE member of any team?
-        // (If you want to *exclude* owners from this bypass, add .neq("role", "owner"))
         const { data, error } = await supabase
           .from("user_teams")
           .select("role, status, team:teams(name)")
@@ -64,16 +66,16 @@ export default function ProtectedRoute() {
       }
     }
 
-    // Only check once ready & user known
-    if (ready) checkTeamAccess();
+    if (ready && !requireAdmin) checkTeamAccess();
+    else if (ready && requireAdmin) setTeamGateChecked(true); // skip team check for admin routes
 
     return () => {
       cancelled = true;
     };
-  }, [ready, user?.id]);
+  }, [ready, user?.id, requireAdmin]);
 
   // While Supabase restores the session after tabbing back, don't render or redirect yet
-  if (!ready || !teamGateChecked) {
+  if (!ready) {
     return (
       <div className="min-h-[40vh] grid place-items-center text-white/60">
         Loading…
@@ -81,8 +83,30 @@ export default function ProtectedRoute() {
     );
   }
 
-  // After hydration, if still no user → bounce to login
+  // Must be logged in
   if (!user) return <Navigate to="/login" replace state={{ from: loc }} />;
+
+  // --- Admin-only path: bypass subscription/team gates, enforce allowlist ---
+  if (requireAdmin) {
+    if (adminLoading) {
+      return (
+        <div className="min-h-[40vh] grid place-items-center text-white/60">
+          Checking access…
+        </div>
+      );
+    }
+    if (!isAdmin) return <Navigate to="/app" replace />;
+    return <Outlet />;
+  }
+
+  // --- Normal path (non-admin routes): keep existing team/subscription logic ---
+  if (!teamGateChecked) {
+    return (
+      <div className="min-h-[40vh] grid place-items-center text-white/60">
+        Loading…
+      </div>
+    );
+  }
 
   // If the user is an active team member, bypass the personal subscription gate
   if (teamOk) {
@@ -94,7 +118,7 @@ export default function ProtectedRoute() {
     );
   }
 
-  // Logged in but not a team member → enforce personal subscription (unchanged path)
+  // Logged in but not a team member → enforce personal subscription (unchanged)
   return (
     <SubscriptionGate>
       <Outlet />
