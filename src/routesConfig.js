@@ -19,6 +19,10 @@ import MyTeams from "./pages/MyTeams.jsx";
 import TeamManagement from "./pages/TeamManagement.jsx";
 import TeamDashboard from "./pages/TeamDashboard.jsx";
 
+// ---- Admin-only Support Inbox ----
+import SupportInbox from "./pages/SupportInbox.jsx";
+import ProtectedRoute from "./components/ProtectedRoute.jsx";
+
 export const routes = [
   // Main section
   { key: "home",     path: "/app",            label: "Home",     component: DashboardHome, index: true,  showInSidebar: true, group: "main" },
@@ -39,6 +43,20 @@ export const routes = [
 
   // Support (very bottom under Agent section)
   { key: "support", path: "/app/support", label: "Support", component: SupportPage, showInSidebar: true, group: "agent" },
+
+  // Admin-only Support Inbox (hidden from sidebar; show it conditionally in your Sidebar for allowlisted admins)
+  {
+    key: "support-inbox",
+    path: "/app/support-inbox",
+    label: "Support Inbox",
+    component: (
+      <ProtectedRoute requireAdmin>
+        <SupportInbox />
+      </ProtectedRoute>
+    ),
+    showInSidebar: false,
+    group: "agent"
+  },
 
   // ---- Team section (NEW divider below Support) ----
   { key: "my-teams", path: "/app/teams", label: "My Teams", component: MyTeams, showInSidebar: true, group: "teams" },
