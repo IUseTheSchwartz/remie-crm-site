@@ -5,14 +5,12 @@ import { createClient } from "@supabase/supabase-js";
 const stripe = new Stripe(process.env.STRIPE_SECRET_KEY);
 
 const SUBS_TABLE = "subscriptions";
+const MAP_TABLE = "user_stripe_customers";
 const WALLET_TABLE = "user_wallets";
 
-const SERVICE_ROLE =
-  process.env.SUPABASE_SERVICE_ROLE || process.env.SUPABASE_SERVICE_ROLE_KEY;
+const SERVICE_ROLE = process.env.SUPABASE_SERVICE_ROLE || process.env.SUPABASE_SERVICE_ROLE_KEY;
 const supabase =
-  process.env.SUPABASE_URL && SERVICE_ROLE
-    ? createClient(process.env.SUPABASE_URL, SERVICE_ROLE)
-    : null;
+  process.env.SUPABASE_URL && SERVICE_ROLE ? createClient(process.env.SUPABASE_URL, SERVICE_ROLE) : null;
 
 export async function handler(event) {
   try {
@@ -43,58 +41,44 @@ export async function handler(event) {
 
     const iso = (tsSec) => (tsSec ? new Date(tsSec * 1000).toISOString() : null);
 
-    // Only metadata-based + customer.metadata-based resolution (no profiles)
+    // Primary resolution: metadata + mapping table
     async function resolveUserId({ sub = null, customerId = null, session = null }) {
-      try {
-        let userId =
-          sub?.metadata?.app_user_id ||
-          session?.metadata?.app_user_id ||
-          session?.subscription_metadata?.app_user_id ||
-          null;
+      // 1) Try direct metadata first
+      let userId =
+        sub?.metadata?.app_user_id ||
+        session?.metadata?.app_user_id ||
+        session?.subscription_metadata?.app_user_id ||
+        null;
 
-        if (!userId && customerId) {
-          const customer = await stripe.customers.retrieve(customerId);
-          userId = customer?.metadata?.user_id || null;
-        }
-        return userId || null;
-      } catch {
-        return null;
+      // 2) If missing, try mapping table by customer id
+      if (!userId && customerId) {
+        const { data: map } = await supabase
+          .from(MAP_TABLE)
+          .select("user_id")
+          .eq("stripe_customer_id", customerId)
+          .maybeSingle();
+        userId = map?.user_id || null;
       }
+
+      // 3) Final fallback: Stripe customer metadata (if present)
+      if (!userId && customerId) {
+        const customer = await stripe.customers.retrieve(customerId);
+        userId = customer?.metadata?.user_id || null;
+      }
+
+      return userId || null;
     }
 
-    async function getPlanName(sub) {
-      try {
-        const firstItem = Array.isArray(sub.items?.data) ? sub.items.data[0] : null;
-        if (!firstItem) return null;
-        const price = firstItem.price;
-        if (!price) return null;
-        if (price.nickname) return price.nickname;
-
-        if (price.product) {
-          const product =
-            typeof price.product === "string"
-              ? await stripe.products.retrieve(price.product)
-              : price.product;
-          return product?.name || null;
-        }
-        return null;
-      } catch {
-        return null;
-      }
-    }
-
-    // Insert/update subscriptions row
     async function upsertSubscription(sub) {
       const customerId = sub.customer || null;
       const userId = await resolveUserId({ sub, customerId });
-      const plan_name = await getPlanName(sub);
 
       const payload = {
-        user_id: userId, // may be null if we cannot resolve yet
-        plan_name,
+        user_id: userId, // may be null initially; we'll backfill on checkout.session.completed
+        plan_name: null, // optional (omit lookups for speed)
         status: sub.status,
         stripe_customer_id: customerId,
-        stripe_subscription_id: sub.id, // PRIMARY KEY/UNIQUE in your table
+        stripe_subscription_id: sub.id, // PRIMARY KEY/UNIQUE
         current_period_end: iso(sub.current_period_end),
         updated_at: new Date().toISOString(),
       };
@@ -103,46 +87,32 @@ export async function handler(event) {
         .from(SUBS_TABLE)
         .upsert(payload, { onConflict: "stripe_subscription_id" });
 
-      if (error) {
-        console.error("[Webhook] subscriptions upsert error:", error);
-      } else {
-        console.log("[Webhook] subscriptions upsert ok:", sub.id, "user:", userId);
-      }
+      if (error) console.error("[Webhook] subscriptions upsert error:", error);
+      else console.log("[Webhook] subscriptions upsert ok:", sub.id, "user:", userId);
     }
 
-    // After checkout completes, we can often map the customer -> user id;
-    // Use that to backfill any subs rows missing user_id.
+    // Backfill: when we finally know (or confirm) user_id at checkout completion,
+    // set user_id on ANY subscription rows for that customer that are still null.
     async function backfillUserIdForCustomer(customerId, userId) {
       if (!customerId || !userId) return;
       const { error } = await supabase
         .from(SUBS_TABLE)
         .update({ user_id: userId, updated_at: new Date().toISOString() })
         .eq("stripe_customer_id", customerId)
-        .is("user_id", null); // only fill missing
-      if (error) {
-        console.error("[Webhook] backfill user_id failed:", error);
-      } else {
-        console.log("[Webhook] backfilled user_id for customer", customerId);
-      }
+        .is("user_id", null);
+      if (error) console.error("[Webhook] backfill user_id failed:", error);
+      else console.log("[Webhook] backfilled user_id for customer", customerId);
     }
 
     async function creditWalletTopup(session) {
       const purpose =
-        session.metadata?.purpose ||
-        session.payment_intent?.metadata?.purpose ||
-        "";
-
+        session.metadata?.purpose || session.payment_intent?.metadata?.purpose || "";
       if (purpose !== "wallet_topup") return;
 
       const userId =
-        session.metadata?.app_user_id ||
-        session.payment_intent?.metadata?.app_user_id;
+        session.metadata?.app_user_id || session.payment_intent?.metadata?.app_user_id;
       const amountCents = session.amount_total || 0;
-
-      if (!userId || !amountCents) {
-        console.warn("[Wallet] Missing user or amount on wallet_topup session", session.id);
-        return;
-      }
+      if (!userId || !amountCents) return;
 
       const { data: wallet } = await supabase
         .from(WALLET_TABLE)
@@ -162,11 +132,9 @@ export async function handler(event) {
           .upsert({ user_id: userId, balance_cents: amountCents });
         if (error) throw error;
       }
-
-      console.log("[Wallet] Credited", amountCents, "cents to", userId, "from session", session.id);
     }
 
-    // ----- event routing -----
+    // ---- route events ----
     switch (evt.type) {
       case "customer.subscription.created":
       case "customer.subscription.updated":
@@ -176,17 +144,21 @@ export async function handler(event) {
 
       case "checkout.session.completed": {
         const session = evt.data.object;
-        // Backfill user_id on any subscription rows for this customer
         const userId = await resolveUserId({ session, customerId: session.customer });
-        await backfillUserIdForCustomer(session.customer, userId);
 
-        // Wallet top-ups (kept)
+        // Ensure mapping exists (in case checkout happened via Payment Link)
+        if (userId && session.customer) {
+          await supabase
+            .from(MAP_TABLE)
+            .upsert({ user_id: userId, stripe_customer_id: session.customer });
+        }
+
+        await backfillUserIdForCustomer(session.customer, userId);
         await creditWalletTopup(session);
         break;
       }
 
       default:
-        // ignore others
         break;
     }
 
