@@ -2,6 +2,7 @@
 import { useEffect, useRef, useState } from "react";
 import { supabase } from "../lib/supabaseClient";
 import { useAuth } from "../auth";
+import { startCheckout, getPriceId } from "../lib/billing"; // ✅ use your existing helper
 
 const ACTIVE_STATUSES = new Set(["active", "trialing"]);
 const norm = (s) => (s || "").toLowerCase().trim();
@@ -10,7 +11,7 @@ export default function SubscriptionGate({ children }) {
   const { user } = useAuth();
   const [loading, setLoading] = useState(true);
   const [admit, setAdmit] = useState(false);
-  const [foundStatus, setFoundStatus] = useState(null); // debug text you like
+  const [foundStatus, setFoundStatus] = useState(null);
   const [reason, setReason] = useState("");
   const timeoutRef = useRef(null);
 
@@ -18,7 +19,6 @@ export default function SubscriptionGate({ children }) {
     let cancelled = false;
 
     async function safeCheck() {
-      // If no user, block (but don't blank!)
       if (!user) {
         if (!cancelled) {
           setAdmit(false);
@@ -29,12 +29,10 @@ export default function SubscriptionGate({ children }) {
         return;
       }
 
-      // HARD TIMEOUT: never hang forever on “Checking…”
       clearTimeout(timeoutRef.current);
       timeoutRef.current = setTimeout(() => {
         if (!cancelled) {
           setLoading(false);
-          // fail closed: show subscribe panel
           setAdmit(false);
           setFoundStatus(null);
           setReason("timeout");
@@ -58,9 +56,8 @@ export default function SubscriptionGate({ children }) {
             statusStr = norm(data[0].status);
             if (ACTIVE_STATUSES.has(statusStr)) ok = true;
           }
-        } catch (e) {
-          // swallow and continue to team check
-          // console.warn("[Gate] subscriptions threw:", e?.message || e);
+        } catch {
+          // swallow & continue to team check
         }
 
         // 2) Team membership (seat access)
@@ -77,8 +74,8 @@ export default function SubscriptionGate({ children }) {
               ok = true;
               if (!statusStr) statusStr = "team-member";
             }
-          } catch (e) {
-            // console.warn("[Gate] user_teams threw:", e?.message || e);
+          } catch {
+            // swallow
           }
         }
 
@@ -89,8 +86,7 @@ export default function SubscriptionGate({ children }) {
           setReason(ok ? "ok" : "no active sub or team");
           setLoading(false);
         }
-      } catch (e) {
-        // absolute safety: never blank screen
+      } catch {
         if (!cancelled) {
           clearTimeout(timeoutRef.current);
           setAdmit(false);
@@ -101,7 +97,6 @@ export default function SubscriptionGate({ children }) {
       }
     }
 
-    // reset state on user change
     setLoading(true);
     setAdmit(false);
     setFoundStatus(null);
@@ -143,15 +138,26 @@ export default function SubscriptionGate({ children }) {
           >
             Refresh status
           </button>
-          <a
-            href="/app/settings"
+
+          {/* ✅ Open Stripe Checkout directly */}
+          <button
+            onClick={async () => {
+              try {
+                const priceId = getPriceId();     // reads VITE_STRIPE_PRICE_ID
+                await startCheckout(priceId);      // creates session & redirects
+              } catch (e) {
+                // Fallback: if env missing, take them to public pricing
+                console.warn("startCheckout failed:", e);
+                window.location.href = "/#pricing";
+              }
+            }}
             className="rounded-xl bg-white/10 px-4 py-2 text-sm hover:bg-white/20"
           >
             Subscribe
-          </a>
+          </button>
         </div>
 
-        {/* Debug line (keep for now) */}
+        {/* Debug line */}
         <div className="mt-3 text-xs text-white/50">
           {foundStatus ? `Found subscription: ${foundStatus}` : "No subscription found"}
           {reason ? ` • ${reason}` : ""}
