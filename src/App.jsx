@@ -396,7 +396,7 @@ function LandingPage() {
                 (915) 494-3286 <ExternalLink className="h-3.5 w-3.5" />
               </a>
             </div>
-            <div className="rounded-xl border border-white/10 bg-black/30 p-4 sm:col-span-2 lg:col-span-1">
+            <div className="rounded-xl border border-white/10 bg-black/30 p-4 sm:col-span-2 lg:grid-cols-1">
               <div className="text-white/60">Instagram</div>
               <a
                 href="https://instagram.com/jacob_prietoo"
@@ -543,7 +543,12 @@ function AppLayout() {
   const nav = useNavigate();
 
   return (
-    <div className="min-h-screen bg-neutral-950 text-white grid md:grid-cols-[240px_1fr]">
+    <div className="min-h-screen relative bg-neutral-950 text-white grid md:grid-cols-[240px_1fr]">
+      {/* 🔮 Subtle gradient background behind the whole CRM */}
+      <div className="pointer-events-none fixed inset-0 -z-10">
+        <div className="absolute -top-40 left-1/2 h-[36rem] w-[36rem] -translate-x-1/2 rounded-full bg-gradient-to-br from-indigo-600/20 via-fuchsia-500/10 to-rose-500/10 blur-3xl" />
+      </div>
+
       <aside className="hidden md:block border-r border-white/10 bg-black/30">
         <a
           href="https://remiecrm.com"
