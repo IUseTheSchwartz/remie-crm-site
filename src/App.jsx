@@ -380,23 +380,23 @@ function LandingPage() {
           <h2 className="text-2xl font-semibold">Contact</h2>
           <p className="mt-2 text-white/70">Reach out anytime.</p>
           <div className="mt-4 grid gap-4 sm:grid-cols-2 lg:grid-cols-3 text-sm">
-            <div className="rounded-xl border border-white/10 bg-black/30 p-4">
+            <div className="rounded-3xl border border-white/10 bg-black/30 p-4">
               <div className="text-white/60">Name</div>
               <div className="mt-1 font-medium">Jacob Prieto</div>
             </div>
-            <div className="rounded-xl border border-white/10 bg-black/30 p-4">
+            <div className="rounded-3xl border border-white/10 bg-black/30 p-4">
               <div className="text-white/60">Email</div>
               <a href="mailto:JacobPrieto@gmail.com" className="mt-1 inline-flex items-center gap-1 font-medium hover:underline">
                 JacobPrieto@gmail.com <ExternalLink className="h-3.5 w-3.5" />
               </a>
             </div>
-            <div className="rounded-xl border border-white/10 bg-black/30 p-4">
+            <div className="rounded-3xl border border-white/10 bg-black/30 p-4">
               <div className="text-white/60">Phone</div>
               <a href="tel:+19154943286" className="mt-1 inline-flex items-center gap-1 font-medium hover:underline">
                 (915) 494-3286 <ExternalLink className="h-3.5 w-3.5" />
               </a>
             </div>
-            <div className="rounded-xl border border-white/10 bg-black/30 p-4 sm:col-span-2 lg:grid-cols-1">
+            <div className="rounded-3xl border border-white/10 bg-black/30 p-4 sm:col-span-2 lg:grid-cols-1">
               <div className="text-white/60">Instagram</div>
               <a
                 href="https://instagram.com/jacob_prietoo"
@@ -544,9 +544,14 @@ function AppLayout() {
 
   return (
     <div className="min-h-screen relative bg-neutral-950 text-white grid md:grid-cols-[240px_1fr]">
-      {/* 🔮 Subtle gradient sits ABOVE the base bg and BELOW content */}
+      {/* 🔮 Two subtle brand blobs behind the whole CRM */}
       <div className="pointer-events-none absolute inset-0 z-0">
-        <div className="absolute -top-40 left-1/2 h-[36rem] w-[36rem] -translate-x-1/2 rounded-full bg-gradient-to-br from-indigo-600/20 via-fuchsia-500/10 to-rose-500/10 blur-3xl" />
+        {/* top-center */}
+        <div className="absolute -top-40 left-1/2 h-[36rem] w-[36rem] -translate-x-1/2 rounded-full
+                        bg-gradient-to-br from-indigo-600/25 via-fuchsia-500/15 to-rose-500/15 blur-3xl" />
+        {/* bottom-right echo */}
+        <div className="absolute -bottom-40 right-[-10%] h-[42rem] w-[42rem] rounded-full
+                        bg-gradient-to-tr from-fuchsia-500/10 via-purple-600/10 to-indigo-600/15 blur-3xl" />
       </div>
 
       <aside className="relative z-10 hidden md:block border-r border-white/10 bg-black/30">
@@ -562,6 +567,7 @@ function AppLayout() {
           <div className="font-semibold">{BRAND.name}</div>
         </a>
         <nav className="p-3 space-y-1 text-sm">
+          {/* MAIN (everything not in 'agent' or 'teams') */}
           {routes
             .filter(r => r.showInSidebar && r.group !== "agent" && r.group !== "teams")
             .map(r => (
@@ -588,7 +594,9 @@ function AppLayout() {
       </aside>
 
       <main className="relative z-10">
-        <div className="flex items-center justify-between border-b border-white/10 bg-black/30 px-4 py-3">
+        <div className="flex items-center justify-between border-b border-white/10
+                        bg-gradient-to-r from-indigo-600/10 via-purple-600/10 to-fuchsia-600/10
+                        px-4 py-3">
           <div className="font-medium">Welcome{user?.email ? `, ${user.email}` : ""}</div>
           <button
             onClick={async () => { await logout(); nav("/"); }}
