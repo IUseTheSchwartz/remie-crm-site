@@ -170,7 +170,7 @@ function preserveStage(existingList, incoming) {
 }
 
 export default function LeadsPage() {
-  const [tab, setTab] = useState("clients"); // 'clients' | 'sold'
+  const [tab, setTab] = useState("clients"); // 'clients' | 'sold'  (label "Leads" for 'clients')
   const [leads, setLeads] = useState([]);
   const [clients, setClients] = useState([]);
   const [selected, setSelected] = useState(null);
@@ -231,7 +231,7 @@ export default function LeadsPage() {
       }
     })();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [/* run once on mount */]);
 
   // Realtime inserts → ignore duplicates (id/email/phone)
   useEffect(() => {
@@ -253,7 +253,7 @@ export default function LeadsPage() {
               const idDup = [...leads, ...clients].some(x => x.id === row.id);
               const eDup = row.email && [...leads, ...clients].some(x => normEmail(x.email) === normEmail(row.email));
               const pDup = row.phone && [...leads, ...clients].some(x => onlyDigits(x.phone) === onlyDigits(row.phone));
-              if (idDup || eDup || pDup) return;
+              if (idDup || eDup || pDup) return; // ignore
 
               const newLeads = [row, ...leads];
               const newClients = [row, ...clients];
@@ -500,6 +500,7 @@ export default function LeadsPage() {
     } catch (e) {
       console.error("Delete server error:", e);
       setServerMsg(`⚠️ Could not delete on Supabase: ${e.message || e}`);
+      // (Optional) If you want strict consistency, you could rollback local here.
     }
   }
 
@@ -513,18 +514,12 @@ export default function LeadsPage() {
   }
 
   return (
-    <div className="relative z-0 space-y-6">
-      {/* 🔒 Fixed full-viewport background layer (covers any horizontal scroll) */}
-      <div className="pointer-events-none fixed inset-0 -z-10">
-        <div className="absolute inset-0 bg-neutral-950" />
-        <div className="absolute -top-56 left-1/2 h-[36rem] w-[36rem] -translate-x-1/2 rounded-full bg-gradient-to-br from-indigo-600/20 via-fuchsia-500/10 to-rose-500/10 blur-3xl" />
-      </div>
-
+    <div className="space-y-6">
       {/* Toolbar */}
       <div className="flex flex-wrap items-center gap-3">
         <div className="inline-flex rounded-full border border-white/15 bg-white/5 p-1 text-sm">
           {[
-            { id:"clients", label:"Leads" },
+            { id:"clients", label:"Leads" },   // renamed from Clients
             { id:"sold",    label:"Sold"  },
           ].map(t => (
             <button
@@ -602,8 +597,8 @@ export default function LeadsPage() {
       </div>
 
       {/* Table */}
-      <div className="overflow-x-auto rounded-2xl border border-white/10">
-        <table className="min-w-[1200px] w-full border-collapse text-sm bg-neutral-950">
+      <div className="leads-scroll relative overflow-x-auto rounded-2xl border border-white/10 bg-neutral-950">
+        <table className="min-w-[1200px] w-max border-collapse text-sm">
           <thead className="bg-white/[0.04] text-white/70">
             <tr>
               <Th>Name</Th>
@@ -699,6 +694,54 @@ export default function LeadsPage() {
           onSave={(payload) => saveSoldInfo(payload.id, payload)}
         />
       )}
+
+      {/* Scroll-area background (prevents white band at far right) */}
+      <style>{`
+        .leads-scroll { background-color: #0a0a0a; }
+        .leads-scroll::before{
+          content:"";
+          position:absolute;
+          inset:-12rem 0 0 0;
+          width:40rem; height:40rem; margin:auto; border-radius:9999px;
+          background: radial-gradient(closest-side,
+            rgba(99,102,241,.18),
+            rgba(217,70,239,.12),
+            rgba(244,63,94,.10) 70%,
+            transparent 100%);
+          filter: blur(48px);
+          pointer-events:none;
+          z-index:0;
+        }
+      `}</style>
+  .leads-scroll {
+    position: relative;
+    background-color: #0a0a0a; /* same as app bg */
+  }
+  /* soft hero glow */
+  .leads-scroll::before{
+    content:"";
+    position:absolute;
+    inset:-12rem 0 0 0;
+    margin:auto;
+    width:40rem; height:40rem; border-radius:9999px;
+    background: radial-gradient(closest-side,
+      rgba(99,102,241,.18),
+      rgba(217,70,239,.12),
+      rgba(244,63,94,.10) 70%,
+      transparent 100%);
+    filter: blur(48px);
+    pointer-events:none;
+    z-index:0;
+  }
+  /* solid backdrop that extends far to the right so you never see white */
+  .leads-scroll::after{
+    content:"";
+    position:absolute;
+    top:0; bottom:0; left:0; right:-120vw; /* push 120vw past the right edge */
+    background:#0a0a0a;
+    z-index:-1; /* sit behind the gradient circle */
+  }
+`}</style>
     </div>
   );
 }
@@ -830,7 +873,7 @@ function SoldDrawer({ initial, allClients, onClose, onSave }) {
             <div className="mb-2 text-sm font-semibold text-white/90">Post-sale options</div>
 
             <div className="grid gap-2">
-              {/* Message Policy Info */}
+              {/* Message Policy Info (reuses existing flag) */}
               <label className="flex items-start gap-3 rounded-xl border border-white/10 bg-black/30 p-3 hover:bg-white/[0.06]">
                 <input
                   type="checkbox"
@@ -846,7 +889,7 @@ function SoldDrawer({ initial, allClients, onClose, onSave }) {
                 </div>
               </label>
 
-              {/* Bday + Holiday Texts */}
+              {/* Bday + Holiday Texts (new flag, stored for future) */}
               <label className="flex items-start gap-3 rounded-xl border border-white/10 bg-black/30 p-3 hover:bg-white/[0.06]">
                 <input
                   type="checkbox"
@@ -889,4 +932,5 @@ function Field({ label, children }) {
       {children}
     </label>
   );
+}
 }
