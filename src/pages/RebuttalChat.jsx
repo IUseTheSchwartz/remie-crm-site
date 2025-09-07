@@ -1,5 +1,29 @@
-// File: src/pages/RebuttalChat.jsx
 import { useEffect, useRef, useState } from "react";
+
+function Section({ title, items }) {
+  if (!items?.length) return null;
+  return (
+    <section className="mb-5">
+      <h3 className="text-sm font-semibold text-white/90 mb-2">{title}</h3>
+      <ul className="list-disc pl-5 space-y-1 text-sm text-white/90">
+        {items.map((t, i) => (
+          <li key={i} className="leading-6">{t}</li>
+        ))}
+      </ul>
+    </section>
+  );
+}
+
+function AssistantCard({ data }) {
+  if (!data) return null;
+  return (
+    <div className="max-w-[80%] rounded-lg px-4 py-3 bg-black text-white border border-gray-700 shadow">
+      <Section title="What likely went wrong" items={data.why} />
+      <Section title="How to fix it next time" items={data.fix} />
+      <Section title="Rebuttals" items={data.rebuttals} />
+    </div>
+  );
+}
 
 function Bubble({ role, text }) {
   const isUser = role === "user";
@@ -20,10 +44,11 @@ export default function RebuttalChat() {
     {
       role: "assistant",
       text:
-        "Tell me what happened on the call/text. Paste the objection or describe what you think went wrong. " +
+        "Tell me what happened. Paste the objection or describe the call. " +
         "I’ll coach you and give 2–3 ready-to-use rebuttals.",
     },
   ]);
+  const [structured, setStructured] = useState(null); // holds JSON result
   const [input, setInput] = useState("");
   const [sending, setSending] = useState(false);
   const [product, setProduct] = useState("Final Expense");
@@ -32,19 +57,17 @@ export default function RebuttalChat() {
 
   useEffect(() => {
     scrollerRef.current?.scrollTo({ top: scrollerRef.current.scrollHeight, behavior: "smooth" });
-  }, [messages]);
+  }, [messages, structured]);
 
   async function sendMessage(e) {
     e?.preventDefault();
     const content = input.trim();
     if (!content || sending) return;
 
+    setStructured(null);
     setMessages((m) => [...m, { role: "user", text: content }]);
     setInput("");
     setSending(true);
-
-    const aiIndex = messages.length + 1;
-    setMessages((m) => [...m, { role: "assistant", text: "" }]);
 
     try {
       const res = await fetch("/.netlify/functions/rebuttal-chat", {
@@ -52,29 +75,11 @@ export default function RebuttalChat() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ content, product, tone }),
       });
-      if (!res.ok || !res.body) throw new Error(`Server error: ${res.status}`);
-
-      const reader = res.body.getReader();
-      const decoder = new TextDecoder();
-      let done = false;
-
-      while (!done) {
-        const { value, done: readerDone } = await reader.read();
-        done = readerDone;
-        const chunk = decoder.decode(value || new Uint8Array(), { stream: !done });
-        if (chunk) {
-          setMessages((m) => {
-            const copy = [...m];
-            copy[aiIndex] = { ...copy[aiIndex], text: (copy[aiIndex].text || "") + chunk };
-            return copy;
-          });
-        }
-      }
+      if (!res.ok) throw new Error(`Server error: ${res.status}`);
+      const data = await res.json();
+      setStructured(data);
     } catch (err) {
-      setMessages((m) => [
-        ...m,
-        { role: "assistant", text: "Sorry—something went wrong. Try again." },
-      ]);
+      setMessages((m) => [...m, { role: "assistant", text: "Sorry—something went wrong. Try again." }]);
       console.error(err);
     } finally {
       setSending(false);
@@ -83,12 +88,9 @@ export default function RebuttalChat() {
 
   function resetChat() {
     setMessages([
-      {
-        role: "assistant",
-        text:
-          "New chat. Paste the objection or summarize the call. I’ll analyze, coach, and give tight rebuttals.",
-      },
+      { role: "assistant", text: "New chat. Summarize the call or paste the objection." },
     ]);
+    setStructured(null);
   }
 
   return (
@@ -96,13 +98,13 @@ export default function RebuttalChat() {
       <header className="p-4 border-b border-gray-800 flex items-center justify-between">
         <div>
           <h1 className="text-xl font-semibold">AI Rebuttal Helper</h1>
-          <p className="text-xs text-gray-400">
-            Stateless chat — nothing is stored. Close the tab = history is gone.
-          </p>
+          <p className="text-xs text-gray-400">Stateless chat — nothing is stored.</p>
         </div>
         <div className="flex gap-2">
           <select
-            className="border rounded px-2 py-1 text-sm bg-white text-black hover:shadow-[0_0_10px_rgba(139,92,246,0.8)] transition"
+            className="border rounded px-2 py-1 text-sm bg-black text-white border-gray-700
+                       hover:shadow-[0_0_12px_rgba(139,92,246,0.9)]
+                       focus:outline-none focus:ring-2 focus:ring-violet-600 transition"
             value={product}
             onChange={(e) => setProduct(e.target.value)}
             title="Product context"
@@ -113,7 +115,9 @@ export default function RebuttalChat() {
             <option>Whole Life</option>
           </select>
           <select
-            className="border rounded px-2 py-1 text-sm bg-white text-black hover:shadow-[0_0_10px_rgba(139,92,246,0.8)] transition"
+            className="border rounded px-2 py-1 text-sm bg-black text-white border-gray-700
+                       hover:shadow-[0_0_12px_rgba(139,92,246,0.9)]
+                       focus:outline-none focus:ring-2 focus:ring-violet-600 transition"
             value={tone}
             onChange={(e) => setTone(e.target.value)}
             title="Coaching tone"
@@ -135,17 +139,23 @@ export default function RebuttalChat() {
 
       <main ref={scrollerRef} className="flex-1 overflow-y-auto p-4">
         {messages.map((m, i) => (
-          <Bubble key={i} role={m.role} text={m.text} />
+          <Bubble key={`m-${i}`} role={m.role} text={m.text} />
         ))}
+        {structured && (
+          <div className="flex justify-start mt-3">
+            <AssistantCard data={structured} />
+          </div>
+        )}
       </main>
 
       <form onSubmit={sendMessage} className="p-4 border-t border-gray-800 bg-black">
         <div className="flex gap-2">
           <textarea
-            className="flex-1 border rounded px-3 py-2 text-sm h-20 bg-black text-white border-gray-700 placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-violet-600"
+            className="flex-1 border rounded px-3 py-2 text-sm h-24 bg-black text-white border-gray-700
+                       placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-violet-600"
             placeholder={`Example:
-Prospect: "Too expensive."
-Me: I only compared price...`}
+Prospect: "Let me talk to my wife."
+Me: Confirmed beneficiary, didn't ask health changes or review date. I froze and said okay.`}
             value={input}
             onChange={(e) => setInput(e.target.value)}
           />
