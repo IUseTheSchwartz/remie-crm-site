@@ -144,16 +144,13 @@ function preserveStage(existingList, incoming) {
 }
 
 export default function LeadsPage() {
-  const [tab, setTab] = useState("clients"); // 'clients' | 'sold'  (label "Leads" for 'clients')
+  const [tab, setTab] = useState("clients"); // 'clients' | 'sold'
   const [leads, setLeads] = useState([]);
   const [clients, setClients] = useState([]);
   const [selected, setSelected] = useState(null);
   const [filter, setFilter] = useState("");
 
-  // Lightweight server status
   const [serverMsg, setServerMsg] = useState("");
-
-  // Toggle for the connector panel
   const [showConnector, setShowConnector] = useState(false);
 
   useEffect(() => {
@@ -205,7 +202,7 @@ export default function LeadsPage() {
       }
     })();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [/* run once on mount */]);
+  }, []);
 
   // Realtime inserts → ignore duplicates (id/email/phone)
   useEffect(() => {
@@ -227,7 +224,7 @@ export default function LeadsPage() {
               const idDup = [...leads, ...clients].some(x => x.id === row.id);
               const eDup = row.email && [...leads, ...clients].some(x => normEmail(x.email) === normEmail(row.email));
               const pDup = row.phone && [...leads, ...clients].some(x => onlyDigits(x.phone) === onlyDigits(row.phone));
-              if (idDup || eDup || pDup) return; // ignore
+              if (idDup || eDup || pDup) return;
 
               const newLeads = [row, ...leads];
               const newClients = [row, ...clients];
@@ -248,7 +245,7 @@ export default function LeadsPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [leads, clients]);
 
-  // Merge clients + leads into a deduped "Leads" view (formerly "Clients")
+  // Merge clients + leads into a deduped "Leads" view
   const allClients = useMemo(() => {
     const map = new Map();
     for (const x of clients) map.set(x.id, x);
@@ -311,14 +308,12 @@ export default function LeadsPage() {
           const gender = buildGender(r, map);
           const military_branch = buildMilitaryBranch(r, map);
 
-          // ✅ Default stage for new imports (no "status: 'lead'")
           const person = normalizePerson({
             name, phone, email, notes,
             stage: "no_pickup",
             dob, state, beneficiary, beneficiary_name, gender, military_branch,
           });
 
-          // require at least some identifier
           if (!(person.name || person.phone || person.email)) continue;
 
           const e = normEmail(person.email);
@@ -348,7 +343,7 @@ export default function LeadsPage() {
         setClients(newClients);
         setTab("clients");
 
-        // Try server batch upsert (only the new ones)
+        // Try server batch upsert
         try {
           setServerMsg(`Syncing ${uniqueToAdd.length} new lead(s) to Supabase…`);
           const count = await upsertManyLeadsServer(uniqueToAdd);
@@ -404,7 +399,6 @@ export default function LeadsPage() {
       phone: soldPayload.phone || base.phone || "",
       email: soldPayload.email || base.email || "",
 
-      // ✅ Persist preferences for future automations
       automationPrefs: {
         messagePolicyInfo: !!soldPayload.sendPolicyEmailOrMail,
         bdayHolidayTexts: !!soldPayload.enableBdayHolidayTexts,
@@ -419,7 +413,6 @@ export default function LeadsPage() {
     setClients(nextClients);
     setLeads(nextLeads);
 
-    // Existing behavior (welcome text disabled by default / not rendered)
     if (soldPayload.sendWelcomeText) {
       scheduleWelcomeText({
         name: updated.name,
@@ -428,7 +421,6 @@ export default function LeadsPage() {
         startDate: updated.sold?.startDate,
       });
     }
-    // Message Policy Info
     if (soldPayload.sendPolicyEmailOrMail) {
       schedulePolicyKickoffEmail({
         name: updated.name,
@@ -444,7 +436,6 @@ export default function LeadsPage() {
     setSelected(null);
     setTab("sold");
 
-    // Try server upsert (non-blocking)
     try {
       setServerMsg("Syncing SOLD to Supabase…");
       await upsertLeadServer(updated);
@@ -457,7 +448,6 @@ export default function LeadsPage() {
 
   async function removeOne(id) {
     if (!confirm("Delete this record? This affects both local and Supabase.")) return;
-    // Optimistic local delete
     const nextClients = clients.filter(c => c.id !== id);
     const nextLeads   = leads.filter(l => l.id !== id);
     saveClients(nextClients);
@@ -466,7 +456,6 @@ export default function LeadsPage() {
     setLeads(nextLeads);
     if (selected?.id === id) setSelected(null);
 
-    // Try server delete
     try {
       setServerMsg("Deleting on Supabase…");
       await deleteLeadServer(id);
@@ -474,7 +463,6 @@ export default function LeadsPage() {
     } catch (e) {
       console.error("Delete server error:", e);
       setServerMsg(`⚠️ Could not delete on Supabase: ${e.message || e}`);
-      // (Optional) If you want strict consistency, you could rollback local here.
     }
   }
 
@@ -488,13 +476,14 @@ export default function LeadsPage() {
   }
 
   return (
-    {/* 🔧 FIX: prevent this page from forcing the grid column wider than the viewport */}
     <div className="space-y-6 min-w-0 overflow-x-hidden">
+      {/* 🔧 Prevent page-level horizontal overflow; table still scrolls inside its wrapper */}
+
       {/* Toolbar */}
       <div className="flex flex-wrap items-center gap-3">
         <div className="inline-flex rounded-full border border-white/15 bg-white/5 p-1 text-sm">
           {[
-            { id:"clients", label:"Leads" },   // renamed from Clients
+            { id:"clients", label:"Leads" },
             { id:"sold",    label:"Sold"  },
           ].map(t => (
             <button
@@ -507,7 +496,6 @@ export default function LeadsPage() {
           ))}
         </div>
 
-        {/* Toggle button (to the LEFT of Import CSV) */}
         <button
           onClick={() => setShowConnector(s => !s)}
           className="rounded-xl border border-white/15 bg-white/5 px-3 py-2 text-sm"
@@ -518,7 +506,6 @@ export default function LeadsPage() {
           {showConnector ? "Close setup" : "Setup auto import leads"}
         </button>
 
-        {/* existing buttons */}
         <label className="ml-auto inline-flex items-center gap-2 rounded-xl border border-white/15 bg-white/5 px-3 py-2 text-sm cursor-pointer">
           <input
             type="file"
@@ -695,8 +682,8 @@ function SoldDrawer({ initial, allClients, onClose, onSave }) {
     zip: initial?.sold?.address?.zip || "",
     // Automations (welcome text hidden for now)
     sendWelcomeText: false,
-    sendPolicyEmailOrMail: true,     // Message Policy Info
-    enableBdayHolidayTexts: true,    // Bday + Holiday Texts
+    sendPolicyEmailOrMail: true,
+    enableBdayHolidayTexts: true,
   });
 
   function pickClient(id) {
@@ -800,7 +787,6 @@ function SoldDrawer({ initial, allClients, onClose, onSave }) {
             <div className="mb-2 text-sm font-semibold text-white/90">Post-sale options</div>
 
             <div className="grid gap-2">
-              {/* Message Policy Info (reuses existing flag) */}
               <label className="flex items-start gap-3 rounded-xl border border-white/10 bg-black/30 p-3 hover:bg-white/[0.06]">
                 <input
                   type="checkbox"
@@ -816,7 +802,6 @@ function SoldDrawer({ initial, allClients, onClose, onSave }) {
                 </div>
               </label>
 
-              {/* Bday + Holiday Texts (new flag, stored for future) */}
               <label className="flex items-start gap-3 rounded-xl border border-white/10 bg-black/30 p-3 hover:bg-white/[0.06]">
                 <input
                   type="checkbox"
