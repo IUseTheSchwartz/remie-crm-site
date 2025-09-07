@@ -559,7 +559,7 @@ function AppLayout() {
   const nav = useNavigate();
 
   return (
-    <div className="min-h-screen relative bg-neutral-950 text-white grid md:grid-cols-[240px_1fr]">
+    <div className="min-h-screen relative bg-neutral-950 text-white grid md:grid-cols-[240px_1fr] overflow-x-hidden">
       {/* 🔮 Two subtle brand blobs behind the whole CRM */}
       <div className="pointer-events-none fixed inset-0 z-0">
         {/* top-center */}
