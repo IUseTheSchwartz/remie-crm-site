@@ -544,36 +544,32 @@ function AppLayout() {
 
   return (
     <div className="min-h-screen relative bg-neutral-950 text-white grid md:grid-cols-[240px_1fr]">
-      {/* 🔮 Subtle gradient background behind the whole CRM */}
-      <div className="pointer-events-none fixed inset-0 -z-10">
+      {/* 🔮 Subtle gradient sits ABOVE the base bg and BELOW content */}
+      <div className="pointer-events-none absolute inset-0 z-0">
         <div className="absolute -top-40 left-1/2 h-[36rem] w-[36rem] -translate-x-1/2 rounded-full bg-gradient-to-br from-indigo-600/20 via-fuchsia-500/10 to-rose-500/10 blur-3xl" />
       </div>
 
-      <aside className="hidden md:block border-r border-white/10 bg-black/30">
+      <aside className="relative z-10 hidden md:block border-r border-white/10 bg-black/30">
         <a
           href="https://remiecrm.com"
           target="_blank"
           rel="noopener noreferrer"
           className="p-4 flex items-center gap-3 border-b border-white/10"
         >
-          {/* ⬇️ No gradient/rounded background wrapper anymore */}
           <div className="grid h-9 w-9 place-items-center">
             <img src={Logo} alt="Logo" className="h-9 w-9 object-contain" />
           </div>
           <div className="font-semibold">{BRAND.name}</div>
         </a>
         <nav className="p-3 space-y-1 text-sm">
-          {/* MAIN (everything not in 'agent' or 'teams') */}
           {routes
             .filter(r => r.showInSidebar && r.group !== "agent" && r.group !== "teams")
             .map(r => (
               <DashLink key={r.path} to={r.path}>{r.label}</DashLink>
             ))}
 
-          {/* Divider before Agent block */}
           <div className="pt-2 mt-2 border-t border-white/10" />
 
-          {/* Agent */}
           <ViewAgentSiteLink />
           {routes
             .filter(r => r.showInSidebar && r.group === "agent")
@@ -581,7 +577,6 @@ function AppLayout() {
               <DashLink key={r.path} to={r.path}>{r.label}</DashLink>
             ))}
 
-          {/* NEW Divider below Agent, then Teams */}
           <div className="pt-2 mt-2 border-t border-white/10" />
 
           {routes
@@ -592,7 +587,7 @@ function AppLayout() {
         </nav>
       </aside>
 
-      <main>
+      <main className="relative z-10">
         <div className="flex items-center justify-between border-b border-white/10 bg-black/30 px-4 py-3">
           <div className="font-medium">Welcome{user?.email ? `, ${user.email}` : ""}</div>
           <button
