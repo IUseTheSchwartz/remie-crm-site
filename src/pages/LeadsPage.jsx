@@ -697,22 +697,35 @@ export default function LeadsPage() {
 
       {/* Scroll-area background (prevents white band at far right) */}
       <style>{`
-        .leads-scroll { background-color: #0a0a0a; }
-        .leads-scroll::before{
-          content:"";
-          position:absolute;
-          inset:-12rem 0 0 0;
-          width:40rem; height:40rem; margin:auto; border-radius:9999px;
-          background: radial-gradient(closest-side,
-            rgba(99,102,241,.18),
-            rgba(217,70,239,.12),
-            rgba(244,63,94,.10) 70%,
-            transparent 100%);
-          filter: blur(48px);
-          pointer-events:none;
-          z-index:0;
-        }
-      `}</style>
+  .leads-scroll {
+    position: relative;
+    background-color: #0a0a0a; /* same as app bg */
+  }
+  /* soft hero glow */
+  .leads-scroll::before{
+    content:"";
+    position:absolute;
+    inset:-12rem 0 0 0;
+    margin:auto;
+    width:40rem; height:40rem; border-radius:9999px;
+    background: radial-gradient(closest-side,
+      rgba(99,102,241,.18),
+      rgba(217,70,239,.12),
+      rgba(244,63,94,.10) 70%,
+      transparent 100%);
+    filter: blur(48px);
+    pointer-events:none;
+    z-index:0;
+  }
+  /* solid backdrop that extends far to the right so you never see white */
+  .leads-scroll::after{
+    content:"";
+    position:absolute;
+    top:0; bottom:0; left:0; right:-120vw; /* push 120vw past the right edge */
+    background:#0a0a0a;
+    z-index:-1; /* sit behind the gradient circle */
+  }
+`}</style>
     </div>
   );
 }
