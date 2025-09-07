@@ -8,16 +8,24 @@
     "preview": "vite preview"
   },
   "dependencies": {
-    "@supabase/supabase-js": "^2.56.0",
+    "@supabase/supabase-js": "^2.57.0",
     "framer-motion": "^11.0.0",
+    "groq-sdk": "^0.32.0",
+    "lob": "^6.6.3",
     "lucide-react": "^0.452.0",
     "papaparse": "^5.5.3",
     "react": "^18.2.0",
     "react-calendly": "^4.4.0",
     "react-dom": "^18.2.0",
     "react-router-dom": "^7.8.2",
+<<<<<<< HEAD
     "stripe": "^18.5.0",
     "twilio": "^4.23.0"
+=======
+    "resend": "^6.0.2",
+    "stripe": "^18.5.0",
+    "twilio": "^5.8.2"
+>>>>>>> 7caccb9 (Add groq-sdk dependency)
   },
   "devDependencies": {
     "@tailwindcss/postcss": "^4.1.12",
