@@ -429,6 +429,12 @@ export default function LeadsPage() {
       name: soldPayload.name || base.name || "",
       phone: soldPayload.phone || base.phone || "",
       email: soldPayload.email || base.email || "",
+
+      // ✅ Persist preferences for future automations
+      automationPrefs: {
+        messagePolicyInfo: !!soldPayload.sendPolicyEmailOrMail,
+        bdayHolidayTexts: !!soldPayload.enableBdayHolidayTexts,
+      },
     };
 
     // Optimistic local write
@@ -439,6 +445,7 @@ export default function LeadsPage() {
     setClients(nextClients);
     setLeads(nextLeads);
 
+    // Existing behavior (welcome text disabled by default / not rendered)
     if (soldPayload.sendWelcomeText) {
       scheduleWelcomeText({
         name: updated.name,
@@ -447,6 +454,7 @@ export default function LeadsPage() {
         startDate: updated.sold?.startDate,
       });
     }
+    // Message Policy Info
     if (soldPayload.sendPolicyEmailOrMail) {
       schedulePolicyKickoffEmail({
         name: updated.name,
@@ -710,9 +718,10 @@ function SoldDrawer({ initial, allClients, onClose, onSave }) {
     city: initial?.sold?.address?.city || "",
     state: initial?.sold?.address?.state || "",
     zip: initial?.sold?.address?.zip || "",
-    // Automations
-    sendWelcomeText: true,
-    sendPolicyEmailOrMail: true,
+    // Automations (welcome text hidden for now)
+    sendWelcomeText: false,
+    sendPolicyEmailOrMail: true,     // Message Policy Info
+    enableBdayHolidayTexts: true,    // Bday + Holiday Texts
   });
 
   function pickClient(id) {
@@ -811,25 +820,42 @@ function SoldDrawer({ initial, allClients, onClose, onSave }) {
                    className="inp" placeholder="78701" />
           </Field>
 
-          <div className="sm:col-span-2 mt-1 grid gap-2">
-            <label className="inline-flex items-center gap-2 text-sm">
-              <input
-                type="checkbox"
-                checked={form.sendWelcomeText}
-                onChange={(e)=>setForm({...form, sendWelcomeText:e.target.checked})}
-              />
-              Send welcome text after saving
-            </label>
-            <label className="inline-flex items-center gap-2 text-sm">
-              <input
-                type="checkbox"
-                checked={form.sendPolicyEmailOrMail}
-                onChange={(e)=>setForm({...form, sendPolicyEmailOrMail:e.target.checked})}
-              />
-              Send policy kickoff email / printable letter after saving
-            </label>
-            <div className="text-xs text-white/50">
-              (Emails require an email address. Printable letters use the mailing address.)
+          {/* === Post-sale options (visuals) === */}
+          <div className="sm:col-span-2 mt-2 rounded-2xl border border-white/15 bg-white/[0.03] p-3">
+            <div className="mb-2 text-sm font-semibold text-white/90">Post-sale options</div>
+
+            <div className="grid gap-2">
+              {/* Message Policy Info (reuses existing flag) */}
+              <label className="flex items-start gap-3 rounded-xl border border-white/10 bg-black/30 p-3 hover:bg-white/[0.06]">
+                <input
+                  type="checkbox"
+                  className="mt-1"
+                  checked={form.sendPolicyEmailOrMail}
+                  onChange={(e)=>setForm({...form, sendPolicyEmailOrMail:e.target.checked})}
+                />
+                <div className="flex-1">
+                  <div className="text-sm">Message Policy Info</div>
+                  <p className="mt-1 text-xs text-white/50">
+                    Sends the policy kickoff info (email or printable letter when messaging is enabled).
+                  </p>
+                </div>
+              </label>
+
+              {/* Bday + Holiday Texts (new flag, stored for future) */}
+              <label className="flex items-start gap-3 rounded-xl border border-white/10 bg-black/30 p-3 hover:bg-white/[0.06]">
+                <input
+                  type="checkbox"
+                  className="mt-1"
+                  checked={form.enableBdayHolidayTexts}
+                  onChange={(e)=>setForm({...form, enableBdayHolidayTexts:e.target.checked})}
+                />
+                <div className="flex-1">
+                  <div className="text-sm">Bday Texts + Holiday Texts</div>
+                  <p className="mt-1 text-xs text-white/50">
+                    Opt-in to automated birthday & holiday greetings (visual only for now).
+                  </p>
+                </div>
+              </label>
             </div>
           </div>
 
