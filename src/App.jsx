@@ -74,11 +74,11 @@ const PLANS = [
 /* --------------------------- Mini Pipeline Demo ---------------------------- */
 
 const DEMO_STAGES = [
-  { id: "no_pickup",     label: "No Pickup" },
-  { id: "answered",      label: "Answered" },
-  { id: "quoted",        label: "Quoted" },
-  { id: "app_started",   label: "App Started" },
-  { id: "app_pending",   label: "App Pending" },
+  { id: "no_pickup", label: "No Pickup" },
+  { id: "answered", label: "Answered" },
+  { id: "quoted", label: "Quoted" },
+  { id: "app_started", label: "App Started" },
+  { id: "app_pending", label: "App Pending" },
   { id: "app_submitted", label: "App Submitted" },
 ];
 
@@ -88,22 +88,22 @@ const DEMO_ROWS = [
 ];
 
 const DEMO_STYLE = {
-  no_pickup:     "bg-white/10 text-white/80",
-  answered:      "bg-sky-500/15 text-sky-300",
-  quoted:        "bg-amber-500/15 text-amber-300",
-  app_started:   "bg-indigo-500/15 text-indigo-300",
-  app_pending:   "bg-fuchsia-500/15 text-fuchsia-300",
+  no_pickup: "bg-white/10 text-white/80",
+  answered: "bg-sky-500/15 text-sky-300",
+  quoted: "bg-amber-500/15 text-amber-300",
+  app_started: "bg-indigo-500/15 text-indigo-300",
+  app_pending: "bg-fuchsia-500/15 text-fuchsia-300",
   app_submitted: "bg-emerald-500/15 text-emerald-300",
 };
 
 function PipelineDemo() {
   const [cards, setCards] = useState([
-    { id: "d1", name: "Alex M.",   stage: "no_pickup",     notes: [] },
-    { id: "d2", name: "Jordan M.", stage: "answered",      notes: [] },
-    { id: "d3", name: "Taylor R.", stage: "quoted",        notes: [] },
-    { id: "d4", name: "Sam K.",    stage: "app_started",   notes: [] },
-    { id: "d5", name: "Jamie L.",  stage: "app_pending",   notes: [] },
-    { id: "d6", name: "Chris D.",  stage: "app_submitted", notes: [] },
+    { id: "d1", name: "Alex M.", stage: "no_pickup", notes: [] },
+    { id: "d2", name: "Jordan M.", stage: "answered", notes: [] },
+    { id: "d3", name: "Taylor R.", stage: "quoted", notes: [] },
+    { id: "d4", name: "Sam K.", stage: "app_started", notes: [] },
+    { id: "d5", name: "Jamie L.", stage: "app_pending", notes: [] },
+    { id: "d6", name: "Chris D.", stage: "app_submitted", notes: [] },
   ]);
   const [activeNote, setActiveNote] = useState({});
 
@@ -128,14 +128,26 @@ function PipelineDemo() {
     if (!text) return;
     setCards((prev) =>
       prev.map((c) =>
-        c.id === id ? { ...c, notes: [{ body: text, ts: new Date().toISOString() }, ...c.notes] } : c
+        c.id === id
+          ? {
+              ...c,
+              notes: [
+                { body: text, ts: new Date().toISOString() },
+                ...c.notes,
+              ],
+            }
+          : c
       )
     );
     setActiveNote((n) => ({ ...n, [id]: "" }));
   };
 
   const StageBadge = ({ stage }) => (
-    <span className={`rounded-full px-2 py-0.5 text-xs ${DEMO_STYLE[stage] || "bg-white/10 text-white/80"}`}>
+    <span
+      className={`rounded-full px-2 py-0.5 text-xs ${
+        DEMO_STYLE[stage] || "bg-white/10 text-white/80"
+      }`}
+    >
       {DEMO_STAGES.find((s) => s.id === stage)?.label || "No Pickup"}
     </span>
   );
@@ -144,14 +156,19 @@ function PipelineDemo() {
     <div className="rounded-3xl border border-white/10 bg-white/[0.04] p-4 ring-1 ring-white/5">
       <div className="mb-3 flex items-center justify-between">
         <div className="text-sm font-medium">Pipeline Demo (no signup)</div>
-        <div className="text-xs text-white/60">Try changing stages & adding notes</div>
+        <div className="text-xs text-white/60">
+          Try changing stages & adding notes
+        </div>
       </div>
 
       <div className="grid gap-4">
         {DEMO_ROWS.map((row, i) => (
           <div key={i} className="grid gap-4 md:grid-cols-3">
             {row.map((stageId) => (
-              <div key={stageId} className="rounded-2xl border border-white/10 bg-white/[0.03] p-2">
+              <div
+                key={stageId}
+                className="rounded-2xl border border-white/10 bg-white/[0.03] p-2"
+              >
                 <div className="flex items-center justify-between px-2 pb-2">
                   <div className="text-sm font-medium">
                     {DEMO_STAGES.find((s) => s.id === stageId)?.label}
@@ -198,11 +215,18 @@ function PipelineDemo() {
 
                         {/* Notes */}
                         <div className="mt-3">
-                          <div className="text-xs text-white/60 mb-1">Add a note</div>
+                          <div className="text-xs text-white/60 mb-1">
+                            Add a note
+                          </div>
                           <div className="flex gap-2">
                             <input
                               value={activeNote[c.id] || ""}
-                              onChange={(e) => setActiveNote((n) => ({ ...n, [c.id]: e.target.value }))}
+                              onChange={(e) =>
+                                setActiveNote((n) => ({
+                                  ...n,
+                                  [c.id]: e.target.value,
+                                }))
+                              }
                               placeholder="e.g., Sent quote for $45/mo"
                               className="w-full rounded-lg border border-white/10 bg-black/40 px-2 py-1 text-xs outline-none focus:ring-2 focus:ring-indigo-500/40"
                             />
@@ -217,10 +241,15 @@ function PipelineDemo() {
 
                           <div className="mt-2 space-y-1">
                             {c.notes.length === 0 ? (
-                              <div className="text-xs text-white/40">No notes yet.</div>
+                              <div className="text-xs text-white/40">
+                                No notes yet.
+                              </div>
                             ) : (
                               c.notes.map((n, i) => (
-                                <div key={i} className="rounded-md border border-white/10 bg-black/30 p-2">
+                                <div
+                                  key={i}
+                                  className="rounded-md border border-white/10 bg-black/30 p-2"
+                                >
                                   <div className="text-[11px] text-white/50 mb-1">
                                     {new Date(n.ts).toLocaleString()}
                                   </div>
@@ -270,17 +299,25 @@ function LandingPage() {
       <header className="relative z-10 border-b border-white/10 backdrop-blur">
         <nav className="mx-auto flex max-w-7xl items-center justify-between px-6 py-4">
           <div className="flex items-centered gap-3">
-            {/* ⬇️ No gradient/rounded background wrapper anymore */}
             <div className="grid h-9 w-9 place-items-center">
               <img src={Logo} alt="Logo" className="h-9 w-9 object-contain" />
             </div>
             <span className="font-semibold tracking-tight">{BRAND.name}</span>
           </div>
           <div className="flex items-center gap-3">
-            {/* NEW: Contact button to jump to contact section */}
-            <a href="#contact" className="text-sm opacity-80 hover:opacity-100">Contact</a>
-            <Link to="/login" className="text-sm opacity-80 hover:opacity-100">Log in</Link>
-            <Link to="/signup" className={`hidden rounded-xl bg-gradient-to-r ${BRAND.primary} px-4 py-2 text-sm font-medium ring-1 ring-white/10 md:block`}>
+            <a href="#contact" className="text-sm opacity-80 hover:opacity-100">
+              Contact
+            </a>
+            <Link
+              to="/login"
+              className="text-sm opacity-80 hover:opacity-100"
+            >
+              Log in
+            </Link>
+            <Link
+              to="/signup"
+              className={`hidden rounded-xl bg-gradient-to-r ${BRAND.primary} px-4 py-2 text-sm font-medium ring-1 ring-white/10 md:block`}
+            >
               Start 14-day free trial
             </Link>
           </div>
@@ -289,43 +326,75 @@ function LandingPage() {
 
       <section className="relative z-10 mx-auto max-w-7xl px-6 pb-10 pt-16 sm:pt-20">
         <div className="mx-auto max-w-3xl text-center">
-          <motion.h1 initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.5 }}
-            className="text-4xl font-semibold leading-tight sm:text-5xl">
+          <motion.h1
+            initial={{ opacity: 0, y: 10 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ duration: 0.5 }}
+            className="text-4xl font-semibold leading-tight sm:text-5xl"
+          >
             Close more policies. Not tabs.
           </motion.h1>
           <p className="mt-4 text-lg text-white/70">
-            Manage your pipeline, automate follow-ups, and keep everything in one place.
+            Manage your pipeline, automate follow-ups, and keep everything in
+            one place.
           </p>
           <div className="mt-6 flex items-center justify-center gap-6 text-xs text-white/60">
-            <span className="inline-flex items-center gap-1"><Star className="h-4 w-4" /> Concierge migration (Remie CRM)</span>
-            <span className="inline-flex items-center gap-1"><Shield className="h-4 w-4" /> Bootcamp for new features</span>
+            <span className="inline-flex items-center gap-1">
+              <Star className="h-4 w-4" /> Concierge migration (Remie CRM)
+            </span>
+            <span className="inline-flex items-center gap-1">
+              <Shield className="h-4 w-4" /> Bootcamp for new features
+            </span>
           </div>
         </div>
       </section>
 
       {/* Pricing + Demo */}
-      <section id="pricing" className="relative z-10 mx-auto max-w-7xl px-6 py-14">
+      <section
+        id="pricing"
+        className="relative z-10 mx-auto max-w-7xl px-6 py-14"
+      >
         <div className="mx-auto max-w-2xl text-center">
-          <h2 className="text-3xl font-semibold tracking-tight sm:text-4xl">Simple, transparent pricing</h2>
-          <p className="mt-2 text-white/70">Switch between monthly and annual billing. Annual saves around 20% where available.</p>
+          <h2 className="text-3xl font-semibold tracking-tight sm:text-4xl">
+            Simple, transparent pricing
+          </h2>
+          <p className="mt-2 text-white/70">
+            Switch between monthly and annual billing. Annual saves around 20%
+            where available.
+          </p>
           <div className="mt-6 inline-flex items-center gap-2 rounded-full border border-white/15 bg-white/5 p-1 text-sm">
-            <button onClick={() => setAnnual(false)} className={`rounded-full px-3 py-1 ${!annual ? "bg-white text-black" : "text-white/80"}`}>Monthly</button>
-            <button onClick={() => setAnnual(true)} className={`rounded-full px-3 py-1 ${annual ? "bg-white text-black" : "text-white/80"}`}>Annual</button>
+            <button
+              onClick={() => setAnnual(false)}
+              className={`rounded-full px-3 py-1 ${
+                !annual ? "bg-white text-black" : "text-white/80"
+              }`}
+            >
+              Monthly
+            </button>
+            <button
+              onClick={() => setAnnual(true)}
+              className={`rounded-full px-3 py-1 ${
+                annual ? "bg-white text-black" : "text-white/80"
+              }`}
+            >
+              Annual
+            </button>
           </div>
         </div>
 
-        {/* Left: plan card, Right: interactive pipeline demo */}
         <div className="mt-10 grid gap-6 md:grid-cols-2 items-start">
-          {/* Plan card (left-aligned) */}
           {PLANS.map((plan) => {
             const isAnnualShown = annual && plan.yearly != null;
             const price = displayPrice(plan);
             const href = buyHref(plan);
 
             return (
-              <div key={plan.name}
+              <div
+                key={plan.name}
                 className={`relative rounded-3xl border ${
-                  plan.highlighted ? "border-white/30 bg-white/[0.06]" : "border-white/10 bg-white/[0.04]"
+                  plan.highlighted
+                    ? "border-white/30 bg-white/[0.06]"
+                    : "border-white/10 bg-white/[0.04]"
                 } p-6 ring-1 ${
                   plan.highlighted ? BRAND.accentRing : "ring-white/5"
                 } transition hover:border-white/30 hover:bg-white/[0.08] hover:ring-indigo-400/50`}
@@ -340,7 +409,10 @@ function LandingPage() {
                 <div className="mt-5 flex items-baseline gap-2">
                   <span className="text-4xl font-bold">${price}</span>
                   <span className="text-white/60">
-                    /mo {isAnnualShown && <span className="text-white/40">(annual)</span>}
+                    /mo{" "}
+                    {isAnnualShown && (
+                      <span className="text-white/40">(annual)</span>
+                    )}
                   </span>
                 </div>
                 <ul className="mt-6 space-y-2 text-sm">
@@ -358,7 +430,11 @@ function LandingPage() {
                   target="_blank"
                   rel="noreferrer"
                   className={`mt-6 grid w-full place-items-center rounded-2xl border border-white/15 px-4 py-3 font-medium transition
-                    ${plan.highlighted ? `bg-gradient-to-r ${BRAND.primary}` : "bg-white/5"}
+                    ${
+                      plan.highlighted
+                        ? `bg-gradient-to-r ${BRAND.primary}`
+                        : "bg-white/5"
+                    }
                     hover:bg-gradient-to-r ${BRAND.primary} hover:text-white`}
                 >
                   <CreditCard className="mr-2 h-5 w-5" /> Buy {plan.name}
@@ -367,281 +443,13 @@ function LandingPage() {
             );
           })}
 
-          {/* Interactive pipeline demo (right) */}
           <PipelineDemo />
         </div>
 
-        <p className="mt-6 text-center text-xs text-white/50">Prices in USD. Annual pricing shows per-month equivalent, billed annually (where available).</p>
+        <p className="mt-6 text-center text-xs text-white/50">
+          Prices in USD. Annual pricing shows per-month equivalent, billed
+          annually (where available).
+        </p>
       </section>
 
       {/* NEW: Contact section */}
-      <section id="contact" className="relative z-10 mx-auto max-w-7xl px-6 py-12">
-        <div className="rounded-3xl border border-white/10 bg-white/[0.04] p-6 ring-1 ring-white/5">
-          <h2 className="text-2xl font-semibold">Contact</h2>
-          <p className="mt-2 text-white/70">Reach out anytime.</p>
-          <div className="mt-4 grid gap-4 sm:grid-cols-2 lg:grid-cols-3 text-sm">
-            <div className="rounded-3xl border border-white/10 bg-black/30 p-4">
-              <div className="text-white/60">Name</div>
-              <div className="mt-1 font-medium">Jacob Prieto</div>
-            </div>
-            <div className="rounded-3xl border border-white/10 bg-black/30 p-4">
-              <div className="text-white/60">Email</div>
-              <a href="mailto:JacobPrieto@gmail.com" className="mt-1 inline-flex items-center gap-1 font-medium hover:underline">
-                JacobPrieto@gmail.com <ExternalLink className="h-3.5 w-3.5" />
-              </a>
-            </div>
-            <div className="rounded-3xl border border-white/10 bg-black/30 p-4">
-              <div className="text-white/60">Phone</div>
-              <a href="tel:+19154943286" className="mt-1 inline-flex items-center gap-1 font-medium hover:underline">
-                (915) 494-3286 <ExternalLink className="h-3.5 w-3.5" />
-              </a>
-            </div>
-            <div className="rounded-3xl border border-white/10 bg-black/30 p-4 sm:col-span-2 lg:grid-cols-1">
-              <div className="text-white/60">Instagram</div>
-              <a
-                href="https://instagram.com/jacob_prietoo"
-                target="_blank"
-                rel="noreferrer"
-                className="mt-1 inline-flex items-center gap-1 font-medium hover:underline"
-              >
-                @jacob_prietoo <ExternalLink className="h-3.5 w-3.5" />
-              </a>
-            </div>
-          </div>
-        </div>
-      </section>
-
-      <footer className="relative z-10 border-t border-white/10 bg-black/40">
-        <div className="mx-auto max-w-7xl px-6 py-6 text-center text-xs text-white/60 space-y-2">
-          <div>© {new Date().getFullYear()} {BRAND.name}. All rights reserved.</div>
-          {/* NEW: Your LLC line */}
-          <div className="text-white/60">PRIETO INSURANCE SOLUTIONS LLC</div>
-          <div className="space-x-3">
-            <Link to="/legal/terms" className="hover:text-white">Terms of Service</Link>
-            <span className="text-white/30">•</span>
-            <Link to="/legal/privacy" className="hover:text-white">Privacy Policy</Link>
-          </div>
-        </div>
-      </footer>
-    </div>
-  );
-}
-
-// ---------- Sidebar Link ----------
-function DashLink({ to, children }) {
-  return (
-    <Link to={to} className="block rounded-lg px-3 py-2 text-white/80 hover:bg-white/5 hover:text-white">
-      {children}
-    </Link>
-  );
-}
-
-// ---------- ViewAgentSiteLink ----------
-function ViewAgentSiteLink() {
-  const [slug, setSlug] = useState("");
-  const [published, setPublished] = useState(false);
-  const [loading, setLoading] = useState(true);
-
-  async function fetchProfile() {
-    try {
-      const { data: auth } = await supabase.auth.getUser();
-      const uid = auth?.user?.id;
-      if (!uid) {
-        setSlug("");
-        setPublished(false);
-        return;
-      }
-      const { data, error } = await supabase
-        .from("agent_profiles")
-        .select("slug, published")
-        .eq("user_id", uid)
-        .maybeSingle();
-
-      if (!error && data) {
-        setSlug(data.slug || "");
-        setPublished(!!data.published);
-      } else {
-        setSlug("");
-        setPublished(false);
-      }
-    } finally {
-      setLoading(false);
-    }
-  }
-
-  useEffect(() => {
-    let isMounted = true;
-    (async () => {
-      await fetchProfile();
-
-      const channel = supabase
-        .channel("agent_profiles_self")
-        .on(
-          "postgres_changes",
-          { event: "*", schema: "public", table: "agent_profiles" },
-          async () => {
-            if (!isMounted) return;
-            await fetchProfile();
-          }
-        )
-        .subscribe();
-
-      const onStorage = (e) => {
-        if (e.key === "agent_profile_refresh") {
-          fetchProfile();
-        }
-      };
-      window.addEventListener("storage", onStorage);
-
-      return () => {
-        isMounted = false;
-        try { supabase.removeChannel?.(channel); } catch {}
-        window.removeEventListener("storage", onStorage);
-      };
-    })();
-  }, []);
-
-  if (loading) {
-    return (
-      <div className="block rounded-lg px-3 py-2 text-white/40 cursor-default">
-        View My Agent Site…
-      </div>
-    );
-  }
-
-  if (!slug) {
-    return (
-      <Link
-        to="/app/agent/showcase"
-        className="flex items-center gap-2 rounded-lg px-3 py-2 text-amber-300/90 hover:bg-white/5"
-        title="Finish setup to generate your public link"
-      >
-        <ExternalLink className="h-4 w-4" />
-        <span>Finish Agent Site Setup</span>
-      </Link>
-    );
-  }
-
-  const href = `/a/${slug}`;
-  return (
-    <a
-      href={href}
-      target="_blank"
-      rel="noreferrer"
-      className="flex items-center gap-2 rounded-lg px-3 py-2 text-white/80 hover:bg-white/5 hover:text-white"
-      title={published ? "Open your public agent page" : "Open preview (publish in the wizard)"}
-    >
-      <ExternalLink className="h-4 w-4" />
-      <span>{published ? "View My Agent Site" : "Preview My Agent Site"}</span>
-    </a>
-  );
-}
-
-// ---------- App Layout (sidebar + routes) ----------
-function AppLayout() {
-  const { user, logout } = useAuth();
-  const nav = useNavigate();
-
-  return (
-    <div className="min-h-screen relative bg-neutral-950 text-white grid md:grid-cols-[240px_1fr]">
-      {/* 🔮 Two subtle brand blobs behind the whole CRM */}
-      <div className="pointer-events-none absolute inset-0 z-0">
-        {/* top-center */}
-        <div className="absolute -top-40 left-1/2 h-[36rem] w-[36rem] -translate-x-1/2 rounded-full
-                        bg-gradient-to-br from-indigo-600/25 via-fuchsia-500/15 to-rose-500/15 blur-3xl" />
-        {/* bottom-right echo */}
-        <div className="absolute -bottom-40 right-[-10%] h-[42rem] w-[42rem] rounded-full
-                        bg-gradient-to-tr from-fuchsia-500/10 via-purple-600/10 to-indigo-600/15 blur-3xl" />
-      </div>
-
-      <aside className="relative z-10 hidden md:block border-r border-white/10 bg-black/30">
-        <a
-          href="https://remiecrm.com"
-          target="_blank"
-          rel="noopener noreferrer"
-          className="p-4 flex items-center gap-3 border-b border-white/10"
-        >
-          <div className="grid h-9 w-9 place-items-center">
-            <img src={Logo} alt="Logo" className="h-9 w-9 object-contain" />
-          </div>
-          <div className="font-semibold">{BRAND.name}</div>
-        </a>
-        <nav className="p-3 space-y-1 text-sm">
-          {/* MAIN (everything not in 'agent' or 'teams') */}
-          {routes
-            .filter(r => r.showInSidebar && r.group !== "agent" && r.group !== "teams")
-            .map(r => (
-              <DashLink key={r.path} to={r.path}>{r.label}</DashLink>
-            ))}
-
-          <div className="pt-2 mt-2 border-t border-white/10" />
-
-          <ViewAgentSiteLink />
-          {routes
-            .filter(r => r.showInSidebar && r.group === "agent")
-            .map(r => (
-              <DashLink key={r.path} to={r.path}>{r.label}</DashLink>
-            ))}
-
-          <div className="pt-2 mt-2 border-t border-white/10" />
-
-          {routes
-            .filter(r => r.showInSidebar && r.group === "teams")
-            .map(r => (
-              <DashLink key={r.path} to={r.path}>{r.label}</DashLink>
-            ))}
-        </nav>
-      </aside>
-
-      <main className="relative z-10">
-        <div className="flex items-center justify-between border-b border-white/10
-                        bg-gradient-to-r from-indigo-600/10 via-purple-600/10 to-fuchsia-600/10
-                        px-4 py-3">
-          <div className="font-medium">Welcome{user?.email ? `, ${user.email}` : ""}</div>
-          <button
-            onClick={async () => { await logout(); nav("/"); }}
-            className="inline-flex items-center gap-2 rounded-lg border border-white/15 px-3 py-1.5 text-sm hover:bg-white/5"
-          >
-            <LogOut className="h-4 w-4" /> Log out
-          </button>
-        </div>
-
-        <div className="p-4">
-          <Routes>
-            {routes.map((r) => {
-              const C = r.component;
-              return r.index
-                ? <Route key={r.key} index element={<C />} />
-                : <Route key={r.key} path={r.path.replace("/app/", "")} element={<C />} />;
-            })}
-          </Routes>
-        </div>
-      </main>
-    </div>
-  );
-}
-
-// ---------- App root ----------
-export default function App() {
-  return (
-    <AuthProvider>
-      <Routes>
-        <Route path="/" element={<LandingPage />} />
-        <Route path="/login" element={<LoginPage />} />
-        <Route path="/signup" element={<SignupPage />} />
-        <Route path="/a/:slug" element={<AgentPublic />} />
-        <Route path="/invite/:token" element={<AcceptInvite />} /> {/* ✅ NEW public invite route */}
-
-        {/* ✅ Legal pages are global */}
-        <Route path="/legal/terms" element={<TermsPage />} />
-        <Route path="/legal/privacy" element={<PrivacyPage />} />
-
-        <Route element={<ProtectedRoute />}>
-          <Route path="/app/*" element={<AppLayout />} />
-        </Route>
-
-        <Route path="*" element={<Navigate to="/" replace />} />
-      </Routes>
-    </AuthProvider>
-  );
-}
