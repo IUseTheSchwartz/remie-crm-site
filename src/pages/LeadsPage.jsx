@@ -50,46 +50,20 @@ function labelForStage(id) {
 
 /* --------------------------- Header alias helpers --------------------------- */
 const H = {
-  first: [
-    "first","first name","firstname","given name","given_name","fname","first_name"
-  ],
-  last: [
-    "last","last name","lastname","surname","family name","lname","last_name","family_name"
-  ],
-  full: [
-    "name","full name","fullname","full_name"
-  ],
-  email: [
-    "email","e-mail","email address","mail","email_address"
-  ],
-  phone: [
-    "phone","phone number","mobile","cell","tel","telephone","number","phone_number"
-  ],
-  notes: [
-    "notes","note","comments","comment","details"
-  ],
-  company: [
-    "company","business","organization","organisation"
-  ],
+  first: ["first","first name","firstname","given name","given_name","fname","first_name"],
+  last:  ["last","last name","lastname","surname","family name","lname","last_name","family_name"],
+  full:  ["name","full name","fullname","full_name"],
+  email: ["email","e-mail","email address","mail","email_address"],
+  phone: ["phone","phone number","mobile","cell","tel","telephone","number","phone_number"],
+  notes: ["notes","note","comments","comment","details"],
+  company:["company","business","organization","organisation"],
   // NEW fields
-  dob: [
-    "dob","date of birth","birthdate","birth date","d.o.b.","date"
-  ],
-  state: [
-    "state","st","us state","residence state"
-  ],
-  beneficiary: [
-    "beneficiary","beneficiary type"
-  ],
-  beneficiary_name: [
-    "beneficiary name","beneficiary_name","beneficiary full name"
-  ],
-  gender: [
-    "gender","sex"
-  ],
-  military_branch: [
-    "military","military branch","branch","service branch"
-  ],
+  dob:   ["dob","date of birth","birthdate","birth date","d.o.b.","date"],
+  state: ["state","st","us state","residence state"],
+  beneficiary: ["beneficiary","beneficiary type"],
+  beneficiary_name: ["beneficiary name","beneficiary_name","beneficiary full name"],
+  gender: ["gender","sex"],
+  military_branch: ["military","military branch","branch","service branch"],
 };
 
 const norm = (s) => (s || "").toString().trim().toLowerCase();
@@ -170,7 +144,7 @@ function preserveStage(existingList, incoming) {
 }
 
 export default function LeadsPage() {
-  const [tab, setTab] = useState("clients"); // 'clients' | 'sold'
+  const [tab, setTab] = useState("clients"); // 'clients' | 'sold'  (label "Leads" for 'clients')
   const [leads, setLeads] = useState([]);
   const [clients, setClients] = useState([]);
   const [selected, setSelected] = useState(null);
@@ -231,7 +205,7 @@ export default function LeadsPage() {
       }
     })();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [/* run once on mount */]);
 
   // Realtime inserts → ignore duplicates (id/email/phone)
   useEffect(() => {
@@ -253,7 +227,7 @@ export default function LeadsPage() {
               const idDup = [...leads, ...clients].some(x => x.id === row.id);
               const eDup = row.email && [...leads, ...clients].some(x => normEmail(x.email) === normEmail(row.email));
               const pDup = row.phone && [...leads, ...clients].some(x => onlyDigits(x.phone) === onlyDigits(row.phone));
-              if (idDup || eDup || pDup) return;
+              if (idDup || eDup || pDup) return; // ignore
 
               const newLeads = [row, ...leads];
               const newClients = [row, ...clients];
@@ -500,6 +474,7 @@ export default function LeadsPage() {
     } catch (e) {
       console.error("Delete server error:", e);
       setServerMsg(`⚠️ Could not delete on Supabase: ${e.message || e}`);
+      // (Optional) If you want strict consistency, you could rollback local here.
     }
   }
 
@@ -513,18 +488,13 @@ export default function LeadsPage() {
   }
 
   return (
-    <div className="relative z-0 space-y-6">
-      {/* 🔒 Fixed full-viewport background layer (covers any horizontal scroll) */}
-      <div className="pointer-events-none fixed inset-0 -z-10">
-        <div className="absolute inset-0 bg-neutral-950" />
-        <div className="absolute -top-56 left-1/2 h-[36rem] w-[36rem] -translate-x-1/2 rounded-full bg-gradient-to-br from-indigo-600/20 via-fuchsia-500/10 to-rose-500/10 blur-3xl" />
-      </div>
-
+    {/* 🔧 FIX: prevent this page from forcing the grid column wider than the viewport */}
+    <div className="space-y-6 min-w-0 overflow-x-hidden">
       {/* Toolbar */}
       <div className="flex flex-wrap items-center gap-3">
         <div className="inline-flex rounded-full border border-white/15 bg-white/5 p-1 text-sm">
           {[
-            { id:"clients", label:"Leads" },
+            { id:"clients", label:"Leads" },   // renamed from Clients
             { id:"sold",    label:"Sold"  },
           ].map(t => (
             <button
@@ -603,7 +573,7 @@ export default function LeadsPage() {
 
       {/* Table */}
       <div className="overflow-x-auto rounded-2xl border border-white/10">
-        <table className="min-w-[1200px] w-full border-collapse text-sm bg-neutral-950">
+        <table className="min-w-[1200px] w-full border-collapse text-sm">
           <thead className="bg-white/[0.04] text-white/70">
             <tr>
               <Th>Name</Th>
@@ -830,7 +800,7 @@ function SoldDrawer({ initial, allClients, onClose, onSave }) {
             <div className="mb-2 text-sm font-semibold text-white/90">Post-sale options</div>
 
             <div className="grid gap-2">
-              {/* Message Policy Info */}
+              {/* Message Policy Info (reuses existing flag) */}
               <label className="flex items-start gap-3 rounded-xl border border-white/10 bg-black/30 p-3 hover:bg-white/[0.06]">
                 <input
                   type="checkbox"
@@ -846,7 +816,7 @@ function SoldDrawer({ initial, allClients, onClose, onSave }) {
                 </div>
               </label>
 
-              {/* Bday + Holiday Texts */}
+              {/* Bday + Holiday Texts (new flag, stored for future) */}
               <label className="flex items-start gap-3 rounded-xl border border-white/10 bg-black/30 p-3 hover:bg-white/[0.06]">
                 <input
                   type="checkbox"
