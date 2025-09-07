@@ -1,121 +1,175 @@
-/**
- * Rebuttal coach (stateless) using Groq SDK.
- * - Smokescreen-aware manager tone
- * - Strict JSON output: { why[], fix[], rebuttals[] }
- * - No DB writes, no logging
- *
- * Env required:
- *   GROQ_API_KEY = gsk_...
- *
- * Notes:
- * - Uses CommonJS `exports.handler` to match the rest of your functions.
- * - If your site switches to "type":"module", I can send an ESM version.
- */
+// File: src/pages/RebuttalChat.jsx
+import { useEffect, useRef, useState } from "react";
 
-const Groq = require("groq-sdk");
-const client = new Groq({ apiKey: process.env.GROQ_API_KEY });
-
-// Fast default; switch to 70B for deeper answers
-const DEFAULT_MODEL = "llama-3.1-8b-instant";
-// const DEFAULT_MODEL = "llama-3.1-70b-versatile";
-
-const SYSTEM_PROMPT = `You are a high-performing US life-insurance sales manager coaching agents.
-
-Core beliefs:
-- Most objections are SMOKESCREENS: stalls, excuses, or avoidance of commitment.
-- Your job is to help the agent regain call control, expose the real objection (trust/urgency/money/need), and redirect.
-- Assume the prospect does need protection; resistance comes from fear, confusion, or budget.
-- Be confident, directive, and realistic — what a top closer would actually say on the phone.
-- Cut fluff. Short bullets. Punchy rebuttals. No essays.
-- Never accept "send info" / "let me think" / "talk to spouse" at face value — pivot with control.
-- Stay compliant: no false guarantees; emphasize risk, protection, and beneficiary needs. Mask any PII.
-
-OUTPUT: ONLY valid JSON (no markdown, no preface) with schema:
-{
-  "why": string[],        // 3–5 blunt reasons the objection is a smokescreen or what truly went wrong
-  "fix": string[],        // 3–5 specific tactics to regain control and move forward
-  "rebuttals": string[]   // 2–3 punchy rebuttals (1–2 sentences each) suitable to SAY or TEXT
+function Section({ title, items }) {
+  if (!items?.length) return null;
+  return (
+    <section className="mb-5">
+      <h3 className="text-sm font-semibold text-white/90 mb-2">{title}</h3>
+      <ul className="list-disc pl-5 space-y-1 text-sm text-white/90">
+        {items.map((t, i) => (
+          <li key={i} className="leading-6">{t}</li>
+        ))}
+      </ul>
+    </section>
+  );
 }
-`;
 
-// Strip accidental code fences if the model adds them
-function tryParseJSON(text) {
-  let t = (text || "").trim();
-  if (t.startsWith("```")) {
-    t = t.replace(/^```json/i, "")
-         .replace(/^```/, "")
-         .replace(/```$/, "")
-         .trim();
+function AssistantCard({ data }) {
+  if (!data) return null;
+  return (
+    <div className="max-w-[80%] rounded-lg px-4 py-3 bg-black text-white border border-gray-700 shadow">
+      <Section title="What likely went wrong" items={data.why} />
+      <Section title="How to fix it next time" items={data.fix} />
+      <Section title="Rebuttals" items={data.rebuttals} />
+    </div>
+  );
+}
+
+function Bubble({ role, text }) {
+  const isUser = role === "user";
+  return (
+    <div className={`flex ${isUser ? "justify-end" : "justify-start"} mb-3`}>
+      <div
+        className={`max-w-[80%] rounded-lg px-3 py-2 text-sm leading-6 shadow
+          ${isUser ? "bg-violet-600 text-white" : "bg-black text-white border border-gray-700"}`}
+      >
+        {text}
+      </div>
+    </div>
+  );
+}
+
+function RebuttalChat() {
+  const [messages, setMessages] = useState([
+    {
+      role: "assistant",
+      text:
+        "Tell me what happened. Paste the objection or describe the call. " +
+        "I’ll coach you and give 2–3 ready-to-use rebuttals.",
+    },
+  ]);
+  const [structured, setStructured] = useState(null); // holds JSON result
+  const [input, setInput] = useState("");
+  const [sending, setSending] = useState(false);
+  const [product, setProduct] = useState("Final Expense");
+  const [tone, setTone] = useState("Direct & supportive");
+  const scrollerRef = useRef(null);
+
+  useEffect(() => {
+    scrollerRef.current?.scrollTo({ top: scrollerRef.current.scrollHeight, behavior: "smooth" });
+  }, [messages, structured]);
+
+  async function sendMessage(e) {
+    e?.preventDefault();
+    const content = input.trim();
+    if (!content || sending) return;
+
+    setStructured(null);
+    setMessages((m) => [...m, { role: "user", text: content }]);
+    setInput("");
+    setSending(true);
+
+    try {
+      const res = await fetch("/.netlify/functions/rebuttal-chat", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ content, product, tone }),
+      });
+      if (!res.ok) throw new Error(`Server error: ${res.status}`);
+      const data = await res.json(); // {why, fix, rebuttals}
+      setStructured(data);
+    } catch (err) {
+      setMessages((m) => [...m, { role: "assistant", text: "Sorry—something went wrong. Try again." }]);
+      console.error(err);
+    } finally {
+      setSending(false);
+    }
   }
-  try { return JSON.parse(t); } catch { return null; }
-}
 
-// Basic CORS helper (optional; safe defaults)
-function withCors(res) {
-  res.headers = {
-    ...(res.headers || {}),
-    "Access-Control-Allow-Origin": "*",
-    "Access-Control-Allow-Methods": "POST, OPTIONS",
-    "Access-Control-Allow-Headers": "Content-Type, Authorization",
-  };
-  return res;
-}
-
-exports.handler = async (event) => {
-  try {
-    if (event.httpMethod === "OPTIONS") {
-      return withCors({ statusCode: 204, body: "" });
-    }
-    if (event.httpMethod !== "POST") {
-      return withCors({ statusCode: 405, body: "Method not allowed" });
-    }
-
-    const { content = "", product = "Final Expense", tone = "Direct & supportive", model } =
-      JSON.parse(event.body || "{}");
-
-    if (typeof content !== "string" || content.trim().length < 4) {
-      return withCors({ statusCode: 400, body: "Please provide a short description of what happened." });
-    }
-
-    const userPrompt = `Agent context:
-- Product: ${product}
-- Coaching tone: ${tone}
-
-Call summary / objection:
-${content.trim()}
-
-Return ONLY JSON per the schema above. Keep bullets sharp and rebuttals punchy.`;
-
-    // Call Groq (Chat Completions)
-    const resp = await client.chat.completions.create({
-      model: model || DEFAULT_MODEL,
-      messages: [
-        { role: "system", content: SYSTEM_PROMPT },
-        { role: "user", content: userPrompt },
-      ],
-      // tighter output, less rambling
-      temperature: 0.2,
-      top_p: 0.9,
-      max_tokens: 700,
-    });
-
-    const raw = resp?.choices?.[0]?.message?.content || "{}";
-    let parsed = tryParseJSON(raw) || { why: [raw], fix: [], rebuttals: [] };
-
-    // Final safety + trimming
-    const out = {
-      why: Array.isArray(parsed.why) ? parsed.why.slice(0, 5) : [],
-      fix: Array.isArray(parsed.fix) ? parsed.fix.slice(0, 5) : [],
-      rebuttals: Array.isArray(parsed.rebuttals) ? parsed.rebuttals.slice(0, 3) : [],
-    };
-
-    return withCors({
-      statusCode: 200,
-      headers: { "Content-Type": "application/json; charset=utf-8" },
-      body: JSON.stringify(out),
-    });
-  } catch (err) {
-    console.error("rebuttal-chat error:", err);
-    return withCors({ statusCode: 500, body: "Server error" });
+  function resetChat() {
+    setMessages([{ role: "assistant", text: "New chat. Summarize the call or paste the objection." }]);
+    setStructured(null);
   }
-};
+
+  return (
+    <div className="h-full w-full max-w-4xl mx-auto flex flex-col bg-black text-white rounded-lg shadow-lg border border-gray-800">
+      <header className="p-4 border-b border-gray-800 flex items-center justify-between">
+        <div>
+          <h1 className="text-xl font-semibold">AI Rebuttal Helper</h1>
+          <p className="text-xs text-gray-400">Stateless chat — nothing is stored.</p>
+        </div>
+        <div className="flex gap-2">
+          <select
+            className="border rounded px-2 py-1 text-sm bg-black text-white border-gray-700
+                       hover:shadow-[0_0_12px_rgba(139,92,246,0.9)]
+                       focus:outline-none focus:ring-2 focus:ring-violet-600 transition"
+            value={product}
+            onChange={(e) => setProduct(e.target.value)}
+            title="Product context"
+          >
+            <option>Final Expense</option>
+            <option>Term</option>
+            <option>IUL</option>
+            <option>Whole Life</option>
+          </select>
+          <select
+            className="border rounded px-2 py-1 text-sm bg-black text-white border-gray-700
+                       hover:shadow-[0_0_12px_rgba(139,92,246,0.9)]
+                       focus:outline-none focus:ring-2 focus:ring-violet-600 transition"
+            value={tone}
+            onChange={(e) => setTone(e.target.value)}
+            title="Coaching tone"
+          >
+            <option>Direct & supportive</option>
+            <option>Empathetic</option>
+            <option>Strict manager</option>
+            <option>Bullet-point & concise</option>
+          </select>
+          <button
+            onClick={resetChat}
+            className="border rounded px-2 py-1 text-sm hover:shadow-[0_0_10px_rgba(139,92,246,0.8)] transition"
+            type="button"
+          >
+            Reset
+          </button>
+        </div>
+      </header>
+
+      <main ref={scrollerRef} className="flex-1 overflow-y-auto p-4">
+        {messages.map((m, i) => (
+          <Bubble key={`m-${i}`} role={m.role} text={m.text} />
+        ))}
+        {structured && (
+          <div className="flex justify-start mt-3">
+            <AssistantCard data={structured} />
+          </div>
+        )}
+      </main>
+
+      <form onSubmit={sendMessage} className="p-4 border-t border-gray-800 bg-black">
+        <div className="flex gap-2">
+          <textarea
+            className="flex-1 border rounded px-3 py-2 text-sm h-24 bg-black text-white border-gray-700
+                       placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-violet-600"
+            placeholder={`Example:
+Prospect: "Let me talk to my wife."
+Me: Confirmed beneficiary, didn't ask health changes or review date. I froze and said okay.`}
+            value={input}
+            onChange={(e) => setInput(e.target.value)}
+          />
+          <button
+            type="submit"
+            disabled={sending}
+            className="px-4 py-2 rounded bg-violet-600 text-white text-sm hover:shadow-[0_0_15px_rgba(139,92,246,0.8)] disabled:opacity-60 transition"
+          >
+            {sending ? "Thinking…" : "Send"}
+          </button>
+        </div>
+      </form>
+    </div>
+  );
+}
+
+// 👇 THIS LINE IS WHAT Vite/Netlify EXPECTS
+export default RebuttalChat;
