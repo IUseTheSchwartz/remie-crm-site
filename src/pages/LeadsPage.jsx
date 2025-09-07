@@ -597,94 +597,92 @@ export default function LeadsPage() {
       </div>
 
       {/* Table */}
-      <div className="relative rounded-2xl border border-white/10 bg-transparent">
-        <div className="overflow-x-auto">
-          <table className="min-w-[1200px] bg-transparent border-collapse text-sm">
-            <thead className="bg-white/[0.04] text-white/70">
-              <tr className="bg-transparent">
-                <Th>Name</Th>
-                <Th>Phone</Th>
-                <Th>Email</Th>
-                <Th>DOB</Th>
-                <Th>State</Th>
-                <Th>Beneficiary</Th>
-                <Th>Beneficiary Name</Th>
-                <Th>Gender</Th>
-                <Th>Military Branch</Th>
-                <Th>Stage</Th>
-                <Th>Carrier</Th>
-                <Th>Face</Th>
-                <Th>Premium</Th>
-                <Th>Monthly</Th>
-                <Th>Policy #</Th>
-                <Th>Start</Th>
-                <Th>Actions</Th>
-              </tr>
-            </thead>
-            <tbody className="bg-transparent">
-              {visible.map((p) => {
-                const isSold = p.status === "sold";
-                const stageId = p.stage || "no_pickup";
-                const stageLabel = labelForStage(stageId);
-                const stageClass = STAGE_STYLE[stageId] || "bg-white/10 text-white/80";
-                return (
-                  <tr key={p.id} className="border-t border-white/10 bg-transparent">
-                    <Td>{p.name || "—"}</Td>
-                    <Td>{p.phone || "—"}</Td>
-                    <Td>{p.email || "—"}</Td>
-                    <Td>{p.dob || "—"}</Td>
-                    <Td>{p.state || "—"}</Td>
-                    <Td>{p.beneficiary || "—"}</Td>
-                    <Td>{p.beneficiary_name || "—"}</Td>
-                    <Td>{p.gender || "—"}</Td>
-                    <Td>{p.military_branch || "—"}</Td>
-                    <Td>
-                      {isSold ? (
-                        <span className="rounded-full bg-emerald-500/15 px-2 py-0.5 text-xs text-emerald-300">
-                          Sold
-                        </span>
-                      ) : (
-                        <span className={`rounded-full px-2 py-0.5 text-xs ${stageClass}`}>
-                          {stageLabel}
-                        </span>
-                      )}
-                    </Td>
-                    <Td>{p.sold?.carrier || "—"}</Td>
-                    <Td>{p.sold?.faceAmount || "—"}</Td>
-                    <Td>{p.sold?.premium || "—"}</Td>
-                    <Td>{p.sold?.monthlyPayment || "—"}</Td>
-                    <Td>{p.sold?.policyNumber || "—"}</Td>
-                    <Td>{p.sold?.startDate || "—"}</Td>
-                    <Td>
-                      <div className="flex items-center gap-2">
-                        <button
-                          onClick={() => openAsSold(p)}
-                          className="rounded-lg border border-white/15 px-2 py-1 hover:bg-white/10"
-                        >
-                          Mark as SOLD
-                        </button>
-                        <button
-                          onClick={() => removeOne(p.id)}
-                          className="rounded-lg border border-rose-500/40 bg-rose-500/10 px-2 py-1 hover:bg-rose-500/20"
-                          title="Delete (local + Supabase)"
-                        >
-                          Delete
-                        </button>
-                      </div>
-                    </Td>
-                  </tr>
-                );
-              })}
-              {visible.length === 0 && (
-                <tr className="bg-transparent">
-                  <td colSpan={17} className="p-6 text-center text-white/60">
-                    No records yet. Import a CSV or add leads.
-                  </td>
+      <div className="leads-scroll relative overflow-x-auto rounded-2xl border border-white/10 bg-neutral-950">
+        <table className="min-w-[1200px] w-max border-collapse text-sm">
+          <thead className="bg-white/[0.04] text-white/70">
+            <tr>
+              <Th>Name</Th>
+              <Th>Phone</Th>
+              <Th>Email</Th>
+              <Th>DOB</Th>
+              <Th>State</Th>
+              <Th>Beneficiary</Th>
+              <Th>Beneficiary Name</Th>
+              <Th>Gender</Th>
+              <Th>Military Branch</Th>
+              <Th>Stage</Th>
+              <Th>Carrier</Th>
+              <Th>Face</Th>
+              <Th>Premium</Th>
+              <Th>Monthly</Th>
+              <Th>Policy #</Th>
+              <Th>Start</Th>
+              <Th>Actions</Th>
+            </tr>
+          </thead>
+          <tbody>
+            {visible.map((p) => {
+              const isSold = p.status === "sold";
+              const stageId = p.stage || "no_pickup";
+              const stageLabel = labelForStage(stageId);
+              const stageClass = STAGE_STYLE[stageId] || "bg-white/10 text-white/80";
+              return (
+                <tr key={p.id} className="border-t border-white/10">
+                  <Td>{p.name || "—"}</Td>
+                  <Td>{p.phone || "—"}</Td>
+                  <Td>{p.email || "—"}</Td>
+                  <Td>{p.dob || "—"}</Td>
+                  <Td>{p.state || "—"}</Td>
+                  <Td>{p.beneficiary || "—"}</Td>
+                  <Td>{p.beneficiary_name || "—"}</Td>
+                  <Td>{p.gender || "—"}</Td>
+                  <Td>{p.military_branch || "—"}</Td>
+                  <Td>
+                    {isSold ? (
+                      <span className="rounded-full bg-emerald-500/15 px-2 py-0.5 text-xs text-emerald-300">
+                        Sold
+                      </span>
+                    ) : (
+                      <span className={`rounded-full px-2 py-0.5 text-xs ${stageClass}`}>
+                        {stageLabel}
+                      </span>
+                    )}
+                  </Td>
+                  <Td>{p.sold?.carrier || "—"}</Td>
+                  <Td>{p.sold?.faceAmount || "—"}</Td>
+                  <Td>{p.sold?.premium || "—"}</Td>
+                  <Td>{p.sold?.monthlyPayment || "—"}</Td>
+                  <Td>{p.sold?.policyNumber || "—"}</Td>
+                  <Td>{p.sold?.startDate || "—"}</Td>
+                  <Td>
+                    <div className="flex items-center gap-2">
+                      <button
+                        onClick={() => openAsSold(p)}
+                        className="rounded-lg border border-white/15 px-2 py-1 hover:bg-white/10"
+                      >
+                        Mark as SOLD
+                      </button>
+                      <button
+                        onClick={() => removeOne(p.id)}
+                        className="rounded-lg border border-rose-500/40 bg-rose-500/10 px-2 py-1 hover:bg-rose-500/20"
+                        title="Delete (local + Supabase)"
+                      >
+                        Delete
+                      </button>
+                    </div>
+                  </Td>
                 </tr>
-              )}
-            </tbody>
-          </table>
-        </div>
+              );
+            })}
+            {visible.length === 0 && (
+              <tr>
+                <td colSpan={17} className="p-6 text-center text-white/60">
+                  No records yet. Import a CSV or add leads.
+                </td>
+              </tr>
+            )}
+          </tbody>
+        </table>
       </div>
 
       {/* Drawer for SOLD */}
@@ -696,16 +694,31 @@ export default function LeadsPage() {
           onSave={(payload) => saveSoldInfo(payload.id, payload)}
         />
       )}
+
+      {/* Scroll-area background (prevents white band at far right) */}
+      <style>{`
+        .leads-scroll { background-color: #0a0a0a; }
+        .leads-scroll::before{
+          content:"";
+          position:absolute;
+          inset:-12rem 0 0 0;
+          width:40rem; height:40rem; margin:auto; border-radius:9999px;
+          background: radial-gradient(closest-side,
+            rgba(99,102,241,.18),
+            rgba(217,70,239,.12),
+            rgba(244,63,94,.10) 70%,
+            transparent 100%);
+          filter: blur(48px);
+          pointer-events:none;
+          z-index:0;
+        }
+      `}</style>
     </div>
   );
 }
 
-function Th({ children }) {
-  return <th className="px-3 py-2 text-left font-medium bg-transparent">{children}</th>;
-}
-function Td({ children }) {
-  return <td className="px-3 py-2 bg-transparent">{children}</td>;
-}
+function Th({ children }) { return <th className="px-3 py-2 text-left font-medium">{children}</th>; }
+function Td({ children }) { return <td className="px-3 py-2">{children}</td>; }
 
 function SoldDrawer({ initial, allClients, onClose, onSave }) {
   const [form, setForm] = useState({
