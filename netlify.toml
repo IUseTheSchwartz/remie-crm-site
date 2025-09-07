@@ -5,10 +5,35 @@
 [build.environment]
   NODE_VERSION = "20"
 
+# ✅ SPA redirect (keep this)
 [[redirects]]
   from = "/*"
   to = "/index.html"
   status = 200
 
+# ✅ Functions dir
 [functions]
   directory = "netlify/functions"
+
+# 🔒 Stop Chrome from caching your HTML shell (prevents “stuck on old build”)
+[[headers]]
+  for = "/index.html"
+  [headers.values]
+  Cache-Control = "no-store, no-cache, must-revalidate, max-age=0"
+
+[[headers]]
+  for = "/"
+  [headers.values]
+  Cache-Control = "no-store, no-cache, must-revalidate, max-age=0"
+
+# 🚀 Let hashed assets cache aggressively (Vite outputs /assets/* with hashes)
+[[headers]]
+  for = "/assets/*"
+  [headers.values]
+  Cache-Control = "public, max-age=31536000, immutable"
+
+# (Optional) also keep any other top-level HTMLs uncached
+[[headers]]
+  for = "/*.html"
+  [headers.values]
+  Cache-Control = "no-store, no-cache, must-revalidate, max-age=0"
