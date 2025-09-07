@@ -1,3 +1,4 @@
+// File: src/pages/RebuttalChat.jsx
 import { useEffect, useRef, useState } from "react";
 
 function Bubble({ role, text }) {
@@ -6,7 +7,7 @@ function Bubble({ role, text }) {
     <div className={`flex ${isUser ? "justify-end" : "justify-start"} mb-3`}>
       <div
         className={`max-w-[80%] rounded-lg px-3 py-2 text-sm leading-6 shadow
-          ${isUser ? "bg-violet-600 text-white" : "bg-gray-100 text-gray-900"}`}
+          ${isUser ? "bg-violet-600 text-white" : "bg-black text-white border border-gray-700"}`}
       >
         {text}
       </div>
@@ -38,13 +39,11 @@ export default function RebuttalChat() {
     const content = input.trim();
     if (!content || sending) return;
 
-    // Push user bubble
     setMessages((m) => [...m, { role: "user", text: content }]);
     setInput("");
     setSending(true);
 
-    // Create assistant placeholder for streaming
-    const aiIndex = messages.length + 1; // after pushing user
+    const aiIndex = messages.length + 1;
     setMessages((m) => [...m, { role: "assistant", text: "" }]);
 
     try {
@@ -63,9 +62,7 @@ export default function RebuttalChat() {
         const { value, done: readerDone } = await reader.read();
         done = readerDone;
         const chunk = decoder.decode(value || new Uint8Array(), { stream: !done });
-
         if (chunk) {
-          // Append streamed text to the last assistant message
           setMessages((m) => {
             const copy = [...m];
             copy[aiIndex] = { ...copy[aiIndex], text: (copy[aiIndex].text || "") + chunk };
@@ -76,10 +73,7 @@ export default function RebuttalChat() {
     } catch (err) {
       setMessages((m) => [
         ...m,
-        {
-          role: "assistant",
-          text: "Sorry—something went wrong. Try again in a moment.",
-        },
+        { role: "assistant", text: "Sorry—something went wrong. Try again." },
       ]);
       console.error(err);
     } finally {
@@ -98,17 +92,17 @@ export default function RebuttalChat() {
   }
 
   return (
-    <div className="h-full w-full max-w-4xl mx-auto flex flex-col">
-      <header className="p-4 border-b flex items-center justify-between">
+    <div className="h-full w-full max-w-4xl mx-auto flex flex-col bg-black text-white rounded-lg shadow-lg border border-gray-800">
+      <header className="p-4 border-b border-gray-800 flex items-center justify-between">
         <div>
           <h1 className="text-xl font-semibold">AI Rebuttal Helper</h1>
-          <p className="text-xs text-gray-500">
+          <p className="text-xs text-gray-400">
             Stateless chat — nothing is stored. Close the tab = history is gone.
           </p>
         </div>
         <div className="flex gap-2">
           <select
-            className="border rounded px-2 py-1 text-sm"
+            className="border rounded px-2 py-1 text-sm bg-white text-black hover:shadow-[0_0_10px_rgba(139,92,246,0.8)] transition"
             value={product}
             onChange={(e) => setProduct(e.target.value)}
             title="Product context"
@@ -119,7 +113,7 @@ export default function RebuttalChat() {
             <option>Whole Life</option>
           </select>
           <select
-            className="border rounded px-2 py-1 text-sm"
+            className="border rounded px-2 py-1 text-sm bg-white text-black hover:shadow-[0_0_10px_rgba(139,92,246,0.8)] transition"
             value={tone}
             onChange={(e) => setTone(e.target.value)}
             title="Coaching tone"
@@ -131,7 +125,7 @@ export default function RebuttalChat() {
           </select>
           <button
             onClick={resetChat}
-            className="border rounded px-2 py-1 text-sm hover:bg-gray-50"
+            className="border rounded px-2 py-1 text-sm hover:shadow-[0_0_10px_rgba(139,92,246,0.8)] transition"
             type="button"
           >
             Reset
@@ -139,27 +133,26 @@ export default function RebuttalChat() {
         </div>
       </header>
 
-      <main ref={scrollerRef} className="flex-1 overflow-y-auto p-4 bg-white">
+      <main ref={scrollerRef} className="flex-1 overflow-y-auto p-4">
         {messages.map((m, i) => (
           <Bubble key={i} role={m.role} text={m.text} />
         ))}
       </main>
 
-      <form onSubmit={sendMessage} className="p-4 border-t bg-white">
+      <form onSubmit={sendMessage} className="p-4 border-t border-gray-800 bg-black">
         <div className="flex gap-2">
           <textarea
-            className="flex-1 border rounded px-3 py-2 text-sm h-20"
+            className="flex-1 border rounded px-3 py-2 text-sm h-20 bg-black text-white border-gray-700 placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-violet-600"
             placeholder={`Example:
 Prospect: "Too expensive."
-Me: I only compared price. They have a 2019 policy. I didn't unpack health changes or beneficiary risk.
-Goal: Book a callback today.`}
+Me: I only compared price...`}
             value={input}
             onChange={(e) => setInput(e.target.value)}
           />
           <button
             type="submit"
             disabled={sending}
-            className="px-4 py-2 rounded bg-violet-600 text-white text-sm disabled:opacity-60"
+            className="px-4 py-2 rounded bg-violet-600 text-white text-sm hover:shadow-[0_0_15px_rgba(139,92,246,0.8)] disabled:opacity-60 transition"
           >
             {sending ? "Thinking…" : "Send"}
           </button>
