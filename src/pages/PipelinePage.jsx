@@ -10,7 +10,7 @@ import {
   loadClients, saveClients,
   normalizePerson
 } from "../lib/storage.js";
-import { updatePipelineServer } from "../lib/supabaseLeads.js";
+import { upsertLeadServer, updatePipelineServer } from "../lib/supabaseLeads.js";
 import { supabase } from "../lib/supabaseClient.js";
 
 /* ---------------------------------- Config --------------------------------- */
@@ -236,28 +236,48 @@ export default function PipelinePage() {
     return null;
   }
 
-  // Save follow-up using the real Supabase UUID id
+  // Save follow-up using the real Supabase UUID id and user_id (for common RLS)
   async function setNextFollowUp(person, dateIso) {
     const withNext = { ...person, next_follow_up_at: dateIso || null };
 
-    // 1) Persist to Supabase first (avoid any helper overwriting the column)
+    // Persist to Supabase first (avoid any helper overwriting this column)
     try {
+      const { data: ses } = await supabase.auth.getSession();
+      const uid = ses?.session?.user?.id || null;
+      if (!uid) {
+        console.error("[follow-up] No logged-in user; cannot satisfy RLS.");
+      }
+
       const supaId = await resolveLeadSupabaseId(withNext);
       if (!supaId) {
-        console.warn("Save follow-up: no matching Supabase row id.");
+        console.warn("[follow-up] Could not resolve Supabase row id for lead.");
       } else {
-        const { error } = await supabase
+        const { data, error } = await supabase
           .from("leads")
           .update({ next_follow_up_at: dateIso || null })
-          .eq("id", supaId);
-        if (error) console.error("Supabase follow-up update failed:", error.message);
-        withNext.id = supaId; // stitch back the real UUID if different
+          .eq("id", supaId)
+          .eq("user_id", uid)
+          .select("id,next_follow_up_at");
+
+        if (error) {
+          console.error("[follow-up] Supabase update error:", error.message);
+        } else {
+          console.log("[follow-up] updated rows:", data?.length || 0, data);
+          if (data?.length) {
+            const serverVal = data[0].next_follow_up_at || null;
+            // stitch back the true UUID & server value
+            withNext.id = supaId;
+            withNext.next_follow_up_at = serverVal;
+          } else {
+            console.warn("[follow-up] 0 rows updated. Check id & user_id on the row.");
+          }
+        }
       }
     } catch (e) {
-      console.error("Follow-up save error:", e?.message || e);
+      console.error("[follow-up] unexpected error:", e?.message || e);
     }
 
-    // 2) Update local cache/UI
+    // Update local cache/UI
     updatePerson(withNext);
   }
 
@@ -534,6 +554,8 @@ function Drawer({
             onClick={() => {
               const raw = followRef.current?.value || "";
               const iso = raw ? new Date(raw).toISOString() : null;
+
+              console.log("[follow-up] click", { raw, iso });
 
               onNextFollowUp(person, iso);
               const msg = iso
