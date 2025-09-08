@@ -106,6 +106,47 @@ function daysInStage(iso) {
 
 function getStageMeta(id) { return STAGES.find(s => s.id === id) || STAGES[0]; }
 
+/** Parse raw text from the input into ISO8601.
+ * Accepts:
+ *   - "YYYY-MM-DDTHH:mm" (native datetime-local)
+ *   - "MM/DD/YYYY HH:mm" or "MM/DD/YYYY HH:mm AM/PM"
+ *   - "MM/DD/YYYY" (time defaults to 09:00)
+ */
+function parseFollowupRawToISO(raw) {
+  if (!raw) return null;
+  const s = raw.trim();
+
+  // Native datetime-local (or close enough)
+  if (/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}/.test(s)) {
+    const d = new Date(s);
+    return isNaN(d.getTime()) ? null : d.toISOString();
+  }
+
+  // MM/DD/YYYY [HH:MM] [AM|PM]
+  const m = s.match(
+    /^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{4})(?:[ T](\d{1,2}):(\d{2})(?:\s*([AP]M))?)?$/i
+  );
+  if (m) {
+    let [, mm, dd, yyyy, hh = "9", min = "00", ampm] = m; // default 9:00 if time omitted
+    let H = parseInt(hh, 10);
+    const M = parseInt(min, 10);
+    if (ampm) {
+      const upper = ampm.toUpperCase();
+      if (upper === "PM" && H < 12) H += 12;
+      if (upper === "AM" && H === 12) H = 0;
+    }
+    const month = parseInt(mm, 10) - 1;
+    const day = parseInt(dd, 10);
+    const year = parseInt(yyyy, 10);
+    const d = new Date(year, month, day, H, M, 0, 0); // local time
+    return isNaN(d.getTime()) ? null : d.toISOString();
+  }
+
+  // Fallback: let Date try its best (may be locale-dependent)
+  const d = new Date(s);
+  return isNaN(d.getTime()) ? null : d.toISOString();
+}
+
 /* --------------------------------- Component -------------------------------- */
 
 export default function PipelinePage() {
@@ -270,11 +311,6 @@ export default function PipelinePage() {
         debug.error = "Could not resolve row id for this lead.";
         return debug;
       }
-      if (!debug.uid) {
-        // you might be using anon key without a signed-in user
-        // RLS will typically block updates in this case
-        // we'll still try without user_id filter to show what happens
-      }
 
       // Attempt #1: with user_id filter (common RLS policy)
       let resp = await supabase
@@ -292,7 +328,6 @@ export default function PipelinePage() {
       if (debug.rowsUpdated1 > 0) {
         debug.serverVal = resp.data[0]?.next_follow_up_at || null;
         debug.rowUserId = resp.data[0]?.user_id || null;
-        // stitch back real UUID & confirmed value
         updatePerson({ ...withNext, id: supaId, next_follow_up_at: debug.serverVal });
         return debug;
       }
@@ -314,8 +349,6 @@ export default function PipelinePage() {
         debug.rowUserId = resp.data[0]?.user_id || null;
         updatePerson({ ...withNext, id: supaId, next_follow_up_at: debug.serverVal });
       } else {
-        // 0 rows even without user_id filter -> id not found or RLS blocked
-        // fetch the row to see user_id (if allowed)
         const check = await supabase
           .from("leads")
           .select("id,user_id,next_follow_up_at")
@@ -601,6 +634,7 @@ function Drawer({
             ref={followRef}
             type="datetime-local"
             className="rounded-lg border border-white/10 bg-black/40 px-2 py-1 text-xs outline-none focus:ring-2 focus:ring-indigo-500/40"
+            placeholder="MM/DD/YYYY HH:MM AM/PM"
             defaultValue={toLocalInputValue(person?.next_follow_up_at || "")}
           />
         </div>
@@ -608,7 +642,7 @@ function Drawer({
           <div className="text-[11px] text-white/50">
             {debugInfo ? (
               <span>
-                <b>Debug:</b> uid={debugInfo.uid || "—"} | rowId={debugInfo.supaId || "—"} | upd1={debugInfo.rowsUpdated1} | upd2={debugInfo.rowsUpdated2} | serverVal={debugInfo.serverVal ? fmtDateTime(debugInfo.serverVal) : "—"} {debugInfo.rowUserId ? `| row.user_id=${debugInfo.rowUserId}` : ""} {debugInfo.error ? `| error=${debugInfo.error}` : ""}
+                <b>Debug:</b> raw={debugInfo.raw || "—"} | iso={debugInfo.iso || "—"} | uid={debugInfo.uid || "—"} | rowId={debugInfo.supaId || "—"} | upd1={debugInfo.rowsUpdated1} | upd2={debugInfo.rowsUpdated2} | serverVal={debugInfo.serverVal ? fmtDateTime(debugInfo.serverVal) : "—"} {debugInfo.rowUserId ? `| row.user_id=${debugInfo.rowUserId}` : ""} {debugInfo.error ? `| error=${debugInfo.error}` : ""}
               </span>
             ) : (
               <span className="opacity-60">Debug status will appear here after you save.</span>
@@ -618,10 +652,10 @@ function Drawer({
             type="button"
             onClick={async () => {
               const raw = followRef.current?.value || "";
-              const iso = raw ? new Date(raw).toISOString() : null;
+              const iso = parseFollowupRawToISO(raw);
 
               const info = await onNextFollowUp(person, iso);
-              setDebugInfo(info);
+              setDebugInfo({ raw, ...info });
 
               const msg = iso
                 ? `Follow-up scheduled for ${fmtDateTime(iso)}.`
