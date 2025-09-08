@@ -10,7 +10,9 @@ function fmt(dt) {
   try {
     const d = new Date(dt);
     return `${d.toLocaleDateString()} ${d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}`;
-  } catch { return "—"; }
+  } catch {
+    return "—";
+  }
 }
 function leadLabel(l) {
   return l.phone || l.email || "Lead";
@@ -30,7 +32,7 @@ function UpcomingFollowUps() {
       setError(null);
       const { data, error } = await supabase
         .from("leads")
-        .select("id,next_follow_up_at,phone,email") // ← only safe, existing columns
+        .select("id,next_follow_up_at,phone,email") // only existing columns
         .eq("user_id", user.id)
         .not("next_follow_up_at", "is", null)
         .gte("next_follow_up_at", new Date().toISOString())
@@ -41,7 +43,9 @@ function UpcomingFollowUps() {
       else setItems(data || []);
       setLoading(false);
     })();
-    return () => { active = false; };
+    return () => {
+      active = false;
+    };
   }, [user?.id]);
 
   return (
@@ -109,7 +113,7 @@ export default function MessagesPage() {
 
   // Compose
   const [text, setText] = useState("");
-  ￼const [sending, setSending] = useState(false);
+  const [sending, setSending] = useState(false);
   const scrollerRef = useRef(null);
 
   /* ---------- Fetchers ---------- */
@@ -197,7 +201,9 @@ export default function MessagesPage() {
 
     return () => {
       mounted = false;
-      try { supabase.removeChannel?.(channel); } catch {}
+      try {
+        supabase.removeChannel(channel);
+      } catch {}
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [user?.id]);
@@ -352,17 +358,12 @@ export default function MessagesPage() {
         <div ref={scrollerRef} className="scrollbar-thin flex-1 overflow-y-auto p-4">
           {activeNumber ? (
             conversation.length === 0 ? (
-              <div className="grid h-full place-items-center text-sm text-white/50">
-                No messages yet.
-              </div>
+              <div className="grid h-full place-items-center text-sm text-white/50">No messages yet.</div>
             ) : (
               conversation.map((m) => (
                 <div
                   key={m.id}
-                  className={classNames(
-                    "mb-2 flex",
-                    m.direction === "out" ? "justify-end" : "justify-start"
-                  )}
+                  className={classNames("mb-2 flex", m.direction === "out" ? "justify-end" : "justify-start")}
                 >
                   <div
                     className={classNames(
@@ -375,9 +376,7 @@ export default function MessagesPage() {
                   >
                     <div>{m.body}</div>
                     {m.direction === "out" && (
-                      <div className="mt-1 text-[10px] uppercase tracking-wide text-white/50">
-                        {m.status}
-                      </div>
+                      <div className="mt-1 text-[10px] uppercase tracking-wide text-white/50">{m.status}</div>
                     )}
                   </div>
                 </div>
@@ -415,9 +414,7 @@ export default function MessagesPage() {
             </button>
           </div>
           {balanceCents <= 0 && (
-            <div className="mt-2 text-xs text-amber-300/90">
-              Your balance is $0. Add funds to send messages.
-            </div>
+            <div className="mt-2 text-xs text-amber-300/90">Your balance is $0. Add funds to send messages.</div>
           )}
         </div>
       </section>
