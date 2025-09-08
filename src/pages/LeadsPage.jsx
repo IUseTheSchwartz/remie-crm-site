@@ -147,7 +147,8 @@ export default function LeadsPage() {
   const [tab, setTab] = useState("clients"); // 'clients' | 'sold'
   const [leads, setLeads] = useState([]);
   const [clients, setClients] = useState([]);
-  const [selected, setSelected] = useState(null);
+  const [selected, setSelected] = useState(null);       // for Mark-as-SOLD drawer
+  const [viewSelected, setViewSelected] = useState(null); // for read-only policy drawer
   const [filter, setFilter] = useState("");
 
   const [serverMsg, setServerMsg] = useState("");
@@ -475,10 +476,13 @@ export default function LeadsPage() {
     setSelected(null);
   }
 
+  const showPolicyCols = tab === "sold";
+  const baseHeaders = ["Name","Phone","Email","DOB","State","Beneficiary","Beneficiary Name","Gender","Military Branch","Stage"];
+  const policyHeaders = ["Carrier","Face","Premium","Monthly","Policy #","Start"];
+  const colCount = baseHeaders.length + (showPolicyCols ? policyHeaders.length : 0) + 1; // + Actions
+
   return (
     <div className="space-y-6 min-w-0 overflow-x-hidden">
-      {/* 🔧 Prevent page-level horizontal overflow; table still scrolls inside its wrapper */}
-
       {/* Toolbar */}
       <div className="flex flex-wrap items-center gap-3">
         <div className="inline-flex rounded-full border border-white/15 bg-white/5 p-1 text-sm">
@@ -563,22 +567,8 @@ export default function LeadsPage() {
         <table className="min-w-[1200px] w-full border-collapse text-sm">
           <thead className="bg-white/[0.04] text-white/70">
             <tr>
-              <Th>Name</Th>
-              <Th>Phone</Th>
-              <Th>Email</Th>
-              <Th>DOB</Th>
-              <Th>State</Th>
-              <Th>Beneficiary</Th>
-              <Th>Beneficiary Name</Th>
-              <Th>Gender</Th>
-              <Th>Military Branch</Th>
-              <Th>Stage</Th>
-              <Th>Carrier</Th>
-              <Th>Face</Th>
-              <Th>Premium</Th>
-              <Th>Monthly</Th>
-              <Th>Policy #</Th>
-              <Th>Start</Th>
+              {baseHeaders.map(h => <Th key={h}>{h}</Th>)}
+              {showPolicyCols && policyHeaders.map(h => <Th key={h}>{h}</Th>)}
               <Th>Actions</Th>
             </tr>
           </thead>
@@ -610,20 +600,37 @@ export default function LeadsPage() {
                       </span>
                     )}
                   </Td>
-                  <Td>{p.sold?.carrier || "—"}</Td>
-                  <Td>{p.sold?.faceAmount || "—"}</Td>
-                  <Td>{p.sold?.premium || "—"}</Td>
-                  <Td>{p.sold?.monthlyPayment || "—"}</Td>
-                  <Td>{p.sold?.policyNumber || "—"}</Td>
-                  <Td>{p.sold?.startDate || "—"}</Td>
+
+                  {/* Policy columns only on SOLD tab */}
+                  {showPolicyCols && (
+                    <>
+                      <Td>{p.sold?.carrier || "—"}</Td>
+                      <Td>{p.sold?.faceAmount || "—"}</Td>
+                      <Td>{p.sold?.premium || "—"}</Td>
+                      <Td>{p.sold?.monthlyPayment || "—"}</Td>
+                      <Td>{p.sold?.policyNumber || "—"}</Td>
+                      <Td>{p.sold?.startDate || "—"}</Td>
+                    </>
+                  )}
+
                   <Td>
                     <div className="flex items-center gap-2">
-                      <button
-                        onClick={() => openAsSold(p)}
-                        className="rounded-lg border border-white/15 px-2 py-1 hover:bg-white/10"
-                      >
-                        Mark as SOLD
-                      </button>
+                      {tab === "clients" ? (
+                        <button
+                          onClick={() => openAsSold(p)}
+                          className="rounded-lg border border-white/15 px-2 py-1 hover:bg-white/10"
+                        >
+                          Mark as SOLD
+                        </button>
+                      ) : (
+                        <button
+                          onClick={() => setViewSelected(p)}
+                          className="rounded-lg border border-white/15 px-2 py-1 hover:bg-white/10"
+                          title="View policy file"
+                        >
+                          Open file
+                        </button>
+                      )}
                       <button
                         onClick={() => removeOne(p.id)}
                         className="rounded-lg border border-rose-500/40 bg-rose-500/10 px-2 py-1 hover:bg-rose-500/20"
@@ -638,7 +645,7 @@ export default function LeadsPage() {
             })}
             {visible.length === 0 && (
               <tr>
-                <td colSpan={17} className="p-6 text-center text-white/60">
+                <td colSpan={colCount} className="p-6 text-center text-white/60">
                   No records yet. Import a CSV or add leads.
                 </td>
               </tr>
@@ -647,13 +654,21 @@ export default function LeadsPage() {
         </table>
       </div>
 
-      {/* Drawer for SOLD */}
+      {/* Drawer for SOLD (create/edit sold) */}
       {selected && (
         <SoldDrawer
           initial={selected}
           allClients={allClients}
           onClose={() => setSelected(null)}
           onSave={(payload) => saveSoldInfo(payload.id, payload)}
+        />
+      )}
+
+      {/* Read-only policy viewer for SOLD rows */}
+      {viewSelected && (
+        <PolicyViewer
+          person={viewSelected}
+          onClose={() => setViewSelected(null)}
         />
       )}
     </div>
@@ -663,6 +678,47 @@ export default function LeadsPage() {
 function Th({ children }) { return <th className="px-3 py-2 text-left font-medium">{children}</th>; }
 function Td({ children }) { return <td className="px-3 py-2">{children}</td>; }
 
+/* ------------------------------ Policy Viewer ------------------------------ */
+function PolicyViewer({ person, onClose }) {
+  const s = person?.sold || {};
+  const addr = s.address || {};
+  return (
+    <div className="fixed inset-0 z-50 grid bg-black/60 p-4">
+      <div className="relative m-auto w-full max-w-3xl rounded-2xl border border-white/15 bg-neutral-950 p-5">
+        <div className="mb-3 text-lg font-semibold">Policy File</div>
+
+        <div className="grid gap-3 sm:grid-cols-2">
+          <Field label="Name"><div className="ro">{s.name || person?.name || "—"}</div></Field>
+          <Field label="Phone"><div className="ro">{s.phone || person?.phone || "—"}</div></Field>
+          <Field label="Email"><div className="ro break-all">{s.email || person?.email || "—"}</div></Field>
+          <Field label="Carrier"><div className="ro">{s.carrier || "—"}</div></Field>
+          <Field label="Face Amount"><div className="ro">{s.faceAmount || "—"}</div></Field>
+          <Field label="Premium"><div className="ro">{s.premium || "—"}</div></Field>
+          <Field label="Monthly Payment"><div className="ro">{s.monthlyPayment || "—"}</div></Field>
+          <Field label="Policy #"><div className="ro">{s.policyNumber || "—"}</div></Field>
+          <Field label="Start Date"><div className="ro">{s.startDate || "—"}</div></Field>
+
+          <Field label="Street"><div className="ro">{addr.street || "—"}</div></Field>
+          <Field label="City"><div className="ro">{addr.city || "—"}</div></Field>
+          <Field label="State"><div className="ro">{addr.state || "—"}</div></Field>
+          <Field label="ZIP"><div className="ro">{addr.zip || "—"}</div></Field>
+        </div>
+
+        <div className="mt-4 flex items-center justify-end">
+          <button
+            onClick={onClose}
+            className="rounded-xl border border-white/15 px-4 py-2 text-sm hover:bg-white/10">
+            Close
+          </button>
+        </div>
+      </div>
+
+      <style>{`.ro{padding:.5rem .75rem; border-radius:.75rem; border:1px solid rgba(255,255,255,.08); background:#00000040}`}</style>
+    </div>
+  );
+}
+
+/* ------------------------------ Sold Drawer ------------------------------- */
 function SoldDrawer({ initial, allClients, onClose, onSave }) {
   const [form, setForm] = useState({
     id: initial?.id || crypto.randomUUID(),
