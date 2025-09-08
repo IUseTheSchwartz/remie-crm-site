@@ -120,6 +120,7 @@ export default function MessagesPage() {
   const [conversation, setConversation] = useState([]); // messages ordered asc
 
   // Compose
+  theLoop: // (kept from your file; harmless label)
   const [text, setText] = useState("");
   const [sending, setSending] = useState(false);
   const scrollerRef = useRef(null);
@@ -149,13 +150,6 @@ export default function MessagesPage() {
       .limit(200);
     if (error) return;
 
-    const seen = new Set();
-    theLoop: for (const m of data) {
-      const partner = m.direction === "out" ? m.to_number : m.from_number;
-      if (!partner) continue;
-      if (threads.some((t) => t.partnerNumber === partner)) continue;
-    }
-    // Rebuild list without duplicates (fast)
     const grouped = [];
     const seenPartners = new Set();
     for (const m of data) {
