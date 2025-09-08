@@ -87,12 +87,19 @@ function fmtDateTime(iso) {
   } catch { return "—"; }
 }
 
-function toLocalInputValue(iso) {
+function toLocalHuman(iso) {
   if (!iso) return "";
   try {
     const d = new Date(iso);
     const pad = (n) => String(n).padStart(2, "0");
-    return `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+    const mm = pad(d.getMonth() + 1);
+    const dd = pad(d.getDate());
+    const yyyy = d.getFullYear();
+    let h = d.getHours();
+    const ampm = h >= 12 ? "PM" : "AM";
+    h = h % 12; if (h === 0) h = 12;
+    const mi = pad(d.getMinutes());
+    return `${mm}/${dd}/${yyyy} ${h}:${mi} ${ampm}`;
   } catch { return ""; }
 }
 
@@ -106,28 +113,26 @@ function daysInStage(iso) {
 
 function getStageMeta(id) { return STAGES.find(s => s.id === id) || STAGES[0]; }
 
-/** Parse raw text from the input into ISO8601.
+/** Parse raw text into ISO.
  * Accepts:
- *   - "YYYY-MM-DDTHH:mm" (native datetime-local)
- *   - "MM/DD/YYYY HH:mm" or "MM/DD/YYYY HH:mm AM/PM"
- *   - "MM/DD/YYYY" (time defaults to 09:00)
+ * - "YYYY-MM-DDTHH:mm" (native datetime-local)
+ * - "MM/DD/YYYY HH:mm"   or "... HH:mm AM/PM"
+ * - "MM/DD/YYYY" (defaults to 9:00 AM)
  */
 function parseFollowupRawToISO(raw) {
   if (!raw) return null;
   const s = raw.trim();
 
-  // Native datetime-local (or close enough)
+  // Native datetime-local (or close)
   if (/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}/.test(s)) {
     const d = new Date(s);
     return isNaN(d.getTime()) ? null : d.toISOString();
   }
 
   // MM/DD/YYYY [HH:MM] [AM|PM]
-  const m = s.match(
-    /^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{4})(?:[ T](\d{1,2}):(\d{2})(?:\s*([AP]M))?)?$/i
-  );
+  const m = s.match(/^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{4})(?:[ T](\d{1,2}):(\d{2})(?:\s*([AP]M))?)?$/i);
   if (m) {
-    let [, mm, dd, yyyy, hh = "9", min = "00", ampm] = m; // default 9:00 if time omitted
+    let [, mm, dd, yyyy, hh = "9", min = "00", ampm] = m;
     let H = parseInt(hh, 10);
     const M = parseInt(min, 10);
     if (ampm) {
@@ -138,11 +143,10 @@ function parseFollowupRawToISO(raw) {
     const month = parseInt(mm, 10) - 1;
     const day = parseInt(dd, 10);
     const year = parseInt(yyyy, 10);
-    const d = new Date(year, month, day, H, M, 0, 0); // local time
+    const d = new Date(year, month, day, H, M, 0, 0);
     return isNaN(d.getTime()) ? null : d.toISOString();
   }
 
-  // Fallback: let Date try its best (may be locale-dependent)
   const d = new Date(s);
   return isNaN(d.getTime()) ? null : d.toISOString();
 }
@@ -249,7 +253,6 @@ export default function PipelinePage() {
     updatePipelineServer(withStage).catch(()=>{});
   }
 
-  /** Resolve the real Supabase UUID id for this lead (by id, then email/phone under user_id). */
   async function resolveLeadSupabaseId(person) {
     const pid = person?.id || null;
     const email = (person?.email || "").trim();
@@ -277,27 +280,14 @@ export default function PipelinePage() {
     return null;
   }
 
-  /**
-   * Save follow-up using the real Supabase UUID id.
-   * First try with `user_id = auth.uid()` (RLS-friendly). If 0 rows updated,
-   * retry without the user_id filter to detect a mismatch.
-   * Returns a debug object consumed by the Drawer to show status inline.
-   */
   async function setNextFollowUp(person, dateIso) {
     const withNext = { ...person, next_follow_up_at: dateIso || null };
-
-    // Update local cache/UI immediately so you see the change
     updatePerson(withNext);
 
     const debug = {
-      uid: null,
-      supaId: null,
-      iso: dateIso || null,
-      rowsUpdated1: 0,
-      rowsUpdated2: 0,
-      serverVal: null,
-      rowUserId: null,
-      error: null,
+      uid: null, supaId: null, iso: dateIso || null,
+      rowsUpdated1: 0, rowsUpdated2: 0,
+      serverVal: null, rowUserId: null, error: null,
     };
 
     try {
@@ -306,13 +296,8 @@ export default function PipelinePage() {
 
       const supaId = await resolveLeadSupabaseId(withNext);
       debug.supaId = supaId;
+      if (!supaId) { debug.error = "Could not resolve row id for this lead."; return debug; }
 
-      if (!supaId) {
-        debug.error = "Could not resolve row id for this lead.";
-        return debug;
-      }
-
-      // Attempt #1: with user_id filter (common RLS policy)
       let resp = await supabase
         .from("leads")
         .update({ next_follow_up_at: dateIso || null })
@@ -320,10 +305,7 @@ export default function PipelinePage() {
         .eq("user_id", debug.uid)
         .select("id,user_id,next_follow_up_at");
 
-      if (resp.error) {
-        debug.error = resp.error.message;
-        return debug;
-      }
+      if (resp.error) { debug.error = resp.error.message; return debug; }
       debug.rowsUpdated1 = resp.data?.length || 0;
       if (debug.rowsUpdated1 > 0) {
         debug.serverVal = resp.data[0]?.next_follow_up_at || null;
@@ -332,17 +314,13 @@ export default function PipelinePage() {
         return debug;
       }
 
-      // Attempt #2: retry without user_id filter (to diagnose mismatch)
       resp = await supabase
         .from("leads")
         .update({ next_follow_up_at: dateIso || null })
         .eq("id", supaId)
         .select("id,user_id,next_follow_up_at");
 
-      if (resp.error) {
-        debug.error = resp.error.message;
-        return debug;
-      }
+      if (resp.error) { debug.error = resp.error.message; return debug; }
       debug.rowsUpdated2 = resp.data?.length || 0;
       if (debug.rowsUpdated2 > 0) {
         debug.serverVal = resp.data[0]?.next_follow_up_at || null;
@@ -359,7 +337,6 @@ export default function PipelinePage() {
           debug.serverVal = check.data.next_follow_up_at || null;
         }
       }
-
       return debug;
     } catch (e) {
       debug.error = e?.message || String(e);
@@ -368,8 +345,6 @@ export default function PipelinePage() {
   }
 
   function openCard(p) { setSelected(p); }
-
-  /* ---------------------------------- Notes ---------------------------------- */
 
   function notesFor(id) {
     return (notesMap[id] || []).slice().sort((a,b) => new Date(b.created_at) - new Date(a.created_at));
@@ -395,8 +370,6 @@ export default function PipelinePage() {
     saveNotesMap(m);
     setNotesMap(m);
   }
-
-  /* --------------------------------- Render ---------------------------------- */
 
   return (
     <div className="space-y-4">
@@ -550,10 +523,8 @@ function Drawer({
   person, onClose, onSetStage, onUpdate, onNextFollowUp,
   notes, onAddNote, onDeleteNote, onPinNote
 }) {
-  // Uncontrolled input + ref so we always read the REAL value the user picked
+  // Text input + ref so we always read exactly what you typed
   const followRef = useRef(null);
-
-  // little inline debug state so you can see what's happening without DevTools
   const [debugInfo, setDebugInfo] = useState(null);
 
   const [noteText, setNoteText] = useState("");
@@ -627,15 +598,15 @@ function Drawer({
           </button>
         </div>
 
-        {/* Follow-up: manual only + save */}
+        {/* Follow-up input + save */}
         <div className="flex items-center gap-2 border-b border-white/10 px-4 py-3">
           <div className="text-xs text-white/60">Next follow-up:</div>
           <input
             ref={followRef}
-            type="datetime-local"
-            className="rounded-lg border border-white/10 bg-black/40 px-2 py-1 text-xs outline-none focus:ring-2 focus:ring-indigo-500/40"
-            placeholder="MM/DD/YYYY HH:MM AM/PM"
-            defaultValue={toLocalInputValue(person?.next_follow_up_at || "")}
+            type="text"
+            placeholder="MM/DD/YYYY HH:MM AM/PM (or 2025-09-08T14:30)"
+            className="w-[230px] rounded-lg border border-white/10 bg-black/40 px-2 py-1 text-xs outline-none focus:ring-2 focus:ring-indigo-500/40"
+            defaultValue={toLocalHuman(person?.next_follow_up_at || "")}
           />
         </div>
         <div className="flex items-center justify-between border-b border-white/10 px-4 pb-3 pt-1">
