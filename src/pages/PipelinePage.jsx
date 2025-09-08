@@ -11,7 +11,7 @@ import {
   normalizePerson
 } from "../lib/storage.js";
 import { upsertLeadServer, updatePipelineServer } from "../lib/supabaseLeads.js";
-import { supabase } from "../lib/supabaseClient.js"; // ✅ ADDED: direct write for follow-up
+import { supabase } from "../lib/supabaseClient.js"; // ✅ ADDED
 
 /* ---------------------------------- Config --------------------------------- */
 
@@ -209,29 +209,52 @@ export default function PipelinePage() {
     updatePipelineServer(withStage).catch(()=>{});
   }
 
+  // ✅ REPLACED: writes directly to Supabase leads.next_follow_up_at
   async function setNextFollowUp(person, dateIso) {
     const withNext = { ...person, next_follow_up_at: dateIso || null };
-    updatePerson(withNext);
+    updatePerson(withNext);                 // local
+    updatePipelineServer(withNext).catch(()=>{}); // your existing server path
 
-    // Keep existing server path
-    updatePipelineServer(withNext).catch(()=>{});
-
-    // ✅ NEW: explicit Supabase write to leads.next_follow_up_at
     try {
       const payload = { next_follow_up_at: dateIso || null };
+      const { data: u } = await supabase.auth.getUser();
+      const uid = u?.user?.id || null;
 
-      // Prefer id; if missing, fall back to email/phone
-      const q = supabase.from("leads").update(payload);
+      let updated = 0;
+
+      // Try by id (plus owner_id if your RLS uses it)
       if (person?.id) {
-        await q.eq("id", person.id);
-      } else if (person?.email || person?.phone) {
-        await q.or([
-          person?.email ? `email.eq.${person.email}` : null,
-          person?.phone ? `phone.eq.${person.phone}` : null,
-        ].filter(Boolean).join(","));
+        let q = supabase.from("leads").update(payload).eq("id", person.id);
+        if (uid) q = q.eq("owner_id", uid);
+        const { data, error } = await q.select("id"); // returns updated rows
+        if (error) throw error;
+        updated = (data || []).length;
       }
-    } catch (_) {
-      // swallow to keep UI responsive; local state already updated
+
+      // Fallback by email
+      if (!updated && person?.email) {
+        let q = supabase.from("leads").update(payload).eq("email", person.email);
+        if (uid) q = q.eq("owner_id", uid);
+        const { data, error } = await q.select("id");
+        if (error) throw error;
+        updated = (data || []).length;
+      }
+
+      // Fallback by phone
+      if (!updated && person?.phone) {
+        let q = supabase.from("leads").update(payload).eq("phone", person.phone);
+        if (uid) q = q.eq("owner_id", uid);
+        const { data, error } = await q.select("id");
+        if (error) throw error;
+        updated = (data || []).length;
+      }
+
+      if (!updated) {
+        // Not fatal—UI already updated—but this helps you debug if needed.
+        console.warn("Follow-up save: no matching row updated in 'leads'. Check id/email/phone/owner_id or RLS.");
+      }
+    } catch (e) {
+      console.error("Supabase follow-up update failed:", e?.message || e);
     }
   }
 
