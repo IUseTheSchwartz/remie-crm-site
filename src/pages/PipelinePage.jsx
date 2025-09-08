@@ -11,7 +11,7 @@ import {
   normalizePerson
 } from "../lib/storage.js";
 import { upsertLeadServer, updatePipelineServer } from "../lib/supabaseLeads.js";
-import { supabase } from "../lib/supabaseClient.js"; // ✅ ADDED
+import { supabase } from "../lib/supabaseClient.js";
 
 /* ---------------------------------- Config --------------------------------- */
 
@@ -205,53 +205,52 @@ export default function PipelinePage() {
     const withStage = { ...person, stage: safe, stage_changed_at: nowIso() };
     updatePerson(withStage);
     autoNoteForStageChange(person, safe);
-    // persist to Supabase (resolve row id by id/email/phone)
     updatePipelineServer(withStage).catch(()=>{});
   }
 
-  // ✅ REPLACED: writes directly to Supabase leads.next_follow_up_at
+  // ✅ FIX: write directly to Supabase (no owner filter)
   async function setNextFollowUp(person, dateIso) {
     const withNext = { ...person, next_follow_up_at: dateIso || null };
-    updatePerson(withNext);                 // local
-    updatePipelineServer(withNext).catch(()=>{}); // your existing server path
+    updatePerson(withNext);
+    updatePipelineServer(withNext).catch(()=>{});
 
+    const payload = { next_follow_up_at: dateIso || null };
+
+    let updated = 0;
     try {
-      const payload = { next_follow_up_at: dateIso || null };
-      const { data: u } = await supabase.auth.getUser();
-      const uid = u?.user?.id || null;
-
-      let updated = 0;
-
-      // Try by id (plus owner_id if your RLS uses it)
+      // 1) by id
       if (person?.id) {
-        let q = supabase.from("leads").update(payload).eq("id", person.id);
-        if (uid) q = q.eq("owner_id", uid);
-        const { data, error } = await q.select("id"); // returns updated rows
+        const { data, error } = await supabase
+          .from("leads")
+          .update(payload)
+          .eq("id", person.id)
+          .select("id"); // return updated rows
         if (error) throw error;
         updated = (data || []).length;
       }
-
-      // Fallback by email
+      // 2) by email
       if (!updated && person?.email) {
-        let q = supabase.from("leads").update(payload).eq("email", person.email);
-        if (uid) q = q.eq("owner_id", uid);
-        const { data, error } = await q.select("id");
+        const { data, error } = await supabase
+          .from("leads")
+          .update(payload)
+          .eq("email", person.email)
+          .select("id");
         if (error) throw error;
         updated = (data || []).length;
       }
-
-      // Fallback by phone
+      // 3) by phone
       if (!updated && person?.phone) {
-        let q = supabase.from("leads").update(payload).eq("phone", person.phone);
-        if (uid) q = q.eq("owner_id", uid);
-        const { data, error } = await q.select("id");
+        const { data, error } = await supabase
+          .from("leads")
+          .update(payload)
+          .eq("phone", person.phone)
+          .select("id");
         if (error) throw error;
         updated = (data || []).length;
       }
 
       if (!updated) {
-        // Not fatal—UI already updated—but this helps you debug if needed.
-        console.warn("Follow-up save: no matching row updated in 'leads'. Check id/email/phone/owner_id or RLS.");
+        console.warn("Save follow-up: 0 rows updated. Check that the lead's id/email/phone match the Supabase row.");
       }
     } catch (e) {
       console.error("Supabase follow-up update failed:", e?.message || e);
@@ -627,10 +626,10 @@ function Drawer({
                     stage_changed_at: nowIso(),
                     pipeline: { ...(person.pipeline || {}), quote: q },
                   };
-                  onUpdate(next);               // local
-                  updatePipelineServer(next).catch(()=>{}); // server
+                  onUpdate(next);
+                  updatePipelineServer(next).catch(()=>{});
                   const msg = `Quoted ${q.carrier || "—"} | Face: ${q.face || "—"} | Premium: ${q.premium || "—"}.`;
-                  onAddNote(person.id, msg);    // ✅ FIX: use prop to update UI state
+                  onAddNote(person.id, msg);
                 }}
                 className="mt-1 inline-flex items-center gap-2 rounded-lg border border-white/15 px-2 py-1 text-xs hover:bg-white/10"
               >
@@ -651,7 +650,7 @@ function Drawer({
                   onUpdate(next);
                   updatePipelineServer(next).catch(()=>{});
                   const msg = `Pending reason saved: ${pendingReason || "—"}.`;
-                  onAddNote(person.id, msg);    // ✅ FIX: use prop to update UI state
+                  onAddNote(person.id, msg);
                 }}
                 className="mt-1 inline-flex items-center gap-2 rounded-lg border border-white/15 px-2 py-1 text-xs hover:bg-white/10"
               >
