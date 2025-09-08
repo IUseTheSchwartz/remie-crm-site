@@ -120,7 +120,6 @@ export default function MessagesPage() {
   const [conversation, setConversation] = useState([]); // messages ordered asc
 
   // Compose
-  theLoop: // (kept from your file; harmless label)
   const [text, setText] = useState("");
   const [sending, setSending] = useState(false);
   const scrollerRef = useRef(null);
