@@ -150,11 +150,18 @@ export default function MessagesPage() {
     if (error) return;
 
     const seen = new Set();
+    theLoop: for (const m of data) {
+      const partner = m.direction === "out" ? m.to_number : m.from_number;
+      if (!partner) continue;
+      if (threads.some((t) => t.partnerNumber === partner)) continue;
+    }
+    // Rebuild list without duplicates (fast)
     const grouped = [];
+    const seenPartners = new Set();
     for (const m of data) {
       const partner = m.direction === "out" ? m.to_number : m.from_number;
-      if (!partner || seen.has(partner)) continue;
-      seen.add(partner);
+      if (!partner || seenPartners.has(partner)) continue;
+      seenPartners.add(partner);
       grouped.push({
         partnerNumber: partner,
         lastMessage: m.body,
@@ -162,6 +169,7 @@ export default function MessagesPage() {
       });
     }
     setThreads(grouped);
+
     // If no active thread, pick the most recent
     if (!activeNumber && grouped[0]?.partnerNumber) {
       setActiveNumber(grouped[0].partnerNumber);
