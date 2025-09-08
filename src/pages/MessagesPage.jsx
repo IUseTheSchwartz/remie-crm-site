@@ -9,7 +9,10 @@ import { Send, CreditCard, Plus, Loader2 } from "lucide-react";
 function fmt(dt) {
   try {
     const d = new Date(dt);
-    return `${d.toLocaleDateString()} ${d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}`;
+    return `${d.toLocaleDateString()} ${d.toLocaleTimeString([], {
+      hour: "2-digit",
+      minute: "2-digit",
+    })}`;
   } catch {
     return "—";
   }
@@ -68,7 +71,9 @@ function UpcomingFollowUps() {
                 className="flex items-center justify-between rounded-lg border border-white/10 bg-black/30 px-3 py-2"
               >
                 <div className="truncate">{leadLabel(l)}</div>
-                <div className="ml-3 shrink-0 text-white/70">{fmt(l.next_follow_up_at)}</div>
+                <div className="ml-3 shrink-0 text-white/70">
+                  {fmt(l.next_follow_up_at)}
+                </div>
               </li>
             ))}
           </ul>
@@ -104,7 +109,10 @@ export default function MessagesPage() {
 
   // Wallet
   const [balanceCents, setBalanceCents] = useState(0);
-  const balanceDollars = useMemo(() => (balanceCents / 100).toFixed(2), [balanceCents]);
+  const balanceDollars = useMemo(
+    () => (balanceCents / 100).toFixed(2),
+    [balanceCents]
+  );
 
   // Threads & conversation
   const [threads, setThreads] = useState([]); // [{partnerNumber, lastMessage, unread}]
@@ -133,7 +141,9 @@ export default function MessagesPage() {
     // Get latest messages (both directions), then group by counterparty number.
     const { data, error } = await supabase
       .from("messages")
-      .select("id, direction, to_number, from_number, body, status, created_at")
+      .select(
+        "id, direction, to_number, from_number, body, status, created_at"
+      )
       .eq("user_id", user.id)
       .order("created_at", { ascending: false })
       .limit(200);
@@ -162,7 +172,9 @@ export default function MessagesPage() {
     if (!user?.id || !number) return;
     const { data, error } = await supabase
       .from("messages")
-      .select("id, direction, to_number, from_number, body, status, created_at")
+      .select(
+        "id, direction, to_number, from_number, body, status, created_at"
+      )
       .eq("user_id", user.id)
       .or(`to_number.eq.${number},from_number.eq.${number}`)
       .order("created_at", { ascending: true })
@@ -171,7 +183,10 @@ export default function MessagesPage() {
     setConversation(data || []);
     // Scroll to bottom
     queueMicrotask(() => {
-      scrollerRef.current?.scrollTo({ top: scrollerRef.current.scrollHeight, behavior: "smooth" });
+      scrollerRef.current?.scrollTo({
+        top: scrollerRef.current.scrollHeight,
+        behavior: "smooth",
+      });
     });
   }
 
@@ -190,7 +205,12 @@ export default function MessagesPage() {
       .channel("messages_rt")
       .on(
         "postgres_changes",
-        { event: "*", schema: "public", table: "messages", filter: `user_id=eq.${user?.id || ""}` },
+        {
+          event: "*",
+          schema: "public",
+          table: "messages",
+          filter: `user_id=eq.${user?.id || ""}`,
+        },
         async () => {
           if (!mounted) return;
           await fetchThreads();
@@ -239,7 +259,10 @@ export default function MessagesPage() {
       }
       setText("");
       // optimistic scroll to bottom
-      scrollerRef.current?.scrollTo({ top: scrollerRef.current.scrollHeight, behavior: "smooth" });
+      scrollerRef.current?.scrollTo({
+        top: scrollerRef.current.scrollHeight,
+        behavior: "smooth",
+      });
       // wallet may have been debited (reserved) — refresh
       fetchWallet();
     } catch (e) {
@@ -313,7 +336,9 @@ export default function MessagesPage() {
           <div>Conversations</div>
           <button
             onClick={() => {
-              const v = prompt("Text a new number (E.164, e.g. +15551234567):");
+              const v = prompt(
+                "Text a new number (E.164, e.g. +15551234567):"
+              );
               if (v) setActiveNumber(v.trim());
             }}
             className="inline-flex items-center gap-1 rounded-md border border-white/15 bg-white/5 px-2 py-1 hover:bg-white/10"
@@ -333,11 +358,17 @@ export default function MessagesPage() {
                 onClick={() => setActiveNumber(t.partnerNumber)}
                 className={classNames(
                   "w-full rounded-xl p-3 text-left hover:bg-white/5",
-                  activeNumber === t.partnerNumber ? "bg-white/5 ring-1 ring-indigo-400/50" : ""
+                  activeNumber === t.partnerNumber
+                    ? "bg-white/5 ring-1 ring-indigo-400/50"
+                    : ""
                 )}
               >
-                <div className="text-sm font-medium">{formatPhone(t.partnerNumber)}</div>
-                <div className="truncate text-xs text-white/60">{t.lastMessage}</div>
+                <div className="text-sm font-medium">
+                  {formatPhone(t.partnerNumber)}
+                </div>
+                <div className="truncate text-xs text-white/60">
+                  {t.lastMessage}
+                </div>
               </button>
             ))
           )}
@@ -350,7 +381,9 @@ export default function MessagesPage() {
         <div className="flex items-center justify-between border-b border-white/10 p-3">
           <div className="text-sm">
             <div className="text-white/60">Chatting with</div>
-            <div className="font-semibold">{activeNumber ? formatPhone(activeNumber) : "—"}</div>
+            <div className="font-semibold">
+              {activeNumber ? formatPhone(activeNumber) : "—"}
+            </div>
           </div>
         </div>
 
@@ -358,12 +391,17 @@ export default function MessagesPage() {
         <div ref={scrollerRef} className="scrollbar-thin flex-1 overflow-y-auto p-4">
           {activeNumber ? (
             conversation.length === 0 ? (
-              <div className="grid h-full place-items-center text-sm text-white/50">No messages yet.</div>
+              <div className="grid h-full place-items-center text-sm text-white/50">
+                No messages yet.
+              </div>
             ) : (
               conversation.map((m) => (
                 <div
                   key={m.id}
-                  className={classNames("mb-2 flex", m.direction === "out" ? "justify-end" : "justify-start")}
+                  className={classNames(
+                    "mb-2 flex",
+                    m.direction === "out" ? "justify-end" : "justify-start"
+                  )}
                 >
                   <div
                     className={classNames(
@@ -376,7 +414,9 @@ export default function MessagesPage() {
                   >
                     <div>{m.body}</div>
                     {m.direction === "out" && (
-                      <div className="mt-1 text-[10px] uppercase tracking-wide text-white/50">{m.status}</div>
+                      <div className="mt-1 text-[10px] uppercase tracking-wide text-white/50">
+                        {m.status}
+                      </div>
                     )}
                   </div>
                 </div>
@@ -406,15 +446,22 @@ export default function MessagesPage() {
               className={classNames(
                 "inline-flex h-[44px] items-center gap-2 rounded-xl border px-4 font-medium",
                 "border-white/15 bg-white/5 hover:bg-white/10",
-                (!activeNumber || !text.trim() || sending || balanceCents <= 0) && "opacity-50 cursor-not-allowed"
+                (!activeNumber || !text.trim() || sending || balanceCents <= 0) &&
+                  "opacity-50 cursor-not-allowed"
               )}
             >
-              {sending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Send className="h-4 w-4" />}
+              {sending ? (
+                <Loader2 className="h-4 w-4 animate-spin" />
+              ) : (
+                <Send className="h-4 w-4" />
+              )}
               Send
             </button>
           </div>
           {balanceCents <= 0 && (
-            <div className="mt-2 text-xs text-amber-300/90">Your balance is $0. Add funds to send messages.</div>
+            <div className="mt-2 text-xs text-amber-300/90">
+              Your balance is $0. Add funds to send messages.
+            </div>
           )}
         </div>
       </section>
