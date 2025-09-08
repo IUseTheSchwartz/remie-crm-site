@@ -208,50 +208,23 @@ export default function PipelinePage() {
     updatePipelineServer(withStage).catch(()=>{});
   }
 
-  // ✅ FIX: write directly to Supabase (no owner filter)
+  // ✅ ID-only write to Supabase leads.next_follow_up_at
   async function setNextFollowUp(person, dateIso) {
     const withNext = { ...person, next_follow_up_at: dateIso || null };
     updatePerson(withNext);
     updatePipelineServer(withNext).catch(()=>{});
 
-    const payload = { next_follow_up_at: dateIso || null };
+    if (!person?.id) {
+      console.warn("Save follow-up: person.id is missing; cannot update Supabase row.");
+      return;
+    }
 
-    let updated = 0;
     try {
-      // 1) by id
-      if (person?.id) {
-        const { data, error } = await supabase
-          .from("leads")
-          .update(payload)
-          .eq("id", person.id)
-          .select("id"); // return updated rows
-        if (error) throw error;
-        updated = (data || []).length;
-      }
-      // 2) by email
-      if (!updated && person?.email) {
-        const { data, error } = await supabase
-          .from("leads")
-          .update(payload)
-          .eq("email", person.email)
-          .select("id");
-        if (error) throw error;
-        updated = (data || []).length;
-      }
-      // 3) by phone
-      if (!updated && person?.phone) {
-        const { data, error } = await supabase
-          .from("leads")
-          .update(payload)
-          .eq("phone", person.phone)
-          .select("id");
-        if (error) throw error;
-        updated = (data || []).length;
-      }
-
-      if (!updated) {
-        console.warn("Save follow-up: 0 rows updated. Check that the lead's id/email/phone match the Supabase row.");
-      }
+      const { error } = await supabase
+        .from("leads")
+        .update({ next_follow_up_at: dateIso || null })
+        .eq("id", person.id);
+      if (error) throw error;
     } catch (e) {
       console.error("Supabase follow-up update failed:", e?.message || e);
     }
