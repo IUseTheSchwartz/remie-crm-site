@@ -147,8 +147,8 @@ export default function LeadsPage() {
   const [tab, setTab] = useState("clients"); // 'clients' | 'sold'
   const [leads, setLeads] = useState([]);
   const [clients, setClients] = useState([]);
-  const [selected, setSelected] = useState(null);       // for Mark-as-SOLD drawer
-  const [viewSelected, setViewSelected] = useState(null); // for read-only policy drawer
+  const [selected, setSelected] = useState(null);         // Mark-as-SOLD drawer
+  const [viewSelected, setViewSelected] = useState(null); // read-only policy drawer
   const [filter, setFilter] = useState("");
 
   const [serverMsg, setServerMsg] = useState("");
@@ -389,13 +389,6 @@ export default function LeadsPage() {
         name: soldPayload.name || base.name || "",
         phone: soldPayload.phone || base.phone || "",
         email: soldPayload.email || base.email || "",
-        // address kept in shape but not edited in drawer
-        address: {
-          street: soldPayload.street || "",
-          city: soldPayload.city || "",
-          state: soldPayload.state || "",
-          zip: soldPayload.zip || "",
-        }
       },
       name: soldPayload.name || base.name || "",
       phone: soldPayload.phone || base.phone || "",
@@ -431,7 +424,7 @@ export default function LeadsPage() {
         faceAmount: updated.sold?.faceAmount,
         monthlyPayment: updated.sold?.monthlyPayment,
         startDate: updated.sold?.startDate,
-        address: updated.sold?.address,
+        address: undefined, // no address data
       });
     }
 
@@ -477,9 +470,7 @@ export default function LeadsPage() {
     setSelected(null);
   }
 
-  // Sold tab should use the SAME columns as Leads (no policy columns).
-  const showPolicyCols = false;
-
+  // Sold tab uses SAME columns as Leads (no policy columns visible)
   const baseHeaders = ["Name","Phone","Email","DOB","State","Beneficiary","Beneficiary Name","Gender","Military Branch","Stage"];
   const colCount = baseHeaders.length + 1; // + Actions
 
@@ -670,7 +661,6 @@ function Td({ children }) { return <td className="px-3 py-2">{children}</td>; }
 /* ------------------------------ Policy Viewer ------------------------------ */
 function PolicyViewer({ person, onClose }) {
   const s = person?.sold || {};
-  const addr = s.address || {};
   return (
     <div className="fixed inset-0 z-50 grid bg-black/60 p-4">
       <div className="relative m-auto w-full max-w-3xl rounded-2xl border border-white/15 bg-neutral-950 p-5">
@@ -680,17 +670,13 @@ function PolicyViewer({ person, onClose }) {
           <Field label="Name"><div className="ro">{s.name || person?.name || "—"}</div></Field>
           <Field label="Phone"><div className="ro">{s.phone || person?.phone || "—"}</div></Field>
           <Field label="Email"><div className="ro break-all">{s.email || person?.email || "—"}</div></Field>
+
           <Field label="Carrier"><div className="ro">{s.carrier || "—"}</div></Field>
           <Field label="Face Amount"><div className="ro">{s.faceAmount || "—"}</div></Field>
-          <Field label="Premium"><div className="ro">{s.premium || "—"}</div></Field>
+          <Field label="AP (Annual premium)"><div className="ro">{s.premium || "—"}</div></Field>
           <Field label="Monthly Payment"><div className="ro">{s.monthlyPayment || "—"}</div></Field>
           <Field label="Policy #"><div className="ro">{s.policyNumber || "—"}</div></Field>
           <Field label="Start Date"><div className="ro">{s.startDate || "—"}</div></Field>
-
-          <Field label="Street"><div className="ro">{addr.street || "—"}</div></Field>
-          <Field label="City"><div className="ro">{addr.city || "—"}</div></Field>
-          <Field label="State"><div className="ro">{addr.state || "—"}</div></Field>
-          <Field label="ZIP"><div className="ro">{addr.zip || "—"}</div></Field>
         </div>
 
         <div className="mt-4 flex items-center justify-end">
@@ -720,7 +706,7 @@ function SoldDrawer({ initial, allClients, onClose, onSave }) {
     monthlyPayment: initial?.sold?.monthlyPayment || "",
     policyNumber: initial?.sold?.policyNumber || "",
     startDate: initial?.sold?.startDate || "",
-    // Automations (welcome text hidden for now)
+    // Automations
     sendWelcomeText: false,
     sendPolicyEmailOrMail: true,
     enableBdayHolidayTexts: true,
@@ -751,6 +737,7 @@ function SoldDrawer({ initial, allClients, onClose, onSave }) {
           <button onClick={onClose} className="rounded-lg px-2 py-1 text-sm hover:bg-white/10">Close</button>
         </div>
 
+        {/* Quick pick existing lead */}
         <div className="mb-3">
           <label className="text-xs text-white/70">Select existing lead (optional)</label>
           <select
@@ -841,7 +828,7 @@ function SoldDrawer({ initial, allClients, onClose, onSave }) {
                 <div className="flex-1">
                   <div className="text-sm">Bday Texts + Holiday Texts</div>
                   <p className="mt-1 text-xs text-white/50">
-                    Opt-in to automated birthday & holiday greetings (visual only for now).
+                    Opt-in to automated birthday & holiday greetings.
                   </p>
                 </div>
               </label>
