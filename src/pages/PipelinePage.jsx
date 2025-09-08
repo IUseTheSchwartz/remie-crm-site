@@ -1,5 +1,5 @@
 // File: src/pages/PipelinePage.jsx
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   Phone, Mail, Clock, StickyNote, Search, Filter,
   CheckCircle2, ChevronRight, X, Trash2
@@ -208,89 +208,55 @@ export default function PipelinePage() {
     updatePipelineServer(withStage).catch(()=>{});
   }
 
-  /**
-   * Resolve the real Supabase row id (UUID) for this lead.
-   * 1) If person.id exists and row is found -> return it.
-   * 2) Else try by email (scoped to user_id).
-   * 3) Else try by phone (scoped to user_id).
-   * Returns null if nothing matches.
-   */
+  /** Resolve the real Supabase UUID id for this lead (by id, then email/phone under user_id). */
   async function resolveLeadSupabaseId(person) {
     const pid = person?.id || null;
     const email = (person?.email || "").trim();
     const phone = (person?.phone || "").trim();
 
-    // Check direct id first
     if (pid) {
-      const { data, error } = await supabase
-        .from("leads")
-        .select("id")
-        .eq("id", pid)
-        .limit(1)
-        .maybeSingle();
-      if (!error && data?.id) return data.id;
+      const { data } = await supabase.from("leads").select("id").eq("id", pid).limit(1).maybeSingle();
+      if (data?.id) return data.id;
     }
 
-    // Need current user for scoped lookup
     let uid = null;
     try {
       const { data: ses } = await supabase.auth.getUser();
       uid = ses?.user?.id || null;
     } catch {}
 
-    // Try by email under this user
     if (uid && email) {
-      const { data, error } = await supabase
-        .from("leads")
-        .select("id")
-        .eq("user_id", uid)
-        .eq("email", email)
-        .limit(1)
-        .maybeSingle();
-      if (!error && data?.id) return data.id;
+      const { data } = await supabase.from("leads").select("id").eq("user_id", uid).eq("email", email).limit(1).maybeSingle();
+      if (data?.id) return data.id;
     }
-
-    // Try by phone under this user
     if (uid && phone) {
-      const { data, error } = await supabase
-        .from("leads")
-        .select("id")
-        .eq("user_id", uid)
-        .eq("phone", phone)
-        .limit(1)
-        .maybeSingle();
-      if (!error && data?.id) return data.id;
+      const { data } = await supabase.from("leads").select("id").eq("user_id", uid).eq("phone", phone).limit(1).maybeSingle();
+      if (data?.id) return data.id;
     }
-
     return null;
   }
 
-  // ✅ Save follow-up using the *real* Supabase UUID id
+  // Save follow-up using the real Supabase UUID id
   async function setNextFollowUp(person, dateIso) {
     const withNext = { ...person, next_follow_up_at: dateIso || null };
 
-    // Update local state & your existing server helper
     updatePerson(withNext);
     updatePipelineServer(withNext).catch(()=>{});
 
     try {
       const supaId = await resolveLeadSupabaseId(withNext);
       if (!supaId) {
-        console.warn("Save follow-up: could not resolve Supabase row id for this lead.");
+        console.warn("Save follow-up: no matching Supabase row id.");
         return;
       }
-
       const { error } = await supabase
         .from("leads")
         .update({ next_follow_up_at: dateIso || null })
         .eq("id", supaId);
-
       if (error) {
         console.error("Supabase follow-up update failed:", error.message);
         return;
       }
-
-      // If we discovered the true UUID, stitch it into local so future saves match immediately.
       if (withNext.id !== supaId) {
         withNext.id = supaId;
         updatePerson(withNext);
@@ -483,6 +449,11 @@ function Drawer({
   person, onClose, onSetStage, onUpdate, onNextFollowUp,
   notes, onAddNote, onDeleteNote, onPinNote
 }) {
+  // Keep state for initial value so the UI shows existing follow-up…
+  const [followPick, setFollowPick] = useState(toLocalInputValue(person?.next_follow_up_at || ""));
+  // …but also read the DOM value at click time to avoid any state sync issues.
+  const followRef = useRef(null);
+
   const [noteText, setNoteText] = useState("");
   const [quote, setQuote] = useState({
     carrier: person?.pipeline?.quote?.carrier || "",
@@ -490,7 +461,6 @@ function Drawer({
     premium: person?.pipeline?.quote?.premium || "",
   });
   const [pendingReason, setPendingReason] = useState(person?.pipeline?.pending?.reason || "");
-  const [followPick, setFollowPick] = useState(toLocalInputValue(person?.next_follow_up_at || ""));
   const [selectedStage, setSelectedStage] = useState(person.stage);
 
   const StageChip = ({ id, children }) => (
@@ -559,6 +529,7 @@ function Drawer({
         <div className="flex items-center gap-2 border-b border-white/10 px-4 py-3">
           <div className="text-xs text-white/60">Next follow-up:</div>
           <input
+            ref={followRef}
             type="datetime-local"
             className="rounded-lg border border-white/10 bg-black/40 px-2 py-1 text-xs outline-none focus:ring-2 focus:ring-indigo-500/40"
             value={followPick}
@@ -568,7 +539,12 @@ function Drawer({
         <div className="flex justify-end gap-2 border-b border-white/10 px-4 pb-3 pt-1">
           <button
             onClick={() => {
-              const iso = followPick ? new Date(followPick).toISOString() : null;
+              const raw = followRef.current?.value || followPick || "";
+              const iso = raw ? new Date(raw).toISOString() : null;
+
+              // debug one-liner so you can see what's being captured
+              console.log("Save follow-up click", { raw, iso });
+
               onNextFollowUp(person, iso);
               const msg = iso
                 ? `Follow-up scheduled for ${fmtDateTime(iso)}.`
