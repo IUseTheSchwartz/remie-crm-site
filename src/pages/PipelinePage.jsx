@@ -208,25 +208,95 @@ export default function PipelinePage() {
     updatePipelineServer(withStage).catch(()=>{});
   }
 
-  // ✅ ID-only write to Supabase leads.next_follow_up_at
+  /**
+   * Resolve the real Supabase row id (UUID) for this lead.
+   * 1) If person.id exists and row is found -> return it.
+   * 2) Else try by email (scoped to user_id).
+   * 3) Else try by phone (scoped to user_id).
+   * Returns null if nothing matches.
+   */
+  async function resolveLeadSupabaseId(person) {
+    const pid = person?.id || null;
+    const email = (person?.email || "").trim();
+    const phone = (person?.phone || "").trim();
+
+    // Check direct id first
+    if (pid) {
+      const { data, error } = await supabase
+        .from("leads")
+        .select("id")
+        .eq("id", pid)
+        .limit(1)
+        .maybeSingle();
+      if (!error && data?.id) return data.id;
+    }
+
+    // Need current user for scoped lookup
+    let uid = null;
+    try {
+      const { data: ses } = await supabase.auth.getUser();
+      uid = ses?.user?.id || null;
+    } catch {}
+
+    // Try by email under this user
+    if (uid && email) {
+      const { data, error } = await supabase
+        .from("leads")
+        .select("id")
+        .eq("user_id", uid)
+        .eq("email", email)
+        .limit(1)
+        .maybeSingle();
+      if (!error && data?.id) return data.id;
+    }
+
+    // Try by phone under this user
+    if (uid && phone) {
+      const { data, error } = await supabase
+        .from("leads")
+        .select("id")
+        .eq("user_id", uid)
+        .eq("phone", phone)
+        .limit(1)
+        .maybeSingle();
+      if (!error && data?.id) return data.id;
+    }
+
+    return null;
+  }
+
+  // ✅ Save follow-up using the *real* Supabase UUID id
   async function setNextFollowUp(person, dateIso) {
     const withNext = { ...person, next_follow_up_at: dateIso || null };
+
+    // Update local state & your existing server helper
     updatePerson(withNext);
     updatePipelineServer(withNext).catch(()=>{});
 
-    if (!person?.id) {
-      console.warn("Save follow-up: person.id is missing; cannot update Supabase row.");
-      return;
-    }
-
     try {
+      const supaId = await resolveLeadSupabaseId(withNext);
+      if (!supaId) {
+        console.warn("Save follow-up: could not resolve Supabase row id for this lead.");
+        return;
+      }
+
       const { error } = await supabase
         .from("leads")
         .update({ next_follow_up_at: dateIso || null })
-        .eq("id", person.id);
-      if (error) throw error;
+        .eq("id", supaId);
+
+      if (error) {
+        console.error("Supabase follow-up update failed:", error.message);
+        return;
+      }
+
+      // If we discovered the true UUID, stitch it into local so future saves match immediately.
+      if (withNext.id !== supaId) {
+        withNext.id = supaId;
+        updatePerson(withNext);
+      }
     } catch (e) {
-      console.error("Supabase follow-up update failed:", e?.message || e);
+      console.error("Follow-up save error:", e?.message || e);
     }
   }
 
