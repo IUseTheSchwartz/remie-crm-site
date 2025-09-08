@@ -280,71 +280,61 @@ export default function PipelinePage() {
     return null;
   }
 
+  /**
+   * Save follow-up using the real Supabase UUID id.
+   * First try with `user_id = auth.uid()` (RLS-friendly). If 0 rows updated,
+   * retry without the user_id filter to detect a mismatch.
+   */
   async function setNextFollowUp(person, dateIso) {
     const withNext = { ...person, next_follow_up_at: dateIso || null };
-    updatePerson(withNext);
 
-    const debug = {
-      uid: null, supaId: null, iso: dateIso || null,
-      rowsUpdated1: 0, rowsUpdated2: 0,
-      serverVal: null, rowUserId: null, error: null,
-    };
+    // Update local cache/UI immediately so you see the change
+    updatePerson(withNext);
 
     try {
       const { data: ses } = await supabase.auth.getSession();
-      debug.uid = ses?.session?.user?.id || null;
+      const uid = ses?.session?.user?.id || null;
 
       const supaId = await resolveLeadSupabaseId(withNext);
-      debug.supaId = supaId;
-      if (!supaId) { debug.error = "Could not resolve row id for this lead."; return debug; }
+      if (!supaId) return;
 
+      // Attempt #1: with user_id filter (common RLS policy)
       let resp = await supabase
         .from("leads")
         .update({ next_follow_up_at: dateIso || null })
         .eq("id", supaId)
-        .eq("user_id", debug.uid)
-        .select("id,user_id,next_follow_up_at");
+        .eq("user_id", uid)
+        .select("id,next_follow_up_at");
 
-      if (resp.error) { debug.error = resp.error.message; return debug; }
-      debug.rowsUpdated1 = resp.data?.length || 0;
-      if (debug.rowsUpdated1 > 0) {
-        debug.serverVal = resp.data[0]?.next_follow_up_at || null;
-        debug.rowUserId = resp.data[0]?.user_id || null;
-        updatePerson({ ...withNext, id: supaId, next_follow_up_at: debug.serverVal });
-        return debug;
+      if (resp.error) return;
+
+      if (resp.data?.length) {
+        const serverVal = resp.data[0]?.next_follow_up_at || null;
+        updatePerson({ ...withNext, id: supaId, next_follow_up_at: serverVal });
+        return;
       }
 
+      // Attempt #2: retry without user_id filter (diagnostic)
       resp = await supabase
         .from("leads")
         .update({ next_follow_up_at: dateIso || null })
         .eq("id", supaId)
-        .select("id,user_id,next_follow_up_at");
+        .select("id,next_follow_up_at");
 
-      if (resp.error) { debug.error = resp.error.message; return debug; }
-      debug.rowsUpdated2 = resp.data?.length || 0;
-      if (debug.rowsUpdated2 > 0) {
-        debug.serverVal = resp.data[0]?.next_follow_up_at || null;
-        debug.rowUserId = resp.data[0]?.user_id || null;
-        updatePerson({ ...withNext, id: supaId, next_follow_up_at: debug.serverVal });
-      } else {
-        const check = await supabase
-          .from("leads")
-          .select("id,user_id,next_follow_up_at")
-          .eq("id", supaId)
-          .maybeSingle();
-        if (check.data) {
-          debug.rowUserId = check.data.user_id || null;
-          debug.serverVal = check.data.next_follow_up_at || null;
-        }
+      if (resp.error) return;
+
+      if (resp.data?.length) {
+        const serverVal = resp.data[0]?.next_follow_up_at || null;
+        updatePerson({ ...withNext, id: supaId, next_follow_up_at: serverVal });
       }
-      return debug;
-    } catch (e) {
-      debug.error = e?.message || String(e);
-      return debug;
+    } catch {
+      // swallow; UI already updated
     }
   }
 
   function openCard(p) { setSelected(p); }
+
+  /* ---------------------------------- Notes ---------------------------------- */
 
   function notesFor(id) {
     return (notesMap[id] || []).slice().sort((a,b) => new Date(b.created_at) - new Date(a.created_at));
@@ -370,6 +360,8 @@ export default function PipelinePage() {
     saveNotesMap(m);
     setNotesMap(m);
   }
+
+  /* --------------------------------- Render ---------------------------------- */
 
   return (
     <div className="space-y-4">
@@ -525,7 +517,6 @@ function Drawer({
 }) {
   // Text input + ref so we always read exactly what you typed
   const followRef = useRef(null);
-  const [debugInfo, setDebugInfo] = useState(null);
 
   const [noteText, setNoteText] = useState("");
   const [quote, setQuote] = useState({
@@ -609,24 +600,14 @@ function Drawer({
             defaultValue={toLocalHuman(person?.next_follow_up_at || "")}
           />
         </div>
-        <div className="flex items-center justify-between border-b border-white/10 px-4 pb-3 pt-1">
-          <div className="text-[11px] text-white/50">
-            {debugInfo ? (
-              <span>
-                <b>Debug:</b> raw={debugInfo.raw || "—"} | iso={debugInfo.iso || "—"} | uid={debugInfo.uid || "—"} | rowId={debugInfo.supaId || "—"} | upd1={debugInfo.rowsUpdated1} | upd2={debugInfo.rowsUpdated2} | serverVal={debugInfo.serverVal ? fmtDateTime(debugInfo.serverVal) : "—"} {debugInfo.rowUserId ? `| row.user_id=${debugInfo.rowUserId}` : ""} {debugInfo.error ? `| error=${debugInfo.error}` : ""}
-              </span>
-            ) : (
-              <span className="opacity-60">Debug status will appear here after you save.</span>
-            )}
-          </div>
+        <div className="flex justify-end border-b border-white/10 px-4 pb-3 pt-1">
           <button
             type="button"
             onClick={async () => {
               const raw = followRef.current?.value || "";
               const iso = parseFollowupRawToISO(raw);
 
-              const info = await onNextFollowUp(person, iso);
-              setDebugInfo({ raw, ...info });
+              await onNextFollowUp(person, iso);
 
               const msg = iso
                 ? `Follow-up scheduled for ${fmtDateTime(iso)}.`
