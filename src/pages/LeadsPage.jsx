@@ -389,7 +389,7 @@ export default function LeadsPage() {
         name: soldPayload.name || base.name || "",
         phone: soldPayload.phone || base.phone || "",
         email: soldPayload.email || base.email || "",
-        // address intentionally omitted from drawer; may remain empty
+        // address kept in shape but not edited in drawer
         address: {
           street: soldPayload.street || "",
           city: soldPayload.city || "",
@@ -477,10 +477,11 @@ export default function LeadsPage() {
     setSelected(null);
   }
 
-  const showPolicyCols = tab === "sold";
+  // Sold tab should use the SAME columns as Leads (no policy columns).
+  const showPolicyCols = false;
+
   const baseHeaders = ["Name","Phone","Email","DOB","State","Beneficiary","Beneficiary Name","Gender","Military Branch","Stage"];
-  const policyHeaders = ["Carrier","Face","Premium","Monthly","Policy #","Start"];
-  const colCount = baseHeaders.length + (showPolicyCols ? policyHeaders.length : 0) + 1; // + Actions
+  const colCount = baseHeaders.length + 1; // + Actions
 
   return (
     <div className="space-y-6 min-w-0 overflow-x-hidden">
@@ -569,7 +570,6 @@ export default function LeadsPage() {
           <thead className="bg-white/[0.04] text-white/70">
             <tr>
               {baseHeaders.map(h => <Th key={h}>{h}</Th>)}
-              {showPolicyCols && policyHeaders.map(h => <Th key={h}>{h}</Th>)}
               <Th>Actions</Th>
             </tr>
           </thead>
@@ -601,18 +601,6 @@ export default function LeadsPage() {
                       </span>
                     )}
                   </Td>
-
-                  {/* Policy columns only on SOLD tab */}
-                  {showPolicyCols && (
-                    <>
-                      <Td>{p.sold?.carrier || "—"}</Td>
-                      <Td>{p.sold?.faceAmount || "—"}</Td>
-                      <Td>{p.sold?.premium || "—"}</Td>
-                      <Td>{p.sold?.monthlyPayment || "—"}</Td>
-                      <Td>{p.sold?.policyNumber || "—"}</Td>
-                      <Td>{p.sold?.startDate || "—"}</Td>
-                    </>
-                  )}
 
                   <Td>
                     <div className="flex items-center gap-2">
