@@ -10,7 +10,7 @@ import {
   loadClients, saveClients,
   normalizePerson
 } from "../lib/storage.js";
-import { upsertLeadServer, updatePipelineServer } from "../lib/supabaseLeads.js";
+import { updatePipelineServer } from "../lib/supabaseLeads.js";
 import { supabase } from "../lib/supabaseClient.js";
 
 /* ---------------------------------- Config --------------------------------- */
@@ -236,49 +236,102 @@ export default function PipelinePage() {
     return null;
   }
 
-  // Save follow-up using the real Supabase UUID id and user_id (for common RLS)
+  /**
+   * Save follow-up using the real Supabase UUID id.
+   * First try with `user_id = auth.uid()` (RLS-friendly). If 0 rows updated,
+   * retry without the user_id filter to detect a mismatch.
+   * Returns a debug object consumed by the Drawer to show status inline.
+   */
   async function setNextFollowUp(person, dateIso) {
     const withNext = { ...person, next_follow_up_at: dateIso || null };
 
-    // Persist to Supabase first (avoid any helper overwriting this column)
+    // Update local cache/UI immediately so you see the change
+    updatePerson(withNext);
+
+    const debug = {
+      uid: null,
+      supaId: null,
+      iso: dateIso || null,
+      rowsUpdated1: 0,
+      rowsUpdated2: 0,
+      serverVal: null,
+      rowUserId: null,
+      error: null,
+    };
+
     try {
       const { data: ses } = await supabase.auth.getSession();
-      const uid = ses?.session?.user?.id || null;
-      if (!uid) {
-        console.error("[follow-up] No logged-in user; cannot satisfy RLS.");
-      }
+      debug.uid = ses?.session?.user?.id || null;
 
       const supaId = await resolveLeadSupabaseId(withNext);
-      if (!supaId) {
-        console.warn("[follow-up] Could not resolve Supabase row id for lead.");
-      } else {
-        const { data, error } = await supabase
-          .from("leads")
-          .update({ next_follow_up_at: dateIso || null })
-          .eq("id", supaId)
-          .eq("user_id", uid)
-          .select("id,next_follow_up_at");
+      debug.supaId = supaId;
 
-        if (error) {
-          console.error("[follow-up] Supabase update error:", error.message);
-        } else {
-          console.log("[follow-up] updated rows:", data?.length || 0, data);
-          if (data?.length) {
-            const serverVal = data[0].next_follow_up_at || null;
-            // stitch back the true UUID & server value
-            withNext.id = supaId;
-            withNext.next_follow_up_at = serverVal;
-          } else {
-            console.warn("[follow-up] 0 rows updated. Check id & user_id on the row.");
-          }
+      if (!supaId) {
+        debug.error = "Could not resolve row id for this lead.";
+        return debug;
+      }
+      if (!debug.uid) {
+        // you might be using anon key without a signed-in user
+        // RLS will typically block updates in this case
+        // we'll still try without user_id filter to show what happens
+      }
+
+      // Attempt #1: with user_id filter (common RLS policy)
+      let resp = await supabase
+        .from("leads")
+        .update({ next_follow_up_at: dateIso || null })
+        .eq("id", supaId)
+        .eq("user_id", debug.uid)
+        .select("id,user_id,next_follow_up_at");
+
+      if (resp.error) {
+        debug.error = resp.error.message;
+        return debug;
+      }
+      debug.rowsUpdated1 = resp.data?.length || 0;
+      if (debug.rowsUpdated1 > 0) {
+        debug.serverVal = resp.data[0]?.next_follow_up_at || null;
+        debug.rowUserId = resp.data[0]?.user_id || null;
+        // stitch back real UUID & confirmed value
+        updatePerson({ ...withNext, id: supaId, next_follow_up_at: debug.serverVal });
+        return debug;
+      }
+
+      // Attempt #2: retry without user_id filter (to diagnose mismatch)
+      resp = await supabase
+        .from("leads")
+        .update({ next_follow_up_at: dateIso || null })
+        .eq("id", supaId)
+        .select("id,user_id,next_follow_up_at");
+
+      if (resp.error) {
+        debug.error = resp.error.message;
+        return debug;
+      }
+      debug.rowsUpdated2 = resp.data?.length || 0;
+      if (debug.rowsUpdated2 > 0) {
+        debug.serverVal = resp.data[0]?.next_follow_up_at || null;
+        debug.rowUserId = resp.data[0]?.user_id || null;
+        updatePerson({ ...withNext, id: supaId, next_follow_up_at: debug.serverVal });
+      } else {
+        // 0 rows even without user_id filter -> id not found or RLS blocked
+        // fetch the row to see user_id (if allowed)
+        const check = await supabase
+          .from("leads")
+          .select("id,user_id,next_follow_up_at")
+          .eq("id", supaId)
+          .maybeSingle();
+        if (check.data) {
+          debug.rowUserId = check.data.user_id || null;
+          debug.serverVal = check.data.next_follow_up_at || null;
         }
       }
-    } catch (e) {
-      console.error("[follow-up] unexpected error:", e?.message || e);
-    }
 
-    // Update local cache/UI
-    updatePerson(withNext);
+      return debug;
+    } catch (e) {
+      debug.error = e?.message || String(e);
+      return debug;
+    }
   }
 
   function openCard(p) { setSelected(p); }
@@ -467,6 +520,9 @@ function Drawer({
   // Uncontrolled input + ref so we always read the REAL value the user picked
   const followRef = useRef(null);
 
+  // little inline debug state so you can see what's happening without DevTools
+  const [debugInfo, setDebugInfo] = useState(null);
+
   const [noteText, setNoteText] = useState("");
   const [quote, setQuote] = useState({
     carrier: person?.pipeline?.quote?.carrier || "",
@@ -548,16 +604,25 @@ function Drawer({
             defaultValue={toLocalInputValue(person?.next_follow_up_at || "")}
           />
         </div>
-        <div className="flex justify-end gap-2 border-b border-white/10 px-4 pb-3 pt-1">
+        <div className="flex items-center justify-between border-b border-white/10 px-4 pb-3 pt-1">
+          <div className="text-[11px] text-white/50">
+            {debugInfo ? (
+              <span>
+                <b>Debug:</b> uid={debugInfo.uid || "—"} | rowId={debugInfo.supaId || "—"} | upd1={debugInfo.rowsUpdated1} | upd2={debugInfo.rowsUpdated2} | serverVal={debugInfo.serverVal ? fmtDateTime(debugInfo.serverVal) : "—"} {debugInfo.rowUserId ? `| row.user_id=${debugInfo.rowUserId}` : ""} {debugInfo.error ? `| error=${debugInfo.error}` : ""}
+              </span>
+            ) : (
+              <span className="opacity-60">Debug status will appear here after you save.</span>
+            )}
+          </div>
           <button
             type="button"
-            onClick={() => {
+            onClick={async () => {
               const raw = followRef.current?.value || "";
               const iso = raw ? new Date(raw).toISOString() : null;
 
-              console.log("[follow-up] click", { raw, iso });
+              const info = await onNextFollowUp(person, iso);
+              setDebugInfo(info);
 
-              onNextFollowUp(person, iso);
               const msg = iso
                 ? `Follow-up scheduled for ${fmtDateTime(iso)}.`
                 : "Next follow-up cleared.";
