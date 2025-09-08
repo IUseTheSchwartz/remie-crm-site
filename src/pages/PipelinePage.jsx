@@ -11,6 +11,7 @@ import {
   normalizePerson
 } from "../lib/storage.js";
 import { upsertLeadServer, updatePipelineServer } from "../lib/supabaseLeads.js";
+import { supabase } from "../lib/supabaseClient.js"; // ✅ ADDED: direct write for follow-up
 
 /* ---------------------------------- Config --------------------------------- */
 
@@ -208,10 +209,30 @@ export default function PipelinePage() {
     updatePipelineServer(withStage).catch(()=>{});
   }
 
-  function setNextFollowUp(person, dateIso) {
+  async function setNextFollowUp(person, dateIso) {
     const withNext = { ...person, next_follow_up_at: dateIso || null };
     updatePerson(withNext);
+
+    // Keep existing server path
     updatePipelineServer(withNext).catch(()=>{});
+
+    // ✅ NEW: explicit Supabase write to leads.next_follow_up_at
+    try {
+      const payload = { next_follow_up_at: dateIso || null };
+
+      // Prefer id; if missing, fall back to email/phone
+      const q = supabase.from("leads").update(payload);
+      if (person?.id) {
+        await q.eq("id", person.id);
+      } else if (person?.email || person?.phone) {
+        await q.or([
+          person?.email ? `email.eq.${person.email}` : null,
+          person?.phone ? `phone.eq.${person.phone}` : null,
+        ].filter(Boolean).join(","));
+      }
+    } catch (_) {
+      // swallow to keep UI responsive; local state already updated
+    }
   }
 
   function openCard(p) { setSelected(p); }
