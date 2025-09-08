@@ -4,7 +4,77 @@ import { supabase } from "../lib/supabaseClient.js";
 import { useAuth } from "../auth.jsx";
 import { Send, CreditCard, Plus, Loader2 } from "lucide-react";
 
-// ---- Helpers ---------------------------------------------------------------
+/* ---------------- Upcoming follow-ups (Pipeline) ---------------- */
+
+function fmt(dt) {
+  try {
+    const d = new Date(dt);
+    return `${d.toLocaleDateString()} ${d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}`;
+  } catch { return "—"; }
+}
+function leadLabel(l) {
+  return l.phone || l.email || "Lead";
+}
+
+function UpcomingFollowUps() {
+  const { user } = useAuth();
+  const [items, setItems] = useState([]);
+  const [error, setError] = useState(null);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    if (!user?.id) return;
+    let active = true;
+    (async () => {
+      setLoading(true);
+      setError(null);
+      const { data, error } = await supabase
+        .from("leads")
+        .select("id,next_follow_up_at,phone,email") // ← only safe, existing columns
+        .eq("user_id", user.id)
+        .not("next_follow_up_at", "is", null)
+        .gte("next_follow_up_at", new Date().toISOString())
+        .order("next_follow_up_at", { ascending: true })
+        .limit(25);
+      if (!active) return;
+      if (error) setError(error.message);
+      else setItems(data || []);
+      setLoading(false);
+    })();
+    return () => { active = false; };
+  }, [user?.id]);
+
+  return (
+    <section className="mx-2 mt-2 rounded-2xl border border-white/10 bg-white/[0.03]">
+      <div className="border-b border-white/10 px-3 py-2 text-sm font-medium">
+        Upcoming follow-ups (Pipeline)
+      </div>
+      <div className="p-3 text-sm">
+        {loading ? (
+          <div className="text-white/60">Loading…</div>
+        ) : error ? (
+          <div className="text-rose-400">Could not load follow-ups. {error}</div>
+        ) : items.length === 0 ? (
+          <div className="text-white/60">No upcoming follow-ups.</div>
+        ) : (
+          <ul className="space-y-2">
+            {items.map((l) => (
+              <li
+                key={l.id}
+                className="flex items-center justify-between rounded-lg border border-white/10 bg-black/30 px-3 py-2"
+              >
+                <div className="truncate">{leadLabel(l)}</div>
+                <div className="ml-3 shrink-0 text-white/70">{fmt(l.next_follow_up_at)}</div>
+              </li>
+            ))}
+          </ul>
+        )}
+      </div>
+    </section>
+  );
+}
+
+/* ---------------- Helpers ---------------- */
 
 function formatPhone(p) {
   if (!p) return "";
@@ -22,7 +92,7 @@ function classNames(...xs) {
   return xs.filter(Boolean).join(" ");
 }
 
-// ---- Main page -------------------------------------------------------------
+/* ---------------- Main page ---------------- */
 
 export default function MessagesPage() {
   const { user } = useAuth();
@@ -39,10 +109,10 @@ export default function MessagesPage() {
 
   // Compose
   const [text, setText] = useState("");
-  const [sending, setSending] = useState(false);
+  ￼const [sending, setSending] = useState(false);
   const scrollerRef = useRef(null);
 
-  // ---------- Fetchers ----------
+  /* ---------- Fetchers ---------- */
 
   async function fetchWallet() {
     if (!user?.id) return;
@@ -68,8 +138,7 @@ export default function MessagesPage() {
     const seen = new Set();
     const grouped = [];
     for (const m of data) {
-      const partner =
-        m.direction === "out" ? m.to_number : m.from_number;
+      const partner = m.direction === "out" ? m.to_number : m.from_number;
       if (!partner || seen.has(partner)) continue;
       seen.add(partner);
       grouped.push({
@@ -102,7 +171,7 @@ export default function MessagesPage() {
     });
   }
 
-  // ---------- Effects ----------
+  /* ---------- Effects ---------- */
 
   useEffect(() => {
     let mounted = true;
@@ -138,7 +207,7 @@ export default function MessagesPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeNumber]);
 
-  // ---------- Actions ----------
+  /* ---------- Actions ---------- */
 
   async function handleSend() {
     if (!text.trim() || !activeNumber) return;
@@ -190,7 +259,7 @@ export default function MessagesPage() {
     }
   }
 
-  // ---------- UI ----------
+  /* ---------- UI ---------- */
 
   if (loading) {
     return (
@@ -204,8 +273,9 @@ export default function MessagesPage() {
 
   return (
     <div className="grid h-[calc(100vh-140px)] grid-cols-1 gap-4 md:grid-cols-[320px_1fr]">
-      {/* Left: threads */}
+      {/* Left: threads + follow-ups */}
       <aside className="flex flex-col rounded-2xl border border-white/10 bg-white/[0.03]">
+        {/* Wallet */}
         <div className="flex items-center justify-between border-b border-white/10 p-3">
           <div className="text-sm">
             <div className="text-white/60">Text Balance</div>
@@ -229,6 +299,10 @@ export default function MessagesPage() {
           </div>
         </div>
 
+        {/* Follow-ups panel */}
+        <UpcomingFollowUps />
+
+        {/* Threads header */}
         <div className="flex items-center justify-between px-3 pt-2 text-xs text-white/60">
           <div>Conversations</div>
           <button
@@ -242,6 +316,7 @@ export default function MessagesPage() {
           </button>
         </div>
 
+        {/* Threads list */}
         <div className="scrollbar-thin mt-2 flex-1 overflow-y-auto px-2 pb-2">
           {threads.length === 0 ? (
             <div className="p-3 text-xs text-white/50">No conversations yet.</div>
