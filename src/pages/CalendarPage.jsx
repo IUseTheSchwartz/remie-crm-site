@@ -28,7 +28,6 @@ export default function CalendarPage() {
   };
 
   const pickFollowUpDate = (row) => {
-    // Try common column names in priority order; add more if your schema differs.
     const cand =
       row?.next_follow_up_at ||
       row?.next_followup_at ||
@@ -41,7 +40,7 @@ export default function CalendarPage() {
   };
 
   // ---------------------------
-  // Load current user (shared)
+  // Load current user
   // ---------------------------
   useEffect(() => {
     let cancel = false;
@@ -65,7 +64,7 @@ export default function CalendarPage() {
   }, []);
 
   // ---------------------------
-  // Load Calendly events (unchanged logic)
+  // Load Calendly events
   // ---------------------------
   useEffect(() => {
     if (!userId) return;
@@ -100,7 +99,7 @@ export default function CalendarPage() {
   }, [userId]);
 
   // ---------------------------
-  // Load upcoming Follow-Ups from pipeline
+  // Load upcoming Follow-Ups
   // ---------------------------
   useEffect(() => {
     if (!userId) return;
@@ -112,27 +111,23 @@ export default function CalendarPage() {
       setFollowUps([]);
 
       try {
-        // Pull reasonable fields; add any others you want to display.
-        // If you use a different owner field, change 'owner_id' below.
         const { data, error } = await supabase
           .from("leads")
-          .select(
-            `
-              id,
-              full_name,
-              first_name,
-              last_name,
-              phone,
-              stage,
-              next_follow_up_at,
-              next_followup_at,
-              next_touch,
-              follow_up_date,
-              followup_date,
-              followup_at,
-              notes
-            `
-          )
+          .select(`
+            id,
+            name,
+            first_name,
+            last_name,
+            phone,
+            stage,
+            next_follow_up_at,
+            next_followup_at,
+            next_touch,
+            follow_up_date,
+            followup_date,
+            followup_at,
+            notes
+          `)
           .eq("owner_id", userId);
 
         if (error) throw error;
@@ -143,9 +138,9 @@ export default function CalendarPage() {
             const when = pickFollowUpDate(r);
             return { ...r, _when: when };
           })
-          .filter((r) => r._when && r._when >= now) // only upcoming
+          .filter((r) => r._when && r._when >= now)
           .sort((a, b) => a._when - b._when)
-          .slice(0, 50); // cap the list
+          .slice(0, 50);
 
         if (!cancel) setFollowUps(rows);
       } catch (e) {
@@ -160,7 +155,10 @@ export default function CalendarPage() {
     };
   }, [userId]);
 
-  const followUpsEmpty = useMemo(() => !fuLoading && !fuErr && followUps.length === 0, [fuLoading, fuErr, followUps]);
+  const followUpsEmpty = useMemo(
+    () => !fuLoading && !fuErr && followUps.length === 0,
+    [fuLoading, fuErr, followUps]
+  );
 
   // ---------------------------
   // Render
@@ -170,7 +168,7 @@ export default function CalendarPage() {
       <h1 className="text-xl font-semibold">Schedule</h1>
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-        {/* Left: Upcoming Calendly meetings (existing behavior) */}
+        {/* Left: Calendly */}
         <div className="space-y-3">
           <h2 className="text-lg font-medium">Upcoming meetings (Calendly)</h2>
 
@@ -219,7 +217,7 @@ export default function CalendarPage() {
           )}
         </div>
 
-        {/* Right: Upcoming Follow-Ups from pipeline */}
+        {/* Right: Follow-Ups */}
         <div className="space-y-3">
           <h2 className="text-lg font-medium">Upcoming follow-ups (Pipeline)</h2>
 
@@ -241,10 +239,12 @@ export default function CalendarPage() {
             <div className="rounded-2xl border divide-y">
               {followUps.map((row) => {
                 const name =
-                  row.full_name ||
+                  row.name ||
                   [row.first_name, row.last_name].filter(Boolean).join(" ") ||
                   "Lead";
-                const whenStr = prettyDate(row._when?.toISOString?.() || row._when);
+                const whenStr = prettyDate(
+                  row._when?.toISOString?.() || row._when
+                );
                 return (
                   <div key={row.id} className="p-4">
                     <div className="font-medium">{name}</div>
