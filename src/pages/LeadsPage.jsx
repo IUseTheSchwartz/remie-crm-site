@@ -382,13 +382,14 @@ export default function LeadsPage() {
       sold: {
         carrier: soldPayload.carrier || "",
         faceAmount: soldPayload.faceAmount || "",
-        premium: soldPayload.premium || "",
+        premium: soldPayload.premium || "",           // AP stored here
         monthlyPayment: soldPayload.monthlyPayment || "",
         policyNumber: soldPayload.policyNumber || "",
         startDate: soldPayload.startDate || "",
         name: soldPayload.name || base.name || "",
         phone: soldPayload.phone || base.phone || "",
         email: soldPayload.email || base.email || "",
+        // address intentionally omitted from drawer; may remain empty
         address: {
           street: soldPayload.street || "",
           city: soldPayload.city || "",
@@ -727,15 +728,10 @@ function SoldDrawer({ initial, allClients, onClose, onSave }) {
     email: initial?.email || "",
     carrier: initial?.sold?.carrier || "",
     faceAmount: initial?.sold?.faceAmount || "",
-    premium: initial?.sold?.premium || "",
+    premium: initial?.sold?.premium || "",           // AP stored here
     monthlyPayment: initial?.sold?.monthlyPayment || "",
     policyNumber: initial?.sold?.policyNumber || "",
     startDate: initial?.sold?.startDate || "",
-    // Address
-    street: initial?.sold?.address?.street || "",
-    city: initial?.sold?.address?.city || "",
-    state: initial?.sold?.address?.state || "",
-    zip: initial?.sold?.address?.zip || "",
     // Automations (welcome text hidden for now)
     sendWelcomeText: false,
     sendPolicyEmailOrMail: true,
@@ -760,12 +756,15 @@ function SoldDrawer({ initial, allClients, onClose, onSave }) {
   }
 
   return (
-    <div className="fixed inset-0 z-50 grid bg-black/60 p-4">
-      <div className="relative m-auto w-full max-w-3xl rounded-2xl border border-white/15 bg-neutral-950 p-5">
-        <div className="mb-3 text-lg font-semibold">Mark as SOLD</div>
+    <div className="fixed inset-0 z-50 grid bg-black/60 p-3">
+      <div className="relative m-auto w-full max-w-xl rounded-2xl border border-white/15 bg-neutral-950 p-4">
+        <div className="mb-2 flex items-center justify-between">
+          <div className="text-base font-semibold">Mark as SOLD</div>
+          <button onClick={onClose} className="rounded-lg px-2 py-1 text-sm hover:bg-white/10">Close</button>
+        </div>
 
         <div className="mb-3">
-          <label className="text-sm text-white/70">Select existing lead (optional)</label>
+          <label className="text-xs text-white/70">Select existing lead (optional)</label>
           <select
             className="mt-1 w-full rounded-xl border border-white/10 bg-black/40 px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-indigo-500/40"
             onChange={(e) => e.target.value && pickClient(e.target.value)}
@@ -778,70 +777,56 @@ function SoldDrawer({ initial, allClients, onClose, onSave }) {
               </option>
             ))}
           </select>
-          <div className="mt-1 text-xs text-white/50">Or type their info manually below.</div>
         </div>
 
-        <form onSubmit={submit} className="grid gap-3 sm:grid-cols-2">
-          <Field label="Name">
-            <input value={form.name} onChange={(e)=>setForm({...form, name:e.target.value})}
-                   className="inp" placeholder="Jane Doe" />
-          </Field>
-          <Field label="Phone">
-            <input value={form.phone} onChange={(e)=>setForm({...form, phone:e.target.value})}
-                   className="inp" placeholder="(555) 123-4567" />
-          </Field>
+        <form onSubmit={submit} className="grid gap-3">
+          {/* Contact */}
+          <div className="grid gap-3 sm:grid-cols-2">
+            <Field label="Name">
+              <input value={form.name} onChange={(e)=>setForm({...form, name:e.target.value})}
+                     className="inp" placeholder="Jane Doe" />
+            </Field>
+            <Field label="Phone">
+              <input value={form.phone} onChange={(e)=>setForm({...form, phone:e.target.value})}
+                     className="inp" placeholder="(555) 123-4567" />
+            </Field>
+          </div>
           <Field label="Email">
             <input value={form.email} onChange={(e)=>setForm({...form, email:e.target.value})}
                    className="inp" placeholder="jane@example.com" />
           </Field>
 
-          {/* sold fields */}
-          <Field label="Carrier sold">
-            <input value={form.carrier} onChange={(e)=>setForm({...form, carrier:e.target.value})}
-                   className="inp" placeholder="Mutual of Omaha" />
-          </Field>
-          <Field label="Face amount">
-            <input value={form.faceAmount} onChange={(e)=>setForm({...form, faceAmount:e.target.value})}
-                   className="inp" placeholder="250,000" />
-          </Field>
-          <Field label="Premium sold">
-            <input value={form.premium} onChange={(e)=>setForm({...form, premium:e.target.value})}
-                   className="inp" placeholder="3,000" />
-          </Field>
-          <Field label="Policy number">
-            <input value={form.policyNumber} onChange={(e)=>setForm({...form, policyNumber:e.target.value})}
-                   className="inp" placeholder="ABC123456789" />
-          </Field>
-          <Field label="Monthly payment">
-            <input value={form.monthlyPayment} onChange={(e)=>setForm({...form, monthlyPayment:e.target.value})}
-                   className="inp" placeholder="250" />
-          </Field>
-          <Field label="Policy start date">
-            <input type="date" value={form.startDate} onChange={(e)=>setForm({...form, startDate:e.target.value})}
-                   className="inp" />
-          </Field>
+          {/* Policy core */}
+          <div className="grid gap-3 sm:grid-cols-2">
+            <Field label="Carrier sold">
+              <input value={form.carrier} onChange={(e)=>setForm({...form, carrier:e.target.value})}
+                     className="inp" placeholder="Mutual of Omaha" />
+            </Field>
+            <Field label="Face amount">
+              <input value={form.faceAmount} onChange={(e)=>setForm({...form, faceAmount:e.target.value})}
+                     className="inp" placeholder="250,000" />
+            </Field>
+            <Field label="AP (Annual premium)">
+              <input value={form.premium} onChange={(e)=>setForm({...form, premium:e.target.value})}
+                     className="inp" placeholder="3,000" />
+            </Field>
+            <Field label="Monthly payment">
+              <input value={form.monthlyPayment} onChange={(e)=>setForm({...form, monthlyPayment:e.target.value})}
+                     className="inp" placeholder="250" />
+            </Field>
+            <Field label="Policy number">
+              <input value={form.policyNumber} onChange={(e)=>setForm({...form, policyNumber:e.target.value})}
+                     className="inp" placeholder="ABC123456789" />
+            </Field>
+            <Field label="Policy start date">
+              <input type="date" value={form.startDate} onChange={(e)=>setForm({...form, startDate:e.target.value})}
+                     className="inp" />
+            </Field>
+          </div>
 
-          <Field label="Street">
-            <input value={form.street} onChange={(e)=>setForm({...form, street:e.target.value})}
-                   className="inp" placeholder="123 Main St" />
-          </Field>
-          <Field label="City">
-            <input value={form.city} onChange={(e)=>setForm({...form, city:e.target.value})}
-                   className="inp" placeholder="Austin" />
-          </Field>
-          <Field label="State">
-            <input value={form.state} onChange={(e)=>setForm({...form, state:e.target.value})}
-                   className="inp" placeholder="TX" />
-          </Field>
-          <Field label="ZIP">
-            <input value={form.zip} onChange={(e)=>setForm({...form, zip:e.target.value})}
-                   className="inp" placeholder="78701" />
-          </Field>
-
-          {/* === Post-sale options (visuals) === */}
-          <div className="sm:col-span-2 mt-2 rounded-2xl border border-white/15 bg-white/[0.03] p-3">
+          {/* Options */}
+          <div className="rounded-2xl border border-white/15 bg-white/[0.03] p-3">
             <div className="mb-2 text-sm font-semibold text-white/90">Post-sale options</div>
-
             <div className="grid gap-2">
               <label className="flex items-start gap-3 rounded-xl border border-white/10 bg-black/30 p-3 hover:bg-white/[0.06]">
                 <input
@@ -875,7 +860,7 @@ function SoldDrawer({ initial, allClients, onClose, onSave }) {
             </div>
           </div>
 
-          <div className="sm:col-span-2 mt-2 flex items-center justify-end gap-2">
+          <div className="mt-3 flex items-center justify-end gap-2">
             <button type="button" onClick={onClose}
               className="rounded-xl border border-white/15 px-4 py-2 text-sm hover:bg-white/10">
               Cancel
@@ -887,6 +872,7 @@ function SoldDrawer({ initial, allClients, onClose, onSave }) {
           </div>
         </form>
       </div>
+
       <style>{`.inp{width:100%; border-radius:0.75rem; border:1px solid rgba(255,255,255,.1); background:#00000066; padding:.5rem .75rem; outline:none}
         .inp:focus{box-shadow:0 0 0 2px rgba(99,102,241,.4)}`}</style>
     </div>
