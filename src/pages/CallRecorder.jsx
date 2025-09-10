@@ -263,7 +263,6 @@ export default function CallRecorder() {
         setAnnotations(rec.annotations || "");
         setLeadId(rec.leadId || null);
 
-        // ask for persistent storage if available (reduces eviction)
         if (navigator?.storage?.persist) {
           try { await navigator.storage.persist(); } catch {}
         }
@@ -277,7 +276,6 @@ export default function CallRecorder() {
   /* -------- Clean up on unmount: stop mic/STT but DON'T clear audio -------- */
   useEffect(() => {
     return () => {
-      // stop devices & STT if leaving, but keep audio state persisted
       if (recognitionRef.current) {
         try { recognitionRef.current.stop(); } catch {}
         recognitionRef.current = null;
@@ -299,7 +297,7 @@ export default function CallRecorder() {
 
   /* -------- Auto-save draft (debounced) whenever key fields change -------- */
   useEffect(() => {
-    if (!audioURL) return; // only persist after we actually have audio
+    if (!audioURL) return;
     if (saveDebounceRef.current) clearTimeout(saveDebounceRef.current);
     saveDebounceRef.current = setTimeout(() => { saveDraft().catch(()=>{}); }, 500);
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -307,10 +305,6 @@ export default function CallRecorder() {
 
   async function saveDraft() {
     try {
-      // fetch the current Blob behind the audioURL? we already have chunks, but after stop we created a Blob.
-      // The reliable source is re-building from audio element src? We kept blob size/mime.
-      // We'll keep a reference by capturing the blob at stop time (see onstop below).
-      // Here we load it from IndexedDB if we don't have it—so store lastBlobRef at stop.
       if (!lastBlobRef.current) return;
       const obj = {
         id: draftIdRef.current || undefined,
@@ -376,7 +370,6 @@ export default function CallRecorder() {
         setAudioURL(url);
         setStopped(true);
 
-        // Load duration from metadata
         try {
           const a = new Audio();
           a.src = url;
@@ -387,7 +380,6 @@ export default function CallRecorder() {
           setDuration(a.duration || 0);
         } catch {}
 
-        // Immediately persist draft locally
         await saveDraft();
       };
 
@@ -455,7 +447,6 @@ export default function CallRecorder() {
       chunksRef.current = [];
       lastBlobRef.current = null;
       draftIdRef.current = null;
-      // Clear draft key so we don't restore it
       idbSetKV(DRAFT_KEY, null).catch(()=>{});
     }
   }
@@ -466,7 +457,6 @@ export default function CallRecorder() {
       if (iv) setTranscript((prev) => (prev + " " + iv).trim());
     } catch {}
     stopEverything({ keepAudio: true });
-    // Save one more time to ensure latest transcript is persisted
     await saveDraft();
   }
 
@@ -483,14 +473,13 @@ export default function CallRecorder() {
   async function handleDeleteRecording() {
     const ok = typeof window !== "undefined" ? window.confirm("Delete this recording from your browser?") : true;
     if (!ok) return;
-    // delete from IndexedDB if present
     try {
       if (draftIdRef.current) {
         await idbDelRec(draftIdRef.current);
         await idbSetKV(DRAFT_KEY, null);
       }
     } catch {}
-    stopEverything({ keepAudio: false }); // wipes local state + draft key
+    stopEverything({ keepAudio: false });
   }
 
   /* -------- UI -------- */
@@ -592,7 +581,7 @@ export default function CallRecorder() {
             </div>
           )}
           <textarea
-            className="w-full h-28 rounded-lg bg_black/30 border border-white/10 p-2 text-sm".replace("_", "-")
+            className="w-full h-28 rounded-lg bg-black/30 border border-white/10 p-2 text-sm"
             placeholder="Transcript (captured locally while recording, or paste your notes here)…"
             value={transcript}
             onChange={(e) => setTranscript(e.target.value)}
@@ -630,7 +619,7 @@ export default function CallRecorder() {
                       <div className="font-medium">{displayName}</div>
                       <div className="text-xs text-white/60">{l.stage || "—"}</div>
                     </div>
-                    <div className="text-xs text_white/60".replace("_", "-")>
+                    <div className="text-xs text-white/60">
                       {l.phone || "—"} {l.email ? `· ${l.email}` : ""}
                     </div>
                   </button>
@@ -735,13 +724,12 @@ export default function CallRecorder() {
           </button>
           <button
             onClick={() => {
-              stopEverything({ keepAudio: true }); // keep audio, just reset fields below
+              stopEverything({ keepAudio: true });
               setTranscript("");
               setAnnotations("");
               setLeadId(null);
               setLeadSearch("");
               setError("");
-              // update persisted draft
               saveDraft().catch(()=>{});
             }}
             className="rounded-xl px-3 py-1.5 text-sm bg-white/10 hover:bg-white/20"
