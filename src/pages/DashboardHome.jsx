@@ -21,15 +21,17 @@ export default function DashboardHome() {
   const [snap, setSnap] = useState(dashboardSnapshot());
   const [loading, setLoading] = useState(false);
 
-  const options = {
-    user_id: user?.id || null,
-    team_id: user?.app_metadata?.team_id || null,
-  };
+  function getOptions() {
+    return {
+      user_id: user?.id || null,
+      team_id: user?.app_metadata?.team_id || null,
+    };
+  }
 
   async function doRefresh(reason = "mount") {
     try {
       setLoading(true);
-      const data = await refreshDashboardSnapshot(options);
+      const data = await refreshDashboardSnapshot(getOptions());
       setSnap(data);
       // console.debug("[Dashboard] refreshed:", reason, data);
     } finally {
@@ -44,7 +46,7 @@ export default function DashboardHome() {
     doRefresh("mount");
 
     // Realtime subscriptions: refresh on any relevant insert/update/delete
-    // NOTE: SOLD/PREMIUM changes typically come through UPDATE on leads.
+    // NOTE: marking Sold typically hits UPDATE on leads.
     const WATCH = [
       { table: "leads", events: ["INSERT", "UPDATE", "DELETE"] },
       // keep these if your appointments live elsewhere; harmless if tables don't exist
@@ -71,16 +73,22 @@ export default function DashboardHome() {
       return ch;
     });
 
-    // Listen for local-storage changes (e.g., Reports/clients marking Sold)
+    // Cross-tab localStorage changes (fires in other tabs)
     const onStorage = () => isMounted && doRefresh("storage");
     window.addEventListener("storage", onStorage);
 
-    // Optional: custom event your app can dispatch after local changes:
+    // Same-tab manual signal (fire after marking Sold in your UI code)
     // window.dispatchEvent(new CustomEvent("stats:changed"))
     const onCustom = () => isMounted && doRefresh("custom");
     window.addEventListener("stats:changed", onCustom);
 
-    // Optional: polling fallback every 60s while testing
+    // Refresh when tab regains focus / becomes visible (helps with local-only changes)
+    const onFocus = () => isMounted && doRefresh("focus");
+    const onVis = () => document.visibilityState === "visible" && isMounted && doRefresh("visible");
+    window.addEventListener("focus", onFocus);
+    document.addEventListener("visibilitychange", onVis);
+
+    // Polling fallback every 60s while testing
     const poll = setInterval(() => {
       if (!isMounted) return;
       doRefresh("poll");
@@ -91,10 +99,11 @@ export default function DashboardHome() {
       clearInterval(poll);
       window.removeEventListener("storage", onStorage);
       window.removeEventListener("stats:changed", onCustom);
+      window.removeEventListener("focus", onFocus);
+      document.removeEventListener("visibilitychange", onVis);
       channels.forEach((ch) => supabase.removeChannel(ch));
     };
-    // rerun when identity scope changes so options are fresh
-  }, [user?.id, user?.app_metadata?.team_id]);
+  }, [user?.id, user?.app_metadata?.team_id]); // rerun when identity scope changes
 
   const money = (n) =>
     Intl.NumberFormat(undefined, {
