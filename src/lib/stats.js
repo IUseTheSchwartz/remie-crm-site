@@ -1,9 +1,8 @@
 // File: src/lib/stats.js
 // Dashboard + Reports helpers
-// - SOLD & Premium: from local storage (same as Reports) so they match 1:1
-// - Leads: Supabase (leads.created_at) — counted up to NOW
-// - Appointments: Supabase (leads.next_follow_up_at) — counted to end-of-period
-// - Reports grouping remains synchronous from local storage
+// - SOLD & Premium: local storage (matches Reports exactly).
+// - Leads: Supabase (leads.created_at) — counted up to NOW.
+// - Appointments: Supabase (leads.next_follow_up_at) — counted to end-of-period.
 
 import { supabase } from "../lib/supabaseClient.js";
 import { loadClients } from "./storage.js";
@@ -20,12 +19,39 @@ function parseNumber(x) {
 }
 
 /* -----------------------------------------------
+   Date parsing (robust)
+   - Accepts ISO / YYYY-MM-DD
+   - Accepts MM/DD/YYYY (noon local time to avoid TZ edge)
+-------------------------------------------------*/
+function toDateSafe(d) {
+  if (!d) return null;
+  if (d instanceof Date) return Number.isFinite(+d) ? d : null;
+  const s = String(d);
+
+  // ISO / YYYY-MM-DD
+  if (/^\d{4}-\d{2}-\d{2}/.test(s)) {
+    const t = new Date(s);
+    return Number.isFinite(+t) ? t : null;
+  }
+
+  // MM/DD/YYYY
+  if (/^\d{1,2}\/\d{1,2}\/\d{4}$/.test(s)) {
+    const [m, d2, y] = s.split("/").map(Number);
+    const t = new Date(y, m - 1, d2, 12, 0, 0, 0);
+    return Number.isFinite(+t) ? t : null;
+  }
+
+  const t = new Date(s);
+  return Number.isFinite(+t) ? t : null;
+}
+
+/* -----------------------------------------------
    Time helpers
 -------------------------------------------------*/
 export function startOfDay(d) { const x = new Date(d); x.setHours(0,0,0,0); return x; }
 export function endOfDay(d)   { const x = new Date(d); x.setHours(23,59,59,999); return x; }
 
-export function startOfWeek(d) { const x = startOfDay(d); const diff = (x.getDay()+6)%7; x.setDate(x.getDate()-diff); return x; }
+export function startOfWeek(d) { const x = startOfDay(d); const diff=(x.getDay()+6)%7; x.setDate(x.getDate()-diff); return x; }
 export function endOfWeek(d)   { const s = startOfWeek(d); const e = new Date(s); e.setDate(e.getDate()+6); e.setHours(23,59,59,999); return e; }
 
 export function startOfMonth(d){ const x = startOfDay(d); x.setDate(1); return x; }
@@ -36,7 +62,7 @@ export function fmtMonth(d) { return new Date(d).toLocaleDateString(undefined, {
 export function getWeekKey(d){ const b = startOfWeek(new Date(d)); return b.toISOString().slice(0,10); }
 
 /* -----------------------------------------------
-   SOLD source (local storage) — used by Reports
+   SOLD source (local storage) — same as Reports
 -------------------------------------------------*/
 export function getSoldEventsFromStorage() {
   const clients = loadClients() || [];
@@ -73,7 +99,9 @@ export function getTotals(items = []) {
 export function filterRange(items = [], from, to) {
   const a = +from, b = +to;
   return (items || []).filter((x) => {
-    const t = +new Date(x.date);
+    const td = toDateSafe(x.date);
+    if (!td) return false;
+    const t = +td;
     return t >= a && t <= b;
   });
 }
@@ -98,7 +126,7 @@ function soldList(items = []) {
 export function groupByMonth(items = timeline()) {
   const m = new Map();
   for (const it of (items || [])) {
-    const d = new Date(it.date);
+    const d = toDateSafe(it.date) || new Date();
     const key = `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}`;
     if (!m.has(key)) m.set(key, []);
     m.get(key).push(it);
@@ -114,7 +142,8 @@ export function groupByMonth(items = timeline()) {
 function groupWeeks(items = []) {
   const w = new Map();
   for (const it of (items || [])) {
-    const key = getWeekKey(it.date);
+    const d = toDateSafe(it.date) || new Date();
+    const key = getWeekKey(d);
     if (!w.has(key)) w.set(key, []);
     w.get(key).push(it);
   }
@@ -126,7 +155,8 @@ function groupWeeks(items = []) {
 function groupDays(items = []) {
   const d = new Map();
   for (const it of (items || [])) {
-    const day = new Date(it.date).toISOString().slice(0, 10);
+    const dd = toDateSafe(it.date) || new Date();
+    const day = dd.toISOString().slice(0, 10);
     if (!d.has(day)) d.set(day, []);
     d.get(day).push(it);
   }
@@ -226,10 +256,11 @@ export async function refreshDashboardSnapshot(options = {}, now = new Date()) {
     _updatedAt: new Date().toISOString(),
   };
 
-  // 🔎 Debug helper so you can verify what Dashboard sees (optional)
+  // Debug: quickly see what dashboard used
   if (typeof window !== "undefined") {
     window.__statsDebug = {
       soldTimelineCount: soldTimeline.length,
+      sampleSold: soldTimeline.slice(0, 5),
       todaySold, weekSold, monthSold, allSold,
       snapshot: _cache,
     };
