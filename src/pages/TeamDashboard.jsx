@@ -57,15 +57,19 @@ export default function TeamDashboard() {
       const { data: t } = await supabase.from("teams").select("*").eq("id", teamId).single();
       setTeam(t || null);
 
-      // 2) Resolve team member IDs (include active/invited)
+      // 2) Resolve team member IDs (active/invited)
       const { data: ut } = await supabase
         .from("user_teams")
         .select("user_id,status")
         .eq("team_id", teamId);
 
-      const userIds = (ut || [])
-        .filter(r => r.status === "active" || r.status === "invited" || !r.status)
-        .map(r => r.user_id);
+      const userIds = Array.from(
+        new Set(
+          (ut || [])
+            .filter(r => r.status === "active" || r.status === "invited" || !r.status)
+            .map(r => r.user_id)
+        )
+      );
 
       if (userIds.length === 0) {
         setKpis({ leadsThisMonth: 0, apps: 0, policies: 0, premium: 0, conversion: 0 });
@@ -91,10 +95,10 @@ export default function TeamDashboard() {
         .gte("next_follow_up_at", monthStart.toISOString())
         .lte("next_follow_up_at", monthEnd.toISOString());
 
-      // 5) Team SOLD rows (status='sold'); we'll bucket by MARKED-SOLD date
+      // 5) Team SOLD rows — MINIMAL COLUMNS (no client PII)
       const { data: soldRows } = await supabase
         .from("leads")
-        .select("id,user_id,name,email,phone,company,sold,created_at,updated_at")
+        .select("id,user_id,company,sold,created_at,updated_at")
         .in("user_id", userIds)
         .eq("status", "sold");
 
@@ -104,8 +108,6 @@ export default function TeamDashboard() {
         return {
           id: r.id,
           user_id: r.user_id,
-          name: r.name || r.email || r.phone || "Unknown",
-          carrier: r.company || "",
           premium: pickPremium(r.sold),
           markedAt: marked,
         };
