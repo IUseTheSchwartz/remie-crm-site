@@ -6,6 +6,9 @@ import SubscriptionGate from "./SubscriptionGate";
 import { supabase } from "../lib/supabaseClient";
 import useIsAdminAllowlist from "../lib/useIsAdminAllowlist.js";
 
+// Toggle this to hide the banner for everyone:
+const SHOW_BANNER_FOR_NON_OWNER = true;
+
 // Simple banner shown when access is via team membership
 function TeamAccessBanner({ teamName }) {
   return (
@@ -26,6 +29,7 @@ export default function ProtectedRoute({ requireAdmin = false, children }) {
   const [teamGateChecked, setTeamGateChecked] = useState(false);
   const [teamOk, setTeamOk] = useState(false);
   const [teamName, setTeamName] = useState("");
+  const [viewerRole, setViewerRole] = useState(null); // 'owner' | 'member' | null
 
   useEffect(() => {
     let cancelled = false;
@@ -35,11 +39,14 @@ export default function ProtectedRoute({ requireAdmin = false, children }) {
         if (!cancelled) {
           setTeamGateChecked(true);
           setTeamOk(false);
+          setViewerRole(null);
         }
         return;
       }
 
       try {
+        // If a user can belong to multiple teams, this picks any active one.
+        // Adjust with an .order(...) or additional filters if you want a canonical team.
         const { data, error } = await supabase
           .from("user_teams")
           .select("role, status, team:teams(name)")
@@ -50,17 +57,21 @@ export default function ProtectedRoute({ requireAdmin = false, children }) {
         if (!cancelled) {
           if (error) {
             setTeamOk(false);
+            setViewerRole(null);
           } else if (Array.isArray(data) && data.length > 0) {
             setTeamOk(true);
+            setViewerRole(data[0]?.role ?? null);
             setTeamName(data[0]?.team?.name || "Team");
           } else {
             setTeamOk(false);
+            setViewerRole(null);
           }
           setTeamGateChecked(true);
         }
       } catch {
         if (!cancelled) {
           setTeamOk(false);
+          setViewerRole(null);
           setTeamGateChecked(true);
         }
       }
@@ -111,9 +122,12 @@ export default function ProtectedRoute({ requireAdmin = false, children }) {
 
   // If the user is an active team member, bypass the personal subscription gate
   if (teamOk) {
+    const showBanner =
+      SHOW_BANNER_FOR_NON_OWNER && viewerRole !== "owner";
+
     return (
       <>
-        <TeamAccessBanner teamName={teamName} />
+        {showBanner && <TeamAccessBanner teamName={teamName} />}
         {children ?? <Outlet />}
       </>
     );
