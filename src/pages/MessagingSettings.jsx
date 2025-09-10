@@ -6,6 +6,7 @@ import { CreditCard, Check, Loader2, MessageSquare, Info, RotateCcw } from "luci
 /* ---------------- Template Catalog ---------------- */
 const TEMPLATE_DEFS = [
   { key: "new_lead", label: "New Lead (instant)" },
+  { key: "new_lead_military", label: "New Lead (military)" }, // 🆕
   { key: "appointment", label: "Appointment Reminder" },
   { key: "sold", label: "Sold - Policy Info" },
   { key: "payment_reminder", label: "Payment Reminder" },
@@ -18,6 +19,12 @@ const DEFAULTS = {
   new_lead:
     "Hi {{first_name}}, this is {{agent_name}}, a licensed life insurance broker in {{state}}. I just received the form you sent in to my office where you listed {{beneficiary}} as the beneficiary. If I’m unable to reach you or there’s a better time to get back to you, feel free to book an appointment with me here: {{calendly_link}} " +
     "You can text me anytime at {{agent_phone}} (this business text line doesn’t accept calls).",
+
+  // 🆕 Firm, professional tone for veterans / military
+  new_lead_military:
+    "Hello {{first_name}}, this is {{agent_name}}, a licensed life insurance broker. I see you noted {{beneficiary}} as your beneficiary and your background with the {{military_branch}}. " +
+    "I handle coverage for service members and veterans directly. Let’s connect today to review your options and make sure everything is squared away. " +
+    "You can also set a time here: {{calendly_link}}. Text me at {{agent_phone}} (this business text line doesn’t accept calls).",
 
   appointment:
     "Hi {{first_name}}, this is {{agent_name}}, a licensed life insurance broker. I’m just reminding you about our scheduled appointment at {{appt_time}}. Please reply YES to confirm or let me know if another time works better. You can also reschedule here: {{calendly_link}} " +
@@ -420,13 +427,14 @@ export default function MessagingSettings() {
               <VarRow token="today" desc="Today’s date" />
               <VarRow token="state" desc="Lead’s state (from form)" />
               <VarRow token="beneficiary" desc="Lead’s listed beneficiary" />
+              <VarRow token="military_branch" desc="Military branch (if provided)" /> {/* 🆕 */}
               <VarRow token="calendly_link" desc="Your Calendly booking link" />
             </div>
 
             <div className="mt-4 rounded-xl border border-white/10 bg-white/[0.02] p-3">
               <div className="mb-1 text-xs font-semibold">Example</div>
               <pre className="whitespace-pre-wrap rounded-lg border border-white/10 bg-black/30 p-3 text-[11px] leading-5">
-{'"Hi {{first_name}}, your policy {{policy_number}} with {{carrier}} is active at ${{premium}}/mo. —{{agent_name}} (Text me at {{agent_phone}}, this line doesn’t accept calls)"'}
+{'"Hello {{first_name}}, this is {{agent_name}}. I see your {{military_branch}} background. Let’s connect to square away your coverage. (Text: {{agent_phone}} — no calls)"'}
               </pre>
             </div>
           </aside>
@@ -453,4 +461,11 @@ function VarRow({ token, desc }) {
       <div className="flex-1 text-right text-white/70">{desc}</div>
     </div>
   );
+}
+
+/* --- Helper for your sender --- */
+/** Decide which new-lead template key to use based on lead data. */
+export function pickNewLeadTemplateKey(lead) {
+  const branch = (lead?.military_branch || "").trim();
+  return branch ? "new_lead_military" : "new_lead";
 }
