@@ -1,9 +1,9 @@
+// File: src/pages/CallRecorder.jsx
 import { useEffect, useMemo, useRef, useState } from "react";
 import { supabase } from "../lib/supabaseClient.js";
 import { useAuth } from "../auth.jsx";
 import {
   Mic,
-  MicOff,
   StopCircle,
   Download,
   FileText,
@@ -25,6 +25,13 @@ function fmtDuration(sec) {
 function nowStamp() {
   const d = new Date();
   return d.toISOString().replace(/[:.]/g, "-");
+}
+
+function slugify(s) {
+  return (s || "")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/(^-|-$)/g, "");
 }
 
 // Very simple “annotation” pass that extracts key bits from a transcript.
@@ -58,10 +65,13 @@ function annotateTranscript(t) {
 
   return [
     "### Summary (Local)",
-    bullet("Contact Details", [
-      phones.length ? `Phone: ${phones.join(", ")}` : null,
-      emails.length ? `Email: ${emails.join(", ")}` : null,
-    ].filter(Boolean)),
+    bullet(
+      "Contact Details",
+      [
+        phones.length ? `Phone: ${phones.join(", ")}` : null,
+        emails.length ? `Email: ${emails.join(", ")}` : null,
+      ].filter(Boolean)
+    ),
     bullet("Needs / Product Mentions", needs),
     bullet("Pricing / Budget", money),
     bullet("Objections / Concerns", obj),
@@ -124,7 +134,7 @@ export default function CallRecorder() {
     const q = leadSearch.trim().toLowerCase();
     if (!q) return leads.slice(0, 30); // show a slice
     return leads.filter((l) => {
-      const name = `${l.first_name || ""} ${l.last_name || ""}`.toLowerCase();
+      const name = (l.name || "").toLowerCase();
       return (
         name.includes(q) ||
         (l.phone || "").toLowerCase().includes(q) ||
@@ -141,10 +151,10 @@ export default function CallRecorder() {
       setLeadsLoading(true);
       setError("");
       try {
-        // Adjust select columns to match your schema
+        // Aligns with your schema: id, name, phone, email, stage
         const { data, error: err } = await supabase
           .from("leads")
-          .select("id, first_name, last_name, phone, email, stage")
+          .select("id, name, phone, email, stage")
           .order("updated_at", { ascending: false })
           .limit(500); // cap for dropdown
         if (err) throw err;
@@ -459,7 +469,7 @@ export default function CallRecorder() {
               </div>
             ) : filteredLeads.length ? (
               filteredLeads.map((l) => {
-                const name = `${l.first_name || ""} ${l.last_name || ""}`.trim() || "Lead";
+                const displayName = l.name || "Lead";
                 return (
                   <button
                     key={l.id}
@@ -469,7 +479,7 @@ export default function CallRecorder() {
                     }`}
                   >
                     <div className="flex items-center justify-between">
-                      <div className="font-medium">{name}</div>
+                      <div className="font-medium">{displayName}</div>
                       <div className="text-xs text-white/60">{l.stage || "—"}</div>
                     </div>
                     <div className="text-xs text-white/60">
@@ -486,7 +496,7 @@ export default function CallRecorder() {
             <div className="mt-2 text-xs text-emerald-300 flex items-center gap-1">
               <Check className="w-3 h-3" /> Linked to:{" "}
               <span className="font-medium">
-                {(selectedLead.first_name || "") + " " + (selectedLead.last_name || "")}
+                {selectedLead.name || "Lead"}
               </span>
             </div>
           )}
@@ -500,9 +510,9 @@ export default function CallRecorder() {
           {audioURL ? (
             <a
               href={audioURL}
-              download={`call-${selectedLead
-                ? `${(selectedLead.first_name || "").toLowerCase()}-${(selectedLead.last_name || "").toLowerCase()}`
-                : "unassigned"}-${nowStamp()}.${(mimeType || "audio/webm").includes("mp4") ? "m4a" : "webm"}`}
+              download={`call-${selectedLead ? slugify(selectedLead.name || "lead") : "unassigned"}-${nowStamp()}.${
+                (mimeType || "audio/webm").includes("mp4") ? "m4a" : "webm"
+              }`}
               className="inline-flex items-center gap-2 rounded-xl px-3 py-1.5 text-sm bg-indigo-600 hover:bg-indigo-500"
             >
               <Download className="w-4 h-4" />
