@@ -21,13 +21,14 @@ export default function DashboardHome() {
   const [snap, setSnap] = useState(dashboardSnapshot());
   const [loading, setLoading] = useState(false);
 
+  const options = {
+    user_id: user?.id || null,
+    team_id: user?.app_metadata?.team_id || null,
+  };
+
   async function doRefresh(reason = "mount") {
     try {
       setLoading(true);
-      const options = {
-        user_id: user?.id || null,
-        team_id: user?.app_metadata?.team_id || null,
-      };
       const data = await refreshDashboardSnapshot(options);
       setSnap(data);
       // console.debug("[Dashboard] refreshed:", reason, data);
@@ -42,10 +43,11 @@ export default function DashboardHome() {
     // Initial fetch (IMPORTANT: pass options so stats filter by your user/team)
     doRefresh("mount");
 
-    // Realtime subscriptions: refresh on any relevant insert/update
-    // We listen to a few likely tables so appointment counts update immediately.
+    // Realtime subscriptions: refresh on any relevant insert/update/delete
+    // NOTE: SOLD/PREMIUM changes typically come through UPDATE on leads.
     const WATCH = [
-      { table: "leads", events: ["INSERT", "UPDATE"] },
+      { table: "leads", events: ["INSERT", "UPDATE", "DELETE"] },
+      // keep these if your appointments live elsewhere; harmless if tables don't exist
       { table: "appointments", events: ["INSERT", "UPDATE", "DELETE"] },
       { table: "calendar_events", events: ["INSERT", "UPDATE", "DELETE"] },
       { table: "followups", events: ["INSERT", "UPDATE", "DELETE"] },
@@ -69,6 +71,15 @@ export default function DashboardHome() {
       return ch;
     });
 
+    // Listen for local-storage changes (e.g., Reports/clients marking Sold)
+    const onStorage = () => isMounted && doRefresh("storage");
+    window.addEventListener("storage", onStorage);
+
+    // Optional: custom event your app can dispatch after local changes:
+    // window.dispatchEvent(new CustomEvent("stats:changed"))
+    const onCustom = () => isMounted && doRefresh("custom");
+    window.addEventListener("stats:changed", onCustom);
+
     // Optional: polling fallback every 60s while testing
     const poll = setInterval(() => {
       if (!isMounted) return;
@@ -78,9 +89,12 @@ export default function DashboardHome() {
     return () => {
       isMounted = false;
       clearInterval(poll);
+      window.removeEventListener("storage", onStorage);
+      window.removeEventListener("stats:changed", onCustom);
       channels.forEach((ch) => supabase.removeChannel(ch));
     };
-  }, [user?.id, user?.app_metadata?.team_id]); // rerun when identity scope changes
+    // rerun when identity scope changes so options are fresh
+  }, [user?.id, user?.app_metadata?.team_id]);
 
   const money = (n) =>
     Intl.NumberFormat(undefined, {
