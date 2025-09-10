@@ -14,31 +14,20 @@ const TEMPLATE_DEFS = [
   { key: "holiday_text", label: "Holiday Text" },
 ];
 
-/* ---------------- Suggested defaults (opt-out removed) ----------------
-   Variables you can use in templates:
-   {{first_name}}, {{last_name}}, {{full_name}}, {{agent_name}},
-   {{company}}, {{agent_phone}}, {{agent_email}},
-   {{appt_time}}, {{policy_number}}, {{carrier}}, {{premium}},
-   {{today}}
----------------------------------------------------------------- */
+/* ---------------- Suggested defaults (opt-out removed) ---------------- */
 const DEFAULTS = {
   new_lead:
     "Hi {{first_name}}! This is {{agent_name}} with {{company}}. I just received your request—when is a good time today to chat for 2–3 minutes?",
   appointment:
     "Hi {{first_name}}, reminder for our call at {{appt_time}} with {{agent_name}} ({{company}}). Reply YES to confirm or 2 to reschedule.",
-
-  // SOLD includes policy details inline
   sold:
     "Congrats {{first_name}}! 🎉 You’re approved. Here are your policy details:\n" +
     "• Carrier: {{carrier}}\n" +
     "• Policy #: {{policy_number}}\n" +
     "• Premium: ${{premium}}/mo\n" +
     "Save this for your records. If you have questions, text me anytime.",
-
-  // Standalone “policy_info” if you want to send details separately
   policy_info:
     "Policy info for {{first_name}}:\n• Carrier: {{carrier}}\n• Policy #: {{policy_number}}\n• Premium: ${{premium}}/mo\nSave this for your records.",
-
   payment_reminder:
     "Hi {{first_name}}, a friendly reminder your payment is coming up. If anything changed with your card or bank, text me here.",
   birthday_text:
@@ -68,11 +57,12 @@ export default function MessagingSettings() {
   const [saveState, setSaveState] = useState("idle");
   const saveTimer = useRef(null);
 
-  // Cheat sheet drawer
+  // Drawer state
   const [cheatOpen, setCheatOpen] = useState(false);
 
   const balanceDollars = (balanceCents / 100).toFixed(2);
 
+  /* -------- Load data -------- */
   useEffect(() => {
     let mounted = true;
     (async () => {
@@ -87,7 +77,7 @@ export default function MessagingSettings() {
       if (!mounted) return;
       setUserId(uid);
 
-      // load wallet
+      // wallet
       const { data: wallet } = await supabase
         .from("user_wallets")
         .select("balance_cents")
@@ -96,7 +86,7 @@ export default function MessagingSettings() {
       if (!mounted) return;
       setBalanceCents(wallet?.balance_cents || 0);
 
-      // load templates (merge with latest defaults)
+      // templates
       const { data: tmpl } = await supabase
         .from("message_templates")
         .select("templates")
@@ -139,6 +129,7 @@ export default function MessagingSettings() {
     };
   }, [userId]);
 
+  /* -------- Autosave templates -------- */
   async function saveTemplates(next) {
     if (!userId) return;
     setSaveState("saving");
@@ -163,6 +154,7 @@ export default function MessagingSettings() {
     saveTimer.current = setTimeout(() => saveTemplates(next), 800);
   }
 
+  /* -------- Stripe top-up -------- */
   async function addFunds(amountCents) {
     setCustomMsg("");
     setTopping(true);
@@ -212,6 +204,15 @@ export default function MessagingSettings() {
     addFunds(cents);
   }
 
+  /* -------- Drawer helpers -------- */
+  useEffect(() => {
+    function onKey(e) {
+      if (e.key === "Escape") setCheatOpen(false);
+    }
+    if (cheatOpen) window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [cheatOpen]);
+
   if (loading) {
     return (
       <div className="min-h-[60vh] grid place-items-center text-white/70">
@@ -226,23 +227,10 @@ export default function MessagingSettings() {
     <div className="space-y-6">
       {/* Header */}
       <header className="rounded-2xl border border-white/10 bg-white/[0.03] p-4">
-        <div className="flex items-center gap-3">
-          <div className="flex-1">
-            <h1 className="text-lg font-semibold">Messaging Settings</h1>
-            <p className="mt-1 text-sm text-white/70">
-              Manage your text balance and message templates. (Twilio connection can be finished later.)
-            </p>
-          </div>
-          {/* Cheat Sheet trigger */}
-          <button
-            onClick={() => setCheatOpen(true)}
-            className="inline-flex items-center gap-2 rounded-xl border border-white/15 bg-white/5 px-3 py-2 text-xs hover:bg-white/10"
-            title="Show template variables"
-          >
-            <Info className="h-4 w-4" />
-            Template Variables
-          </button>
-        </div>
+        <h1 className="text-lg font-semibold">Messaging Settings</h1>
+        <p className="mt-1 text-sm text-white/70">
+          Manage your text balance and message templates. (Twilio connection can be finished later.)
+        </p>
       </header>
 
       {/* Wallet block */}
@@ -251,17 +239,43 @@ export default function MessagingSettings() {
           <div>
             <div className="text-sm text-white/60">Text balance</div>
             <div className="text-xl font-semibold">${balanceDollars}</div>
-            <div className="mt-1 text-xs text-white/50">
-              Texts are billed per segment.
-            </div>
+            <div className="mt-1 text-xs text-white/50">Texts are billed per segment.</div>
           </div>
 
           <div className="flex flex-col gap-2 md:items-end">
             <div className="flex flex-wrap gap-2">
-              <button onClick={() => addFunds(500)}  disabled={topping} className="inline-flex items-center gap-1 rounded-lg border border-white/15 bg-white/5 px-3 py-2 text-sm hover:bg-white/10 disabled:opacity-50"><CreditCard className="h-4 w-4" /> +$5</button>
-              <button onClick={() => addFunds(1000)} disabled={topping} className="inline-flex items-center gap-1 rounded-lg border border-white/15 bg-white/5 px-3 py-2 text-sm hover:bg-white/10 disabled:opacity-50"><CreditCard className="h-4 w-4" /> +$10</button>
-              <button onClick={() => addFunds(2000)} disabled={topping} className="inline-flex items-center gap-1 rounded-lg border border-white/15 bg-white/5 px-3 py-2 text-sm hover:bg-white/10 disabled:opacity-50"><CreditCard className="h-4 w-4" /> +$20</button>
-              <button onClick={() => addFunds(5000)} disabled={topping} className="inline-flex items-center gap-1 rounded-lg border border-white/15 bg-white/5 px-3 py-2 text-sm hover:bg-white/10 disabled:opacity-50"><CreditCard className="h-4 w-4" /> +$50</button>
+              <button
+                type="button"
+                onClick={() => addFunds(500)}
+                disabled={topping}
+                className="inline-flex items-center gap-1 rounded-lg border border-white/15 bg-white/5 px-3 py-2 text-sm hover:bg-white/10 disabled:opacity-50"
+              >
+                <CreditCard className="h-4 w-4" /> +$5
+              </button>
+              <button
+                type="button"
+                onClick={() => addFunds(1000)}
+                disabled={topping}
+                className="inline-flex items-center gap-1 rounded-lg border border-white/15 bg-white/5 px-3 py-2 text-sm hover:bg-white/10 disabled:opacity-50"
+              >
+                <CreditCard className="h-4 w-4" /> +$10
+              </button>
+              <button
+                type="button"
+                onClick={() => addFunds(2000)}
+                disabled={topping}
+                className="inline-flex items-center gap-1 rounded-lg border border-white/15 bg-white/5 px-3 py-2 text-sm hover:bg-white/10 disabled:opacity-50"
+              >
+                <CreditCard className="h-4 w-4" /> +$20
+              </button>
+              <button
+                type="button"
+                onClick={() => addFunds(5000)}
+                disabled={topping}
+                className="inline-flex items-center gap-1 rounded-lg border border-white/15 bg-white/5 px-3 py-2 text-sm hover:bg-white/10 disabled:opacity-50"
+              >
+                <CreditCard className="h-4 w-4" /> +$50
+              </button>
             </div>
 
             <div className="flex items-center gap-2">
@@ -281,7 +295,14 @@ export default function MessagingSettings() {
                     className="w-24 rounded-lg border border-white/15 bg-white/5 pl-5 pr-3 py-2 text-sm outline-none focus:ring-1 focus:ring-indigo-400/50"
                   />
                 </div>
-                <button onClick={addCustom} disabled={topping} className="inline-flex items-center gap-1 rounded-lg border border-white/15 bg-white/5 px-3 py-2 text-sm hover:bg-white/10 disabled:opacity-50"><CreditCard className="h-4 w-4" /> Add</button>
+                <button
+                  type="button"
+                  onClick={addCustom}
+                  disabled={topping}
+                  className="inline-flex items-center gap-1 rounded-lg border border-white/15 bg-white/5 px-3 py-2 text-sm hover:bg-white/10 disabled:opacity-50"
+                >
+                  <CreditCard className="h-4 w-4" /> Add
+                </button>
               </div>
               {customMsg && <div className="text-xs text-amber-300">{customMsg}</div>}
             </div>
@@ -293,20 +314,42 @@ export default function MessagingSettings() {
 
       {/* Templates editor */}
       <section className="rounded-2xl border border-white/10 bg-white/[0.03] p-4">
-        <div className="flex items-center gap-2 mb-3">
+        <div className="mb-3 flex items-center gap-2">
           <div className="grid h-10 w-10 place-items-center rounded-xl bg-white/5 ring-1 ring-white/10">
             <MessageSquare className="h-5 w-5" />
           </div>
-          <div>
+          <div className="min-w-0">
             <h3 className="text-sm font-semibold">Message Templates</h3>
-            <p className="text-xs text-white/60">
+            <p className="text-xs text-white/60 truncate">
               Customize what’s sent for each event. Variables like <code className="px-1 rounded bg-white/10">{'{{first_name}}'}</code> are replaced automatically.
             </p>
           </div>
-          <div className="ml-auto text-xs text-white/60">
-            {saveState === "saving" && <span className="inline-flex items-center gap-1"><Loader2 className="h-3 w-3 animate-spin" /> Saving…</span>}
-            {saveState === "saved" && <span className="inline-flex items-center gap-1 text-emerald-300"><Check className="h-3 w-3" /> Saved</span>}
-            {saveState === "error" && <span className="text-rose-300">Save failed</span>}
+
+          {/* RIGHT-SIDE TRIGGER */}
+          <div className="ml-auto">
+            <button
+              type="button"
+              onClick={() => setCheatOpen(true)}
+              className="inline-flex items-center gap-2 rounded-xl border border-white/15 bg-white/5 px-3 py-2 text-xs hover:bg-white/10"
+              title="Show template variables"
+            >
+              <Info className="h-4 w-4" />
+              Template Variables
+            </button>
+          </div>
+
+          <div className="text-xs text-white/60">
+            {saveState === "saving" && (
+              <span className="ml-3 inline-flex items-center gap-1">
+                <Loader2 className="h-3 w-3 animate-spin" /> Saving…
+              </span>
+            )}
+            {saveState === "saved" && (
+              <span className="ml-3 inline-flex items-center gap-1 text-emerald-300">
+                <Check className="h-3 w-3" /> Saved
+              </span>
+            )}
+            {saveState === "error" && <span className="ml-3 text-rose-300">Save failed</span>}
           </div>
         </div>
 
@@ -335,20 +378,29 @@ export default function MessagingSettings() {
         </ul>
       </section>
 
-      {/* Drawer: Template Variables Cheat Sheet (opt-out omitted) */}
+      {/* Drawer: Template Variables Cheat Sheet */}
       {cheatOpen && (
         <>
+          {/* Overlay */}
           <div
             className="fixed inset-0 z-40 bg-black/50"
             onClick={() => setCheatOpen(false)}
           />
-          <aside className="fixed right-0 top-0 z-50 h-full w-full max-w-md rounded-l-2xl border-l border-white/10 bg-[#0b0b12] p-4 shadow-2xl">
+
+          {/* Panel */}
+          <aside
+            className="fixed right-0 top-0 z-50 h-full w-full max-w-md rounded-l-2xl border-l border-white/10 bg-[#0b0b12] p-4 shadow-2xl"
+            role="dialog"
+            aria-modal="true"
+            aria-label="Template Variables"
+          >
             <div className="mb-3 flex items-center justify-between">
               <div className="inline-flex items-center gap-2">
                 <Info className="h-5 w-5" />
                 <h2 className="text-sm font-semibold">Template Variables</h2>
               </div>
               <button
+                type="button"
                 onClick={() => setCheatOpen(false)}
                 className="rounded-lg border border-white/15 bg-white/5 px-2 py-1 text-xs hover:bg-white/10"
               >
