@@ -11,6 +11,7 @@ import {
   Check,
   Search,
   Loader2,
+  Trash2,
 } from "lucide-react";
 
 /* ---------------- Utilities ---------------- */
@@ -143,7 +144,7 @@ export default function CallRecorder() {
     });
   }, [leads, leadSearch]);
 
-  /* -------- Fetch leads on mount -------- */
+  /* -------- Fetch leads on mount (only mine) -------- */
   useEffect(() => {
     let cancelled = false;
     (async () => {
@@ -151,12 +152,15 @@ export default function CallRecorder() {
       setLeadsLoading(true);
       setError("");
       try {
-        // Aligns with your schema: id, name, phone, email, stage
+        // Only leads associated with the current user:
+        // either leads.user_id === user.id OR leads.owner_user_id === user.id
         const { data, error: err } = await supabase
           .from("leads")
           .select("id, name, phone, email, stage")
+          .or(`user_id.eq.${user.id},owner_user_id.eq.${user.id}`)
           .order("updated_at", { ascending: false })
-          .limit(500); // cap for dropdown
+          .limit(500);
+
         if (err) throw err;
         if (!cancelled) setLeads(data || []);
       } catch (e) {
@@ -317,11 +321,14 @@ export default function CallRecorder() {
     setRecording(false);
     if (!keepAudio) {
       // clear audio
-      if (audioURL) URL.revokeObjectURL(audioURL);
+      try {
+        if (audioURL) URL.revokeObjectURL(audioURL);
+      } catch {}
       setAudioURL("");
       setBlobSize(0);
       setDuration(0);
       setStopped(false);
+      chunksRef.current = [];
     }
   }
 
@@ -342,6 +349,12 @@ export default function CallRecorder() {
     } finally {
       setAnnotating(false);
     }
+  }
+
+  function handleDeleteRecording() {
+    const ok = typeof window !== "undefined" ? window.confirm("Delete this recording from your browser?") : true;
+    if (!ok) return;
+    stopEverything({ keepAudio: false }); // wipes audio URL, chunks, size, duration
   }
 
   /* -------- UI -------- */
@@ -507,18 +520,30 @@ export default function CallRecorder() {
       <div className="rounded-xl border border-white/10 p-4 bg-white/5 mb-6">
         <div className="flex items-center justify-between mb-3">
           <div className="text-sm text-white/70">Recording Output</div>
-          {audioURL ? (
-            <a
-              href={audioURL}
-              download={`call-${selectedLead ? slugify(selectedLead.name || "lead") : "unassigned"}-${nowStamp()}.${
-                (mimeType || "audio/webm").includes("mp4") ? "m4a" : "webm"
-              }`}
-              className="inline-flex items-center gap-2 rounded-xl px-3 py-1.5 text-sm bg-indigo-600 hover:bg-indigo-500"
-            >
-              <Download className="w-4 h-4" />
-              Download Audio
-            </a>
-          ) : null}
+          <div className="flex items-center gap-2">
+            {audioURL ? (
+              <>
+                <a
+                  href={audioURL}
+                  download={`call-${selectedLead ? slugify(selectedLead.name || "lead") : "unassigned"}-${nowStamp()}.${
+                    (mimeType || "audio/webm").includes("mp4") ? "m4a" : "webm"
+                  }`}
+                  className="inline-flex items-center gap-2 rounded-xl px-3 py-1.5 text-sm bg-indigo-600 hover:bg-indigo-500"
+                >
+                  <Download className="w-4 h-4" />
+                  Download Audio
+                </a>
+                <button
+                  onClick={handleDeleteRecording}
+                  className="inline-flex items-center gap-2 rounded-xl px-3 py-1.5 text-sm bg-rose-700 hover:bg-rose-600"
+                  title="Delete recording from this browser"
+                >
+                  <Trash2 className="w-4 h-4" />
+                  Delete
+                </button>
+              </>
+            ) : null}
+          </div>
         </div>
 
         {!audioURL && (
@@ -545,7 +570,7 @@ export default function CallRecorder() {
             <FileText className="w-4 h-4 text-white/70" />
             <div className="text-sm text-white/70">Annotations (local)</div>
           </div>
-          <button
+        <button
             onClick={handleAnnotate}
             disabled={annotating || !transcript.trim()}
             className={`inline-flex items-center gap-2 rounded-xl px-3 py-1.5 text-sm 
