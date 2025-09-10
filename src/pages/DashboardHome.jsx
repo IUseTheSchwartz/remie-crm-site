@@ -42,21 +42,18 @@ export default function DashboardHome() {
   useEffect(() => {
     let isMounted = true;
 
-    // Initial fetch (IMPORTANT: pass options so stats filter by your user/team)
+    // Initial
     doRefresh("mount");
 
-    // Realtime subscriptions: refresh on any relevant insert/update/delete
-    // NOTE: marking Sold typically hits UPDATE on leads.
+    // Realtime: refresh on any insert/update/delete against likely tables
     const WATCH = [
       { table: "leads", events: ["INSERT", "UPDATE", "DELETE"] },
-      // keep these if your appointments live elsewhere; harmless if tables don't exist
       { table: "appointments", events: ["INSERT", "UPDATE", "DELETE"] },
       { table: "calendar_events", events: ["INSERT", "UPDATE", "DELETE"] },
       { table: "followups", events: ["INSERT", "UPDATE", "DELETE"] },
       { table: "pipeline_followups", events: ["INSERT", "UPDATE", "DELETE"] },
       { table: "pipeline_events", events: ["INSERT", "UPDATE", "DELETE"] },
     ];
-
     const channels = WATCH.map(({ table, events }) => {
       const ch = supabase.channel(`dash-${table}`);
       events.forEach((evt) => {
@@ -65,34 +62,27 @@ export default function DashboardHome() {
           doRefresh(`realtime:${table}:${evt}`);
         });
       });
-      ch.subscribe((status) => {
-        if (status === "CHANNEL_ERROR") {
-          console.warn(`[DashboardHome] Realtime channel error for ${table}`);
-        }
-      });
+      ch.subscribe();
       return ch;
     });
 
-    // Cross-tab localStorage changes (fires in other tabs)
+    // Cross-tab storage changes
     const onStorage = () => isMounted && doRefresh("storage");
     window.addEventListener("storage", onStorage);
 
-    // Same-tab manual signal (fire after marking Sold in your UI code)
+    // Same-tab manual signal after local changes:
     // window.dispatchEvent(new CustomEvent("stats:changed"))
     const onCustom = () => isMounted && doRefresh("custom");
     window.addEventListener("stats:changed", onCustom);
 
-    // Refresh when tab regains focus / becomes visible (helps with local-only changes)
+    // Focus/visibility (helps pick up local-only edits)
     const onFocus = () => isMounted && doRefresh("focus");
     const onVis = () => document.visibilityState === "visible" && isMounted && doRefresh("visible");
     window.addEventListener("focus", onFocus);
     document.addEventListener("visibilitychange", onVis);
 
-    // Polling fallback every 60s while testing
-    const poll = setInterval(() => {
-      if (!isMounted) return;
-      doRefresh("poll");
-    }, 60000);
+    // Polling fallback
+    const poll = setInterval(() => isMounted && doRefresh("poll"), 60000);
 
     return () => {
       isMounted = false;
@@ -103,7 +93,7 @@ export default function DashboardHome() {
       document.removeEventListener("visibilitychange", onVis);
       channels.forEach((ch) => supabase.removeChannel(ch));
     };
-  }, [user?.id, user?.app_metadata?.team_id]); // rerun when identity scope changes
+  }, [user?.id, user?.app_metadata?.team_id]);
 
   const money = (n) =>
     Intl.NumberFormat(undefined, {
