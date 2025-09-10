@@ -1,8 +1,8 @@
 // File: src/lib/stats.js
 // Dashboard + Reports helpers
 // - REPORTS: SOLD & Premium from local storage (policy startDate) so it stays synchronous.
-// - DASHBOARD: SOLD & Premium from Supabase (filtered by user_id/team_id), using "marked sold" timestamp.
-// - Leads: Supabase (leads.created_at) — so far to NOW
+// - DASHBOARD: SOLD & Premium from Supabase `leads` (status='sold'), scoped by user/team, using "marked-sold" time.
+// - Leads: Supabase (leads.created_at) — to NOW
 // - Appointments: Supabase (leads.next_follow_up_at) — to period end
 
 import { supabase } from "../lib/supabaseClient.js";
@@ -58,7 +58,7 @@ export function fmtMonth(d) { return new Date(d).toLocaleDateString(undefined, {
 export function getWeekKey(d){ const b = startOfWeek(toLocalNoon(d) || new Date()); return b.toISOString().slice(0,10); }
 
 /* =====================================================
-   SOLD — LOCAL STORAGE (Reports only; policy startDate)
+   REPORTS — SOLD from local storage (policy startDate)
 =====================================================*/
 export function getSoldEventsFromStorage() {
   const clients = loadClients() || [];
@@ -161,96 +161,97 @@ function groupDays(items = []) {
 }
 
 /* =====================================================
-   DASHBOARD — SOLD from Supabase with user/team scoping
-   (Counts by "marked sold" time, not policy start date)
+   DASHBOARD — SOLD from Supabase `leads` (status='sold')
+   Scoped by user/team. Count by "marked sold" time.
 =====================================================*/
 
-const SOLD_TIME_COLS_DASH = [
-  "sold_marked_at", "sold_at", "closed_at", "date_marked", "marked_at",
-  "updated_at", "created_at"
-];
-const SOLD_PREMIUM_COLS = [
-  "sold_premium", "premium", "monthly_premium", "annual_premium"
-];
+// Prefer these fields for the "marked sold" timestamp if present in sold JSON
+const SOLD_JSON_TIME_KEYS = ["markedAt", "soldAt", "closedAt", "dateMarked"];
+// Premium fields in sold JSON
+const SOLD_JSON_PREMIUM_KEYS = ["premium", "monthlyPayment", "annualPremium"];
 
-// Try a single time column; return rows or [] on error.
-async function trySoldQuery(col, startISO, endISO, options = {}) {
-  try {
-    let q = supabase
-      .from("leads")
-      .select([
-        "id", "user_id", "team_id", "status",
-        "name", "email", "phone", "carrier",
-        ...SOLD_TIME_COLS_DASH,
-        ...SOLD_PREMIUM_COLS,
-        "sold_start_date", "policy_start_date"
-      ].join(","))
-      .gte(col, startISO)
-      .lte(col, endISO);
+/** Get team user IDs for scoping (user_teams). */
+async function fetchTeamUserIds(team_id) {
+  const { data, error } = await supabase
+    .from("user_teams")
+    .select("user_id")
+    .eq("team_id", team_id)
+    .eq("status", "active");
 
-    if (options.team_id) q = q.eq("team_id", options.team_id);
-    if (options.user_id) q = q.eq("user_id", options.user_id);
-    // If a status column exists, restrict to sold-like statuses
-    try { q = q.in("status", ["sold", "policy_closed", "closed"]); } catch {}
-
-    const { data, error } = await q;
-    if (error) {
-      console.warn(`[stats] sold query error on col ${col}:`, error);
-      return [];
-    }
-    return data || [];
-  } catch (e) {
+  if (error) {
+    console.warn("[stats] fetchTeamUserIds error:", error);
     return [];
   }
+  return (data || []).map((r) => r.user_id);
 }
 
-function chooseMarkedDate(row) {
-  for (const key of SOLD_TIME_COLS_DASH) {
-    if (row[key]) return row[key];
+/** Choose the best "marked sold" timestamp for a row. */
+function chooseMarkedDateFromRow(row) {
+  // Prefer jsonb sold.timestamp fields if present
+  const s = row?.sold || {};
+  for (const k of SOLD_JSON_TIME_KEYS) {
+    if (s && s[k]) return s[k];
   }
-  return new Date().toISOString();
+  // Fallback to updated_at (most DBs touch this when status flips to 'sold')
+  if (row.updated_at) return row.updated_at;
+  return row.created_at || new Date().toISOString();
 }
 
-function choosePremium(row) {
-  for (const key of SOLD_PREMIUM_COLS) {
-    const v = parseNumber(row[key]);
+/** Extract premium from the sold JSON. */
+function choosePremiumFromRow(row) {
+  const s = row?.sold || {};
+  for (const k of SOLD_JSON_PREMIUM_KEYS) {
+    const v = parseNumber(s[k]);
     if (v > 0) return v;
   }
+  // If monthlyPayment present, some teams want monthly sum in dashboard:
+  // return parseNumber(s.monthlyPayment) * 12; // <- uncomment if you want annualized
   return 0;
 }
 
-function mapRowsToEvents(rows = []) {
-  return (rows || []).map((r) => ({
+/** Fetch sold leads rows for a window, scoped by user/team, and map to events. */
+async function fetchSoldEventsSupabase(startISO, endISO, options = {}) {
+  let userIds = null;
+
+  // Resolve scope
+  if (options.user_id) {
+    userIds = [options.user_id];
+  } else if (options.team_id) {
+    userIds = await fetchTeamUserIds(options.team_id);
+  }
+
+  // Base query
+  let q = supabase
+    .from("leads")
+    .select("id,user_id,status,updated_at,created_at,sold,name,email,phone,company")
+    .eq("status", "sold");
+
+  // Scope by user(s)
+  if (Array.isArray(userIds) && userIds.length > 0) {
+    if (userIds.length === 1) q = q.eq("user_id", userIds[0]);
+    else q = q.in("user_id", userIds);
+  }
+
+  // Filter by updated_at in window (used as a good proxy for marked-sold)
+  q = q.gte("updated_at", startISO).lte("updated_at", endISO);
+
+  const { data, error } = await q;
+  if (error) {
+    console.error("[stats] fetchSoldEventsSupabase error:", error);
+    return [];
+  }
+
+  // Map to dash events using the best timestamp + premium
+  return (data || []).map((r) => ({
     type: "policy_closed",
-    date: chooseMarkedDate(r),
-    premium: choosePremium(r),
+    date: chooseMarkedDateFromRow(r), // could be sold.markedAt or updated_at
+    premium: choosePremiumFromRow(r),
     name: r.name || r.email || r.phone || "Unknown",
     email: r.email || "",
     phone: r.phone || "",
-    carrier: r.carrier || "",
-    id: r.id
+    carrier: r.company || "", // adjust if you store carrier name elsewhere
+    id: r.id,
   }));
-}
-
-async function fetchSoldEventsSupabase(startISO, endISO, options = {}) {
-  // Query each candidate time column and merge results by id.
-  const perCol = await Promise.all(
-    SOLD_TIME_COLS_DASH.map((col) => trySoldQuery(col, startISO, endISO, options))
-  );
-
-  const byId = new Map(); // id -> row
-  for (const batch of perCol) {
-    for (const r of batch) {
-      if (!byId.has(r.id)) byId.set(r.id, r);
-      else {
-        // Prefer a more specific "sold_marked_at" over generic timestamps
-        const cur = byId.get(r.id);
-        const order = (row) => SOLD_TIME_COLS_DASH.findIndex(k => !!row[k]);
-        if (order(r) < order(cur)) byId.set(r.id, r);
-      }
-    }
-  }
-  return mapRowsToEvents([...byId.values()]);
 }
 
 /* -----------------------------------------------
@@ -262,9 +263,14 @@ async function countLeadsBetween(startISO, endISO, options = {}) {
     .select("id", { count: "exact", head: true })
     .gte("created_at", startISO)
     .lte("created_at", endISO);
-  if (options.team_id) q = q.eq("team_id", options.team_id);
+
   if (options.user_id) q = q.eq("user_id", options.user_id);
-  if (options.extraFilters) q = options.extraFilters(q);
+  else if (options.team_id) {
+    const userIds = await fetchTeamUserIds(options.team_id);
+    if (userIds.length === 0) return 0;
+    q = q.in("user_id", userIds);
+  }
+
   const { count, error } = await q;
   if (error) { console.error("[stats] lead count error:", error); return 0; }
   return count || 0;
@@ -278,8 +284,14 @@ async function countAppointmentsBetween(startISO, endISO, options = {}) {
     .gte(APPT_SOURCE.timeCol, startISO)
     .lte(APPT_SOURCE.timeCol, endISO)
     .not(APPT_SOURCE.timeCol, "is", null);
-  if (options.team_id) q = q.eq("team_id", options.team_id);
+
   if (options.user_id) q = q.eq("user_id", options.user_id);
+  else if (options.team_id) {
+    const userIds = await fetchTeamUserIds(options.team_id);
+    if (userIds.length === 0) return 0;
+    q = q.in("user_id", userIds);
+  }
+
   const { count, error } = await q;
   if (error) { console.error("[stats] appt count error:", error); return 0; }
   return count || 0;
@@ -309,6 +321,7 @@ export async function refreshDashboardSnapshot(options = {}, now = new Date()) {
     fetchSoldEventsSupabase(todayStart.toISOString(), todayEnd.toISOString(), options),
     fetchSoldEventsSupabase(weekStart.toISOString(),  weekEnd.toISOString(),  options),
     fetchSoldEventsSupabase(monthStart.toISOString(), monthEnd.toISOString(), options),
+    // For allTime we’ll just fetch everything with status='sold' in the past 100 years :)
     fetchSoldEventsSupabase("1970-01-01T00:00:00.000Z", "9999-12-31T23:59:59.999Z", options),
   ]);
 
