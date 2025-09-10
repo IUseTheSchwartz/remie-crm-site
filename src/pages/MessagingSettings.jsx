@@ -8,11 +8,11 @@ const TEMPLATE_DEFS = [
   { key: "new_lead", label: "New Lead (instant)" },
   { key: "appointment", label: "Appointment Reminder" },
   { key: "sold", label: "Sold - Policy Info" },
-  { key: "policy_info", label: "Sold - Policy Info (Alt)" },
   { key: "payment_reminder", label: "Payment Reminder" },
   { key: "birthday_text", label: "Birthday Text" },
   { key: "holiday_text", label: "Holiday Text" },
 ];
+
 
 /* ---------------- Suggested defaults ---------------- */
 const DEFAULTS = {
@@ -28,13 +28,6 @@ const DEFAULTS = {
     "• Policy #: {{policy_number}}\n" +
     "• Premium: ${{premium}}/mo\n" +
     "If you have any questions or need assistance, feel free to call or text me anytime.",
-
-  policy_info:
-    "Hi {{first_name}}, this is {{agent_name}}. Here’s a summary of your policy:\n" +
-    "• Carrier: {{carrier}}\n" +
-    "• Policy #: {{policy_number}}\n" +
-    "• Premium: ${{premium}}/mo\n" +
-    "Keep this handy for your records, and let me know if anything ever changes.",
 
   payment_reminder:
     "Hi {{first_name}}, this is {{agent_name}}. I’m reaching out to remind you that your policy payment is coming up soon. If your billing details have changed or you need assistance, please let me know so we can avoid any interruptions.",
