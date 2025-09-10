@@ -7,7 +7,7 @@ import { BarChart3, TrendingUp, Target } from "lucide-react";
 
 /* ---------- helpers to read sold JSON ---------- */
 const PREMIUM_KEYS = ["premium", "monthlyPayment", "annualPremium"];
-const POLICY_DATE_KEYS = ["startDate", "policy_start_date", "policyStartDate", "effectiveDate", "policyEffectiveDate"];
+const MARKED_KEYS  = ["markedAt", "soldAt", "closedAt", "dateMarked"];
 
 function parseNumber(x) {
   if (x == null) return 0;
@@ -23,12 +23,10 @@ function pickPremium(sold) {
   }
   return 0;
 }
-function pickPolicyDate(sold, fallback) {
+function pickMarkedDate(sold, updated_at, created_at) {
   const s = sold || {};
-  for (const k of POLICY_DATE_KEYS) {
-    if (s[k]) return new Date(s[k]);
-  }
-  return fallback ? new Date(fallback) : null;
+  for (const k of MARKED_KEYS) if (s[k]) return new Date(s[k]);
+  return updated_at ? new Date(updated_at) : new Date(created_at || Date.now());
 }
 
 /* ---------- UI bits ---------- */
@@ -49,7 +47,7 @@ export default function TeamDashboard() {
   const [loading, setLoading] = useState(true);
 
   const monthStart = useMemo(() => startOfMonth(new Date()), []);
-  const monthEnd = useMemo(() => endOfMonth(new Date()), []);
+  const monthEnd   = useMemo(() => endOfMonth(new Date()), []);
 
   useEffect(() => {
     (async () => {
@@ -59,13 +57,16 @@ export default function TeamDashboard() {
       const { data: t } = await supabase.from("teams").select("*").eq("id", teamId).single();
       setTeam(t || null);
 
-      // 2) Resolve active team member IDs
+      // 2) Resolve team member IDs (include active/invited)
       const { data: ut } = await supabase
         .from("user_teams")
-        .select("user_id")
-        .eq("team_id", teamId)
-        .eq("status", "active");
-      const userIds = (ut || []).map((r) => r.user_id);
+        .select("user_id,status")
+        .eq("team_id", teamId);
+
+      const userIds = (ut || [])
+        .filter(r => r.status === "active" || r.status === "invited" || !r.status)
+        .map(r => r.user_id);
+
       if (userIds.length === 0) {
         setKpis({ leadsThisMonth: 0, apps: 0, policies: 0, premium: 0, conversion: 0 });
         setLeaderboard([]);
@@ -73,7 +74,7 @@ export default function TeamDashboard() {
         return;
       }
 
-      // 3) Leads this month
+      // 3) Leads this month (so far)
       const { count: leadsCount } = await supabase
         .from("leads")
         .select("id", { count: "exact", head: true })
@@ -81,7 +82,7 @@ export default function TeamDashboard() {
         .gte("created_at", monthStart.toISOString())
         .lte("created_at", new Date().toISOString());
 
-      // 4) Appointments this month (from leads.next_follow_up_at)
+      // 4) "Applications" KPI from next_follow_up_at (appointments)
       const { count: apptCount } = await supabase
         .from("leads")
         .select("id", { count: "exact", head: true })
@@ -90,27 +91,27 @@ export default function TeamDashboard() {
         .gte("next_follow_up_at", monthStart.toISOString())
         .lte("next_follow_up_at", monthEnd.toISOString());
 
-      // 5) Sold leads for the team (we'll bucket by POLICY start date)
+      // 5) Team SOLD rows (status='sold'); we'll bucket by MARKED-SOLD date
       const { data: soldRows } = await supabase
         .from("leads")
         .select("id,user_id,name,email,phone,company,sold,created_at,updated_at")
         .in("user_id", userIds)
         .eq("status", "sold");
 
-      // Normalize + keep only this-month policies
+      // Normalize + keep only those whose MARKED date falls in this month
       const soldThisMonth = (soldRows || []).map((r) => {
-        const policyDate = pickPolicyDate(r.sold, r.updated_at || r.created_at);
+        const marked = pickMarkedDate(r.sold, r.updated_at, r.created_at);
         return {
           id: r.id,
           user_id: r.user_id,
           name: r.name || r.email || r.phone || "Unknown",
           carrier: r.company || "",
           premium: pickPremium(r.sold),
-          policyDate,
+          markedAt: marked,
         };
       }).filter((x) => {
-        if (!x.policyDate) return false;
-        const t = +x.policyDate;
+        if (!x.markedAt) return false;
+        const t = +x.markedAt;
         return t >= +monthStart && t <= +monthEnd;
       });
 
@@ -120,13 +121,13 @@ export default function TeamDashboard() {
 
       setKpis({
         leadsThisMonth: leadsCount || 0,
-        apps: apptCount || 0, // "Applications" KPI is using appointments; rename label if desired
+        apps: apptCount || 0,
         policies: policiesCount,
         premium: premiumSum,
         conversion,
       });
 
-      // 6) Leaderboard (this-month only)
+      // 6) Leaderboard (this-month only; by premium)
       const byUser = {};
       for (const r of soldThisMonth) {
         if (!byUser[r.user_id]) byUser[r.user_id] = { user_id: r.user_id, policies: 0, premium: 0 };
@@ -161,7 +162,7 @@ export default function TeamDashboard() {
         <h1 className="text-2xl font-semibold flex items-center gap-2">
           <BarChart3 className="w-6 h-6" /> {team.name} — Team Dashboard
         </h1>
-        <p className="text-sm text-gray-500">This month’s production across all active team members.</p>
+        <p className="text-sm text-gray-500">This month’s production across all active team members (counted when marked SOLD).</p>
       </header>
 
       {/* KPI Cards */}
