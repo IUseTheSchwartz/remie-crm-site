@@ -335,7 +335,7 @@ export default function MessagingSettings() {
         </ul>
       </section>
 
-      {/* Drawer via portal */}
+      {/* Drawer via portal (safe) */}
       <SlideOver open={cheatOpen} onClose={() => setCheatOpen(false)} title="Template Variables">
         <p className="mb-3 text-xs text-white/70">
           Paste these tokens into any template. The system replaces them automatically when messages are sent.
@@ -393,18 +393,21 @@ function SlideOver({ open, onClose, title, children }) {
     return () => window.removeEventListener("keydown", onKey);
   }, [open, onClose]);
 
-  if (!mounted) return null;
+  // Only render the portal when:
+  // 1) we've mounted on the client, 2) document exists, and 3) the drawer is open.
+  if (!mounted || typeof document === "undefined" || !open) return null;
+
   return createPortal(
     <>
       {/* overlay */}
       <div
-        className={`fixed inset-0 z-40 transition ${open ? "bg-black/50" : "pointer-events-none bg-transparent"}`}
-        onClick={onClose}
+        className="fixed inset-0 z-40 bg-black/50"
+        onClick={() => onClose?.()}
         aria-hidden="true"
       />
       {/* panel */}
       <aside
-        className={`fixed right-0 top-0 z-50 h-full w-full max-w-md transform rounded-l-2xl border-l border-white/10 bg-[#0b0b12] p-4 shadow-2xl transition-transform ${open ? "translate-x-0" : "translate-x-full"}`}
+        className="fixed right-0 top-0 z-50 h-full w-full max-w-md transform rounded-l-2xl border-l border-white/10 bg-[#0b0b12] p-4 shadow-2xl transition-transform translate-x-0"
         role="dialog"
         aria-modal="true"
         aria-label={title || "Panel"}
@@ -413,7 +416,7 @@ function SlideOver({ open, onClose, title, children }) {
           <h2 className="text-sm font-semibold">{title}</h2>
           <button
             type="button"
-            onClick={onClose}
+            onClick={() => onClose?.()}
             className="rounded-lg border border-white/15 bg-white/5 px-2 py-1 text-xs hover:bg-white/10"
           >
             Close
