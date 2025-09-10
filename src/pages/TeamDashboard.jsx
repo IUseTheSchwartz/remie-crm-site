@@ -2,16 +2,43 @@
 import { useEffect, useMemo, useState } from "react";
 import { useParams } from "react-router-dom";
 import { supabase } from "../lib/supabaseClient";
-import { getCurrentUserId } from "../lib/teamApi";
+import { startOfMonth, endOfMonth } from "../lib/stats.js";
 import { BarChart3, TrendingUp, Target } from "lucide-react";
 
-// small helper
+/* ---------- helpers to read sold JSON ---------- */
+const PREMIUM_KEYS = ["premium", "monthlyPayment", "annualPremium"];
+const POLICY_DATE_KEYS = ["startDate", "policy_start_date", "policyStartDate", "effectiveDate", "policyEffectiveDate"];
+
 function parseNumber(x) {
   if (x == null) return 0;
   if (typeof x === "number") return x;
-  const n = String(x).replace(/[$,\s]/g, "");
-  const v = parseFloat(n);
+  const v = parseFloat(String(x).replace(/[$,\s]/g, ""));
   return Number.isFinite(v) ? v : 0;
+}
+function pickPremium(sold) {
+  const s = sold || {};
+  for (const k of PREMIUM_KEYS) {
+    const v = parseNumber(s[k]);
+    if (v > 0) return v;
+  }
+  return 0;
+}
+function pickPolicyDate(sold, fallback) {
+  const s = sold || {};
+  for (const k of POLICY_DATE_KEYS) {
+    if (s[k]) return new Date(s[k]);
+  }
+  return fallback ? new Date(fallback) : null;
+}
+
+/* ---------- UI bits ---------- */
+function KpiCard({ label, value, icon }) {
+  return (
+    <div className="border rounded-2xl p-4">
+      <div className="text-sm text-gray-600 flex items-center gap-2">{icon} {label}</div>
+      <div className="text-2xl font-semibold mt-1">{value}</div>
+    </div>
+  );
 }
 
 export default function TeamDashboard() {
@@ -21,154 +48,109 @@ export default function TeamDashboard() {
   const [leaderboard, setLeaderboard] = useState([]);
   const [loading, setLoading] = useState(true);
 
-  const monthStartISO = useMemo(() => {
-    const d = new Date(); d.setDate(1); d.setHours(0,0,0,0); return d.toISOString();
-  }, []);
+  const monthStart = useMemo(() => startOfMonth(new Date()), []);
+  const monthEnd = useMemo(() => endOfMonth(new Date()), []);
 
   useEffect(() => {
     (async () => {
       setLoading(true);
-      await getCurrentUserId(); // ensure authed
 
-      /* ---------------- Load Team ---------------- */
-      const { data: t, error: tErr } = await supabase
-        .from("teams")
-        .select("*")
-        .eq("id", teamId)
-        .single();
-      if (tErr) console.warn("[TeamDashboard] load team error:", tErr);
+      // 1) Load team
+      const { data: t } = await supabase.from("teams").select("*").eq("id", teamId).single();
       setTeam(t || null);
 
-      /* ---------------- Leads this month ---------------- */
-      let leadsCount = 0;
-      {
-        const { count, error } = await supabase
-          .from("leads")
-          .select("id", { count: "exact" })
-          .eq("team_id", teamId)
-          .gte("created_at", monthStartISO)
-          .limit(1);
-        if (error) console.warn("[TeamDashboard] leads count error:", error);
-        leadsCount = count || 0;
+      // 2) Resolve active team member IDs
+      const { data: ut } = await supabase
+        .from("user_teams")
+        .select("user_id")
+        .eq("team_id", teamId)
+        .eq("status", "active");
+      const userIds = (ut || []).map((r) => r.user_id);
+      if (userIds.length === 0) {
+        setKpis({ leadsThisMonth: 0, apps: 0, policies: 0, premium: 0, conversion: 0 });
+        setLeaderboard([]);
+        setLoading(false);
+        return;
       }
 
-      /* ---------------- Applications ---------------- */
-      // Try applications table first; if not available, fall back to leads by stage/status
-      let appsCount = 0;
-      {
-        const { count, error } = await supabase
-          .from("applications")
-          .select("id", { count: "exact" })
-          .eq("team_id", teamId)
-          .gte("created_at", monthStartISO)
-          .limit(1);
+      // 3) Leads this month
+      const { count: leadsCount } = await supabase
+        .from("leads")
+        .select("id", { count: "exact", head: true })
+        .in("user_id", userIds)
+        .gte("created_at", monthStart.toISOString())
+        .lte("created_at", new Date().toISOString());
 
-        if (!error) {
-          appsCount = count || 0;
-        } else {
-          // Fallback: detect "application" via leads.stage/status
-          const { count: fallbackCount, error: fbErr } = await supabase
-            .from("leads")
-            .select("id", { count: "exact" })
-            .eq("team_id", teamId)
-            .gte("created_at", monthStartISO)
-            .or("stage.eq.application,stage.eq.applications,status.eq.application,status.eq.application_submitted")
-            .limit(1);
-          if (fbErr) console.warn("[TeamDashboard] apps fallback error:", fbErr);
-          appsCount = fallbackCount || 0;
-        }
-      }
+      // 4) Appointments this month (from leads.next_follow_up_at)
+      const { count: apptCount } = await supabase
+        .from("leads")
+        .select("id", { count: "exact", head: true })
+        .in("user_id", userIds)
+        .not("next_follow_up_at", "is", null)
+        .gte("next_follow_up_at", monthStart.toISOString())
+        .lte("next_follow_up_at", monthEnd.toISOString());
 
-      /* ---------------- Policies sold + premium ---------------- */
-      // Prefer sold_at (if your schema has it); otherwise fall back to created_at window.
-      let policiesRows = [];
-      {
-        // First try filtering by sold_at within this month
-        const { data: rowsBySoldAt, error: soldAtErr } = await supabase
-          .from("leads")
-          .select("id,user_id,premium,monthlyPayment,faceAmount,sold_premium,sold_monthly,sold_face,sold,sold_at,created_at")
-          .eq("team_id", teamId)
-          .or("status.eq.sold,stage.eq.sold")
-          .gte("sold_at", monthStartISO);
+      // 5) Sold leads for the team (we'll bucket by POLICY start date)
+      const { data: soldRows } = await supabase
+        .from("leads")
+        .select("id,user_id,name,email,phone,company,sold,created_at,updated_at")
+        .in("user_id", userIds)
+        .eq("status", "sold");
 
-        if (soldAtErr) console.warn("[TeamDashboard] policies sold_at query error:", soldAtErr);
+      // Normalize + keep only this-month policies
+      const soldThisMonth = (soldRows || []).map((r) => {
+        const policyDate = pickPolicyDate(r.sold, r.updated_at || r.created_at);
+        return {
+          id: r.id,
+          user_id: r.user_id,
+          name: r.name || r.email || r.phone || "Unknown",
+          carrier: r.company || "",
+          premium: pickPremium(r.sold),
+          policyDate,
+        };
+      }).filter((x) => {
+        if (!x.policyDate) return false;
+        const t = +x.policyDate;
+        return t >= +monthStart && t <= +monthEnd;
+      });
 
-        if (rowsBySoldAt && rowsBySoldAt.length) {
-          policiesRows = rowsBySoldAt;
-        } else {
-          // Fallback: if no sold_at column/data, count those created this month and marked sold
-          const { data: rowsByCreated, error: createdErr } = await supabase
-            .from("leads")
-            .select("id,user_id,premium,monthlyPayment,faceAmount,sold_premium,sold_monthly,sold_face,sold,sold_at,created_at")
-            .eq("team_id", teamId)
-            .or("status.eq.sold,stage.eq.sold")
-            .gte("created_at", monthStartISO);
-          if (createdErr) console.warn("[TeamDashboard] policies created_at fallback error:", createdErr);
-          policiesRows = rowsByCreated || [];
-        }
-      }
-
-      const policiesCount = policiesRows.length;
-
-      // Compute premium from best-available columns on leads
-      // Priority: sold_premium -> premium -> monthlyPayment (if you treat it as monthly premium)
-      const premiumSum = policiesRows.reduce((acc, r) => {
-        const v =
-          parseNumber(r.sold_premium) ||
-          parseNumber(r.premium) ||
-          parseNumber(r.monthlyPayment); // adjust if you prefer annualize monthly, etc.
-        return acc + v;
-      }, 0);
-
-      /* ---------------- Conversion ---------------- */
-      const conversion = leadsCount ? Math.round((policiesCount / leadsCount) * 100) : 0;
+      const policiesCount = soldThisMonth.length;
+      const premiumSum = soldThisMonth.reduce((a, b) => a + (b.premium || 0), 0);
+      const conversion = leadsCount ? Math.round((policiesCount / (leadsCount || 1)) * 100) : 0;
 
       setKpis({
-        leadsThisMonth: leadsCount,
-        apps: appsCount,
+        leadsThisMonth: leadsCount || 0,
+        apps: apptCount || 0, // "Applications" KPI is using appointments; rename label if desired
         policies: policiesCount,
         premium: premiumSum,
         conversion,
       });
 
-      /* ---------------- Leaderboard (by user) ---------------- */
+      // 6) Leaderboard (this-month only)
       const byUser = {};
-      for (const p of policiesRows) {
-        const uid = p.user_id || "unknown";
-        if (!byUser[uid]) byUser[uid] = { user_id: uid, policies: 0, premium: 0 };
-        byUser[uid].policies += 1;
-        byUser[uid].premium +=
-          parseNumber(p.sold_premium) ||
-          parseNumber(p.premium) ||
-          parseNumber(p.monthlyPayment);
+      for (const r of soldThisMonth) {
+        if (!byUser[r.user_id]) byUser[r.user_id] = { user_id: r.user_id, policies: 0, premium: 0 };
+        byUser[r.user_id].policies += 1;
+        byUser[r.user_id].premium += r.premium || 0;
       }
 
-      const userIds = Object.keys(byUser).filter(Boolean);
-      let profiles = [];
-      if (userIds.length) {
-        const { data: profs, error: profErr } = await supabase
+      let rows = Object.values(byUser);
+      if (rows.length) {
+        const { data: profiles } = await supabase
           .from("profiles")
-          .select("id, full_name, email")
-          .in("id", userIds);
-        if (profErr) console.warn("[TeamDashboard] profiles error:", profErr);
-        profiles = profs || [];
+          .select("id,full_name,email")
+          .in("id", rows.map((r) => r.user_id));
+        const profs = profiles || [];
+        rows = rows.map((r) => {
+          const p = profs.find((x) => x.id === r.user_id);
+          return { ...r, name: p?.full_name || r.user_id.slice(0, 6), email: p?.email || "—" };
+        }).sort((a, b) => b.premium - a.premium);
       }
-
-      const rows = Object.values(byUser)
-        .map((r) => {
-          const p = profiles.find((x) => x.id === r.user_id);
-          return {
-            ...r,
-            name: p?.full_name || (r.user_id ? r.user_id.slice(0, 6) : "—"),
-            email: p?.email || "—",
-          };
-        })
-        .sort((a, b) => b.premium - a.premium);
-
       setLeaderboard(rows);
+
       setLoading(false);
     })();
-  }, [teamId, monthStartISO]);
+  }, [teamId, monthStart, monthEnd]);
 
   if (loading) return <div className="p-6">Loading...</div>;
   if (!team) return <div className="p-6">Team not found.</div>;
@@ -179,7 +161,7 @@ export default function TeamDashboard() {
         <h1 className="text-2xl font-semibold flex items-center gap-2">
           <BarChart3 className="w-6 h-6" /> {team.name} — Team Dashboard
         </h1>
-        <p className="text-sm text-gray-500">Overview of production and activity for this team.</p>
+        <p className="text-sm text-gray-500">This month’s production across all active team members.</p>
       </header>
 
       {/* KPI Cards */}
@@ -187,7 +169,7 @@ export default function TeamDashboard() {
         <KpiCard label="Leads (This Month)" value={kpis.leadsThisMonth} icon={<Target className="w-5 h-5" />} />
         <KpiCard label="Applications" value={kpis.apps} icon={<TrendingUp className="w-5 h-5" />} />
         <KpiCard label="Policies Sold" value={kpis.policies} icon={<TrendingUp className="w-5 h-5" />} />
-        <KpiCard label="Premium Volume" value={`$${(kpis.premium || 0).toLocaleString()}`} icon={<TrendingUp className="w-5 h-5" />} />
+        <KpiCard label="Premium Volume" value={`$${kpis.premium.toLocaleString()}`} icon={<TrendingUp className="w-5 h-5" />} />
       </section>
 
       {/* Conversion */}
@@ -198,7 +180,7 @@ export default function TeamDashboard() {
 
       {/* Leaderboard */}
       <section className="border rounded-2xl p-4">
-        <div className="font-medium mb-3">Top Producers</div>
+        <div className="font-medium mb-3">Top Producers (This Month)</div>
         <div className="overflow-auto">
           <table className="min-w-[640px] w-full text-sm">
             <thead className="text-left text-gray-600">
@@ -215,7 +197,7 @@ export default function TeamDashboard() {
                   <td className="py-2 pr-3">{r.name}</td>
                   <td className="py-2 pr-3">{r.email}</td>
                   <td className="py-2 pr-3">{r.policies}</td>
-                  <td className="py-2 pr-3">${(r.premium || 0).toLocaleString()}</td>
+                  <td className="py-2 pr-3">${r.premium.toLocaleString()}</td>
                 </tr>
               ))}
               {leaderboard.length === 0 && (
@@ -225,15 +207,6 @@ export default function TeamDashboard() {
           </table>
         </div>
       </section>
-    </div>
-  );
-}
-
-function KpiCard({ label, value, icon }) {
-  return (
-    <div className="border rounded-2xl p-4">
-      <div className="text-sm text-gray-600 flex items-center gap-2">{icon} {label}</div>
-      <div className="text-2xl font-semibold mt-1">{value}</div>
     </div>
   );
 }
