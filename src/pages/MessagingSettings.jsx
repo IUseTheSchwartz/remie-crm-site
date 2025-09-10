@@ -14,29 +14,38 @@ const TEMPLATE_DEFS = [
   { key: "holiday_text", label: "Holiday Text" },
 ];
 
-/* ---------------- Suggested defaults (opt-out removed) ---------------- */
+/* ---------------- Suggested defaults ---------------- */
 const DEFAULTS = {
   new_lead:
-    "Hi {{first_name}}, this is {{agent_name}}, a licensed life insurance broker in {{state}}. " +
-    "I just received the form you sent in to my office where you listed {{beneficiary}} as the beneficiary. " +
-    "If I’m unable to reach you or there’s a better time to get back to you, feel free to book an appointment with me here: {{calendly_link}}",
+    "Hi {{first_name}}, this is {{agent_name}}, a licensed life insurance broker in {{state}}. I just received the form you sent in to my office where you listed {{beneficiary}} as the beneficiary. If I’m unable to reach you or there’s a better time to get back to you, feel free to book an appointment with me here: {{calendly_link}}",
+
   appointment:
-    "Hi {{first_name}}, reminder for our call at {{appt_time}} with {{agent_name}} ({{company}}). Reply YES to confirm or 2 to reschedule.",
+    "Hi {{first_name}}, this is {{agent_name}}, a licensed life insurance broker. I’m just reminding you about our scheduled appointment at {{appt_time}}. Please reply YES to confirm or let me know if another time works better. You can also reschedule here: {{calendly_link}}",
+
   sold:
-    "Congrats {{first_name}}! 🎉 You’re approved. Here are your policy details:\n" +
+    "Hi {{first_name}}, this is {{agent_name}}. Congratulations on getting approved! 🎉 Here are the details of your new policy:\n" +
     "• Carrier: {{carrier}}\n" +
     "• Policy #: {{policy_number}}\n" +
     "• Premium: ${{premium}}/mo\n" +
-    "Save this for your records. If you have questions, text me anytime.",
+    "If you have any questions or need assistance, feel free to call or text me anytime.",
+
   policy_info:
-    "Policy info for {{first_name}}:\n• Carrier: {{carrier}}\n• Policy #: {{policy_number}}\n• Premium: ${{premium}}/mo\nSave this for your records.",
+    "Hi {{first_name}}, this is {{agent_name}}. Here’s a summary of your policy:\n" +
+    "• Carrier: {{carrier}}\n" +
+    "• Policy #: {{policy_number}}\n" +
+    "• Premium: ${{premium}}/mo\n" +
+    "Keep this handy for your records, and let me know if anything ever changes.",
+
   payment_reminder:
-    "Hi {{first_name}}, a friendly reminder your payment is coming up. If anything changed with your card or bank, text me here.",
+    "Hi {{first_name}}, this is {{agent_name}}. I’m reaching out to remind you that your policy payment is coming up soon. If your billing details have changed or you need assistance, please let me know so we can avoid any interruptions.",
+
   birthday_text:
-    "Happy Birthday, {{first_name}}! 🥳 Wishing you a great year ahead. —{{agent_name}}",
+    "Hi {{first_name}}, this is {{agent_name}}. I just wanted to wish you a very Happy Birthday! 🥳 Wishing you a wonderful year ahead. If you need anything related to your coverage, I’m always here to help.",
+
   holiday_text:
-    "Happy holidays from {{agent_name}} at {{company}}! Hope you and your family are well.",
+    "Hi {{first_name}}, this is {{agent_name}}. I wanted to wish you and your family a happy holiday season. Thank you for trusting me as your agent — I’m always here if you need assistance.",
 };
+
 
 
 export default function MessagingSettings() {
