@@ -17,7 +17,9 @@ const TEMPLATE_DEFS = [
 /* ---------------- Suggested defaults (opt-out removed) ---------------- */
 const DEFAULTS = {
   new_lead:
-    "Hi {{first_name}}! This is {{agent_name}} with {{company}}. I just received your request—when is a good time today to chat for 2–3 minutes?",
+    "Hi {{first_name}}, this is {{agent_name}}, a licensed life insurance broker in {{state}}. " +
+    "I just received the form you sent in to my office where you listed {{beneficiary}} as the beneficiary. " +
+    "If I’m unable to reach you or there’s a better time to get back to you, feel free to book an appointment with me here: {{calendly_link}}",
   appointment:
     "Hi {{first_name}}, reminder for our call at {{appt_time}} with {{agent_name}} ({{company}}). Reply YES to confirm or 2 to reschedule.",
   sold:
@@ -35,6 +37,7 @@ const DEFAULTS = {
   holiday_text:
     "Happy holidays from {{agent_name}} at {{company}}! Hope you and your family are well.",
 };
+
 
 export default function MessagingSettings() {
   const [loading, setLoading] = useState(true);
