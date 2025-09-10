@@ -108,26 +108,22 @@ export default function MessagingSettings() {
       setLoading(false);
     })();
 
-    // realtime wallet updates (guard for environments without Realtime)
-    let ch;
-    try {
-      ch = supabase
-        .channel("wallet_rt")
-        .on(
-          "postgres_changes",
-          { event: "UPDATE", schema: "public", table: "user_wallets" },
-          (payload) => {
-            if (payload?.new?.user_id === userId) {
-              setBalanceCents(payload.new.balance_cents || 0);
-            }
+    const ch = supabase
+      .channel("wallet_rt")
+      .on(
+        "postgres_changes",
+        { event: "UPDATE", schema: "public", table: "user_wallets" },
+        (payload) => {
+          if (payload.new?.user_id === userId) {
+            setBalanceCents(payload.new.balance_cents || 0);
           }
-        )
-        .subscribe();
-    } catch {}
+        }
+      )
+      .subscribe();
 
     return () => {
       try {
-        if (ch) supabase.removeChannel?.(ch);
+        supabase.removeChannel?.(ch);
       } catch {}
       mounted = false;
     };
@@ -239,7 +235,7 @@ export default function MessagingSettings() {
 
           <div className="flex flex-col gap-2 md:items-end">
             <div className="flex flex-wrap gap-2">
-              <button type="button" onClick={() => addFunds(500)}  disabled={topping} className="inline-flex items-center gap-1 rounded-lg border border-white/15 bg-white/5 px-3 py-2 text-sm hover:bg-white/10 disabled:opacity-50"><CreditCard className="h-4 w-4" /> +$5</button>
+              <button type="button" onClick={() => addFunds(500)} disabled={topping} className="inline-flex items-center gap-1 rounded-lg border border-white/15 bg-white/5 px-3 py-2 text-sm hover:bg-white/10 disabled:opacity-50"><CreditCard className="h-4 w-4" /> +$5</button>
               <button type="button" onClick={() => addFunds(1000)} disabled={topping} className="inline-flex items-center gap-1 rounded-lg border border-white/15 bg-white/5 px-3 py-2 text-sm hover:bg-white/10 disabled:opacity-50"><CreditCard className="h-4 w-4" /> +$10</button>
               <button type="button" onClick={() => addFunds(2000)} disabled={topping} className="inline-flex items-center gap-1 rounded-lg border border-white/15 bg-white/5 px-3 py-2 text-sm hover:bg-white/10 disabled:opacity-50"><CreditCard className="h-4 w-4" /> +$20</button>
               <button type="button" onClick={() => addFunds(5000)} disabled={topping} className="inline-flex items-center gap-1 rounded-lg border border-white/15 bg-white/5 px-3 py-2 text-sm hover:bg-white/10 disabled:opacity-50"><CreditCard className="h-4 w-4" /> +$50</button>
@@ -273,7 +269,7 @@ export default function MessagingSettings() {
       </section>
 
       {/* Templates editor */}
-      <section className="rounded-2xl border border-white/10 bg-white/[0.03] p-4 relative">
+      <section className="rounded-2xl border border-white/10 bg-white/[0.03] p-4">
         <div className="mb-3 flex items-center gap-2">
           <div className="grid h-10 w-10 place-items-center rounded-xl bg-white/5 ring-1 ring-white/10">
             <MessageSquare className="h-5 w-5" />
@@ -328,60 +324,55 @@ export default function MessagingSettings() {
           ))}
         </div>
 
-        {/* Inline slide-over (no portal, can't crash) */}
-        <div
-          className={`fixed inset-0 z-40 ${cheatOpen ? "bg-black/50" : "pointer-events-none bg-transparent"} transition`}
-          onClick={() => setCheatOpen(false)}
-          aria-hidden="true"
-          style={{ display: cheatOpen ? "block" : "none" }}
-        />
-        <aside
-          className={`fixed right-0 top-0 z-50 h-full w-full max-w-md transform rounded-l-2xl border-l border-white/10 bg-[#0b0b12] p-4 shadow-2xl transition-transform ${cheatOpen ? "translate-x-0" : "translate-x-full"}`}
-          role="dialog"
-          aria-modal="true"
-          aria-label="Template Variables"
-          style={{ pointerEvents: cheatOpen ? "auto" : "none" }}
-        >
-          <div className="mb-3 flex items-center justify-between">
-            <div className="inline-flex items-center gap-2">
-              <Info className="h-5 w-5" />
-              <h2 className="text-sm font-semibold">Template Variables</h2>
+        {/* Drawer inline */}
+        {cheatOpen && (
+          <aside
+            className="fixed right-0 top-0 z-50 h-full w-full max-w-md transform rounded-l-2xl border-l border-white/10 bg-[#0b0b12] p-4 shadow-2xl"
+            role="dialog"
+            aria-modal="true"
+            aria-label="Template Variables"
+          >
+            <div className="mb-3 flex items-center justify-between">
+              <div className="inline-flex items-center gap-2">
+                <Info className="h-5 w-5" />
+                <h2 className="text-sm font-semibold">Template Variables</h2>
+              </div>
+              <button
+                type="button"
+                onClick={() => setCheatOpen(false)}
+                className="rounded-lg border border-white/15 bg-white/5 px-2 py-1 text-xs hover:bg-white/10"
+              >
+                Close
+              </button>
             </div>
-            <button
-              type="button"
-              onClick={() => setCheatOpen(false)}
-              className="rounded-lg border border-white/15 bg-white/5 px-2 py-1 text-xs hover:bg-white/10"
-            >
-              Close
-            </button>
-          </div>
 
-          <p className="mb-3 text-xs text-white/70">
-            Paste these tokens into any template. The system replaces them automatically when messages are sent.
-          </p>
+            <p className="mb-3 text-xs text-white/70">
+              Paste these tokens into any template. The system replaces them automatically when messages are sent.
+            </p>
 
-          <div className="space-y-3 text-xs">
-            <VarRow token="first_name" desc="Lead’s first name" />
-            <VarRow token="last_name" desc="Lead’s last name" />
-            <VarRow token="full_name" desc="Lead’s full name" />
-            <VarRow token="agent_name" desc="Your display name" />
-            <VarRow token="company" desc="Your agency/company" />
-            <VarRow token="agent_phone" desc="Your phone number" />
-            <VarRow token="agent_email" desc="Your email address" />
-            <VarRow token="appt_time" desc="Formatted appointment time" />
-            <VarRow token="carrier" desc="Policy carrier (e.g., Americo)" />
-            <VarRow token="policy_number" desc="Issued policy number" />
-            <VarRow token="premium" desc="Monthly premium amount" />
-            <VarRow token="today" desc="Today’s date" />
-          </div>
+            <div className="space-y-3 text-xs">
+              <VarRow token="first_name" desc="Lead’s first name" />
+              <VarRow token="last_name" desc="Lead’s last name" />
+              <VarRow token="full_name" desc="Lead’s full name" />
+              <VarRow token="agent_name" desc="Your display name" />
+              <VarRow token="company" desc="Your agency/company" />
+              <VarRow token="agent_phone" desc="Your phone number" />
+              <VarRow token="agent_email" desc="Your email address" />
+              <VarRow token="appt_time" desc="Formatted appointment time" />
+              <VarRow token="carrier" desc="Policy carrier (e.g., Americo)" />
+              <VarRow token="policy_number" desc="Issued policy number" />
+              <VarRow token="premium" desc="Monthly premium amount" />
+              <VarRow token="today" desc="Today’s date" />
+            </div>
 
-          <div className="mt-4 rounded-xl border border-white/10 bg-white/[0.02] p-3">
-            <div className="mb-1 text-xs font-semibold">Example</div>
-            <pre className="whitespace-pre-wrap rounded-lg border border-white/10 bg-black/30 p-3 text-[11px] leading-5">
-{`"Hi {{first_name}}, your policy {{policy_number}} with {{carrier}} is active at ${{premium}}/mo. —{{agent_name}}"`}
-            </pre>
-          </div>
-        </aside>
+            <div className="mt-4 rounded-xl border border-white/10 bg-white/[0.02] p-3">
+              <div className="mb-1 text-xs font-semibold">Example</div>
+              <pre className="whitespace-pre-wrap rounded-lg border border-white/10 bg-black/30 p-3 text-[11px] leading-5">
+{'"Hi {{first_name}}, your policy {{policy_number}} with {{carrier}} is active at ${{premium}}/mo. —{{agent_name}}"' }
+              </pre>
+            </div>
+          </aside>
+        )}
       </section>
 
       {/* Compliance */}
@@ -405,3 +396,4 @@ function VarRow({ token, desc }) {
     </div>
   );
 }
+
