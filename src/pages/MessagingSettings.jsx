@@ -16,26 +16,32 @@ const TEMPLATE_DEFS = [
 /* ---------------- Suggested defaults ---------------- */
 const DEFAULTS = {
   new_lead:
-    "Hi {{first_name}}, this is {{agent_name}}, a licensed life insurance broker in {{state}}. I just received the form you sent in to my office where you listed {{beneficiary}} as the beneficiary. If I’m unable to reach you or there’s a better time to get back to you, feel free to book an appointment with me here: {{calendly_link}}",
+    "Hi {{first_name}}, this is {{agent_name}}, a licensed life insurance broker in {{state}}. I just received the form you sent in to my office where you listed {{beneficiary}} as the beneficiary. If I’m unable to reach you or there’s a better time to get back to you, feel free to book an appointment with me here: {{calendly_link}} " +
+    "You can text me anytime at {{agent_phone}} (this business text line doesn’t accept calls).",
 
   appointment:
-    "Hi {{first_name}}, this is {{agent_name}}, a licensed life insurance broker. I’m just reminding you about our scheduled appointment at {{appt_time}}. Please reply YES to confirm or let me know if another time works better. You can also reschedule here: {{calendly_link}}",
+    "Hi {{first_name}}, this is {{agent_name}}, a licensed life insurance broker. I’m just reminding you about our scheduled appointment at {{appt_time}}. Please reply YES to confirm or let me know if another time works better. You can also reschedule here: {{calendly_link}} " +
+    "You can text me at {{agent_phone}} (this business text line doesn’t accept calls).",
 
   sold:
     "Hi {{first_name}}, this is {{agent_name}}. Congratulations on getting approved! 🎉 Here are the details of your new policy:\n" +
     "• Carrier: {{carrier}}\n" +
     "• Policy #: {{policy_number}}\n" +
     "• Premium: ${{premium}}/mo\n" +
-    "If you have any questions or need assistance, feel free to call or text me anytime.",
+    "If you have any questions or need assistance, feel free to reach out by text. " +
+    "You can text me at {{agent_phone}} (this business text line doesn’t accept calls).",
 
   payment_reminder:
-    "Hi {{first_name}}, this is {{agent_name}}. I’m reaching out to remind you that your policy payment is coming up soon. If your billing details have changed or you need assistance, please let me know so we can avoid any interruptions.",
+    "Hi {{first_name}}, this is {{agent_name}}. I’m reaching out to remind you that your policy payment is coming up soon. If your billing details have changed or you need assistance, please let me know so we can avoid any interruptions. " +
+    "Text me at {{agent_phone}} (this business text line doesn’t accept calls).",
 
   birthday_text:
-    "Hi {{first_name}}, this is {{agent_name}}. I just wanted to wish you a very Happy Birthday! 🥳 Wishing you a wonderful year ahead. If you need anything related to your coverage, I’m always here to help.",
+    "Hi {{first_name}}, this is {{agent_name}}. I just wanted to wish you a very Happy Birthday! 🥳 Wishing you a wonderful year ahead. If you need anything related to your coverage, I’m always here to help. " +
+    "You can text me at {{agent_phone}} (this business text line doesn’t accept calls).",
 
   holiday_text:
-    "Hi {{first_name}}, this is {{agent_name}}. I wanted to wish you and your family a happy holiday season. Thank you for trusting me as your agent — I’m always here if you need assistance.",
+    "Hi {{first_name}}, this is {{agent_name}}. I wanted to wish you and your family a happy holiday season. Thank you for trusting me as your agent — I’m always here if you need assistance. " +
+    "Text me anytime at {{agent_phone}} (this business text line doesn’t accept calls).",
 };
 
 export default function MessagingSettings() {
@@ -162,6 +168,17 @@ export default function MessagingSettings() {
     updateTemplate(key, def);
   }
 
+  // Reset ALL templates to defaults and autosave (with confirm)
+  function resetAllTemplates() {
+    const confirmed = window.confirm(
+      "Reset all templates to the default messages? This will overwrite your custom text."
+    );
+    if (!confirmed) return;
+    const next = { ...DEFAULTS };
+    setTemplates(next);
+    saveTemplates(next);
+  }
+
   /* -------- Stripe top-up -------- */
   async function addFunds(amountCents) {
     setCustomMsg("");
@@ -221,6 +238,11 @@ export default function MessagingSettings() {
       </div>
     );
   }
+
+  // compute whether everything already matches defaults
+  const allDefault = Object.keys(DEFAULTS).every(
+    (k) => (templates[k] ?? "") === (DEFAULTS[k] ?? "")
+  );
 
   return (
     <div className="space-y-6">
@@ -289,8 +311,18 @@ export default function MessagingSettings() {
             </p>
           </div>
 
-          {/* RIGHT-SIDE TRIGGER */}
-          <div className="ml-auto">
+          {/* RIGHT-SIDE ACTIONS */}
+          <div className="ml-auto flex items-center gap-2">
+            <button
+              type="button"
+              onClick={resetAllTemplates}
+              disabled={allDefault}
+              className="inline-flex items-center gap-1 rounded-xl border border-white/15 bg-white/5 px-3 py-2 text-xs hover:bg-white/10 disabled:opacity-40"
+              title="Reset all templates to default"
+            >
+              <RotateCcw className="h-4 w-4" />
+              Reset All
+            </button>
             <button
               type="button"
               onClick={() => setCheatOpen(true)}
@@ -386,7 +418,6 @@ export default function MessagingSettings() {
               <VarRow token="policy_number" desc="Issued policy number" />
               <VarRow token="premium" desc="Monthly premium amount" />
               <VarRow token="today" desc="Today’s date" />
-              {/* extra tokens used in templates */}
               <VarRow token="state" desc="Lead’s state (from form)" />
               <VarRow token="beneficiary" desc="Lead’s listed beneficiary" />
               <VarRow token="calendly_link" desc="Your Calendly booking link" />
@@ -395,7 +426,7 @@ export default function MessagingSettings() {
             <div className="mt-4 rounded-xl border border-white/10 bg-white/[0.02] p-3">
               <div className="mb-1 text-xs font-semibold">Example</div>
               <pre className="whitespace-pre-wrap rounded-lg border border-white/10 bg-black/30 p-3 text-[11px] leading-5">
-{'"Hi {{first_name}}, your policy {{policy_number}} with {{carrier}} is active at ${{premium}}/mo. —{{agent_name}}"' }
+{'"Hi {{first_name}}, your policy {{policy_number}} with {{carrier}} is active at ${{premium}}/mo. —{{agent_name}} (Text me at {{agent_phone}}, this line doesn’t accept calls)"'}
               </pre>
             </div>
           </aside>
