@@ -1,7 +1,9 @@
 // File: src/lib/stats.js
 // Dashboard + Reports helpers
-// - REPORTS: SOLD & Premium from local storage (policy startDate) so it stays synchronous.
-// - DASHBOARD: SOLD & Premium from Supabase `leads` (status='sold'), scoped by user/team, using "marked-sold" time.
+// - DASHBOARD: SOLD & Premium from Supabase (status='sold'), scoped by user/team, counted by "marked sold" time.
+// - REPORTS: SOLD & Premium can come from Supabase (policy start date) via fetchReportsSoldTimeline(options).
+//            (Legacy local-storage helpers kept for compatibility with old code.)
+//
 // - Leads: Supabase (leads.created_at) — to NOW
 // - Appointments: Supabase (leads.next_follow_up_at) — to period end
 
@@ -57,9 +59,7 @@ export function fmtDate(d)  { return new Date(d).toLocaleDateString(undefined, {
 export function fmtMonth(d) { return new Date(d).toLocaleDateString(undefined, { month: "short", year: "numeric" }); }
 export function getWeekKey(d){ const b = startOfWeek(toLocalNoon(d) || new Date()); return b.toISOString().slice(0,10); }
 
-/* =====================================================
-   REPORTS — SOLD from local storage (policy startDate)
-=====================================================*/
+/* ========== LEGACY (LOCAL) SOLD for Reports compatibility ========== */
 export function getSoldEventsFromStorage() {
   const clients = loadClients() || [];
   const sold = clients.filter((c) => c.status === "sold" && c.sold);
@@ -103,10 +103,8 @@ export function filterRange(items = [], from, to) {
 }
 
 /* -----------------------------------------------
-   Reports timeline (sync; local)
+   Grouping (works for any items array of events)
 -------------------------------------------------*/
-function timeline(){ return getSoldEventsFromStorage(); }
-
 function soldList(items = []) {
   return (items || [])
     .filter((x) => x.type === "policy_closed")
@@ -119,7 +117,7 @@ function soldList(items = []) {
     }));
 }
 
-export function groupByMonth(items = timeline()) {
+export function groupByMonth(items = []) {
   const m = new Map();
   for (const it of (items || [])) {
     const d = toLocalNoon(it.date) || new Date();
@@ -161,14 +159,12 @@ function groupDays(items = []) {
 }
 
 /* =====================================================
-   DASHBOARD — SOLD from Supabase `leads` (status='sold')
-   Scoped by user/team. Count by "marked sold" time.
+   DASHBOARD — SOLD from Supabase (status='sold'), scoped
+   Count by "marked sold" time (sold.* timestamp or updated_at)
 =====================================================*/
-
-// Prefer these fields for the "marked sold" timestamp if present in sold JSON
-const SOLD_JSON_TIME_KEYS = ["markedAt", "soldAt", "closedAt", "dateMarked"];
-// Premium fields in sold JSON
-const SOLD_JSON_PREMIUM_KEYS = ["premium", "monthlyPayment", "annualPremium"];
+const SOLD_JSON_TIME_KEYS = ["markedAt", "soldAt", "closedAt", "dateMarked"]; // for marked-sold
+const SOLD_JSON_PREMIUM_KEYS = ["premium", "monthlyPayment", "annualPremium"]; // premium fields
+const SOLD_JSON_POLICY_DATE_KEYS = ["startDate", "policy_start_date", "policyStartDate", "effectiveDate", "policyEffectiveDate"]; // for Reports
 
 /** Get team user IDs for scoping (user_teams). */
 async function fetchTeamUserIds(team_id) {
@@ -185,87 +181,110 @@ async function fetchTeamUserIds(team_id) {
   return (data || []).map((r) => r.user_id);
 }
 
-/** Choose the best "marked sold" timestamp for a row. */
+/** Choose timestamps/premium from a row.sold JSON */
 function chooseMarkedDateFromRow(row) {
-  // Prefer jsonb sold.timestamp fields if present
   const s = row?.sold || {};
-  for (const k of SOLD_JSON_TIME_KEYS) {
-    if (s && s[k]) return s[k];
-  }
-  // Fallback to updated_at (most DBs touch this when status flips to 'sold')
+  for (const k of SOLD_JSON_TIME_KEYS) if (s && s[k]) return s[k];
   if (row.updated_at) return row.updated_at;
   return row.created_at || new Date().toISOString();
 }
-
-/** Extract premium from the sold JSON. */
+function choosePolicyDateFromRow(row) {
+  const s = row?.sold || {};
+  for (const k of SOLD_JSON_POLICY_DATE_KEYS) if (s && s[k]) return s[k];
+  // Fallback so it still appears if policy date missing
+  return row.updated_at || row.created_at || new Date().toISOString();
+}
 function choosePremiumFromRow(row) {
   const s = row?.sold || {};
   for (const k of SOLD_JSON_PREMIUM_KEYS) {
     const v = parseNumber(s[k]);
     if (v > 0) return v;
   }
-  // If monthlyPayment present, some teams want monthly sum in dashboard:
-  // return parseNumber(s.monthlyPayment) * 12; // <- uncomment if you want annualized
   return 0;
 }
 
-/** Fetch sold leads rows for a window, scoped by user/team, and map to events. */
-async function fetchSoldEventsSupabase(startISO, endISO, options = {}) {
+/** Fetch sold leads rows for a window (Dashboard), scoped by user/team; map to events by MARKED date. */
+async function fetchSoldEventsSupabaseMarked(startISO, endISO, options = {}) {
   let userIds = null;
+  if (options.user_id) userIds = [options.user_id];
+  else if (options.team_id) userIds = await fetchTeamUserIds(options.team_id);
 
-  // Resolve scope
-  if (options.user_id) {
-    userIds = [options.user_id];
-  } else if (options.team_id) {
-    userIds = await fetchTeamUserIds(options.team_id);
+  let q = supabase
+    .from("leads")
+    .select("id,user_id,status,updated_at,created_at,sold,name,email,phone,company")
+    .eq("status", "sold")
+    .gte("updated_at", startISO)
+    .lte("updated_at", endISO);
+
+  if (Array.isArray(userIds) && userIds.length > 0) {
+    q = userIds.length === 1 ? q.eq("user_id", userIds[0]) : q.in("user_id", userIds);
   }
 
-  // Base query
+  const { data, error } = await q;
+  if (error) {
+    console.error("[stats] fetchSoldEventsSupabaseMarked error:", error);
+    return [];
+  }
+  return (data || []).map((r) => ({
+    type: "policy_closed",
+    date: chooseMarkedDateFromRow(r),
+    premium: choosePremiumFromRow(r),
+    name: r.name || r.email || r.phone || "Unknown",
+    email: r.email || "",
+    phone: r.phone || "",
+    carrier: r.company || "",
+    id: r.id,
+  }));
+}
+
+/** PUBLIC: Fetch ALL sold leads for Reports (scoped), mapped by POLICY start date. */
+export async function fetchReportsSoldTimeline(options = {}) {
+  let userIds = null;
+  if (options.user_id) userIds = [options.user_id];
+  else if (options.team_id) userIds = await fetchTeamUserIds(options.team_id);
+
   let q = supabase
     .from("leads")
     .select("id,user_id,status,updated_at,created_at,sold,name,email,phone,company")
     .eq("status", "sold");
 
-  // Scope by user(s)
   if (Array.isArray(userIds) && userIds.length > 0) {
-    if (userIds.length === 1) q = q.eq("user_id", userIds[0]);
-    else q = q.in("user_id", userIds);
+    q = userIds.length === 1 ? q.eq("user_id", userIds[0]) : q.in("user_id", userIds);
   }
-
-  // Filter by updated_at in window (used as a good proxy for marked-sold)
-  q = q.gte("updated_at", startISO).lte("updated_at", endISO);
 
   const { data, error } = await q;
   if (error) {
-    console.error("[stats] fetchSoldEventsSupabase error:", error);
+    console.error("[stats] fetchReportsSoldTimeline error:", error);
     return [];
   }
 
-  // Map to dash events using the best timestamp + premium
-  return (data || []).map((r) => ({
-    type: "policy_closed",
-    date: chooseMarkedDateFromRow(r), // could be sold.markedAt or updated_at
-    premium: choosePremiumFromRow(r),
-    name: r.name || r.email || r.phone || "Unknown",
-    email: r.email || "",
-    phone: r.phone || "",
-    carrier: r.company || "", // adjust if you store carrier name elsewhere
-    id: r.id,
-  }));
+  return (data || [])
+    .map((r) => ({
+      type: "policy_closed",
+      date: choosePolicyDateFromRow(r), // POLICY start date for Reports
+      premium: choosePremiumFromRow(r),
+      name: r.name || r.email || r.phone || "Unknown",
+      email: r.email || "",
+      phone: r.phone || "",
+      carrier: r.company || "",
+      id: r.id,
+    }))
+    // guard against completely missing dates
+    .filter((e) => !!toLocalNoon(e.date));
 }
 
 /* -----------------------------------------------
    Supabase counts for Leads / Appointments
 -------------------------------------------------*/
-// Leads (so-far → end = now)
 async function countLeadsBetween(startISO, endISO, options = {}) {
   let q = supabase.from("leads")
     .select("id", { count: "exact", head: true })
     .gte("created_at", startISO)
     .lte("created_at", endISO);
 
-  if (options.user_id) q = q.eq("user_id", options.user_id);
-  else if (options.team_id) {
+  if (options.user_id) {
+    q = q.eq("user_id", options.user_id);
+  } else if (options.team_id) {
     const userIds = await fetchTeamUserIds(options.team_id);
     if (userIds.length === 0) return 0;
     q = q.in("user_id", userIds);
@@ -276,7 +295,6 @@ async function countLeadsBetween(startISO, endISO, options = {}) {
   return count || 0;
 }
 
-// Appointments (to end-of-period) — leads.next_follow_up_at
 const APPT_SOURCE = { table: "leads", timeCol: "next_follow_up_at" };
 async function countAppointmentsBetween(startISO, endISO, options = {}) {
   let q = supabase.from(APPT_SOURCE.table)
@@ -285,8 +303,9 @@ async function countAppointmentsBetween(startISO, endISO, options = {}) {
     .lte(APPT_SOURCE.timeCol, endISO)
     .not(APPT_SOURCE.timeCol, "is", null);
 
-  if (options.user_id) q = q.eq("user_id", options.user_id);
-  else if (options.team_id) {
+  if (options.user_id) {
+    q = q.eq("user_id", options.user_id);
+  } else if (options.team_id) {
     const userIds = await fetchTeamUserIds(options.team_id);
     if (userIds.length === 0) return 0;
     q = q.in("user_id", userIds);
@@ -316,13 +335,12 @@ export async function refreshDashboardSnapshot(options = {}, now = new Date()) {
   const weekStart  = startOfWeek(now), weekEnd  = endOfWeek(now);
   const monthStart = startOfMonth(now), monthEnd = endOfMonth(now);
 
-  // SOLD events for dashboard: Supabase, scoped
+  // SOLD events for dashboard: Supabase, scoped (by marked-sold time)
   const [soldToday, soldWeek, soldMonth, soldAll] = await Promise.all([
-    fetchSoldEventsSupabase(todayStart.toISOString(), todayEnd.toISOString(), options),
-    fetchSoldEventsSupabase(weekStart.toISOString(),  weekEnd.toISOString(),  options),
-    fetchSoldEventsSupabase(monthStart.toISOString(), monthEnd.toISOString(), options),
-    // For allTime we’ll just fetch everything with status='sold' in the past 100 years :)
-    fetchSoldEventsSupabase("1970-01-01T00:00:00.000Z", "9999-12-31T23:59:59.999Z", options),
+    fetchSoldEventsSupabaseMarked(todayStart.toISOString(), todayEnd.toISOString(), options),
+    fetchSoldEventsSupabaseMarked(weekStart.toISOString(),  weekEnd.toISOString(),  options),
+    fetchSoldEventsSupabaseMarked(monthStart.toISOString(), monthEnd.toISOString(), options),
+    fetchSoldEventsSupabaseMarked("1970-01-01T00:00:00.000Z", "9999-12-31T23:59:59.999Z", options),
   ]);
 
   const todaySold  = getTotals(soldToday);
@@ -354,12 +372,9 @@ export async function refreshDashboardSnapshot(options = {}, now = new Date()) {
     _updatedAt: new Date().toISOString(),
   };
 
-  // Debug: see exactly what the dashboard used
+  // Debug
   if (typeof window !== "undefined") {
-    window.__statsDebug = {
-      soldToday, soldWeek, soldMonth, soldAll,
-      snapshot: _cache,
-    };
+    window.__statsDebug = { snapshot: _cache };
   }
 
   return _cache;
