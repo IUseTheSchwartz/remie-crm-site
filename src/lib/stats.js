@@ -1,14 +1,16 @@
 // File: src/lib/stats.js
 // Dashboard + Reports helpers
-// - SOLD & Premium (Reports): policy start date (c.sold.startDate)
-// - SOLD & Premium (Dashboard): when it was marked sold (closed/marked date)
-// - Leads: Supabase (leads.created_at) — to NOW
+// - REPORTS: SOLD & Premium from local storage (policy startDate) so it stays synchronous.
+// - DASHBOARD: SOLD & Premium from Supabase (filtered by user_id/team_id), using "marked sold" timestamp.
+// - Leads: Supabase (leads.created_at) — so far to NOW
 // - Appointments: Supabase (leads.next_follow_up_at) — to period end
 
 import { supabase } from "../lib/supabaseClient.js";
 import { loadClients } from "./storage.js";
 
-/* ---------------- Number parsing ---------------- */
+/* -----------------------------------------------
+   Number parsing
+-------------------------------------------------*/
 function parseNumber(x) {
   if (x == null) return 0;
   if (typeof x === "number") return x;
@@ -17,61 +19,53 @@ function parseNumber(x) {
   return Number.isFinite(v) ? v : 0;
 }
 
-/* ---------------- Robust date parsing ---------------- */
+/* -----------------------------------------------
+   Date parsing (robust) + normalization
+-------------------------------------------------*/
 function toDateSafe(d) {
   if (!d) return null;
   if (d instanceof Date) return Number.isFinite(+d) ? d : null;
   const s = String(d).trim();
-
-  // ISO / YYYY-MM-DD...
-  if (/^\d{4}-\d{2}-\d{2}/.test(s)) {
+  if (/^\d{4}-\d{2}-\d{2}/.test(s)) { // ISO / YYYY-MM-DD
     const t = new Date(s);
     return Number.isFinite(+t) ? t : null;
   }
-  // MM/DD/YYYY
-  if (/^\d{1,2}\/\d{1,2}\/\d{4}$/.test(s)) {
+  if (/^\d{1,2}\/\d{1,2}\/\d{4}$/.test(s)) { // MM/DD/YYYY
     const [m, dd, y] = s.split("/").map(Number);
-    const t = new Date(y, m - 1, dd, 12, 0, 0, 0); // noon local
+    const t = new Date(y, m - 1, dd, 12, 0, 0, 0); // local noon to avoid TZ edge
     return Number.isFinite(+t) ? t : null;
   }
   const t = new Date(s);
   return Number.isFinite(+t) ? t : null;
 }
-
-/** Normalize to local noon to avoid UTC/off-by-one issues. */
 function toLocalNoon(dateLike) {
   const d = toDateSafe(dateLike);
   if (!d) return null;
   return new Date(d.getFullYear(), d.getMonth(), d.getDate(), 12, 0, 0, 0);
 }
 
-/* ---------------- Time helpers ---------------- */
+/* -----------------------------------------------
+   Time helpers
+-------------------------------------------------*/
 export function startOfDay(d) { const x = new Date(d); x.setHours(0,0,0,0); return x; }
 export function endOfDay(d)   { const x = new Date(d); x.setHours(23,59,59,999); return x; }
-
-export function startOfWeek(d) { const x = startOfDay(d); const diff=(x.getDay()+6)%7; x.setDate(x.getDate()-diff); return x; }
-export function endOfWeek(d)   { const s = startOfWeek(d); const e = new Date(s); e.setDate(e.getDate()+6); e.setHours(23,59,59,999); return e; }
-
+export function startOfWeek(d){ const x = startOfDay(d); const diff=(x.getDay()+6)%7; x.setDate(x.getDate()-diff); return x; }
+export function endOfWeek(d)  { const s = startOfWeek(d); const e = new Date(s); e.setDate(e.getDate()+6); e.setHours(23,59,59,999); return e; }
 export function startOfMonth(d){ const x = startOfDay(d); x.setDate(1); return x; }
-export function endOfMonth(d)  { const s = startOfMonth(d); const e = new Date(s); e.setMonth(e.getMonth()+1); e.setDate(0); e.setHours(23,59,59,999); return e; }
-
+export function endOfMonth(d) { const s = startOfMonth(d); const e = new Date(s); e.setMonth(e.getMonth()+1); e.setDate(0); e.setHours(23,59,59,999); return e; }
 export function fmtDate(d)  { return new Date(d).toLocaleDateString(undefined, { month: "short", day: "numeric" }); }
 export function fmtMonth(d) { return new Date(d).toLocaleDateString(undefined, { month: "short", year: "numeric" }); }
 export function getWeekKey(d){ const b = startOfWeek(toLocalNoon(d) || new Date()); return b.toISOString().slice(0,10); }
 
-/* ======================================================
-   SOLD sources from local storage
-   - Reports timeline: uses policy startDate
-   - Dashboard timeline: uses "marked sold" date if available
-====================================================== */
-
-/** SOLD events for Reports (policy effective date) */
+/* =====================================================
+   SOLD — LOCAL STORAGE (Reports only; policy startDate)
+=====================================================*/
 export function getSoldEventsFromStorage() {
   const clients = loadClients() || [];
   const sold = clients.filter((c) => c.status === "sold" && c.sold);
   return sold.map((c) => ({
     type: "policy_closed",
-    date: c.sold.startDate || new Date().toISOString(), // effective date (may be future)
+    date: c.sold.startDate || new Date().toISOString(), // policy effective date (may be future)
     premium: parseNumber(c.sold.premium),
     name: c.sold.name || c.name || "",
     email: c.sold.email || c.email || "",
@@ -83,40 +77,9 @@ export function getSoldEventsFromStorage() {
   }));
 }
 
-/** SOLD events for Dashboard (when you marked it sold) */
-function getSoldEventsForDashboard() {
-  const clients = loadClients() || [];
-  const sold = clients.filter((c) => c.status === "sold" && c.sold);
-
-  return sold.map((c) => {
-    // Prefer any "closed/marked" timestamps you might have stored:
-    const marked =
-      c.sold.closedAt ||
-      c.sold.soldAt ||
-      c.sold.markedAt ||
-      c.sold.dateMarked ||
-      c.updated_at ||
-      c.updatedAt ||
-      c.created_at ||
-      c.createdAt ||
-      new Date().toISOString();
-
-    return {
-      type: "policy_closed",
-      date: marked,                                   // ← used for Dashboard windows
-      premium: parseNumber(c.sold.premium),
-      name: c.sold.name || c.name || "",
-      email: c.sold.email || c.email || "",
-      phone: c.sold.phone || c.phone || "",
-      carrier: c.sold.carrier || "",
-      monthlyPayment: parseNumber(c.sold.monthlyPayment),
-      faceAmount: parseNumber(c.sold.faceAmount),
-      id: c.id,
-    };
-  });
-}
-
-/* ---------------- Totals + filters ---------------- */
+/* -----------------------------------------------
+   Totals + filters
+-------------------------------------------------*/
 function countByType(items) {
   const c = { lead: 0, appointment: 0, client_created: 0, policy_closed: 0, premium: 0 };
   for (const it of items || []) {
@@ -139,7 +102,9 @@ export function filterRange(items = [], from, to) {
   });
 }
 
-/* ---------------- Reports grouping (sync) ---------------- */
+/* -----------------------------------------------
+   Reports timeline (sync; local)
+-------------------------------------------------*/
 function timeline(){ return getSoldEventsFromStorage(); }
 
 function soldList(items = []) {
@@ -195,14 +160,108 @@ function groupDays(items = []) {
     .map(([key, arr]) => ({ key, label: fmtDate(key), totals: getTotals(arr), sold: soldList(arr) }));
 }
 
-/* ---------------- Supabase counts for Dashboard ---------------- */
+/* =====================================================
+   DASHBOARD — SOLD from Supabase with user/team scoping
+   (Counts by "marked sold" time, not policy start date)
+=====================================================*/
+
+const SOLD_TIME_COLS_DASH = [
+  "sold_marked_at", "sold_at", "closed_at", "date_marked", "marked_at",
+  "updated_at", "created_at"
+];
+const SOLD_PREMIUM_COLS = [
+  "sold_premium", "premium", "monthly_premium", "annual_premium"
+];
+
+// Try a single time column; return rows or [] on error.
+async function trySoldQuery(col, startISO, endISO, options = {}) {
+  try {
+    let q = supabase
+      .from("leads")
+      .select([
+        "id", "user_id", "team_id", "status",
+        "name", "email", "phone", "carrier",
+        ...SOLD_TIME_COLS_DASH,
+        ...SOLD_PREMIUM_COLS,
+        "sold_start_date", "policy_start_date"
+      ].join(","))
+      .gte(col, startISO)
+      .lte(col, endISO);
+
+    if (options.team_id) q = q.eq("team_id", options.team_id);
+    if (options.user_id) q = q.eq("user_id", options.user_id);
+    // If a status column exists, restrict to sold-like statuses
+    try { q = q.in("status", ["sold", "policy_closed", "closed"]); } catch {}
+
+    const { data, error } = await q;
+    if (error) {
+      console.warn(`[stats] sold query error on col ${col}:`, error);
+      return [];
+    }
+    return data || [];
+  } catch (e) {
+    return [];
+  }
+}
+
+function chooseMarkedDate(row) {
+  for (const key of SOLD_TIME_COLS_DASH) {
+    if (row[key]) return row[key];
+  }
+  return new Date().toISOString();
+}
+
+function choosePremium(row) {
+  for (const key of SOLD_PREMIUM_COLS) {
+    const v = parseNumber(row[key]);
+    if (v > 0) return v;
+  }
+  return 0;
+}
+
+function mapRowsToEvents(rows = []) {
+  return (rows || []).map((r) => ({
+    type: "policy_closed",
+    date: chooseMarkedDate(r),
+    premium: choosePremium(r),
+    name: r.name || r.email || r.phone || "Unknown",
+    email: r.email || "",
+    phone: r.phone || "",
+    carrier: r.carrier || "",
+    id: r.id
+  }));
+}
+
+async function fetchSoldEventsSupabase(startISO, endISO, options = {}) {
+  // Query each candidate time column and merge results by id.
+  const perCol = await Promise.all(
+    SOLD_TIME_COLS_DASH.map((col) => trySoldQuery(col, startISO, endISO, options))
+  );
+
+  const byId = new Map(); // id -> row
+  for (const batch of perCol) {
+    for (const r of batch) {
+      if (!byId.has(r.id)) byId.set(r.id, r);
+      else {
+        // Prefer a more specific "sold_marked_at" over generic timestamps
+        const cur = byId.get(r.id);
+        const order = (row) => SOLD_TIME_COLS_DASH.findIndex(k => !!row[k]);
+        if (order(r) < order(cur)) byId.set(r.id, r);
+      }
+    }
+  }
+  return mapRowsToEvents([...byId.values()]);
+}
+
+/* -----------------------------------------------
+   Supabase counts for Leads / Appointments
+-------------------------------------------------*/
 // Leads (so-far → end = now)
 async function countLeadsBetween(startISO, endISO, options = {}) {
   let q = supabase.from("leads")
-    .select("id", { count: "exact" })
+    .select("id", { count: "exact", head: true })
     .gte("created_at", startISO)
-    .lte("created_at", endISO)
-    .limit(1);
+    .lte("created_at", endISO);
   if (options.team_id) q = q.eq("team_id", options.team_id);
   if (options.user_id) q = q.eq("user_id", options.user_id);
   if (options.extraFilters) q = options.extraFilters(q);
@@ -215,11 +274,10 @@ async function countLeadsBetween(startISO, endISO, options = {}) {
 const APPT_SOURCE = { table: "leads", timeCol: "next_follow_up_at" };
 async function countAppointmentsBetween(startISO, endISO, options = {}) {
   let q = supabase.from(APPT_SOURCE.table)
-    .select("id", { count: "exact" })
+    .select("id", { count: "exact", head: true })
     .gte(APPT_SOURCE.timeCol, startISO)
     .lte(APPT_SOURCE.timeCol, endISO)
-    .not(APPT_SOURCE.timeCol, "is", null)
-    .limit(1);
+    .not(APPT_SOURCE.timeCol, "is", null);
   if (options.team_id) q = q.eq("team_id", options.team_id);
   if (options.user_id) q = q.eq("user_id", options.user_id);
   const { count, error } = await q;
@@ -227,7 +285,9 @@ async function countAppointmentsBetween(startISO, endISO, options = {}) {
   return count || 0;
 }
 
-/* ---------------- Dashboard cache + refresh ---------------- */
+/* -----------------------------------------------
+   Dashboard cache + refresh (SOLD from Supabase)
+-------------------------------------------------*/
 const ZERO = { leads: 0, appointments: 0, clients: 0, closed: 0, premium: 0 };
 
 let _cache = {
@@ -239,40 +299,33 @@ let _cache = {
 };
 export function dashboardSnapshot(){ return _cache; }
 
-/** Build SOLD timeline specifically for Dashboard (uses "marked sold" date). */
-function buildSoldTimelineForDashboard() {
-  return getSoldEventsForDashboard();
-}
-
 export async function refreshDashboardSnapshot(options = {}, now = new Date()) {
-  // windows
-  const nowISO = now.toISOString();
   const todayStart = startOfDay(now), todayEnd = endOfDay(now);
   const weekStart  = startOfWeek(now), weekEnd  = endOfWeek(now);
   const monthStart = startOfMonth(now), monthEnd = endOfMonth(now);
 
-  // SOLD timelines
-  const soldTimelineReports   = getSoldEventsFromStorage();       // for all-time parity
-  let   soldTimelineDashboard = buildSoldTimelineForDashboard();  // for day/week/month
+  // SOLD events for dashboard: Supabase, scoped
+  const [soldToday, soldWeek, soldMonth, soldAll] = await Promise.all([
+    fetchSoldEventsSupabase(todayStart.toISOString(), todayEnd.toISOString(), options),
+    fetchSoldEventsSupabase(weekStart.toISOString(),  weekEnd.toISOString(),  options),
+    fetchSoldEventsSupabase(monthStart.toISOString(), monthEnd.toISOString(), options),
+    fetchSoldEventsSupabase("1970-01-01T00:00:00.000Z", "9999-12-31T23:59:59.999Z", options),
+  ]);
 
-  // Optional behavior: if someone had a future policy date but marked it sold now,
-  // and no explicit "marked" field exists, the function above already falls back to updated/created/now.
+  const todaySold  = getTotals(soldToday);
+  const weekSold   = getTotals(soldWeek);
+  const monthSold  = getTotals(soldMonth);
+  const allSold    = getTotals(soldAll);
 
-  // Compute SOLD totals for each dashboard bucket
-  const todaySold  = getTotals(filterRange(soldTimelineDashboard, todayStart, todayEnd));
-  const weekSold   = getTotals(filterRange(soldTimelineDashboard, weekStart, weekEnd));
-  const monthSold  = getTotals(filterRange(soldTimelineDashboard, monthStart, monthEnd));
-  const allSold    = getTotals(soldTimelineReports); // all-time totals don't depend on date buckets
-
-  // Supabase counts (leads so-far, appts to end-of-period)
+  // Supabase counts for leads & appointments
   const [
     todayLeads, weekLeads, monthLeads, allLeads,
     todayAppts, weekAppts, monthAppts, allAppts,
   ] = await Promise.all([
-    countLeadsBetween(todayStart.toISOString(), nowISO, options),
-    countLeadsBetween(weekStart.toISOString(),  nowISO, options),
-    countLeadsBetween(monthStart.toISOString(), nowISO, options),
-    countLeadsBetween("1970-01-01T00:00:00.000Z", nowISO, options),
+    countLeadsBetween(todayStart.toISOString(), now.toISOString(), options),
+    countLeadsBetween(weekStart.toISOString(),  now.toISOString(), options),
+    countLeadsBetween(monthStart.toISOString(), now.toISOString(), options),
+    countLeadsBetween("1970-01-01T00:00:00.000Z", now.toISOString(), options),
 
     countAppointmentsBetween(todayStart.toISOString(), todayEnd.toISOString(), options),
     countAppointmentsBetween(weekStart.toISOString(),  weekEnd.toISOString(),  options),
@@ -288,12 +341,10 @@ export async function refreshDashboardSnapshot(options = {}, now = new Date()) {
     _updatedAt: new Date().toISOString(),
   };
 
+  // Debug: see exactly what the dashboard used
   if (typeof window !== "undefined") {
     window.__statsDebug = {
-      soldDashboardCount: soldTimelineDashboard.length,
-      soldReportsCount:   soldTimelineReports.length,
-      sampleDashboardSold: soldTimelineDashboard.slice(0, 3),
-      sampleReportsSold:   soldTimelineReports.slice(0, 3),
+      soldToday, soldWeek, soldMonth, soldAll,
       snapshot: _cache,
     };
   }
@@ -301,7 +352,9 @@ export async function refreshDashboardSnapshot(options = {}, now = new Date()) {
   return _cache;
 }
 
-/* ---------------- Reports helper ---------------- */
+/* -----------------------------------------------
+   Helper for ReportsPage
+-------------------------------------------------*/
 export function monthFromWeekKey(weekKey) {
   const d = new Date(weekKey);
   return d.toLocaleDateString(undefined, { month: "short", year: "numeric" });
