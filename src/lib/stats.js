@@ -1,8 +1,9 @@
 // File: src/lib/stats.js
 // Dashboard + Reports helpers
-// - SOLD & Premium: local storage (matches Reports).
-// - Leads: Supabase (leads.created_at) — counted up to NOW.
-// - Appointments: Supabase (leads.next_follow_up_at) — counted to end-of-period.
+// - SOLD & Premium (Reports): policy start date (c.sold.startDate)
+// - SOLD & Premium (Dashboard): when it was marked sold (closed/marked date)
+// - Leads: Supabase (leads.created_at) — to NOW
+// - Appointments: Supabase (leads.next_follow_up_at) — to period end
 
 import { supabase } from "../lib/supabaseClient.js";
 import { loadClients } from "./storage.js";
@@ -16,36 +17,28 @@ function parseNumber(x) {
   return Number.isFinite(v) ? v : 0;
 }
 
-/* ---------------- Robust date parsing ----------------
-   Accepts:
-   - ISO / YYYY-MM-DD[THH:mm:ss(.sss)Z?]
-   - MM/DD/YYYY (set to noon local to avoid TZ edge)
-------------------------------------------------------*/
+/* ---------------- Robust date parsing ---------------- */
 function toDateSafe(d) {
   if (!d) return null;
   if (d instanceof Date) return Number.isFinite(+d) ? d : null;
-  const s = String(d);
+  const s = String(d).trim();
 
-  // ISO / YYYY-MM-DD
+  // ISO / YYYY-MM-DD...
   if (/^\d{4}-\d{2}-\d{2}/.test(s)) {
     const t = new Date(s);
     return Number.isFinite(+t) ? t : null;
   }
-
   // MM/DD/YYYY
   if (/^\d{1,2}\/\d{1,2}\/\d{4}$/.test(s)) {
     const [m, dd, y] = s.split("/").map(Number);
     const t = new Date(y, m - 1, dd, 12, 0, 0, 0); // noon local
     return Number.isFinite(+t) ? t : null;
   }
-
   const t = new Date(s);
   return Number.isFinite(+t) ? t : null;
 }
 
-/* Normalize any parsed date to local **noon** for comparisons.
-   This removes UTC→local boundary issues (e.g., '2025-09-01T00:00:00Z').
-*/
+/** Normalize to local noon to avoid UTC/off-by-one issues. */
 function toLocalNoon(dateLike) {
   const d = toDateSafe(dateLike);
   if (!d) return null;
@@ -64,18 +57,21 @@ export function endOfMonth(d)  { const s = startOfMonth(d); const e = new Date(s
 
 export function fmtDate(d)  { return new Date(d).toLocaleDateString(undefined, { month: "short", day: "numeric" }); }
 export function fmtMonth(d) { return new Date(d).toLocaleDateString(undefined, { month: "short", year: "numeric" }); }
-export function getWeekKey(d){
-  const b = startOfWeek(toLocalNoon(d) || new Date());
-  return b.toISOString().slice(0,10);
-}
+export function getWeekKey(d){ const b = startOfWeek(toLocalNoon(d) || new Date()); return b.toISOString().slice(0,10); }
 
-/* ---------------- SOLD (local storage) ---------------- */
+/* ======================================================
+   SOLD sources from local storage
+   - Reports timeline: uses policy startDate
+   - Dashboard timeline: uses "marked sold" date if available
+====================================================== */
+
+/** SOLD events for Reports (policy effective date) */
 export function getSoldEventsFromStorage() {
   const clients = loadClients() || [];
   const sold = clients.filter((c) => c.status === "sold" && c.sold);
   return sold.map((c) => ({
     type: "policy_closed",
-    date: c.sold.startDate || new Date().toISOString(),
+    date: c.sold.startDate || new Date().toISOString(), // effective date (may be future)
     premium: parseNumber(c.sold.premium),
     name: c.sold.name || c.name || "",
     email: c.sold.email || c.email || "",
@@ -85,6 +81,39 @@ export function getSoldEventsFromStorage() {
     faceAmount: parseNumber(c.sold.faceAmount),
     id: c.id,
   }));
+}
+
+/** SOLD events for Dashboard (when you marked it sold) */
+function getSoldEventsForDashboard() {
+  const clients = loadClients() || [];
+  const sold = clients.filter((c) => c.status === "sold" && c.sold);
+
+  return sold.map((c) => {
+    // Prefer any "closed/marked" timestamps you might have stored:
+    const marked =
+      c.sold.closedAt ||
+      c.sold.soldAt ||
+      c.sold.markedAt ||
+      c.sold.dateMarked ||
+      c.updated_at ||
+      c.updatedAt ||
+      c.created_at ||
+      c.createdAt ||
+      new Date().toISOString();
+
+    return {
+      type: "policy_closed",
+      date: marked,                                   // ← used for Dashboard windows
+      premium: parseNumber(c.sold.premium),
+      name: c.sold.name || c.name || "",
+      email: c.sold.email || c.email || "",
+      phone: c.sold.phone || c.phone || "",
+      carrier: c.sold.carrier || "",
+      monthlyPayment: parseNumber(c.sold.monthlyPayment),
+      faceAmount: parseNumber(c.sold.faceAmount),
+      id: c.id,
+    };
+  });
 }
 
 /* ---------------- Totals + filters ---------------- */
@@ -103,14 +132,14 @@ export function getTotals(items = []) {
 export function filterRange(items = [], from, to) {
   const a = +from, b = +to;
   return (items || []).filter((x) => {
-    const td = toLocalNoon(x.date);         // << normalize here
+    const td = toLocalNoon(x.date);
     if (!td) return false;
     const t = +td;
     return t >= a && t <= b;
   });
 }
 
-/* ---------------- Reports timeline (sync) ---------------- */
+/* ---------------- Reports grouping (sync) ---------------- */
 function timeline(){ return getSoldEventsFromStorage(); }
 
 function soldList(items = []) {
@@ -128,7 +157,7 @@ function soldList(items = []) {
 export function groupByMonth(items = timeline()) {
   const m = new Map();
   for (const it of (items || [])) {
-    const d = toLocalNoon(it.date) || new Date(); // << normalized
+    const d = toLocalNoon(it.date) || new Date();
     const key = `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}`;
     if (!m.has(key)) m.set(key, []);
     m.get(key).push(it);
@@ -144,7 +173,7 @@ export function groupByMonth(items = timeline()) {
 function groupWeeks(items = []) {
   const w = new Map();
   for (const it of (items || [])) {
-    const key = getWeekKey(toLocalNoon(it.date) || new Date()); // << normalized
+    const key = getWeekKey(toLocalNoon(it.date) || new Date());
     if (!w.has(key)) w.set(key, []);
     w.get(key).push(it);
   }
@@ -156,7 +185,7 @@ function groupWeeks(items = []) {
 function groupDays(items = []) {
   const d = new Map();
   for (const it of (items || [])) {
-    const dd = toLocalNoon(it.date) || new Date(); // << normalized
+    const dd = toLocalNoon(it.date) || new Date();
     const day = dd.toISOString().slice(0, 10);
     if (!d.has(day)) d.set(day, []);
     d.get(day).push(it);
@@ -210,6 +239,11 @@ let _cache = {
 };
 export function dashboardSnapshot(){ return _cache; }
 
+/** Build SOLD timeline specifically for Dashboard (uses "marked sold" date). */
+function buildSoldTimelineForDashboard() {
+  return getSoldEventsForDashboard();
+}
+
 export async function refreshDashboardSnapshot(options = {}, now = new Date()) {
   // windows
   const nowISO = now.toISOString();
@@ -217,16 +251,20 @@ export async function refreshDashboardSnapshot(options = {}, now = new Date()) {
   const weekStart  = startOfWeek(now), weekEnd  = endOfWeek(now);
   const monthStart = startOfMonth(now), monthEnd = endOfMonth(now);
 
-  // SOLD timeline from local storage (same as Reports)
-  const soldTimeline = getSoldEventsFromStorage();
+  // SOLD timelines
+  const soldTimelineReports   = getSoldEventsFromStorage();       // for all-time parity
+  let   soldTimelineDashboard = buildSoldTimelineForDashboard();  // for day/week/month
 
-  // Compute SOLD totals for each bucket using **normalized dates**
-  const todaySold  = getTotals(filterRange(soldTimeline, todayStart, todayEnd));
-  const weekSold   = getTotals(filterRange(soldTimeline, weekStart, weekEnd));
-  const monthSold  = getTotals(filterRange(soldTimeline, monthStart, monthEnd));
-  const allSold    = getTotals(soldTimeline);
+  // Optional behavior: if someone had a future policy date but marked it sold now,
+  // and no explicit "marked" field exists, the function above already falls back to updated/created/now.
 
-  // Fetch Supabase counts for Leads (so-far) & Appointments (to end-of-period)
+  // Compute SOLD totals for each dashboard bucket
+  const todaySold  = getTotals(filterRange(soldTimelineDashboard, todayStart, todayEnd));
+  const weekSold   = getTotals(filterRange(soldTimelineDashboard, weekStart, weekEnd));
+  const monthSold  = getTotals(filterRange(soldTimelineDashboard, monthStart, monthEnd));
+  const allSold    = getTotals(soldTimelineReports); // all-time totals don't depend on date buckets
+
+  // Supabase counts (leads so-far, appts to end-of-period)
   const [
     todayLeads, weekLeads, monthLeads, allLeads,
     todayAppts, weekAppts, monthAppts, allAppts,
@@ -252,9 +290,10 @@ export async function refreshDashboardSnapshot(options = {}, now = new Date()) {
 
   if (typeof window !== "undefined") {
     window.__statsDebug = {
-      soldTimelineCount: soldTimeline.length,
-      sampleSold: soldTimeline.slice(0, 5),
-      todaySold, weekSold, monthSold, allSold,
+      soldDashboardCount: soldTimelineDashboard.length,
+      soldReportsCount:   soldTimelineReports.length,
+      sampleDashboardSold: soldTimelineDashboard.slice(0, 3),
+      sampleReportsSold:   soldTimelineReports.slice(0, 3),
       snapshot: _cache,
     };
   }
