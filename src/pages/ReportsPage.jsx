@@ -1,7 +1,16 @@
 // File: src/pages/ReportsPage.jsx
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import NumberCard from "../components/NumberCard.jsx";
-import { dashboardSnapshot, groupByMonth, monthFromWeekKey } from "../lib/stats.js";
+import {
+  groupByMonth,
+  monthFromWeekKey,
+  getTotals,
+  startOfMonth,
+  endOfMonth,
+  filterRange,
+  fetchReportsSoldTimeline,
+} from "../lib/stats.js";
+import { useAuth } from "../auth.jsx";
 
 function Row({ label, totals, onClick }) {
   return (
@@ -24,17 +33,47 @@ function formatMoney(n) {
 }
 
 export default function ReportsPage() {
+  const { user } = useAuth();
   const [tab, setTab] = useState("monthly"); // 'weekly' | 'monthly' | 'all'
   const [expanded, setExpanded] = useState(null); // { level:'month'|'week'|'day'|'all', key:string }
+  const [items, setItems] = useState([]); // SOLD events (policy-date based, from Supabase)
+  const [loading, setLoading] = useState(true);
 
-  const snapshot = useMemo(() => dashboardSnapshot(), []);
-  const months = useMemo(() => groupByMonth(), []);
+  useEffect(() => {
+    let alive = true;
+    (async () => {
+      setLoading(true);
+      const options = {
+        user_id: user?.id || null, // scope to signed-in user
+        // If you want team-scoped reports instead, pass team_id:
+        // team_id: user?.app_metadata?.team_id || null,
+      };
+      const rows = await fetchReportsSoldTimeline(options);
+      if (!alive) return;
+      setItems(rows);
+      setLoading(false);
+    })();
+    return () => { alive = false; };
+  }, [user?.id /*, user?.app_metadata?.team_id */]);
+
+  // 🔧 FIX: pass items into groupByMonth
+  const months = useMemo(() => groupByMonth(items), [items]);
 
   // For Weekly tab we flatten weeks across months
   const allWeeks = useMemo(() => months.flatMap((m) => m.weeks), [months]);
 
   // For All-time list (top-level rows are months; inside we also show weeks & days)
   const allTimeMonths = months;
+
+  // Summary numbers (based on policy-date items for this user)
+  const now = new Date();
+  const thisMonthStart = startOfMonth(now);
+  const thisMonthEnd = endOfMonth(now);
+  const allTimeTotals = useMemo(() => getTotals(items), [items]);
+  const thisMonthTotals = useMemo(
+    () => getTotals(filterRange(items, thisMonthStart, thisMonthEnd)),
+    [items, thisMonthStart, thisMonthEnd]
+  );
 
   const header = (
     <div className="grid grid-cols-6 gap-3 text-xs uppercase tracking-wide text-white/60">
@@ -46,6 +85,8 @@ export default function ReportsPage() {
       <div className="text-center">Appts</div>
     </div>
   );
+
+  if (loading) return <div className="p-6">Loading…</div>;
 
   return (
     <div className="space-y-6">
@@ -66,12 +107,12 @@ export default function ReportsPage() {
         ))}
       </div>
 
-      {/* Summary strip */}
+      {/* Summary strip (scoped to this user) */}
       <div className="grid gap-4 md:grid-cols-4">
-        <NumberCard label="Closed (all time)" value={snapshot.allTime.closed} />
-        <NumberCard label="Premium (all time)" value={formatMoney(snapshot.allTime.premium)} />
-        <NumberCard label="Closed (this month)" value={snapshot.thisMonth.closed} />
-        <NumberCard label="Premium (this month)" value={formatMoney(snapshot.thisMonth.premium)} />
+        <NumberCard label="Closed (all time)" value={allTimeTotals.closed} />
+        <NumberCard label="Premium (all time)" value={formatMoney(allTimeTotals.premium)} />
+        <NumberCard label="Closed (this month)" value={thisMonthTotals.closed} />
+        <NumberCard label="Premium (this month)" value={formatMoney(thisMonthTotals.premium)} />
       </div>
 
       {/* Tables */}
@@ -95,9 +136,9 @@ export default function ReportsPage() {
                       <Row
                         label={`• ${w.label}`}
                         totals={w.totals}
-                        onClick={() => setExpanded((e) =>
-                          e?.key === w.key ? { level: "month", key: m.key } : { level: "week", key: w.key }
-                        )}
+                        onClick={() =>
+                          setExpanded((e) => (e?.key === w.key ? { level: "month", key: m.key } : { level: "week", key: w.key }))
+                        }
                       />
                       {expanded?.level === "week" && expanded?.key === w.key && (
                         <div className="ml-4 space-y-1">
@@ -107,9 +148,9 @@ export default function ReportsPage() {
                               <Row
                                 label={`— ${d.label}`}
                                 totals={d.totals}
-                                onClick={() => setExpanded((e) =>
-                                  e?.key === d.key ? { level: "week", key: w.key } : { level: "day", key: d.key }
-                                )}
+                                onClick={() =>
+                                  setExpanded((e) => (e?.key === d.key ? { level: "week", key: w.key } : { level: "day", key: d.key }))
+                                }
                               />
                               {expanded?.level === "day" && expanded?.key === d.key && (
                                 <div className="ml-6">
@@ -142,15 +183,14 @@ export default function ReportsPage() {
               {expanded?.level === "week" && expanded?.key === w.key && (
                 <div className="ml-4 space-y-2">
                   <SoldList title="Sold in this week" items={w.sold} />
-                  {/* Show days for this week */}
                   {w.days.map((d) => (
                     <div key={d.key} className="ml-2">
                       <Row
                         label={`— ${d.label}`}
                         totals={d.totals}
-                        onClick={() => setExpanded((e) =>
-                          e?.key === d.key ? { level: "week", key: w.key } : { level: "day", key: d.key }
-                        )}
+                        onClick={() =>
+                          setExpanded((e) => (e?.key === d.key ? { level: "week", key: w.key } : { level: "day", key: d.key }))
+                        }
                       />
                       {expanded?.level === "day" && expanded?.key === d.key && (
                         <div className="ml-6">
@@ -184,9 +224,9 @@ export default function ReportsPage() {
                       <Row
                         label={`• ${w.label}`}
                         totals={w.totals}
-                        onClick={() => setExpanded((e) =>
-                          e?.key === w.key ? { level: "month", key: m.key } : { level: "week", key: w.key }
-                        )}
+                        onClick={() =>
+                          setExpanded((e) => (e?.key === w.key ? { level: "month", key: m.key } : { level: "week", key: w.key }))
+                        }
                       />
                       {expanded?.level === "week" && expanded?.key === w.key && (
                         <div className="ml-4 space-y-1">
@@ -196,9 +236,9 @@ export default function ReportsPage() {
                               <Row
                                 label={`— ${d.label}`}
                                 totals={d.totals}
-                                onClick={() => setExpanded((e) =>
-                                  e?.key === d.key ? { level: "week", key: w.key } : { level: "day", key: d.key }
-                                )}
+                                onClick={() =>
+                                  setExpanded((e) => (e?.key === d.key ? { level: "week", key: w.key } : { level: "day", key: d.key }))
+                                }
                               />
                               {expanded?.level === "day" && expanded?.key === d.key && (
                                 <div className="ml-6">
