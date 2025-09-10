@@ -3,6 +3,7 @@ import { useEffect, useState } from "react";
 import NumberCard from "../components/NumberCard.jsx";
 import { dashboardSnapshot, refreshDashboardSnapshot } from "../lib/stats.js";
 import { supabase } from "../lib/supabaseClient.js";
+import { useAuth } from "../auth.jsx";
 
 function Card({ title, children }) {
   return (
@@ -14,48 +15,72 @@ function Card({ title, children }) {
 }
 
 export default function DashboardHome() {
+  const { user } = useAuth();
+
   // read cached snapshot immediately to avoid layout shift
   const [snap, setSnap] = useState(dashboardSnapshot());
+  const [loading, setLoading] = useState(false);
+
+  async function doRefresh(reason = "mount") {
+    try {
+      setLoading(true);
+      const options = {
+        user_id: user?.id || null,
+        team_id: user?.app_metadata?.team_id || null,
+      };
+      const data = await refreshDashboardSnapshot(options);
+      setSnap(data);
+      // console.debug("[Dashboard] refreshed:", reason, data);
+    } finally {
+      setLoading(false);
+    }
+  }
 
   useEffect(() => {
     let isMounted = true;
 
-    // Initial fetch from Supabase
-    refreshDashboardSnapshot()
-      .then((data) => isMounted && setSnap(data))
-      .catch(console.error);
+    // Initial fetch (IMPORTANT: pass options so stats filter by your user/team)
+    doRefresh("mount");
 
-    // Realtime: update when a new lead row is inserted
-    const channel = supabase
-      .channel("leads-dashboard")
-      .on(
-        "postgres_changes",
-        { event: "INSERT", schema: "public", table: "leads" },
-        () => {
-          refreshDashboardSnapshot().then((data) => {
-            if (isMounted) setSnap(data);
-          });
-        }
-      )
-      .subscribe((status) => {
+    // Realtime subscriptions: refresh on any relevant insert/update
+    // We listen to a few likely tables so appointment counts update immediately.
+    const WATCH = [
+      { table: "leads", events: ["INSERT", "UPDATE"] },
+      { table: "appointments", events: ["INSERT", "UPDATE", "DELETE"] },
+      { table: "calendar_events", events: ["INSERT", "UPDATE", "DELETE"] },
+      { table: "followups", events: ["INSERT", "UPDATE", "DELETE"] },
+      { table: "pipeline_followups", events: ["INSERT", "UPDATE", "DELETE"] },
+      { table: "pipeline_events", events: ["INSERT", "UPDATE", "DELETE"] },
+    ];
+
+    const channels = WATCH.map(({ table, events }) => {
+      const ch = supabase.channel(`dash-${table}`);
+      events.forEach((evt) => {
+        ch.on("postgres_changes", { event: evt, schema: "public", table }, () => {
+          if (!isMounted) return;
+          doRefresh(`realtime:${table}:${evt}`);
+        });
+      });
+      ch.subscribe((status) => {
         if (status === "CHANNEL_ERROR") {
-          console.warn("[DashboardHome] Realtime channel error for leads-dashboard");
+          console.warn(`[DashboardHome] Realtime channel error for ${table}`);
         }
       });
+      return ch;
+    });
 
-    // Optional: polling fallback every 60s (remove if not needed)
+    // Optional: polling fallback every 60s while testing
     const poll = setInterval(() => {
-      refreshDashboardSnapshot()
-        .then((data) => isMounted && setSnap(data))
-        .catch(() => {});
+      if (!isMounted) return;
+      doRefresh("poll");
     }, 60000);
 
     return () => {
       isMounted = false;
       clearInterval(poll);
-      supabase.removeChannel(channel);
+      channels.forEach((ch) => supabase.removeChannel(ch));
     };
-  }, []);
+  }, [user?.id, user?.app_metadata?.team_id]); // rerun when identity scope changes
 
   const money = (n) =>
     Intl.NumberFormat(undefined, {
@@ -73,6 +98,16 @@ export default function DashboardHome() {
 
   return (
     <div className="space-y-6">
+      <div className="flex items-center justify-between">
+        <div />
+        <button
+          onClick={() => doRefresh("button")}
+          className="rounded-xl px-3 py-2 text-sm bg-white/10 hover:bg-white/15 border border-white/10 text-white"
+        >
+          {loading ? "Refreshing…" : "Refresh"}
+        </button>
+      </div>
+
       <div className="grid gap-4 md:grid-cols-4">
         {kpi.map((x) => (
           <NumberCard key={x.label} label={x.label} value={x.value} sublabel={x.sub} />
