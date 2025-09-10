@@ -1,5 +1,5 @@
 // File: src/pages/CalendarPage.jsx
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useState } from "react";
 import { supabase } from "../lib/supabaseClient.js";
 import { useAuth } from "../auth.jsx";
 
@@ -23,8 +23,6 @@ function classNames(...xs) {
 
 /* ============================================================
    LEFT: Upcoming meetings (Calendly)
-   - This tries a Netlify function you likely have (calendly-events).
-   - If it’s not set up yet, it will gracefully show “No upcoming meetings.”
    ============================================================ */
 
 function UpcomingMeetings() {
@@ -40,8 +38,6 @@ function UpcomingMeetings() {
       setErr("");
 
       try {
-        // If you have a function that returns upcoming events for the current user:
-        // Expected shape: [{ id, start_time, end_time, title, invitee_email, location }]
         const res = await fetch("/.netlify/functions/calendly-events", {
           method: "GET",
           headers: { "Content-Type": "application/json" },
@@ -53,7 +49,6 @@ function UpcomingMeetings() {
         if (!active) return;
         setItems(Array.isArray(data) ? data.slice(0, 10) : []);
       } catch (e) {
-        // If no function exists, or it errors, just show the empty state
         setItems([]);
         setErr(e?.message || "Failed to load meetings.");
       } finally {
@@ -64,7 +59,7 @@ function UpcomingMeetings() {
     return () => {
       active = false;
     };
-  }, [user?.id]); // re-run if user changes
+  }, [user?.id]);
 
   return (
     <section className="mx-2 mt-2 rounded-2xl border border-white/10 bg-white/[0.03]">
@@ -108,12 +103,12 @@ function UpcomingMeetings() {
 }
 
 /* ============================================================
-   RIGHT: Upcoming follow-ups (Pipeline)
-   - IMPORTANT FIX: no reference to `first_name` (or any missing column).
-   - Only selects columns that exist: id, next_follow_up_at, phone, email.
+   RIGHT: Upcoming follow-ups (Pipeline) — with names
    ============================================================ */
 
 function leadLabel(l) {
+  const name = (l.name || "").trim();
+  if (name) return name;
   return l.phone || l.email || "Lead";
 }
 
@@ -133,8 +128,8 @@ function UpcomingFollowUps() {
 
       const { data, error } = await supabase
         .from("leads")
-        // ✅ FIX: only existing columns
-        .select("id,next_follow_up_at,phone,email")
+        // ✅ Include 'name' now; other columns still exist in your schema
+        .select("id,next_follow_up_at,phone,email,name")
         .eq("user_id", user.id)
         .not("next_follow_up_at", "is", null)
         .gte("next_follow_up_at", new Date().toISOString())
