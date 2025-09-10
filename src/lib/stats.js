@@ -1,15 +1,13 @@
 // File: src/lib/stats.js
 // Dashboard + Reports helpers
-// - SOLD & Premium: local storage (matches Reports exactly).
+// - SOLD & Premium: local storage (matches Reports).
 // - Leads: Supabase (leads.created_at) — counted up to NOW.
 // - Appointments: Supabase (leads.next_follow_up_at) — counted to end-of-period.
 
 import { supabase } from "../lib/supabaseClient.js";
 import { loadClients } from "./storage.js";
 
-/* -----------------------------------------------
-   Number parsing
--------------------------------------------------*/
+/* ---------------- Number parsing ---------------- */
 function parseNumber(x) {
   if (x == null) return 0;
   if (typeof x === "number") return x;
@@ -18,11 +16,11 @@ function parseNumber(x) {
   return Number.isFinite(v) ? v : 0;
 }
 
-/* -----------------------------------------------
-   Date parsing (robust)
-   - Accepts ISO / YYYY-MM-DD
-   - Accepts MM/DD/YYYY (noon local time to avoid TZ edge)
--------------------------------------------------*/
+/* ---------------- Robust date parsing ----------------
+   Accepts:
+   - ISO / YYYY-MM-DD[THH:mm:ss(.sss)Z?]
+   - MM/DD/YYYY (set to noon local to avoid TZ edge)
+------------------------------------------------------*/
 function toDateSafe(d) {
   if (!d) return null;
   if (d instanceof Date) return Number.isFinite(+d) ? d : null;
@@ -36,8 +34,8 @@ function toDateSafe(d) {
 
   // MM/DD/YYYY
   if (/^\d{1,2}\/\d{1,2}\/\d{4}$/.test(s)) {
-    const [m, d2, y] = s.split("/").map(Number);
-    const t = new Date(y, m - 1, d2, 12, 0, 0, 0);
+    const [m, dd, y] = s.split("/").map(Number);
+    const t = new Date(y, m - 1, dd, 12, 0, 0, 0); // noon local
     return Number.isFinite(+t) ? t : null;
   }
 
@@ -45,9 +43,16 @@ function toDateSafe(d) {
   return Number.isFinite(+t) ? t : null;
 }
 
-/* -----------------------------------------------
-   Time helpers
--------------------------------------------------*/
+/* Normalize any parsed date to local **noon** for comparisons.
+   This removes UTC→local boundary issues (e.g., '2025-09-01T00:00:00Z').
+*/
+function toLocalNoon(dateLike) {
+  const d = toDateSafe(dateLike);
+  if (!d) return null;
+  return new Date(d.getFullYear(), d.getMonth(), d.getDate(), 12, 0, 0, 0);
+}
+
+/* ---------------- Time helpers ---------------- */
 export function startOfDay(d) { const x = new Date(d); x.setHours(0,0,0,0); return x; }
 export function endOfDay(d)   { const x = new Date(d); x.setHours(23,59,59,999); return x; }
 
@@ -59,11 +64,12 @@ export function endOfMonth(d)  { const s = startOfMonth(d); const e = new Date(s
 
 export function fmtDate(d)  { return new Date(d).toLocaleDateString(undefined, { month: "short", day: "numeric" }); }
 export function fmtMonth(d) { return new Date(d).toLocaleDateString(undefined, { month: "short", year: "numeric" }); }
-export function getWeekKey(d){ const b = startOfWeek(new Date(d)); return b.toISOString().slice(0,10); }
+export function getWeekKey(d){
+  const b = startOfWeek(toLocalNoon(d) || new Date());
+  return b.toISOString().slice(0,10);
+}
 
-/* -----------------------------------------------
-   SOLD source (local storage) — same as Reports
--------------------------------------------------*/
+/* ---------------- SOLD (local storage) ---------------- */
 export function getSoldEventsFromStorage() {
   const clients = loadClients() || [];
   const sold = clients.filter((c) => c.status === "sold" && c.sold);
@@ -81,9 +87,7 @@ export function getSoldEventsFromStorage() {
   }));
 }
 
-/* -----------------------------------------------
-   Totals + filters
--------------------------------------------------*/
+/* ---------------- Totals + filters ---------------- */
 function countByType(items) {
   const c = { lead: 0, appointment: 0, client_created: 0, policy_closed: 0, premium: 0 };
   for (const it of items || []) {
@@ -99,16 +103,14 @@ export function getTotals(items = []) {
 export function filterRange(items = [], from, to) {
   const a = +from, b = +to;
   return (items || []).filter((x) => {
-    const td = toDateSafe(x.date);
+    const td = toLocalNoon(x.date);         // << normalize here
     if (!td) return false;
     const t = +td;
     return t >= a && t <= b;
   });
 }
 
-/* -----------------------------------------------
-   Reports timeline (sync)
--------------------------------------------------*/
+/* ---------------- Reports timeline (sync) ---------------- */
 function timeline(){ return getSoldEventsFromStorage(); }
 
 function soldList(items = []) {
@@ -126,7 +128,7 @@ function soldList(items = []) {
 export function groupByMonth(items = timeline()) {
   const m = new Map();
   for (const it of (items || [])) {
-    const d = toDateSafe(it.date) || new Date();
+    const d = toLocalNoon(it.date) || new Date(); // << normalized
     const key = `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}`;
     if (!m.has(key)) m.set(key, []);
     m.get(key).push(it);
@@ -142,8 +144,7 @@ export function groupByMonth(items = timeline()) {
 function groupWeeks(items = []) {
   const w = new Map();
   for (const it of (items || [])) {
-    const d = toDateSafe(it.date) || new Date();
-    const key = getWeekKey(d);
+    const key = getWeekKey(toLocalNoon(it.date) || new Date()); // << normalized
     if (!w.has(key)) w.set(key, []);
     w.get(key).push(it);
   }
@@ -155,7 +156,7 @@ function groupWeeks(items = []) {
 function groupDays(items = []) {
   const d = new Map();
   for (const it of (items || [])) {
-    const dd = toDateSafe(it.date) || new Date();
+    const dd = toLocalNoon(it.date) || new Date(); // << normalized
     const day = dd.toISOString().slice(0, 10);
     if (!d.has(day)) d.set(day, []);
     d.get(day).push(it);
@@ -165,9 +166,7 @@ function groupDays(items = []) {
     .map(([key, arr]) => ({ key, label: fmtDate(key), totals: getTotals(arr), sold: soldList(arr) }));
 }
 
-/* -----------------------------------------------
-   Supabase counts for Dashboard
--------------------------------------------------*/
+/* ---------------- Supabase counts for Dashboard ---------------- */
 // Leads (so-far → end = now)
 async function countLeadsBetween(startISO, endISO, options = {}) {
   let q = supabase.from("leads")
@@ -199,10 +198,7 @@ async function countAppointmentsBetween(startISO, endISO, options = {}) {
   return count || 0;
 }
 
-/* -----------------------------------------------
-   Dashboard cache + refresh
-   (SOLD/Premium from local storage so it matches Reports)
--------------------------------------------------*/
+/* ---------------- Dashboard cache + refresh ---------------- */
 const ZERO = { leads: 0, appointments: 0, clients: 0, closed: 0, premium: 0 };
 
 let _cache = {
@@ -221,10 +217,10 @@ export async function refreshDashboardSnapshot(options = {}, now = new Date()) {
   const weekStart  = startOfWeek(now), weekEnd  = endOfWeek(now);
   const monthStart = startOfMonth(now), monthEnd = endOfMonth(now);
 
-  // SOLD timeline from local storage (just like Reports)
+  // SOLD timeline from local storage (same as Reports)
   const soldTimeline = getSoldEventsFromStorage();
 
-  // Compute SOLD totals for each bucket EXACTLY like Reports
+  // Compute SOLD totals for each bucket using **normalized dates**
   const todaySold  = getTotals(filterRange(soldTimeline, todayStart, todayEnd));
   const weekSold   = getTotals(filterRange(soldTimeline, weekStart, weekEnd));
   const monthSold  = getTotals(filterRange(soldTimeline, monthStart, monthEnd));
@@ -246,8 +242,6 @@ export async function refreshDashboardSnapshot(options = {}, now = new Date()) {
     countAppointmentsBetween("1970-01-01T00:00:00.000Z", "9999-12-31T23:59:59.999Z", options),
   ]);
 
-  // Compose snapshot — keep SOLD & premium from local storage (Report-matching),
-  // and inject Leads + Appointments on top.
   _cache = {
     today:     { ...todaySold,  leads: todayLeads, appointments: todayAppts },
     thisWeek:  { ...weekSold,   leads: weekLeads, appointments: weekAppts  },
@@ -256,7 +250,6 @@ export async function refreshDashboardSnapshot(options = {}, now = new Date()) {
     _updatedAt: new Date().toISOString(),
   };
 
-  // Debug: quickly see what dashboard used
   if (typeof window !== "undefined") {
     window.__statsDebug = {
       soldTimelineCount: soldTimeline.length,
@@ -269,9 +262,7 @@ export async function refreshDashboardSnapshot(options = {}, now = new Date()) {
   return _cache;
 }
 
-/* -----------------------------------------------
-   Helper for Weekly tab label suffix in ReportsPage
--------------------------------------------------*/
+/* ---------------- Reports helper ---------------- */
 export function monthFromWeekKey(weekKey) {
   const d = new Date(weekKey);
   return d.toLocaleDateString(undefined, { month: "short", year: "numeric" });
