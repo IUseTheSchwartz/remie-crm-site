@@ -140,7 +140,6 @@ export default function AgentShowcase() {
         updated_at: new Date().toISOString(),
       };
 
-      // IMPORTANT: return a row so the promise resolves cleanly & UI advances
       const { data, error } = await supabase
         .from("agent_profiles")
         .upsert(payload, { onConflict: "user_id" })
@@ -288,7 +287,6 @@ export default function AgentShowcase() {
       }
 
       if (rowsToUpsert.length) {
-        // return rows so the client is never “waiting” on an empty body
         const { error: upErr } = await supabase
           .from("agent_states")
           .upsert(rowsToUpsert, { onConflict: "user_id,state_code" })
@@ -439,12 +437,25 @@ export default function AgentShowcase() {
       {step === 2 && (
         <div className="mt-6 space-y-4 rounded-2xl border border-white/10 bg-white/[0.03] p-5">
           <Field label="Headshot">
-            <input
-              type="file"
-              accept="image/*"
-              onChange={(e) => setHeadshotFile(e.target.files?.[0] || null)}
-              className="block text-sm"
-            />
+            {/* Custom white upload button */}
+            <div className="flex items-center gap-3">
+              <input
+                id="headshot_file"
+                type="file"
+                accept="image/*"
+                onChange={(e) => setHeadshotFile(e.target.files?.[0] || null)}
+                className="hidden"
+              />
+              <label
+                htmlFor="headshot_file"
+                className="cursor-pointer rounded-lg bg-white px-4 py-2 text-sm font-medium text-black hover:bg-neutral-200"
+              >
+                Choose File
+              </label>
+              <div className="text-sm text-white/70">
+                {headshotFile?.name || (headshotUrl ? "Current image saved" : "No file chosen")}
+              </div>
+            </div>
           </Field>
 
           {headshotUrl && (
@@ -461,6 +472,13 @@ export default function AgentShowcase() {
               className="rounded-lg border border-white/15 px-4 py-2 text-sm hover:bg-white/5"
             >
               Back
+            </button>
+            {/* NEW: Skip/Next button */}
+            <button
+              onClick={() => setStep(3)}
+              className="rounded-lg border border-white/15 px-4 py-2 text-sm hover:bg-white/5"
+            >
+              Next
             </button>
             <button
               onClick={uploadHeadshot}
