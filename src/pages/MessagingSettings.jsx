@@ -390,13 +390,24 @@ export default function MessagingSettings() {
   );
 }
 
-/* --- Var row --- */
-function VarRow({ token, desc }) {
-  return (
-    <div className="flex items-start justify-between gap-3 rounded-lg border border-white/10 bg-white/[0.02] p-2">
-      <code className="rounded bg-white/10 px-1.5 py-0.5 text-[11px]">{`{{${token}}}`}</code>
-      <div className="flex-1 text-right text-white/70">{desc}</div>
-    </div>
-  );
-}
+{/* inside your drawer content */}
+<div className="space-y-3 text-xs">
+  <VarRow token="first_name" desc="Lead’s first name" />
+  <VarRow token="last_name" desc="Lead’s last name" />
+  <VarRow token="full_name" desc="Lead’s full name" />
+  <VarRow token="agent_name" desc="Your display name" />
+  <VarRow token="company" desc="Your agency/company" />
+  <VarRow token="agent_phone" desc="Your phone number" />
+  <VarRow token="agent_email" desc="Your email address" />
+  <VarRow token="appt_time" desc="Formatted appointment time" />
+  <VarRow token="carrier" desc="Policy carrier (e.g., Americo)" />
+  <VarRow token="policy_number" desc="Issued policy number" />
+  <VarRow token="premium" desc="Monthly premium amount" />
+  <VarRow token="today" desc="Today’s date" />
+  {/* 🆕 Added tokens */}
+  <VarRow token="state" desc="Lead’s state (from form)" />
+  <VarRow token="beneficiary" desc="Lead’s listed beneficiary" />
+  <VarRow token="calendly_link" desc="Your Calendly booking link" />
+</div>
+
 
