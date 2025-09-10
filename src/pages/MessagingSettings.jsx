@@ -3,7 +3,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { supabase } from "../lib/supabaseClient";
 import { CreditCard, Check, Loader2, MessageSquare } from "lucide-react";
 
-/* ---------------- Template Catalog (keys + friendly names) ---------------- */
+/* ---------------- Template Catalog ---------------- */
 const TEMPLATE_DEFS = [
   { key: "new_lead", label: "New Lead (instant)" },
   { key: "appointment", label: "Appointment Reminder" },
@@ -14,13 +14,7 @@ const TEMPLATE_DEFS = [
   { key: "holiday_text", label: "Holiday Text" },
 ];
 
-/* ---------------- Suggested default messages ----------------
-  You can use variables:
-    {{first_name}}, {{last_name}}, {{full_name}}, {{agent_name}},
-    {{company}}, {{agent_phone}}, {{agent_email}},
-    {{appt_time}}, {{policy_number}}, {{carrier}}, {{premium}},
-    {{today}}, {{opt_out}}
----------------------------------------------------------------- */
+/* ---------------- Suggested defaults ---------------- */
 const DEFAULTS = {
   new_lead:
     "Hi {{first_name}}! This is {{agent_name}} with {{company}}. I just received your request—when is a good time today to chat for 2–3 minutes? {{opt_out}}",
@@ -49,25 +43,23 @@ export default function MessagingSettings() {
   const [userId, setUserId] = useState(null);
 
   // Custom amount state
-  const [customUsd, setCustomUsd] = useState(""); // string input
-  const [customMsg, setCustomMsg] = useState(""); // validation/output message
-  const MIN_CENTS = 100;   // $1
-  const MAX_CENTS = 50000; // $500
+  const [customUsd, setCustomUsd] = useState("");
+  const [customMsg, setCustomMsg] = useState("");
+  const MIN_CENTS = 100;
+  const MAX_CENTS = 50000;
 
   // Templates
   const [templates, setTemplates] = useState(() => ({ ...DEFAULTS }));
-  const [saveState, setSaveState] = useState("idle"); // idle | saving | saved | error
+  const [saveState, setSaveState] = useState("idle");
   const saveTimer = useRef(null);
 
   const balanceDollars = (balanceCents / 100).toFixed(2);
 
-  // Load session, wallet, templates
   useEffect(() => {
     let mounted = true;
     (async () => {
       setLoading(true);
 
-      // who am i?
       const { data: sessionData } = await supabase.auth.getSession();
       const uid = sessionData?.session?.user?.id || null;
       if (!uid) {
@@ -86,7 +78,7 @@ export default function MessagingSettings() {
       if (!mounted) return;
       setBalanceCents(wallet?.balance_cents || 0);
 
-      // load templates row (single JSON blob keyed by user)
+      // load templates
       const { data: tmpl } = await supabase
         .from("message_templates")
         .select("templates")
@@ -95,10 +87,8 @@ export default function MessagingSettings() {
 
       if (!mounted) return;
       if (tmpl?.templates && typeof tmpl.templates === "object") {
-        // merge: keep any newly added defaults not in DB yet
         setTemplates((prev) => ({ ...DEFAULTS, ...tmpl.templates }));
       } else {
-        // not present -> seed defaults (lazy)
         try {
           await supabase
             .from("message_templates")
@@ -110,7 +100,6 @@ export default function MessagingSettings() {
       setLoading(false);
     })();
 
-    // realtime updates to wallet
     const ch = supabase
       .channel("wallet_rt")
       .on(
@@ -132,7 +121,6 @@ export default function MessagingSettings() {
     };
   }, [userId]);
 
-  /* ---------------- Save templates (debounced autosave) ---------------- */
   async function saveTemplates(next) {
     if (!userId) return;
     setSaveState("saving");
@@ -142,7 +130,6 @@ export default function MessagingSettings() {
         .upsert({ user_id: userId, templates: next });
       if (error) throw error;
       setSaveState("saved");
-      // clear state back to idle after a moment
       setTimeout(() => setSaveState("idle"), 1200);
     } catch (e) {
       console.error(e);
@@ -158,7 +145,6 @@ export default function MessagingSettings() {
     saveTimer.current = setTimeout(() => saveTemplates(next), 800);
   }
 
-  /* ---------------- Stripe top-ups ---------------- */
   async function addFunds(amountCents) {
     setCustomMsg("");
     setTopping(true);
@@ -174,7 +160,6 @@ export default function MessagingSettings() {
       });
 
       if (!res.ok) {
-        // show server-provided error when possible
         let msg = "Could not start checkout.";
         try {
           const j = await res.json();
@@ -194,7 +179,6 @@ export default function MessagingSettings() {
     }
   }
 
-  // custom amount flow
   function addCustom() {
     setCustomMsg("");
     const n = Number(customUsd);
@@ -242,41 +226,12 @@ export default function MessagingSettings() {
 
           <div className="flex flex-col gap-2 md:items-end">
             <div className="flex flex-wrap gap-2">
-              <button
-                onClick={() => addFunds(500)}
-                disabled={topping}
-                className="inline-flex items-center gap-1 rounded-lg border border-white/15 bg-white/5 px-3 py-2 text-sm hover:bg-white/10 disabled:opacity-50"
-                title="Add $5"
-              >
-                <CreditCard className="h-4 w-4" /> +$5
-              </button>
-              <button
-                onClick={() => addFunds(1000)}
-                disabled={topping}
-                className="inline-flex items-center gap-1 rounded-lg border border-white/15 bg-white/5 px-3 py-2 text-sm hover:bg-white/10 disabled:opacity-50"
-                title="Add $10"
-              >
-                <CreditCard className="h-4 w-4" /> +$10
-              </button>
-              <button
-                onClick={() => addFunds(2000)}
-                disabled={topping}
-                className="inline-flex items-center gap-1 rounded-lg border border-white/15 bg-white/5 px-3 py-2 text-sm hover:bg-white/10 disabled:opacity-50"
-                title="Add $20"
-              >
-                <CreditCard className="h-4 w-4" /> +$20
-              </button>
-              <button
-                onClick={() => addFunds(5000)}
-                disabled={topping}
-                className="inline-flex items-center gap-1 rounded-lg border border-white/15 bg-white/5 px-3 py-2 text-sm hover:bg-white/10 disabled:opacity-50"
-                title="Add $50"
-              >
-                <CreditCard className="h-4 w-4" /> +$50
-              </button>
+              <button onClick={() => addFunds(500)} disabled={topping} className="inline-flex items-center gap-1 rounded-lg border border-white/15 bg-white/5 px-3 py-2 text-sm hover:bg-white/10 disabled:opacity-50"><CreditCard className="h-4 w-4" /> +$5</button>
+              <button onClick={() => addFunds(1000)} disabled={topping} className="inline-flex items-center gap-1 rounded-lg border border-white/15 bg-white/5 px-3 py-2 text-sm hover:bg-white/10 disabled:opacity-50"><CreditCard className="h-4 w-4" /> +$10</button>
+              <button onClick={() => addFunds(2000)} disabled={topping} className="inline-flex items-center gap-1 rounded-lg border border-white/15 bg-white/5 px-3 py-2 text-sm hover:bg-white/10 disabled:opacity-50"><CreditCard className="h-4 w-4" /> +$20</button>
+              <button onClick={() => addFunds(5000)} disabled={topping} className="inline-flex items-center gap-1 rounded-lg border border-white/15 bg-white/5 px-3 py-2 text-sm hover:bg-white/10 disabled:opacity-50"><CreditCard className="h-4 w-4" /> +$50</button>
             </div>
 
-            {/* Custom amount input */}
             <div className="flex items-center gap-2">
               <label className="text-xs text-white/60">Custom:</label>
               <div className="flex items-center gap-2">
@@ -294,14 +249,7 @@ export default function MessagingSettings() {
                     className="w-24 rounded-lg border border-white/15 bg-white/5 pl-5 pr-3 py-2 text-sm outline-none focus:ring-1 focus:ring-indigo-400/50"
                   />
                 </div>
-                <button
-                  onClick={addCustom}
-                  disabled={topping}
-                  className="inline-flex items-center gap-1 rounded-lg border border-white/15 bg-white/5 px-3 py-2 text-sm hover:bg-white/10 disabled:opacity-50"
-                  title="Add custom amount"
-                >
-                  <CreditCard className="h-4 w-4" /> Add
-                </button>
+                <button onClick={addCustom} disabled={topping} className="inline-flex items-center gap-1 rounded-lg border border-white/15 bg-white/5 px-3 py-2 text-sm hover:bg-white/10 disabled:opacity-50"><CreditCard className="h-4 w-4" /> Add</button>
               </div>
               {customMsg && <div className="text-xs text-amber-300">{customMsg}</div>}
             </div>
@@ -311,7 +259,7 @@ export default function MessagingSettings() {
         </div>
       </section>
 
-      {/* Templates editor (per-user; Twilio can be wired up later) */}
+      {/* Templates editor */}
       <section className="rounded-2xl border border-white/10 bg-white/[0.03] p-4">
         <div className="flex items-center gap-2 mb-3">
           <div className="grid h-10 w-10 place-items-center rounded-xl bg-white/5 ring-1 ring-white/10">
@@ -320,8 +268,7 @@ export default function MessagingSettings() {
           <div>
             <h3 className="text-sm font-semibold">Message Templates</h3>
             <p className="text-xs text-white/60">
-              Customize what’s sent for each event. Variables like <code className="px-1 rounded bg-white/10">{{"{{first_name}}"}}</code> are
-              replaced automatically.
+              Customize what’s sent for each event. Variables like <code className="px-1 rounded bg-white/10">{'{{first_name}}'}</code> are replaced automatically.
             </p>
           </div>
           <div className="ml-auto text-xs text-white/60">
@@ -343,7 +290,7 @@ export default function MessagingSettings() {
                 placeholder={DEFAULTS[key]}
               />
               <div className="mt-2 text-[11px] text-white/50">
-                Tip: Include <code className="px-1 rounded bg-white/10">{{"{{opt_out}}"}}</code> to append “Reply STOP to opt out.”
+                Tip: Include <code className="px-1 rounded bg-white/10">{'{{opt_out}}'}</code> to append “Reply STOP to opt out.”
               </div>
             </div>
           ))}
