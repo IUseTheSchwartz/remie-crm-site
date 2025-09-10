@@ -7,44 +7,44 @@ import { CreditCard, Check, Loader2, MessageSquare, Info } from "lucide-react";
 const TEMPLATE_DEFS = [
   { key: "new_lead", label: "New Lead (instant)" },
   { key: "appointment", label: "Appointment Reminder" },
-  { key: "sold", label: "Sold - Policy Info" }, // ← updated label
+  { key: "sold", label: "Sold - Policy Info" },
   { key: "policy_info", label: "Sold - Policy Info (Alt)" },
   { key: "payment_reminder", label: "Payment Reminder" },
   { key: "birthday_text", label: "Birthday Text" },
   { key: "holiday_text", label: "Holiday Text" },
 ];
 
-/* ---------------- Suggested defaults ----------------
+/* ---------------- Suggested defaults (opt-out removed) ----------------
    Variables you can use in templates:
    {{first_name}}, {{last_name}}, {{full_name}}, {{agent_name}},
    {{company}}, {{agent_phone}}, {{agent_email}},
    {{appt_time}}, {{policy_number}}, {{carrier}}, {{premium}},
-   {{today}}, {{opt_out}}
+   {{today}}
 ---------------------------------------------------------------- */
 const DEFAULTS = {
   new_lead:
-    "Hi {{first_name}}! This is {{agent_name}} with {{company}}. I just received your request—when is a good time today to chat for 2–3 minutes? {{opt_out}}",
+    "Hi {{first_name}}! This is {{agent_name}} with {{company}}. I just received your request—when is a good time today to chat for 2–3 minutes?",
   appointment:
-    "Hi {{first_name}}, reminder for our call at {{appt_time}} with {{agent_name}} ({{company}}). Reply YES to confirm or 2 to reschedule. {{opt_out}}",
+    "Hi {{first_name}}, reminder for our call at {{appt_time}} with {{agent_name}} ({{company}}). Reply YES to confirm or 2 to reschedule.",
 
-  // ← SOLD now includes policy details inline
+  // SOLD includes policy details inline
   sold:
     "Congrats {{first_name}}! 🎉 You’re approved. Here are your policy details:\n" +
     "• Carrier: {{carrier}}\n" +
     "• Policy #: {{policy_number}}\n" +
     "• Premium: ${{premium}}/mo\n" +
-    "Save this for your records. If you have questions, text me anytime. {{opt_out}}",
+    "Save this for your records. If you have questions, text me anytime.",
 
-  // Keeping the standalone “policy_info” too in case you want to send details separately
+  // Standalone “policy_info” if you want to send details separately
   policy_info:
-    "Policy info for {{first_name}}:\n• Carrier: {{carrier}}\n• Policy #: {{policy_number}}\n• Premium: ${{premium}}/mo\nSave this for your records. {{opt_out}}",
+    "Policy info for {{first_name}}:\n• Carrier: {{carrier}}\n• Policy #: {{policy_number}}\n• Premium: ${{premium}}/mo\nSave this for your records.",
 
   payment_reminder:
-    "Hi {{first_name}}, a friendly reminder your payment is coming up. If anything changed with your card or bank, text me here. {{opt_out}}",
+    "Hi {{first_name}}, a friendly reminder your payment is coming up. If anything changed with your card or bank, text me here.",
   birthday_text:
-    "Happy Birthday, {{first_name}}! 🥳 Wishing you a great year ahead. —{{agent_name}} {{opt_out}}",
+    "Happy Birthday, {{first_name}}! 🥳 Wishing you a great year ahead. —{{agent_name}}",
   holiday_text:
-    "Happy holidays from {{agent_name}} at {{company}}! Hope you and your family are well. {{opt_out}}",
+    "Happy holidays from {{agent_name}} at {{company}}! Hope you and your family are well.",
 };
 
 export default function MessagingSettings() {
@@ -96,7 +96,7 @@ export default function MessagingSettings() {
       if (!mounted) return;
       setBalanceCents(wallet?.balance_cents || 0);
 
-      // load templates
+      // load templates (merge with latest defaults)
       const { data: tmpl } = await supabase
         .from("message_templates")
         .select("templates")
@@ -252,7 +252,7 @@ export default function MessagingSettings() {
             <div className="text-sm text-white/60">Text balance</div>
             <div className="text-xl font-semibold">${balanceDollars}</div>
             <div className="mt-1 text-xs text-white/50">
-              Texts are billed per segment. “Reply STOP to opt out.” is appended when needed.
+              Texts are billed per segment.
             </div>
           </div>
 
@@ -321,9 +321,6 @@ export default function MessagingSettings() {
                 className="w-full rounded-lg border border-white/15 bg-white/5 px-3 py-2 text-sm outline-none focus:ring-1 focus:ring-indigo-400/50"
                 placeholder={DEFAULTS[key]}
               />
-              <div className="mt-2 text-[11px] text-white/50">
-                Tip: Include <code className="px-1 rounded bg-white/10">{'{{opt_out}}'}</code> to append “Reply STOP to opt out.”
-              </div>
             </div>
           ))}
         </div>
@@ -334,12 +331,11 @@ export default function MessagingSettings() {
         <h3 className="text-sm font-medium">Compliance</h3>
         <ul className="mt-2 list-disc space-y-1 pl-5 text-xs text-white/70">
           <li>Only text clients who have opted in or have an existing relationship.</li>
-          <li>Include required disclosures (e.g., “Msg&data rates may apply. Reply STOP to opt out.”).</li>
-          <li>STOP/START/HELP are honored automatically by carriers when enabled with your provider.</li>
+          <li>Include any disclosures your brand requires.</li>
         </ul>
       </section>
 
-      {/* Drawer: Template Variables Cheat Sheet */}
+      {/* Drawer: Template Variables Cheat Sheet (opt-out omitted) */}
       {cheatOpen && (
         <>
           <div
@@ -377,13 +373,12 @@ export default function MessagingSettings() {
               <VarRow token="policy_number" desc="Issued policy number" />
               <VarRow token="premium" desc="Monthly premium amount" />
               <VarRow token="today" desc="Today’s date" />
-              <VarRow token="opt_out" desc='Adds compliance text like “Reply STOP to opt out.”' />
             </div>
 
             <div className="mt-4 rounded-xl border border-white/10 bg-white/[0.02] p-3">
               <div className="mb-1 text-xs font-semibold">Example</div>
               <pre className="whitespace-pre-wrap rounded-lg border border-white/10 bg-black/30 p-3 text-[11px] leading-5">
-{`"Hi {{first_name}}, your policy {{policy_number}} with {{carrier}} is active at ${{premium}}/mo. —{{agent_name}} {{opt_out}}"`}
+{`"Hi {{first_name}}, your policy {{policy_number}} with {{carrier}} is active at ${{premium}}/mo. —{{agent_name}}"`}
               </pre>
             </div>
           </aside>
