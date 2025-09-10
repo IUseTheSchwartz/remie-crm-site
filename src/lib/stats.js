@@ -186,8 +186,9 @@ function groupDays(items = []) {
 }
 
 /* ===============================================
-   SUPABASE LEAD COUNTS for DASHBOARD (created_at)
-   - Async refresh updates a cached snapshot
+   SUPABASE COUNTS for DASHBOARD (created_at / start_time)
+   - Leads via leads.created_at (existing)
+   - Appointments via appointments.start_time (new)
 =================================================*/
 async function countLeadsBetween(startISO, endISO, options = {}) {
   let q = supabase
@@ -205,6 +206,41 @@ async function countLeadsBetween(startISO, endISO, options = {}) {
   const { count, error } = await q;
   if (error) {
     console.error("[stats] Supabase lead count error:", error);
+    return 0;
+  }
+  return count || 0;
+}
+
+/**
+ * Count appointments between times.
+ * Assumes table: `appointments`
+ * - datetime column: `start_time`
+ * - optional `status` column; rows with status IN ('canceled','no_show') are excluded if present.
+ * Filters: team_id / user_id like leads.
+ */
+async function countAppointmentsBetween(startISO, endISO, options = {}) {
+  let q = supabase
+    .from("appointments")
+    .select("*", { count: "exact", head: true })
+    .gte("start_time", startISO)
+    .lte("start_time", endISO);
+
+  if (options.team_id) q = q.eq("team_id", options.team_id);
+  if (options.user_id) q = q.eq("user_id", options.user_id);
+  // If a status column exists, exclude canceled/no_show. If it doesn't, Supabase ignores the filter.
+  // (Supabase won't error on `neq` to a missing column in head:true selects; if it does, we catch below.)
+  try {
+    q = q.neq("status", "canceled").neq("status", "no_show");
+  } catch (_) {
+    /* no-op */
+  }
+  if (options.extraApptFilters && typeof options.extraApptFilters === "function") {
+    q = options.extraApptFilters(q);
+  }
+
+  const { count, error } = await q;
+  if (error) {
+    console.error("[stats] Supabase appointment count error:", error);
     return 0;
   }
   return count || 0;
@@ -230,11 +266,20 @@ export async function refreshDashboardSnapshot(options = {}, now = new Date()) {
   const weekStart = startOfWeek(now);
   const monthStart = startOfMonth(now);
 
-  const [todayLeads, weekLeads, monthLeads, allLeads] = await Promise.all([
+  // Parallelize all counts
+  const [
+    todayLeads, weekLeads, monthLeads, allLeads,
+    todayAppts, weekAppts, monthAppts, allAppts,
+  ] = await Promise.all([
     countLeadsBetween(todayStart.toISOString(), end.toISOString(), options),
     countLeadsBetween(weekStart.toISOString(), end.toISOString(), options),
     countLeadsBetween(monthStart.toISOString(), end.toISOString(), options),
     countLeadsBetween("1970-01-01T00:00:00.000Z", end.toISOString(), options),
+
+    countAppointmentsBetween(todayStart.toISOString(), end.toISOString(), options),
+    countAppointmentsBetween(weekStart.toISOString(), end.toISOString(), options),
+    countAppointmentsBetween(monthStart.toISOString(), end.toISOString(), options),
+    countAppointmentsBetween("1970-01-01T00:00:00.000Z", end.toISOString(), options),
   ]);
 
   // SOLD timeline (reports still sync)
@@ -248,11 +293,16 @@ export async function refreshDashboardSnapshot(options = {}, now = new Date()) {
   const monthTotals = getTotals(monthItems);
   const allTotals = getTotals(soldTimeline);
 
-  // Inject Supabase lead counts
+  // Inject Supabase counts
   todayTotals.leads = todayLeads;
   weekTotals.leads = weekLeads;
   monthTotals.leads = monthLeads;
   allTotals.leads = allLeads;
+
+  todayTotals.appointments = todayAppts;
+  weekTotals.appointments = weekAppts;
+  monthTotals.appointments = monthAppts;
+  allTotals.appointments = allAppts;
 
   _cache = {
     today: todayTotals,
