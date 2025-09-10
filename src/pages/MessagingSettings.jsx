@@ -1,6 +1,5 @@
 // File: src/pages/MessagingSettings.jsx
 import { useEffect, useRef, useState } from "react";
-import { createPortal } from "react-dom";
 import { supabase } from "../lib/supabaseClient";
 import { CreditCard, Check, Loader2, MessageSquare, Info } from "lucide-react";
 
@@ -109,22 +108,26 @@ export default function MessagingSettings() {
       setLoading(false);
     })();
 
-    const ch = supabase
-      .channel("wallet_rt")
-      .on(
-        "postgres_changes",
-        { event: "UPDATE", schema: "public", table: "user_wallets" },
-        (payload) => {
-          if (payload.new?.user_id === userId) {
-            setBalanceCents(payload.new.balance_cents || 0);
+    // realtime wallet updates (guard for environments without Realtime)
+    let ch;
+    try {
+      ch = supabase
+        .channel("wallet_rt")
+        .on(
+          "postgres_changes",
+          { event: "UPDATE", schema: "public", table: "user_wallets" },
+          (payload) => {
+            if (payload?.new?.user_id === userId) {
+              setBalanceCents(payload.new.balance_cents || 0);
+            }
           }
-        }
-      )
-      .subscribe();
+        )
+        .subscribe();
+    } catch {}
 
     return () => {
       try {
-        supabase.removeChannel?.(ch);
+        if (ch) supabase.removeChannel?.(ch);
       } catch {}
       mounted = false;
     };
@@ -270,7 +273,7 @@ export default function MessagingSettings() {
       </section>
 
       {/* Templates editor */}
-      <section className="rounded-2xl border border-white/10 bg-white/[0.03] p-4">
+      <section className="rounded-2xl border border-white/10 bg-white/[0.03] p-4 relative">
         <div className="mb-3 flex items-center gap-2">
           <div className="grid h-10 w-10 place-items-center rounded-xl bg-white/5 ring-1 ring-white/10">
             <MessageSquare className="h-5 w-5" />
@@ -324,6 +327,61 @@ export default function MessagingSettings() {
             </div>
           ))}
         </div>
+
+        {/* Inline slide-over (no portal, can't crash) */}
+        <div
+          className={`fixed inset-0 z-40 ${cheatOpen ? "bg-black/50" : "pointer-events-none bg-transparent"} transition`}
+          onClick={() => setCheatOpen(false)}
+          aria-hidden="true"
+          style={{ display: cheatOpen ? "block" : "none" }}
+        />
+        <aside
+          className={`fixed right-0 top-0 z-50 h-full w-full max-w-md transform rounded-l-2xl border-l border-white/10 bg-[#0b0b12] p-4 shadow-2xl transition-transform ${cheatOpen ? "translate-x-0" : "translate-x-full"}`}
+          role="dialog"
+          aria-modal="true"
+          aria-label="Template Variables"
+          style={{ pointerEvents: cheatOpen ? "auto" : "none" }}
+        >
+          <div className="mb-3 flex items-center justify-between">
+            <div className="inline-flex items-center gap-2">
+              <Info className="h-5 w-5" />
+              <h2 className="text-sm font-semibold">Template Variables</h2>
+            </div>
+            <button
+              type="button"
+              onClick={() => setCheatOpen(false)}
+              className="rounded-lg border border-white/15 bg-white/5 px-2 py-1 text-xs hover:bg-white/10"
+            >
+              Close
+            </button>
+          </div>
+
+          <p className="mb-3 text-xs text-white/70">
+            Paste these tokens into any template. The system replaces them automatically when messages are sent.
+          </p>
+
+          <div className="space-y-3 text-xs">
+            <VarRow token="first_name" desc="Lead’s first name" />
+            <VarRow token="last_name" desc="Lead’s last name" />
+            <VarRow token="full_name" desc="Lead’s full name" />
+            <VarRow token="agent_name" desc="Your display name" />
+            <VarRow token="company" desc="Your agency/company" />
+            <VarRow token="agent_phone" desc="Your phone number" />
+            <VarRow token="agent_email" desc="Your email address" />
+            <VarRow token="appt_time" desc="Formatted appointment time" />
+            <VarRow token="carrier" desc="Policy carrier (e.g., Americo)" />
+            <VarRow token="policy_number" desc="Issued policy number" />
+            <VarRow token="premium" desc="Monthly premium amount" />
+            <VarRow token="today" desc="Today’s date" />
+          </div>
+
+          <div className="mt-4 rounded-xl border border-white/10 bg-white/[0.02] p-3">
+            <div className="mb-1 text-xs font-semibold">Example</div>
+            <pre className="whitespace-pre-wrap rounded-lg border border-white/10 bg-black/30 p-3 text-[11px] leading-5">
+{`"Hi {{first_name}}, your policy {{policy_number}} with {{carrier}} is active at ${{premium}}/mo. —{{agent_name}}"`}
+            </pre>
+          </div>
+        </aside>
       </section>
 
       {/* Compliance */}
@@ -334,35 +392,6 @@ export default function MessagingSettings() {
           <li>Include any disclosures your brand requires.</li>
         </ul>
       </section>
-
-      {/* Drawer via portal (safe) */}
-      <SlideOver open={cheatOpen} onClose={() => setCheatOpen(false)} title="Template Variables">
-        <p className="mb-3 text-xs text-white/70">
-          Paste these tokens into any template. The system replaces them automatically when messages are sent.
-        </p>
-
-        <div className="space-y-3 text-xs">
-          <VarRow token="first_name" desc="Lead’s first name" />
-          <VarRow token="last_name" desc="Lead’s last name" />
-          <VarRow token="full_name" desc="Lead’s full name" />
-          <VarRow token="agent_name" desc="Your display name" />
-          <VarRow token="company" desc="Your agency/company" />
-          <VarRow token="agent_phone" desc="Your phone number" />
-          <VarRow token="agent_email" desc="Your email address" />
-          <VarRow token="appt_time" desc="Formatted appointment time" />
-          <VarRow token="carrier" desc="Policy carrier (e.g., Americo)" />
-          <VarRow token="policy_number" desc="Issued policy number" />
-          <VarRow token="premium" desc="Monthly premium amount" />
-          <VarRow token="today" desc="Today’s date" />
-        </div>
-
-        <div className="mt-4 rounded-xl border border-white/10 bg-white/[0.02] p-3">
-          <div className="mb-1 text-xs font-semibold">Example</div>
-          <pre className="whitespace-pre-wrap rounded-lg border border-white/10 bg-black/30 p-3 text-[11px] leading-5">
-{`"Hi {{first_name}}, your policy {{policy_number}} with {{carrier}} is active at ${{premium}}/mo. —{{agent_name}}"`}
-          </pre>
-        </div>
-      </SlideOver>
     </div>
   );
 }
@@ -374,57 +403,5 @@ function VarRow({ token, desc }) {
       <code className="rounded bg-white/10 px-1.5 py-0.5 text-[11px]">{`{{${token}}}`}</code>
       <div className="flex-1 text-right text-white/70">{desc}</div>
     </div>
-  );
-}
-
-/* --- Generic slide-over (portal) --- */
-function SlideOver({ open, onClose, title, children }) {
-  const [mounted, setMounted] = useState(false);
-
-  useEffect(() => {
-    setMounted(true);
-  }, []);
-
-  useEffect(() => {
-    function onKey(e) {
-      if (e.key === "Escape") onClose?.();
-    }
-    if (open) window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [open, onClose]);
-
-  // Only render the portal when:
-  // 1) we've mounted on the client, 2) document exists, and 3) the drawer is open.
-  if (!mounted || typeof document === "undefined" || !open) return null;
-
-  return createPortal(
-    <>
-      {/* overlay */}
-      <div
-        className="fixed inset-0 z-40 bg-black/50"
-        onClick={() => onClose?.()}
-        aria-hidden="true"
-      />
-      {/* panel */}
-      <aside
-        className="fixed right-0 top-0 z-50 h-full w-full max-w-md transform rounded-l-2xl border-l border-white/10 bg-[#0b0b12] p-4 shadow-2xl transition-transform translate-x-0"
-        role="dialog"
-        aria-modal="true"
-        aria-label={title || "Panel"}
-      >
-        <div className="mb-3 flex items-center justify-between">
-          <h2 className="text-sm font-semibold">{title}</h2>
-          <button
-            type="button"
-            onClick={() => onClose?.()}
-            className="rounded-lg border border-white/15 bg-white/5 px-2 py-1 text-xs hover:bg-white/10"
-          >
-            Close
-          </button>
-        </div>
-        {children}
-      </aside>
-    </>,
-    document.body
   );
 }
