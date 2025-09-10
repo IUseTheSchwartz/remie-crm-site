@@ -1,7 +1,7 @@
 // File: src/pages/MessagingSettings.jsx
 import { useEffect, useRef, useState } from "react";
 import { supabase } from "../lib/supabaseClient";
-import { CreditCard, Check, Loader2, MessageSquare, Info } from "lucide-react";
+import { CreditCard, Check, Loader2, MessageSquare, Info, RotateCcw } from "lucide-react";
 
 /* ---------------- Template Catalog ---------------- */
 const TEMPLATE_DEFS = [
@@ -154,6 +154,12 @@ export default function MessagingSettings() {
     setSaveState("saving");
     if (saveTimer.current) clearTimeout(saveTimer.current);
     saveTimer.current = setTimeout(() => saveTemplates(next), 800);
+  }
+
+  // Reset a single template to its default and autosave
+  function resetTemplate(key) {
+    const def = DEFAULTS[key] ?? "";
+    updateTemplate(key, def);
   }
 
   /* -------- Stripe top-up -------- */
@@ -312,18 +318,33 @@ export default function MessagingSettings() {
         </div>
 
         <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
-          {TEMPLATE_DEFS.map(({ key, label }) => (
-            <div key={key} className="rounded-xl border border-white/10 bg-white/[0.02] p-3">
-              <div className="text-xs mb-1 text-white/70">{label}</div>
-              <textarea
-                value={templates[key] ?? ""}
-                onChange={(e) => updateTemplate(key, e.target.value)}
-                rows={5}
-                className="w-full rounded-lg border border-white/15 bg-white/5 px-3 py-2 text-sm outline-none focus:ring-1 focus:ring-indigo-400/50"
-                placeholder={DEFAULTS[key]}
-              />
-            </div>
-          ))}
+          {TEMPLATE_DEFS.map(({ key, label }) => {
+            const isDirty = (templates[key] ?? "") !== (DEFAULTS[key] ?? "");
+            return (
+              <div key={key} className="rounded-xl border border-white/10 bg-white/[0.02] p-3">
+                <div className="mb-1 flex items-center">
+                  <div className="text-xs text-white/70">{label}</div>
+                  <button
+                    type="button"
+                    onClick={() => resetTemplate(key)}
+                    disabled={!isDirty}
+                    title="Reset to default"
+                    className="ml-auto inline-flex items-center gap-1 rounded-md border border-white/15 bg-white/5 px-2 py-1 text-[11px] hover:bg-white/10 disabled:opacity-40"
+                  >
+                    <RotateCcw className="h-3.5 w-3.5" /> Reset
+                  </button>
+                </div>
+
+                <textarea
+                  value={templates[key] ?? ""}
+                  onChange={(e) => updateTemplate(key, e.target.value)}
+                  rows={5}
+                  className="w-full rounded-lg border border-white/15 bg-white/5 px-3 py-2 text-sm outline-none focus:ring-1 focus:ring-indigo-400/50"
+                  placeholder={DEFAULTS[key]}
+                />
+              </div>
+            );
+          })}
         </div>
 
         {/* Drawer inline */}
