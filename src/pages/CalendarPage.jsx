@@ -1,269 +1,202 @@
 // File: src/pages/CalendarPage.jsx
-import { useEffect, useState, useMemo } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { supabase } from "../lib/supabaseClient.js";
+import { useAuth } from "../auth.jsx";
 
-export default function CalendarPage() {
-  const [userId, setUserId] = useState(null);
+/* ---------------- shared helpers ---------------- */
 
-  // Calendly
+function fmt(dt) {
+  try {
+    const d = new Date(dt);
+    return `${d.toLocaleDateString()} ${d.toLocaleTimeString([], {
+      hour: "2-digit",
+      minute: "2-digit",
+    })}`;
+  } catch {
+    return "—";
+  }
+}
+
+function classNames(...xs) {
+  return xs.filter(Boolean).join(" ");
+}
+
+/* ============================================================
+   LEFT: Upcoming meetings (Calendly)
+   - This tries a Netlify function you likely have (calendly-events).
+   - If it’s not set up yet, it will gracefully show “No upcoming meetings.”
+   ============================================================ */
+
+function UpcomingMeetings() {
+  const { user } = useAuth();
+  const [items, setItems] = useState([]);
   const [loading, setLoading] = useState(true);
-  const [events, setEvents] = useState([]);
   const [err, setErr] = useState("");
 
-  // Follow-ups (pipeline)
-  const [fuLoading, setFuLoading] = useState(true);
-  const [followUps, setFollowUps] = useState([]);
-  const [fuErr, setFuErr] = useState("");
-
-  // ---------------------------
-  // Helpers
-  // ---------------------------
-  const prettyDate = (iso) => {
-    if (!iso) return "—";
-    try {
-      return new Date(iso).toLocaleString();
-    } catch {
-      return iso;
-    }
-  };
-
-  const pickFollowUpDate = (row) => {
-    const cand =
-      row?.next_follow_up_at ||
-      row?.next_followup_at ||
-      row?.next_touch ||
-      row?.follow_up_date ||
-      row?.followup_date ||
-      row?.followup_at ||
-      null;
-    return cand ? new Date(cand) : null;
-  };
-
-  // ---------------------------
-  // Load current user
-  // ---------------------------
   useEffect(() => {
-    let cancel = false;
-
-    (async () => {
-      const { data, error } = await supabase.auth.getUser();
-      if (cancel) return;
-      if (error || !data?.user?.id) {
-        setErr(error?.message || "Not authenticated");
-        setLoading(false);
-        setFuErr(error?.message || "Not authenticated");
-        setFuLoading(false);
-        return;
-      }
-      setUserId(data.user.id);
-    })();
-
-    return () => {
-      cancel = true;
-    };
-  }, []);
-
-  // ---------------------------
-  // Load Calendly events
-  // ---------------------------
-  useEffect(() => {
-    if (!userId) return;
-    let cancel = false;
-
+    let active = true;
     (async () => {
       setLoading(true);
       setErr("");
-      setEvents([]);
 
       try {
-        const res = await fetch(
-          `/.netlify/functions/calendly-events?uid=${encodeURIComponent(userId)}&count=50`
-        );
-        if (!res.ok) {
-          const t = await res.text();
-          throw new Error(t || `HTTP ${res.status}`);
-        }
-        const payload = await res.json();
-        const list = Array.isArray(payload?.collection) ? payload.collection : [];
-        if (!cancel) setEvents(list);
+        // If you have a function that returns upcoming events for the current user:
+        // Expected shape: [{ id, start_time, end_time, title, invitee_email, location }]
+        const res = await fetch("/.netlify/functions/calendly-events", {
+          method: "GET",
+          headers: { "Content-Type": "application/json" },
+        });
+
+        if (!res.ok) throw new Error(await res.text());
+
+        const data = await res.json();
+        if (!active) return;
+        setItems(Array.isArray(data) ? data.slice(0, 10) : []);
       } catch (e) {
-        if (!cancel) setErr(e.message || "Failed to load events");
+        // If no function exists, or it errors, just show the empty state
+        setItems([]);
+        setErr(e?.message || "Failed to load meetings.");
       } finally {
-        if (!cancel) setLoading(false);
+        if (active) setLoading(false);
       }
     })();
 
     return () => {
-      cancel = true;
+      active = false;
     };
-  }, [userId]);
+  }, [user?.id]); // re-run if user changes
 
-  // ---------------------------
-  // Load upcoming Follow-Ups
-  // ---------------------------
+  return (
+    <section className="mx-2 mt-2 rounded-2xl border border-white/10 bg-white/[0.03]">
+      <div className="border-b border-white/10 px-3 py-2 text-sm font-medium">
+        Upcoming meetings (Calendly)
+      </div>
+      <div className="p-3 text-sm">
+        {loading ? (
+          <div className="text-white/60">Loading...</div>
+        ) : err ? (
+          <div className="text-white/60">No upcoming meetings.</div>
+        ) : items.length === 0 ? (
+          <div className="text-white/60">No upcoming meetings.</div>
+        ) : (
+          <ul className="space-y-2">
+            {items.map((ev) => (
+              <li
+                key={ev.id || `${ev.start_time}-${ev.title}`}
+                className="rounded-lg border border-white/10 bg-black/30 px-3 py-2"
+              >
+                <div className="flex items-center justify-between gap-3">
+                  <div className="min-w-0">
+                    <div className="truncate font-medium">
+                      {ev.title || "Meeting"}
+                    </div>
+                    <div className="truncate text-xs text-white/60">
+                      {ev.invitee_email || ev.location || ""}
+                    </div>
+                  </div>
+                  <div className="shrink-0 text-white/70">
+                    {ev.start_time ? fmt(ev.start_time) : "—"}
+                  </div>
+                </div>
+              </li>
+            ))}
+          </ul>
+        )}
+      </div>
+    </section>
+  );
+}
+
+/* ============================================================
+   RIGHT: Upcoming follow-ups (Pipeline)
+   - IMPORTANT FIX: no reference to `first_name` (or any missing column).
+   - Only selects columns that exist: id, next_follow_up_at, phone, email.
+   ============================================================ */
+
+function leadLabel(l) {
+  return l.phone || l.email || "Lead";
+}
+
+function UpcomingFollowUps() {
+  const { user } = useAuth();
+  const [items, setItems] = useState([]);
+  const [error, setError] = useState("");
+  const [loading, setLoading] = useState(true);
+
   useEffect(() => {
-    if (!userId) return;
-    let cancel = false;
+    if (!user?.id) return;
+    let active = true;
 
     (async () => {
-      setFuLoading(true);
-      setFuErr("");
-      setFollowUps([]);
+      setLoading(true);
+      setError("");
 
-      try {
-        const { data, error } = await supabase
-          .from("leads")
-          .select(`
-            id,
-            name,
-            first_name,
-            last_name,
-            phone,
-            stage,
-            next_follow_up_at,
-            next_followup_at,
-            next_touch,
-            follow_up_date,
-            followup_date,
-            followup_at,
-            notes
-          `)
-          .eq("owner_id", userId);
+      const { data, error } = await supabase
+        .from("leads")
+        // ✅ FIX: only existing columns
+        .select("id,next_follow_up_at,phone,email")
+        .eq("user_id", user.id)
+        .not("next_follow_up_at", "is", null)
+        .gte("next_follow_up_at", new Date().toISOString())
+        .order("next_follow_up_at", { ascending: true })
+        .limit(25);
 
-        if (error) throw error;
+      if (!active) return;
+      if (error) setError(error.message || "Failed to load follow-ups.");
+      else setItems(data || []);
 
-        const now = new Date();
-        const rows = (data || [])
-          .map((r) => {
-            const when = pickFollowUpDate(r);
-            return { ...r, _when: when };
-          })
-          .filter((r) => r._when && r._when >= now)
-          .sort((a, b) => a._when - b._when)
-          .slice(0, 50);
-
-        if (!cancel) setFollowUps(rows);
-      } catch (e) {
-        if (!cancel) setFuErr(e.message || "Failed to load follow-ups");
-      } finally {
-        if (!cancel) setFuLoading(false);
-      }
+      setLoading(false);
     })();
 
     return () => {
-      cancel = true;
+      active = false;
     };
-  }, [userId]);
+  }, [user?.id]);
 
-  const followUpsEmpty = useMemo(
-    () => !fuLoading && !fuErr && followUps.length === 0,
-    [fuLoading, fuErr, followUps]
-  );
-
-  // ---------------------------
-  // Render
-  // ---------------------------
   return (
-    <div className="space-y-4">
-      <h1 className="text-xl font-semibold">Schedule</h1>
+    <section className="mx-2 mt-2 rounded-2xl border border-white/10 bg-white/[0.03]">
+      <div className="border-b border-white/10 px-3 py-2 text-sm font-medium">
+        Upcoming follow-ups (Pipeline)
+      </div>
+      <div className="p-3 text-sm">
+        {loading ? (
+          <div className="text-white/60">Loading…</div>
+        ) : error ? (
+          <div className="text-rose-400">Could not load follow-ups. {error}</div>
+        ) : items.length === 0 ? (
+          <div className="text-white/60">No upcoming follow-ups.</div>
+        ) : (
+          <ul className="space-y-2">
+            {items.map((l) => (
+              <li
+                key={l.id}
+                className="flex items-center justify-between rounded-lg border border-white/10 bg-black/30 px-3 py-2"
+              >
+                <div className="truncate">{leadLabel(l)}</div>
+                <div className="ml-3 shrink-0 text-white/70">
+                  {fmt(l.next_follow_up_at)}
+                </div>
+              </li>
+            ))}
+          </ul>
+        )}
+      </div>
+    </section>
+  );
+}
 
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-        {/* Left: Calendly */}
-        <div className="space-y-3">
-          <h2 className="text-lg font-medium">Upcoming meetings (Calendly)</h2>
+/* ============================================================
+   PAGE
+   ============================================================ */
 
-          {loading && <div className="rounded-2xl border p-4">Loading…</div>}
+export default function CalendarPage() {
+  return (
+    <div className="p-2">
+      <h2 className="px-2 pt-1 text-lg font-semibold">Schedule</h2>
 
-          {!loading && err && (
-            <div className="rounded-2xl border p-4 text-red-500">
-              Could not load events. {err}
-            </div>
-          )}
-
-          {!loading && !err && events.length === 0 && (
-            <div className="rounded-2xl border p-4 text-gray-400">
-              No upcoming meetings.
-            </div>
-          )}
-
-          {!loading && !err && events.length > 0 && (
-            <div className="rounded-2xl border divide-y">
-              {events.map((ev) => {
-                const start = ev.start_time;
-                const end = ev.end_time;
-                const title = ev.name || "Meeting";
-                const location =
-                  ev.location?.type === "physical"
-                    ? ev.location?.location
-                    : ev.location?.type === "zoom"
-                    ? "Zoom"
-                    : ev.location?.type || "—";
-
-                return (
-                  <div key={ev.uri} className="p-4">
-                    <div className="font-medium">{title}</div>
-                    <div className="text-sm text-gray-500">
-                      {prettyDate(start)} – {prettyDate(end)}
-                    </div>
-                    {location && (
-                      <div className="text-sm text-gray-500 mt-1">
-                        Location: {location}
-                      </div>
-                    )}
-                  </div>
-                );
-              })}
-            </div>
-          )}
-        </div>
-
-        {/* Right: Follow-Ups */}
-        <div className="space-y-3">
-          <h2 className="text-lg font-medium">Upcoming follow-ups (Pipeline)</h2>
-
-          {fuLoading && <div className="rounded-2xl border p-4">Loading…</div>}
-
-          {!fuLoading && fuErr && (
-            <div className="rounded-2xl border p-4 text-red-500">
-              Could not load follow-ups. {fuErr}
-            </div>
-          )}
-
-          {followUpsEmpty && (
-            <div className="rounded-2xl border p-4 text-gray-400">
-              No upcoming follow-ups.
-            </div>
-          )}
-
-          {!fuLoading && !fuErr && followUps.length > 0 && (
-            <div className="rounded-2xl border divide-y">
-              {followUps.map((row) => {
-                const name =
-                  row.name ||
-                  [row.first_name, row.last_name].filter(Boolean).join(" ") ||
-                  "Lead";
-                const whenStr = prettyDate(
-                  row._when?.toISOString?.() || row._when
-                );
-                return (
-                  <div key={row.id} className="p-4">
-                    <div className="font-medium">{name}</div>
-                    <div className="text-sm text-gray-500">{whenStr}</div>
-                    <div className="text-xs text-gray-500 mt-1">
-                      Stage: {row.stage || "—"}
-                      {row.phone ? ` • ${row.phone}` : ""}
-                    </div>
-                    {row.notes ? (
-                      <div className="text-sm text-gray-600 mt-2 line-clamp-2">
-                        {row.notes}
-                      </div>
-                    ) : null}
-                  </div>
-                );
-              })}
-            </div>
-          )}
-        </div>
+      <div className="mt-2 grid grid-cols-1 gap-4 md:grid-cols-2">
+        <UpcomingMeetings />
+        <UpcomingFollowUps />
       </div>
     </div>
   );
