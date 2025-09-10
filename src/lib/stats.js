@@ -186,9 +186,9 @@ function groupDays(items = []) {
 }
 
 /* ===============================================
-   SUPABASE COUNTS for DASHBOARD (created_at / start_time)
+   SUPABASE COUNTS for DASHBOARD
    - Leads via leads.created_at (existing)
-   - Appointments via appointments.start_time (new)
+   - Appointments: smart detection (appointments OR followups/pipeline)
 =================================================*/
 async function countLeadsBetween(startISO, endISO, options = {}) {
   let q = supabase
@@ -211,39 +211,95 @@ async function countLeadsBetween(startISO, endISO, options = {}) {
   return count || 0;
 }
 
+/** Generic helper that tries a table with several possible datetime columns */
+async function tryTableWithTimeColumns(table, timeCols, startISO, endISO, options = {}, extra = (qq) => qq) {
+  for (const col of timeCols) {
+    try {
+      let q = supabase
+        .from(table)
+        .select("*", { count: "exact", head: true })
+        .gte(col, startISO)
+        .lte(col, endISO);
+
+      if (options.team_id) q = q.eq("team_id", options.team_id);
+      if (options.user_id) q = q.eq("user_id", options.user_id);
+      q = extra(q);
+
+      const { count, error } = await q;
+      if (!error && typeof count === "number") return count || 0;
+    } catch (e) {
+      // try next column
+    }
+  }
+  return 0;
+}
+
 /**
- * Count appointments between times.
- * Assumes table: `appointments`
- * - datetime column: `start_time`
- * - optional `status` column; rows with status IN ('canceled','no_show') are excluded if present.
- * Filters: team_id / user_id like leads.
+ * Smart appointment counter:
+ * 1) Try an `appointments` table with common time columns
+ * 2) If zero, try a follow-ups/pipeline table with common time columns
+ *    (Matches the "Upcoming FollowUps" UI most teams use.)
  */
-async function countAppointmentsBetween(startISO, endISO, options = {}) {
-  let q = supabase
-    .from("appointments")
-    .select("*", { count: "exact", head: true })
-    .gte("start_time", startISO)
-    .lte("start_time", endISO);
+async function countAppointmentsSmartBetween(startISO, endISO, options = {}) {
+  // Try dedicated appointments table first
+  const apptCount = await tryTableWithTimeColumns(
+    "appointments",
+    ["start_time", "start_at", "scheduled_at", "start", "date", "when"],
+    startISO,
+    endISO,
+    options,
+    (q) => {
+      // If you track status, ignore canceled/no_show. If column doesn't exist, Supabase head:true won't throw on neq.
+      try {
+        q = q.neq("status", "canceled").neq("status", "no_show");
+      } catch (_) {}
+      return q;
+    }
+  );
+  if (apptCount > 0) return apptCount;
 
-  if (options.team_id) q = q.eq("team_id", options.team_id);
-  if (options.user_id) q = q.eq("user_id", options.user_id);
-  // If a status column exists, exclude canceled/no_show. If it doesn't, Supabase ignores the filter.
-  // (Supabase won't error on `neq` to a missing column in head:true selects; if it does, we catch below.)
-  try {
-    q = q.neq("status", "canceled").neq("status", "no_show");
-  } catch (_) {
-    /* no-op */
-  }
-  if (options.extraApptFilters && typeof options.extraApptFilters === "function") {
-    q = options.extraApptFilters(q);
+  // Fall back to a followups/pipeline table (used by UpcomingFollowUps)
+  // Common table names and time columns
+  const followupTablesToTry = [
+    { table: "followups", cols: ["due_at", "scheduled_for", "followup_at", "next_at"] },
+    { table: "pipeline_followups", cols: ["due_at", "scheduled_for", "followup_at", "next_at"] },
+    { table: "pipeline_events", cols: ["due_at", "scheduled_for", "followup_at", "next_at"] },
+  ];
+
+  for (const t of followupTablesToTry) {
+    const c = await tryTableWithTimeColumns(
+      t.table,
+      t.cols,
+      startISO,
+      endISO,
+      options,
+      (q) => {
+        // If a status exists, count only "pending"/"upcoming"
+        try {
+          q = q.in("status", ["pending", "upcoming", "scheduled"]);
+        } catch (_) {}
+        return q;
+      }
+    );
+    if (c > 0) return c;
   }
 
-  const { count, error } = await q;
-  if (error) {
-    console.error("[stats] Supabase appointment count error:", error);
-    return 0;
-  }
-  return count || 0;
+  // As a last resort, count appointments stored directly on leads (e.g., next_appointment_at)
+  const leadsAppt = await tryTableWithTimeColumns(
+    "leads",
+    ["next_appointment_at", "appointment_at", "appt_at"],
+    startISO,
+    endISO,
+    options,
+    (q) => {
+      // filter out nulls in case the column exists but is sparsely populated
+      try {
+        q = q.not("next_appointment_at", "is", null);
+      } catch (_) {}
+      return q;
+    }
+  );
+  return leadsAppt || 0;
 }
 
 const ZERO = { leads: 0, appointments: 0, clients: 0, closed: 0, premium: 0 };
@@ -276,13 +332,13 @@ export async function refreshDashboardSnapshot(options = {}, now = new Date()) {
     countLeadsBetween(monthStart.toISOString(), end.toISOString(), options),
     countLeadsBetween("1970-01-01T00:00:00.000Z", end.toISOString(), options),
 
-    countAppointmentsBetween(todayStart.toISOString(), end.toISOString(), options),
-    countAppointmentsBetween(weekStart.toISOString(), end.toISOString(), options),
-    countAppointmentsBetween(monthStart.toISOString(), end.toISOString(), options),
-    countAppointmentsBetween("1970-01-01T00:00:00.000Z", end.toISOString(), options),
+    countAppointmentsSmartBetween(todayStart.toISOString(), end.toISOString(), options),
+    countAppointmentsSmartBetween(weekStart.toISOString(), end.toISOString(), options),
+    countAppointmentsSmartBetween(monthStart.toISOString(), end.toISOString(), options),
+    countAppointmentsSmartBetween("1970-01-01T00:00:00.000Z", end.toISOString(), options),
   ]);
 
-  // SOLD timeline (reports still sync)
+  // SOLD timeline (reports still sync from local storage)
   const soldTimeline = buildSoldTimeline();
 
   const dayItems = filterRange(soldTimeline, todayStart, end);
