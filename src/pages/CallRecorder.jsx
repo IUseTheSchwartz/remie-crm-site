@@ -35,8 +35,7 @@ function slugify(s) {
     .replace(/(^-|-$)/g, "");
 }
 
-// Very simple “annotation” pass that extracts key bits from a transcript.
-// (Local-only; no network calls. We can swap this for a smarter model later.)
+/* ---------------- Lightweight local "annotations" ---------------- */
 function annotateTranscript(t) {
   if (!t?.trim()) return "No transcript captured.";
   const lines = t
@@ -49,9 +48,7 @@ function annotateTranscript(t) {
 
   const phones = [
     ...new Set(
-      t.match(
-        /(\+?1[\s\-\.]?)?\(?\d{3}\)?[\s\-\.]?\d{3}[\s\-\.]?\d{4}/g
-      ) || []
+      t.match(/(\+?1[\s\-\.]?)?\(?\d{3}\)?[\s\-\.]?\d{3}[\s\-\.]?\d{4}/g) || []
     ),
   ];
   const emails = [...new Set(t.match(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi) || [])];
@@ -66,21 +63,91 @@ function annotateTranscript(t) {
 
   return [
     "### Summary (Local)",
-    bullet(
-      "Contact Details",
-      [
-        phones.length ? `Phone: ${phones.join(", ")}` : null,
-        emails.length ? `Email: ${emails.join(", ")}` : null,
-      ].filter(Boolean)
-    ),
+    bullet("Contact Details", [
+      phones.length ? `Phone: ${phones.join(", ")}` : null,
+      emails.length ? `Email: ${emails.join(", ")}` : null,
+    ].filter(Boolean)),
     bullet("Needs / Product Mentions", needs),
     bullet("Pricing / Budget", money),
     bullet("Objections / Concerns", obj),
     bullet("Appointments / Timing", appt),
     bullet("Action Items / Next Steps", actions),
-  ]
-    .filter(Boolean)
-    .join("\n\n");
+  ].filter(Boolean).join("\n\n");
+}
+
+/* ---------------- IndexedDB (free local persistence) ---------------- */
+
+const DB_NAME = "remie-recorder";
+const STORE_RECS = "recordings";
+const STORE_KV = "kv";
+const DRAFT_KEY = "last-draft-id";
+
+function idbOpen() {
+  return new Promise((resolve, reject) => {
+    const req = indexedDB.open(DB_NAME, 1);
+    req.onupgradeneeded = () => {
+      const db = req.result;
+      if (!db.objectStoreNames.contains(STORE_RECS)) {
+        const s = db.createObjectStore(STORE_RECS, { keyPath: "id", autoIncrement: true });
+        s.createIndex("createdAt", "createdAt");
+      }
+      if (!db.objectStoreNames.contains(STORE_KV)) {
+        db.createObjectStore(STORE_KV);
+      }
+    };
+    req.onsuccess = () => resolve(req.result);
+    req.onerror = () => reject(req.error);
+  });
+}
+
+async function idbPutRec(obj) {
+  const db = await idbOpen();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(STORE_RECS, "readwrite");
+    const req = tx.objectStore(STORE_RECS).put(obj);
+    req.onsuccess = () => resolve(req.result);
+    req.onerror = () => reject(req.error);
+  });
+}
+
+async function idbGetRec(id) {
+  const db = await idbOpen();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(STORE_RECS, "readonly");
+    const req = tx.objectStore(STORE_RECS).get(id);
+    req.onsuccess = () => resolve(req.result || null);
+    req.onerror = () => reject(req.error);
+  });
+}
+
+async function idbDelRec(id) {
+  const db = await idbOpen();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(STORE_RECS, "readwrite");
+    const req = tx.objectStore(STORE_RECS).delete(id);
+    req.onsuccess = () => resolve();
+    req.onerror = () => reject(req.error);
+  });
+}
+
+async function idbSetKV(key, value) {
+  const db = await idbOpen();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(STORE_KV, "readwrite");
+    const req = tx.objectStore(STORE_KV).put(value, key);
+    req.onsuccess = () => resolve();
+    req.onerror = () => reject(req.error);
+  });
+}
+
+async function idbGetKV(key) {
+  const db = await idbOpen();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(STORE_KV, "readonly");
+    const req = tx.objectStore(STORE_KV).get(key);
+    req.onsuccess = () => resolve(req.result);
+    req.onerror = () => reject(req.error);
+  });
 }
 
 /* ---------------- Main Page ---------------- */
@@ -125,6 +192,10 @@ export default function CallRecorder() {
   const [leadId, setLeadId] = useState(null);
   const [leadsLoading, setLeadsLoading] = useState(false);
 
+  // Local persistence
+  const draftIdRef = useRef(null);
+  const saveDebounceRef = useRef(null);
+
   // Derived
   const selectedLead = useMemo(
     () => leads.find((l) => l.id === leadId) || null,
@@ -133,7 +204,7 @@ export default function CallRecorder() {
 
   const filteredLeads = useMemo(() => {
     const q = leadSearch.trim().toLowerCase();
-    if (!q) return leads.slice(0, 30); // show a slice
+    if (!q) return leads.slice(0, 30);
     return leads.filter((l) => {
       const name = (l.name || "").toLowerCase();
       return (
@@ -152,8 +223,6 @@ export default function CallRecorder() {
       setLeadsLoading(true);
       setError("");
       try {
-        // Only leads associated with the current user:
-        // either leads.user_id === user.id OR leads.owner_user_id === user.id
         const { data, error: err } = await supabase
           .from("leads")
           .select("id, name, phone, email, stage")
@@ -169,18 +238,100 @@ export default function CallRecorder() {
         if (!cancelled) setLeadsLoading(false);
       }
     })();
-    return () => {
-      cancelled = true;
-    };
+    return () => { cancelled = true; };
   }, [user?.id]);
 
-  /* -------- Clean up on unmount -------- */
+  /* -------- Restore last draft from IndexedDB on mount -------- */
+  useEffect(() => {
+    let active = true;
+    (async () => {
+      try {
+        const draftId = await idbGetKV(DRAFT_KEY);
+        if (!active || !draftId) return;
+        const rec = await idbGetRec(draftId);
+        if (!active || !rec) return;
+
+        const url = URL.createObjectURL(rec.blob);
+        if (!active) return;
+        draftIdRef.current = rec.id;
+        setAudioURL(url);
+        setBlobSize(rec.blob.size || 0);
+        setMimeType(rec.mimeType || "");
+        setDuration(rec.duration || 0);
+        setStopped(true);
+        setTranscript(rec.transcript || "");
+        setAnnotations(rec.annotations || "");
+        setLeadId(rec.leadId || null);
+
+        // ask for persistent storage if available (reduces eviction)
+        if (navigator?.storage?.persist) {
+          try { await navigator.storage.persist(); } catch {}
+        }
+      } catch {
+        // ignore restore errors
+      }
+    })();
+    return () => { active = false; };
+  }, []);
+
+  /* -------- Clean up on unmount: stop mic/STT but DON'T clear audio -------- */
   useEffect(() => {
     return () => {
-      stopEverything({ keepAudio: false });
+      // stop devices & STT if leaving, but keep audio state persisted
+      if (recognitionRef.current) {
+        try { recognitionRef.current.stop(); } catch {}
+        recognitionRef.current = null;
+      }
+      if (mediaRecorderRef.current && mediaRecorderRef.current.state !== "inactive") {
+        try { mediaRecorderRef.current.stop(); } catch {}
+        mediaRecorderRef.current = null;
+      }
+      if (mediaStreamRef.current) {
+        mediaStreamRef.current.getTracks().forEach((t) => t.stop());
+        mediaStreamRef.current = null;
+      }
+      if (timerRef.current) {
+        clearInterval(timerRef.current);
+        timerRef.current = null;
+      }
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  /* -------- Auto-save draft (debounced) whenever key fields change -------- */
+  useEffect(() => {
+    if (!audioURL) return; // only persist after we actually have audio
+    if (saveDebounceRef.current) clearTimeout(saveDebounceRef.current);
+    saveDebounceRef.current = setTimeout(() => { saveDraft().catch(()=>{}); }, 500);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [audioURL, transcript, annotations, leadId, mimeType, duration, blobSize]);
+
+  async function saveDraft() {
+    try {
+      // fetch the current Blob behind the audioURL? we already have chunks, but after stop we created a Blob.
+      // The reliable source is re-building from audio element src? We kept blob size/mime.
+      // We'll keep a reference by capturing the blob at stop time (see onstop below).
+      // Here we load it from IndexedDB if we don't have it—so store lastBlobRef at stop.
+      if (!lastBlobRef.current) return;
+      const obj = {
+        id: draftIdRef.current || undefined,
+        createdAt: Date.now(),
+        mimeType,
+        duration,
+        leadId: leadId || null,
+        leadName: selectedLead?.name || null,
+        transcript,
+        annotations,
+        blob: lastBlobRef.current,
+      };
+      const newId = await idbPutRec(obj);
+      draftIdRef.current = newId;
+      await idbSetKV(DRAFT_KEY, newId);
+    } catch {
+      // ignore persistence errors
+    }
+  }
+
+  const lastBlobRef = useRef(null);
 
   /* -------- Recording handlers -------- */
   async function startRecording() {
@@ -190,15 +341,14 @@ export default function CallRecorder() {
     setTranscript("");
     interimRef.current = "";
     chunksRef.current = [];
+    lastBlobRef.current = null;
 
     try {
       if (!consented) throw new Error("Please confirm you have consent to record.");
 
-      // Get mic
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
       mediaStreamRef.current = stream;
 
-      // Pick a supported mime type
       const prefer = [
         "audio/webm;codecs=opus",
         "audio/webm",
@@ -210,7 +360,6 @@ export default function CallRecorder() {
       const chosen = prefer.find((t) => window.MediaRecorder?.isTypeSupported?.(t)) || "";
       setMimeType(chosen);
 
-      // Create recorder
       const rec = new MediaRecorder(stream, chosen ? { mimeType: chosen } : undefined);
       mediaRecorderRef.current = rec;
 
@@ -221,12 +370,13 @@ export default function CallRecorder() {
       };
       rec.onstop = async () => {
         const blob = new Blob(chunksRef.current, { type: chosen || "audio/webm" });
+        lastBlobRef.current = blob;
         setBlobSize(blob.size);
         const url = URL.createObjectURL(blob);
         setAudioURL(url);
         setStopped(true);
 
-        // Load duration
+        // Load duration from metadata
         try {
           const a = new Audio();
           a.src = url;
@@ -235,23 +385,21 @@ export default function CallRecorder() {
             a.onerror = rej;
           });
           setDuration(a.duration || 0);
-        } catch {
-          // ignore
-        }
+        } catch {}
+
+        // Immediately persist draft locally
+        await saveDraft();
       };
 
-      // Start recording
-      rec.start(1000); // timeslice for steady chunks
+      rec.start(1000);
       setRecording(true);
 
-      // Timer
       let elapsed = 0;
       timerRef.current = setInterval(() => {
         elapsed += 1;
         setDuration(elapsed);
       }, 1000);
 
-      // Live STT (local) if supported
       if (autoNotesEnabled && SpeechRecognition) {
         const recog = new SpeechRecognition();
         recognitionRef.current = recog;
@@ -266,23 +414,16 @@ export default function CallRecorder() {
             if (r.isFinal) finalText += r[0].transcript + " ";
             else interimText += r[0].transcript + " ";
           }
-          if (finalText) {
-            setTranscript((prev) => (prev + " " + finalText).trim());
-          }
+          if (finalText) setTranscript((prev) => (prev + " " + finalText).trim());
           interimRef.current = interimText;
         };
         recog.onerror = () => {};
         recog.onend = () => {
-          // Keep it going during recording
           if (recording) {
-            try {
-              recog.start();
-            } catch {}
+            try { recog.start(); } catch {}
           }
         };
-        try {
-          recog.start();
-        } catch {}
+        try { recog.start(); } catch {}
       }
     } catch (e) {
       setError(e.message || "Failed to start recording.");
@@ -291,54 +432,42 @@ export default function CallRecorder() {
   }
 
   function stopEverything({ keepAudio = true } = {}) {
-    // Stop timer
-    if (timerRef.current) {
-      clearInterval(timerRef.current);
-      timerRef.current = null;
-    }
-    // Stop STT
+    if (timerRef.current) { clearInterval(timerRef.current); timerRef.current = null; }
     if (recognitionRef.current) {
-      try {
-        recognitionRef.current.onresult = null;
-        recognitionRef.current.onend = null;
-        recognitionRef.current.onerror = null;
-        recognitionRef.current.stop();
-      } catch {}
+      try { recognitionRef.current.onresult = null; recognitionRef.current.onend = null; recognitionRef.current.onerror = null; recognitionRef.current.stop(); } catch {}
       recognitionRef.current = null;
     }
-    // Stop recorder
     if (mediaRecorderRef.current && mediaRecorderRef.current.state !== "inactive") {
-      try {
-        mediaRecorderRef.current.stop();
-      } catch {}
+      try { mediaRecorderRef.current.stop(); } catch {}
     }
     mediaRecorderRef.current = null;
-    // Stop tracks
     if (mediaStreamRef.current) {
       mediaStreamRef.current.getTracks().forEach((t) => t.stop());
       mediaStreamRef.current = null;
     }
     setRecording(false);
     if (!keepAudio) {
-      // clear audio
-      try {
-        if (audioURL) URL.revokeObjectURL(audioURL);
-      } catch {}
+      try { if (audioURL) URL.revokeObjectURL(audioURL); } catch {}
       setAudioURL("");
       setBlobSize(0);
       setDuration(0);
       setStopped(false);
       chunksRef.current = [];
+      lastBlobRef.current = null;
+      draftIdRef.current = null;
+      // Clear draft key so we don't restore it
+      idbSetKV(DRAFT_KEY, null).catch(()=>{});
     }
   }
 
   async function stopRecording() {
     try {
-      // Capture last bit of interim STT
       const iv = (interimRef.current || "").trim();
       if (iv) setTranscript((prev) => (prev + " " + iv).trim());
     } catch {}
     stopEverything({ keepAudio: true });
+    // Save one more time to ensure latest transcript is persisted
+    await saveDraft();
   }
 
   function handleAnnotate() {
@@ -351,10 +480,17 @@ export default function CallRecorder() {
     }
   }
 
-  function handleDeleteRecording() {
+  async function handleDeleteRecording() {
     const ok = typeof window !== "undefined" ? window.confirm("Delete this recording from your browser?") : true;
     if (!ok) return;
-    stopEverything({ keepAudio: false }); // wipes audio URL, chunks, size, duration
+    // delete from IndexedDB if present
+    try {
+      if (draftIdRef.current) {
+        await idbDelRec(draftIdRef.current);
+        await idbSetKV(DRAFT_KEY, null);
+      }
+    } catch {}
+    stopEverything({ keepAudio: false }); // wipes local state + draft key
   }
 
   /* -------- UI -------- */
@@ -363,8 +499,7 @@ export default function CallRecorder() {
       <h1 className="text-2xl font-bold mb-2">Call Recorder (Local)</h1>
       <p className="text-white/70 mb-6">
         Records audio <span className="font-semibold">locally in your browser</span> (nothing is uploaded).
-        After stopping, you can download the file and link it to a lead. Optionally capture a live transcript for
-        one-click annotations.
+        Your latest recording is <span className="font-semibold">auto-saved</span> as a draft so it survives page changes and reloads.
       </p>
 
       <div className="flex items-start gap-3 p-3 rounded-lg border border-yellow-500/30 bg-yellow-500/10 mb-4">
@@ -457,7 +592,7 @@ export default function CallRecorder() {
             </div>
           )}
           <textarea
-            className="w-full h-28 rounded-lg bg-black/30 border border-white/10 p-2 text-sm"
+            className="w-full h-28 rounded-lg bg_black/30 border border-white/10 p-2 text-sm".replace("_", "-")
             placeholder="Transcript (captured locally while recording, or paste your notes here)…"
             value={transcript}
             onChange={(e) => setTranscript(e.target.value)}
@@ -495,7 +630,7 @@ export default function CallRecorder() {
                       <div className="font-medium">{displayName}</div>
                       <div className="text-xs text-white/60">{l.stage || "—"}</div>
                     </div>
-                    <div className="text-xs text-white/60">
+                    <div className="text-xs text_white/60".replace("_", "-")>
                       {l.phone || "—"} {l.email ? `· ${l.email}` : ""}
                     </div>
                   </button>
@@ -570,7 +705,7 @@ export default function CallRecorder() {
             <FileText className="w-4 h-4 text-white/70" />
             <div className="text-sm text-white/70">Annotations (local)</div>
           </div>
-        <button
+          <button
             onClick={handleAnnotate}
             disabled={annotating || !transcript.trim()}
             className={`inline-flex items-center gap-2 rounded-xl px-3 py-1.5 text-sm 
@@ -592,9 +727,7 @@ export default function CallRecorder() {
         <div className="mt-3 flex items-center gap-2">
           <button
             onClick={async () => {
-              try {
-                await navigator.clipboard.writeText(annotations || "");
-              } catch {}
+              try { await navigator.clipboard.writeText(annotations || ""); } catch {}
             }}
             className="rounded-xl px-3 py-1.5 text-sm bg-white/10 hover:bg-white/20"
           >
@@ -602,17 +735,18 @@ export default function CallRecorder() {
           </button>
           <button
             onClick={() => {
-              // Clear session data (local-only)
-              stopEverything({ keepAudio: false });
+              stopEverything({ keepAudio: true }); // keep audio, just reset fields below
               setTranscript("");
               setAnnotations("");
               setLeadId(null);
               setLeadSearch("");
               setError("");
+              // update persisted draft
+              saveDraft().catch(()=>{});
             }}
             className="rounded-xl px-3 py-1.5 text-sm bg-white/10 hover:bg-white/20"
           >
-            Reset Session
+            Reset Notes
           </button>
           <div className="ml-auto text-xs text-white/60">
             Notes/transcript stay in your browser unless you copy or download the audio.
