@@ -57,19 +57,17 @@ export default function TeamDashboard() {
       const { data: t } = await supabase.from("teams").select("*").eq("id", teamId).single();
       setTeam(t || null);
 
-      // 2) Resolve team member IDs (active/invited)
+      // 2) Resolve team member IDs (active/invited) AND grab email from user_teams
       const { data: ut } = await supabase
         .from("user_teams")
-        .select("user_id,status")
+        .select("user_id,status,email")
         .eq("team_id", teamId);
 
-      const userIds = Array.from(
-        new Set(
-          (ut || [])
-            .filter(r => r.status === "active" || r.status === "invited" || !r.status)
-            .map(r => r.user_id)
-        )
-      );
+      const activeMembers = (ut || []).filter(r => r.status === "active" || r.status === "invited" || !r.status);
+      const userIds = Array.from(new Set(activeMembers.map(r => r.user_id)));
+
+      // Build a map user_id -> email from user_teams (works even if profiles is blocked by RLS)
+      const emailMap = new Map(activeMembers.map(r => [r.user_id, r.email || null]));
 
       if (userIds.length === 0) {
         setKpis({ leadsThisMonth: 0, apps: 0, policies: 0, premium: 0, conversion: 0 });
@@ -139,14 +137,20 @@ export default function TeamDashboard() {
 
       let rows = Object.values(byUser);
       if (rows.length) {
+        // Try to attach profile names/emails (may be blocked by RLS); we’ll fallback to user_teams.email
         const { data: profiles } = await supabase
           .from("profiles")
           .select("id,full_name,email")
           .in("id", rows.map((r) => r.user_id));
+
         const profs = profiles || [];
         rows = rows.map((r) => {
           const p = profs.find((x) => x.id === r.user_id);
-          return { ...r, name: p?.full_name || r.user_id.slice(0, 6), email: p?.email || "—" };
+          const email = p?.email || emailMap.get(r.user_id) || "—";
+          const name =
+            p?.full_name ||
+            (email && email !== "—" ? String(email).split("@")[0] : r.user_id.slice(0, 6));
+          return { ...r, name, email };
         }).sort((a, b) => b.premium - a.premium);
       }
       setLeaderboard(rows);
