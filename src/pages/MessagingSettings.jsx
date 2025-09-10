@@ -1,29 +1,44 @@
 // File: src/pages/MessagingSettings.jsx
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { supabase } from "../lib/supabaseClient";
-import { CreditCard, Check, Loader2, MessageSquare } from "lucide-react";
+import { CreditCard, Check, Loader2, MessageSquare, Info } from "lucide-react";
 
 /* ---------------- Template Catalog ---------------- */
 const TEMPLATE_DEFS = [
   { key: "new_lead", label: "New Lead (instant)" },
   { key: "appointment", label: "Appointment Reminder" },
-  { key: "sold", label: "Sold - Congrats" },
-  { key: "policy_info", label: "Sold - Policy Info" },
+  { key: "sold", label: "Sold - Policy Info" }, // ← updated label
+  { key: "policy_info", label: "Sold - Policy Info (Alt)" },
   { key: "payment_reminder", label: "Payment Reminder" },
   { key: "birthday_text", label: "Birthday Text" },
   { key: "holiday_text", label: "Holiday Text" },
 ];
 
-/* ---------------- Suggested defaults ---------------- */
+/* ---------------- Suggested defaults ----------------
+   Variables you can use in templates:
+   {{first_name}}, {{last_name}}, {{full_name}}, {{agent_name}},
+   {{company}}, {{agent_phone}}, {{agent_email}},
+   {{appt_time}}, {{policy_number}}, {{carrier}}, {{premium}},
+   {{today}}, {{opt_out}}
+---------------------------------------------------------------- */
 const DEFAULTS = {
   new_lead:
     "Hi {{first_name}}! This is {{agent_name}} with {{company}}. I just received your request—when is a good time today to chat for 2–3 minutes? {{opt_out}}",
   appointment:
     "Hi {{first_name}}, reminder for our call at {{appt_time}} with {{agent_name}} ({{company}}). Reply YES to confirm or 2 to reschedule. {{opt_out}}",
+
+  // ← SOLD now includes policy details inline
   sold:
-    "Congrats {{first_name}}! 🎉 We’re approved. I’ll send your policy details next. If you have questions, text me anytime. {{opt_out}}",
+    "Congrats {{first_name}}! 🎉 You’re approved. Here are your policy details:\n" +
+    "• Carrier: {{carrier}}\n" +
+    "• Policy #: {{policy_number}}\n" +
+    "• Premium: ${{premium}}/mo\n" +
+    "Save this for your records. If you have questions, text me anytime. {{opt_out}}",
+
+  // Keeping the standalone “policy_info” too in case you want to send details separately
   policy_info:
     "Policy info for {{first_name}}:\n• Carrier: {{carrier}}\n• Policy #: {{policy_number}}\n• Premium: ${{premium}}/mo\nSave this for your records. {{opt_out}}",
+
   payment_reminder:
     "Hi {{first_name}}, a friendly reminder your payment is coming up. If anything changed with your card or bank, text me here. {{opt_out}}",
   birthday_text:
@@ -52,6 +67,9 @@ export default function MessagingSettings() {
   const [templates, setTemplates] = useState(() => ({ ...DEFAULTS }));
   const [saveState, setSaveState] = useState("idle");
   const saveTimer = useRef(null);
+
+  // Cheat sheet drawer
+  const [cheatOpen, setCheatOpen] = useState(false);
 
   const balanceDollars = (balanceCents / 100).toFixed(2);
 
@@ -206,11 +224,25 @@ export default function MessagingSettings() {
 
   return (
     <div className="space-y-6">
+      {/* Header */}
       <header className="rounded-2xl border border-white/10 bg-white/[0.03] p-4">
-        <h1 className="text-lg font-semibold">Messaging Settings</h1>
-        <p className="mt-1 text-sm text-white/70">
-          Manage your text balance and message templates. (Twilio connection can be finished later.)
-        </p>
+        <div className="flex items-center gap-3">
+          <div className="flex-1">
+            <h1 className="text-lg font-semibold">Messaging Settings</h1>
+            <p className="mt-1 text-sm text-white/70">
+              Manage your text balance and message templates. (Twilio connection can be finished later.)
+            </p>
+          </div>
+          {/* Cheat Sheet trigger */}
+          <button
+            onClick={() => setCheatOpen(true)}
+            className="inline-flex items-center gap-2 rounded-xl border border-white/15 bg-white/5 px-3 py-2 text-xs hover:bg-white/10"
+            title="Show template variables"
+          >
+            <Info className="h-4 w-4" />
+            Template Variables
+          </button>
+        </div>
       </header>
 
       {/* Wallet block */}
@@ -226,7 +258,7 @@ export default function MessagingSettings() {
 
           <div className="flex flex-col gap-2 md:items-end">
             <div className="flex flex-wrap gap-2">
-              <button onClick={() => addFunds(500)} disabled={topping} className="inline-flex items-center gap-1 rounded-lg border border-white/15 bg-white/5 px-3 py-2 text-sm hover:bg-white/10 disabled:opacity-50"><CreditCard className="h-4 w-4" /> +$5</button>
+              <button onClick={() => addFunds(500)}  disabled={topping} className="inline-flex items-center gap-1 rounded-lg border border-white/15 bg-white/5 px-3 py-2 text-sm hover:bg-white/10 disabled:opacity-50"><CreditCard className="h-4 w-4" /> +$5</button>
               <button onClick={() => addFunds(1000)} disabled={topping} className="inline-flex items-center gap-1 rounded-lg border border-white/15 bg-white/5 px-3 py-2 text-sm hover:bg-white/10 disabled:opacity-50"><CreditCard className="h-4 w-4" /> +$10</button>
               <button onClick={() => addFunds(2000)} disabled={topping} className="inline-flex items-center gap-1 rounded-lg border border-white/15 bg-white/5 px-3 py-2 text-sm hover:bg-white/10 disabled:opacity-50"><CreditCard className="h-4 w-4" /> +$20</button>
               <button onClick={() => addFunds(5000)} disabled={topping} className="inline-flex items-center gap-1 rounded-lg border border-white/15 bg-white/5 px-3 py-2 text-sm hover:bg-white/10 disabled:opacity-50"><CreditCard className="h-4 w-4" /> +$50</button>
@@ -306,6 +338,67 @@ export default function MessagingSettings() {
           <li>STOP/START/HELP are honored automatically by carriers when enabled with your provider.</li>
         </ul>
       </section>
+
+      {/* Drawer: Template Variables Cheat Sheet */}
+      {cheatOpen && (
+        <>
+          <div
+            className="fixed inset-0 z-40 bg-black/50"
+            onClick={() => setCheatOpen(false)}
+          />
+          <aside className="fixed right-0 top-0 z-50 h-full w-full max-w-md rounded-l-2xl border-l border-white/10 bg-[#0b0b12] p-4 shadow-2xl">
+            <div className="mb-3 flex items-center justify-between">
+              <div className="inline-flex items-center gap-2">
+                <Info className="h-5 w-5" />
+                <h2 className="text-sm font-semibold">Template Variables</h2>
+              </div>
+              <button
+                onClick={() => setCheatOpen(false)}
+                className="rounded-lg border border-white/15 bg-white/5 px-2 py-1 text-xs hover:bg-white/10"
+              >
+                Close
+              </button>
+            </div>
+
+            <p className="mb-3 text-xs text-white/70">
+              Paste these tokens into any template. The system replaces them automatically when messages are sent.
+            </p>
+
+            <div className="space-y-3 text-xs">
+              <VarRow token="first_name" desc="Lead’s first name" />
+              <VarRow token="last_name" desc="Lead’s last name" />
+              <VarRow token="full_name" desc="Lead’s full name" />
+              <VarRow token="agent_name" desc="Your display name" />
+              <VarRow token="company" desc="Your agency/company" />
+              <VarRow token="agent_phone" desc="Your phone number" />
+              <VarRow token="agent_email" desc="Your email address" />
+              <VarRow token="appt_time" desc="Formatted appointment time" />
+              <VarRow token="carrier" desc="Policy carrier (e.g., Americo)" />
+              <VarRow token="policy_number" desc="Issued policy number" />
+              <VarRow token="premium" desc="Monthly premium amount" />
+              <VarRow token="today" desc="Today’s date" />
+              <VarRow token="opt_out" desc='Adds compliance text like “Reply STOP to opt out.”' />
+            </div>
+
+            <div className="mt-4 rounded-xl border border-white/10 bg-white/[0.02] p-3">
+              <div className="mb-1 text-xs font-semibold">Example</div>
+              <pre className="whitespace-pre-wrap rounded-lg border border-white/10 bg-black/30 p-3 text-[11px] leading-5">
+{`"Hi {{first_name}}, your policy {{policy_number}} with {{carrier}} is active at ${{premium}}/mo. —{{agent_name}} {{opt_out}}"`}
+              </pre>
+            </div>
+          </aside>
+        </>
+      )}
+    </div>
+  );
+}
+
+/* --- Small helper to render a row in the cheat sheet --- */
+function VarRow({ token, desc }) {
+  return (
+    <div className="flex items-start justify-between gap-3 rounded-lg border border-white/10 bg-white/[0.02] p-2">
+      <code className="rounded bg-white/10 px-1.5 py-0.5 text-[11px]">{`{{${token}}}`}</code>
+      <div className="flex-1 text-right text-white/70">{desc}</div>
     </div>
   );
 }
