@@ -1,5 +1,6 @@
 // File: src/pages/MessagingSettings.jsx
 import { useEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { supabase } from "../lib/supabaseClient";
 import { CreditCard, Check, Loader2, MessageSquare, Info } from "lucide-react";
 
@@ -204,15 +205,6 @@ export default function MessagingSettings() {
     addFunds(cents);
   }
 
-  /* -------- Drawer helpers -------- */
-  useEffect(() => {
-    function onKey(e) {
-      if (e.key === "Escape") setCheatOpen(false);
-    }
-    if (cheatOpen) window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [cheatOpen]);
-
   if (loading) {
     return (
       <div className="min-h-[60vh] grid place-items-center text-white/70">
@@ -244,38 +236,10 @@ export default function MessagingSettings() {
 
           <div className="flex flex-col gap-2 md:items-end">
             <div className="flex flex-wrap gap-2">
-              <button
-                type="button"
-                onClick={() => addFunds(500)}
-                disabled={topping}
-                className="inline-flex items-center gap-1 rounded-lg border border-white/15 bg-white/5 px-3 py-2 text-sm hover:bg-white/10 disabled:opacity-50"
-              >
-                <CreditCard className="h-4 w-4" /> +$5
-              </button>
-              <button
-                type="button"
-                onClick={() => addFunds(1000)}
-                disabled={topping}
-                className="inline-flex items-center gap-1 rounded-lg border border-white/15 bg-white/5 px-3 py-2 text-sm hover:bg-white/10 disabled:opacity-50"
-              >
-                <CreditCard className="h-4 w-4" /> +$10
-              </button>
-              <button
-                type="button"
-                onClick={() => addFunds(2000)}
-                disabled={topping}
-                className="inline-flex items-center gap-1 rounded-lg border border-white/15 bg-white/5 px-3 py-2 text-sm hover:bg-white/10 disabled:opacity-50"
-              >
-                <CreditCard className="h-4 w-4" /> +$20
-              </button>
-              <button
-                type="button"
-                onClick={() => addFunds(5000)}
-                disabled={topping}
-                className="inline-flex items-center gap-1 rounded-lg border border-white/15 bg-white/5 px-3 py-2 text-sm hover:bg-white/10 disabled:opacity-50"
-              >
-                <CreditCard className="h-4 w-4" /> +$50
-              </button>
+              <button type="button" onClick={() => addFunds(500)}  disabled={topping} className="inline-flex items-center gap-1 rounded-lg border border-white/15 bg-white/5 px-3 py-2 text-sm hover:bg-white/10 disabled:opacity-50"><CreditCard className="h-4 w-4" /> +$5</button>
+              <button type="button" onClick={() => addFunds(1000)} disabled={topping} className="inline-flex items-center gap-1 rounded-lg border border-white/15 bg-white/5 px-3 py-2 text-sm hover:bg-white/10 disabled:opacity-50"><CreditCard className="h-4 w-4" /> +$10</button>
+              <button type="button" onClick={() => addFunds(2000)} disabled={topping} className="inline-flex items-center gap-1 rounded-lg border border-white/15 bg-white/5 px-3 py-2 text-sm hover:bg-white/10 disabled:opacity-50"><CreditCard className="h-4 w-4" /> +$20</button>
+              <button type="button" onClick={() => addFunds(5000)} disabled={topping} className="inline-flex items-center gap-1 rounded-lg border border-white/15 bg-white/5 px-3 py-2 text-sm hover:bg-white/10 disabled:opacity-50"><CreditCard className="h-4 w-4" /> +$50</button>
             </div>
 
             <div className="flex items-center gap-2">
@@ -295,14 +259,7 @@ export default function MessagingSettings() {
                     className="w-24 rounded-lg border border-white/15 bg-white/5 pl-5 pr-3 py-2 text-sm outline-none focus:ring-1 focus:ring-indigo-400/50"
                   />
                 </div>
-                <button
-                  type="button"
-                  onClick={addCustom}
-                  disabled={topping}
-                  className="inline-flex items-center gap-1 rounded-lg border border-white/15 bg-white/5 px-3 py-2 text-sm hover:bg-white/10 disabled:opacity-50"
-                >
-                  <CreditCard className="h-4 w-4" /> Add
-                </button>
+                <button type="button" onClick={addCustom} disabled={topping} className="inline-flex items-center gap-1 rounded-lg border border-white/15 bg-white/5 px-3 py-2 text-sm hover:bg-white/10 disabled:opacity-50"><CreditCard className="h-4 w-4" /> Add</button>
               </div>
               {customMsg && <div className="text-xs text-amber-300">{customMsg}</div>}
             </div>
@@ -378,74 +335,93 @@ export default function MessagingSettings() {
         </ul>
       </section>
 
-      {/* Drawer: Template Variables Cheat Sheet */}
-      {cheatOpen && (
-        <>
-          {/* Overlay */}
-          <div
-            className="fixed inset-0 z-40 bg-black/50"
-            onClick={() => setCheatOpen(false)}
-          />
+      {/* Drawer via portal */}
+      <SlideOver open={cheatOpen} onClose={() => setCheatOpen(false)} title="Template Variables">
+        <p className="mb-3 text-xs text-white/70">
+          Paste these tokens into any template. The system replaces them automatically when messages are sent.
+        </p>
 
-          {/* Panel */}
-          <aside
-            className="fixed right-0 top-0 z-50 h-full w-full max-w-md rounded-l-2xl border-l border-white/10 bg-[#0b0b12] p-4 shadow-2xl"
-            role="dialog"
-            aria-modal="true"
-            aria-label="Template Variables"
-          >
-            <div className="mb-3 flex items-center justify-between">
-              <div className="inline-flex items-center gap-2">
-                <Info className="h-5 w-5" />
-                <h2 className="text-sm font-semibold">Template Variables</h2>
-              </div>
-              <button
-                type="button"
-                onClick={() => setCheatOpen(false)}
-                className="rounded-lg border border-white/15 bg-white/5 px-2 py-1 text-xs hover:bg-white/10"
-              >
-                Close
-              </button>
-            </div>
+        <div className="space-y-3 text-xs">
+          <VarRow token="first_name" desc="Lead’s first name" />
+          <VarRow token="last_name" desc="Lead’s last name" />
+          <VarRow token="full_name" desc="Lead’s full name" />
+          <VarRow token="agent_name" desc="Your display name" />
+          <VarRow token="company" desc="Your agency/company" />
+          <VarRow token="agent_phone" desc="Your phone number" />
+          <VarRow token="agent_email" desc="Your email address" />
+          <VarRow token="appt_time" desc="Formatted appointment time" />
+          <VarRow token="carrier" desc="Policy carrier (e.g., Americo)" />
+          <VarRow token="policy_number" desc="Issued policy number" />
+          <VarRow token="premium" desc="Monthly premium amount" />
+          <VarRow token="today" desc="Today’s date" />
+        </div>
 
-            <p className="mb-3 text-xs text-white/70">
-              Paste these tokens into any template. The system replaces them automatically when messages are sent.
-            </p>
-
-            <div className="space-y-3 text-xs">
-              <VarRow token="first_name" desc="Lead’s first name" />
-              <VarRow token="last_name" desc="Lead’s last name" />
-              <VarRow token="full_name" desc="Lead’s full name" />
-              <VarRow token="agent_name" desc="Your display name" />
-              <VarRow token="company" desc="Your agency/company" />
-              <VarRow token="agent_phone" desc="Your phone number" />
-              <VarRow token="agent_email" desc="Your email address" />
-              <VarRow token="appt_time" desc="Formatted appointment time" />
-              <VarRow token="carrier" desc="Policy carrier (e.g., Americo)" />
-              <VarRow token="policy_number" desc="Issued policy number" />
-              <VarRow token="premium" desc="Monthly premium amount" />
-              <VarRow token="today" desc="Today’s date" />
-            </div>
-
-            <div className="mt-4 rounded-xl border border-white/10 bg-white/[0.02] p-3">
-              <div className="mb-1 text-xs font-semibold">Example</div>
-              <pre className="whitespace-pre-wrap rounded-lg border border-white/10 bg-black/30 p-3 text-[11px] leading-5">
+        <div className="mt-4 rounded-xl border border-white/10 bg-white/[0.02] p-3">
+          <div className="mb-1 text-xs font-semibold">Example</div>
+          <pre className="whitespace-pre-wrap rounded-lg border border-white/10 bg-black/30 p-3 text-[11px] leading-5">
 {`"Hi {{first_name}}, your policy {{policy_number}} with {{carrier}} is active at ${{premium}}/mo. —{{agent_name}}"`}
-              </pre>
-            </div>
-          </aside>
-        </>
-      )}
+          </pre>
+        </div>
+      </SlideOver>
     </div>
   );
 }
 
-/* --- Small helper to render a row in the cheat sheet --- */
+/* --- Var row --- */
 function VarRow({ token, desc }) {
   return (
     <div className="flex items-start justify-between gap-3 rounded-lg border border-white/10 bg-white/[0.02] p-2">
       <code className="rounded bg-white/10 px-1.5 py-0.5 text-[11px]">{`{{${token}}}`}</code>
       <div className="flex-1 text-right text-white/70">{desc}</div>
     </div>
+  );
+}
+
+/* --- Generic slide-over (portal) --- */
+function SlideOver({ open, onClose, title, children }) {
+  const [mounted, setMounted] = useState(false);
+
+  useEffect(() => {
+    setMounted(true);
+  }, []);
+
+  useEffect(() => {
+    function onKey(e) {
+      if (e.key === "Escape") onClose?.();
+    }
+    if (open) window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [open, onClose]);
+
+  if (!mounted) return null;
+  return createPortal(
+    <>
+      {/* overlay */}
+      <div
+        className={`fixed inset-0 z-40 transition ${open ? "bg-black/50" : "pointer-events-none bg-transparent"}`}
+        onClick={onClose}
+        aria-hidden="true"
+      />
+      {/* panel */}
+      <aside
+        className={`fixed right-0 top-0 z-50 h-full w-full max-w-md transform rounded-l-2xl border-l border-white/10 bg-[#0b0b12] p-4 shadow-2xl transition-transform ${open ? "translate-x-0" : "translate-x-full"}`}
+        role="dialog"
+        aria-modal="true"
+        aria-label={title || "Panel"}
+      >
+        <div className="mb-3 flex items-center justify-between">
+          <h2 className="text-sm font-semibold">{title}</h2>
+          <button
+            type="button"
+            onClick={onClose}
+            className="rounded-lg border border-white/15 bg-white/5 px-2 py-1 text-xs hover:bg-white/10"
+          >
+            Close
+          </button>
+        </div>
+        {children}
+      </aside>
+    </>,
+    document.body
   );
 }
