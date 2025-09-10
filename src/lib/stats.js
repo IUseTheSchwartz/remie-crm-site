@@ -1,14 +1,13 @@
 // File: src/lib/stats.js
-// Stats + grouping helpers for dashboard and reports.
-// Dashboard lead counts come from Supabase (created_at).
-// Reports stays synchronous and defaults to SOLD-only timeline so it won't white-screen.
+// Dashboard + Reports helpers
+// - SOLD & Premium: local storage (matches Reports).
+// - Leads: Supabase (leads.created_at) — counted up to NOW.
+// - Appointments: Supabase (leads.next_follow_up_at) — counted to end-of-period.
 
 import { supabase } from "../lib/supabaseClient.js";
 import { loadClients } from "./storage.js";
 
-/* -----------------------------------------------
-   Number parsing
--------------------------------------------------*/
+/* ---------------- Number parsing ---------------- */
 function parseNumber(x) {
   if (x == null) return 0;
   if (typeof x === "number") return x;
@@ -17,40 +16,60 @@ function parseNumber(x) {
   return Number.isFinite(v) ? v : 0;
 }
 
-/* -----------------------------------------------
-   Date parsing / normalization
-   (prevents TZ/format issues that hide SOLD items)
--------------------------------------------------*/
-function toDateSafe(val) {
-  if (!val) return null;
-  if (val instanceof Date) return Number.isFinite(+val) ? val : null;
-  const s = String(val).trim();
+/* ---------------- Robust date parsing ----------------
+   Accepts:
+   - ISO / YYYY-MM-DD[THH:mm:ss(.sss)Z?]
+   - MM/DD/YYYY (set to noon local to avoid TZ edge)
+------------------------------------------------------*/
+function toDateSafe(d) {
+  if (!d) return null;
+  if (d instanceof Date) return Number.isFinite(+d) ? d : null;
+  const s = String(d);
 
-  // ISO / YYYY-MM-DD...
+  // ISO / YYYY-MM-DD
   if (/^\d{4}-\d{2}-\d{2}/.test(s)) {
-    const d = new Date(s);
-    return Number.isFinite(+d) ? d : null;
-  }
-  // MM/DD/YYYY
-  if (/^\d{1,2}\/\d{1,2}\/\d{4}$/.test(s)) {
-    const [m, d, y] = s.split("/").map(Number);
-    const t = new Date(y, m - 1, d, 12, 0, 0, 0); // local noon
+    const t = new Date(s);
     return Number.isFinite(+t) ? t : null;
   }
-  const d2 = new Date(s);
-  return Number.isFinite(+d2) ? d2 : null;
+
+  // MM/DD/YYYY
+  if (/^\d{1,2}\/\d{1,2}\/\d{4}$/.test(s)) {
+    const [m, dd, y] = s.split("/").map(Number);
+    const t = new Date(y, m - 1, dd, 12, 0, 0, 0); // noon local
+    return Number.isFinite(+t) ? t : null;
+  }
+
+  const t = new Date(s);
+  return Number.isFinite(+t) ? t : null;
 }
 
-function normalizeForCompare(val) {
-  const d = toDateSafe(val);
+/* Normalize any parsed date to local **noon** for comparisons.
+   This removes UTC→local boundary issues (e.g., '2025-09-01T00:00:00Z').
+*/
+function toLocalNoon(dateLike) {
+  const d = toDateSafe(dateLike);
   if (!d) return null;
-  // Clamp to local noon to avoid off-by-one around midnight UTC.
   return new Date(d.getFullYear(), d.getMonth(), d.getDate(), 12, 0, 0, 0);
 }
 
-/* -----------------------------------------------
-   SOLD data source (real, from local storage)
--------------------------------------------------*/
+/* ---------------- Time helpers ---------------- */
+export function startOfDay(d) { const x = new Date(d); x.setHours(0,0,0,0); return x; }
+export function endOfDay(d)   { const x = new Date(d); x.setHours(23,59,59,999); return x; }
+
+export function startOfWeek(d) { const x = startOfDay(d); const diff=(x.getDay()+6)%7; x.setDate(x.getDate()-diff); return x; }
+export function endOfWeek(d)   { const s = startOfWeek(d); const e = new Date(s); e.setDate(e.getDate()+6); e.setHours(23,59,59,999); return e; }
+
+export function startOfMonth(d){ const x = startOfDay(d); x.setDate(1); return x; }
+export function endOfMonth(d)  { const s = startOfMonth(d); const e = new Date(s); e.setMonth(e.getMonth()+1); e.setDate(0); e.setHours(23,59,59,999); return e; }
+
+export function fmtDate(d)  { return new Date(d).toLocaleDateString(undefined, { month: "short", day: "numeric" }); }
+export function fmtMonth(d) { return new Date(d).toLocaleDateString(undefined, { month: "short", year: "numeric" }); }
+export function getWeekKey(d){
+  const b = startOfWeek(toLocalNoon(d) || new Date());
+  return b.toISOString().slice(0,10);
+}
+
+/* ---------------- SOLD (local storage) ---------------- */
 export function getSoldEventsFromStorage() {
   const clients = loadClients() || [];
   const sold = clients.filter((c) => c.status === "sold" && c.sold);
@@ -68,87 +87,32 @@ export function getSoldEventsFromStorage() {
   }));
 }
 
-/* -----------------------------------------------
-   Time helpers
--------------------------------------------------*/
-export function startOfDay(d) {
-  const x = new Date(d);
-  x.setHours(0, 0, 0, 0);
-  return x;
-}
-export function startOfWeek(d) {
-  const x = startOfDay(d);
-  const day = x.getDay(); // 0=Sun
-  const diff = (day + 6) % 7; // Monday start
-  x.setDate(x.getDate() - diff);
-  return x;
-}
-export function startOfMonth(d) {
-  const x = startOfDay(d);
-  x.setDate(1);
-  return x;
-}
-export function fmtDate(d) {
-  return new Date(d).toLocaleDateString(undefined, { month: "short", day: "numeric" });
-}
-export function fmtMonth(d) {
-  return new Date(d).toLocaleDateString(undefined, { month: "short", year: "numeric" });
-}
-export function getWeekKey(d) {
-  const base = startOfWeek(normalizeForCompare(d) || new Date());
-  return base.toISOString().slice(0, 10); // YYYY-MM-DD (Mon)
-}
-
-/* -----------------------------------------------
-   Totals + filters
--------------------------------------------------*/
+/* ---------------- Totals + filters ---------------- */
 function countByType(items) {
   const c = { lead: 0, appointment: 0, client_created: 0, policy_closed: 0, premium: 0 };
-  for (const it of items) {
+  for (const it of items || []) {
     c[it.type] = (c[it.type] || 0) + 1;
     if (it.type === "policy_closed") c.premium += parseNumber(it.premium);
   }
   return c;
 }
-
 export function getTotals(items = []) {
   const c = countByType(items || []);
-  return {
-    leads: c.lead,
-    appointments: c.appointment,
-    clients: c.client_created,
-    closed: c.policy_closed,
-    premium: c.premium,
-  };
+  return { leads: c.lead, appointments: c.appointment, clients: c.client_created, closed: c.policy_closed, premium: c.premium };
 }
-
 export function filterRange(items = [], from, to) {
   const a = +from, b = +to;
   return (items || []).filter((x) => {
-    const nd = normalizeForCompare(x.date);
-    if (!nd) return false;
-    const t = +nd;
+    const td = toLocalNoon(x.date);         // << normalize here
+    if (!td) return false;
+    const t = +td;
     return t >= a && t <= b;
   });
 }
 
-/* -----------------------------------------------
-   Reports timeline (sync)
-   - Keep SOLD events so Reports renders without async
--------------------------------------------------*/
-function buildSoldTimeline() {
-  return getSoldEventsFromStorage();
-}
+/* ---------------- Reports timeline (sync) ---------------- */
+function timeline(){ return getSoldEventsFromStorage(); }
 
-// ✅ restore the old API: Reports calls groupByMonth() with no args
-// so we provide a default timeline() that is synchronous.
-function timeline() {
-  return buildSoldTimeline();
-}
-
-/* -----------------------------------------------
-   Grouping (Month → Weeks → Days) with SOLD lists
--------------------------------------------------*/
 function soldList(items = []) {
   return (items || [])
     .filter((x) => x.type === "policy_closed")
@@ -164,8 +128,8 @@ function soldList(items = []) {
 export function groupByMonth(items = timeline()) {
   const m = new Map();
   for (const it of (items || [])) {
-    const d = normalizeForCompare(it.date) || new Date();
-    const key = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
+    const d = toLocalNoon(it.date) || new Date(); // << normalized
+    const key = `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}`;
     if (!m.has(key)) m.set(key, []);
     m.get(key).push(it);
   }
@@ -173,77 +137,68 @@ export function groupByMonth(items = timeline()) {
     .sort((a, b) => (a[0] < b[0] ? 1 : -1))
     .map(([key, arr]) => {
       const monthDate = new Date(`${key}-01T00:00:00`);
-      return {
-        key,
-        label: fmtMonth(monthDate),
-        totals: getTotals(arr),
-        sold: soldList(arr),
-        weeks: groupWeeks(arr),
-      };
+      return { key, label: fmtMonth(monthDate), totals: getTotals(arr), sold: soldList(arr), weeks: groupWeeks(arr) };
     });
 }
 
 function groupWeeks(items = []) {
   const w = new Map();
   for (const it of (items || [])) {
-    const key = getWeekKey(it.date); // Monday start (normalized inside getWeekKey)
+    const key = getWeekKey(toLocalNoon(it.date) || new Date()); // << normalized
     if (!w.has(key)) w.set(key, []);
     w.get(key).push(it);
   }
   return [...w.entries()]
     .sort((a, b) => (a[0] < b[0] ? 1 : -1))
-    .map(([key, arr]) => ({
-      key,
-      label: `${fmtDate(key)} wk`,
-      totals: getTotals(arr),
-      sold: soldList(arr),
-      days: groupDays(arr),
-    }));
+    .map(([key, arr]) => ({ key, label: `${fmtDate(key)} wk`, totals: getTotals(arr), sold: soldList(arr), days: groupDays(arr) }));
 }
 
 function groupDays(items = []) {
   const d = new Map();
   for (const it of (items || [])) {
-    const dayDate = normalizeForCompare(it.date) || new Date();
-    const day = dayDate.toISOString().slice(0, 10);
+    const dd = toLocalNoon(it.date) || new Date(); // << normalized
+    const day = dd.toISOString().slice(0, 10);
     if (!d.has(day)) d.set(day, []);
     d.get(day).push(it);
   }
   return [...d.entries()]
     .sort((a, b) => (a[0] < b[0] ? 1 : -1))
-    .map(([key, arr]) => ({
-      key,
-      label: fmtDate(key),
-      totals: getTotals(arr),
-      sold: soldList(arr),
-    }));
+    .map(([key, arr]) => ({ key, label: fmtDate(key), totals: getTotals(arr), sold: soldList(arr) }));
 }
 
-/* ===============================================
-   SUPABASE LEAD COUNTS for DASHBOARD (created_at)
-   - Async refresh updates a cached snapshot
-=================================================*/
+/* ---------------- Supabase counts for Dashboard ---------------- */
+// Leads (so-far → end = now)
 async function countLeadsBetween(startISO, endISO, options = {}) {
-  let q = supabase
-    .from("leads")
-    .select("*", { count: "exact", head: true })
+  let q = supabase.from("leads")
+    .select("id", { count: "exact" })
     .gte("created_at", startISO)
-    .lte("created_at", endISO);
-
+    .lte("created_at", endISO)
+    .limit(1);
   if (options.team_id) q = q.eq("team_id", options.team_id);
   if (options.user_id) q = q.eq("user_id", options.user_id);
-  if (options.extraFilters && typeof options.extraFilters === "function") {
-    q = options.extraFilters(q);
-  }
-
+  if (options.extraFilters) q = options.extraFilters(q);
   const { count, error } = await q;
-  if (error) {
-    console.error("[stats] Supabase lead count error:", error);
-    return 0;
-  }
+  if (error) { console.error("[stats] lead count error:", error); return 0; }
   return count || 0;
 }
 
+// Appointments (to end-of-period) — leads.next_follow_up_at
+const APPT_SOURCE = { table: "leads", timeCol: "next_follow_up_at" };
+async function countAppointmentsBetween(startISO, endISO, options = {}) {
+  let q = supabase.from(APPT_SOURCE.table)
+    .select("id", { count: "exact" })
+    .gte(APPT_SOURCE.timeCol, startISO)
+    .lte(APPT_SOURCE.timeCol, endISO)
+    .not(APPT_SOURCE.timeCol, "is", null)
+    .limit(1);
+  if (options.team_id) q = q.eq("team_id", options.team_id);
+  if (options.user_id) q = q.eq("user_id", options.user_id);
+  const { count, error } = await q;
+  if (error) { console.error("[stats] appt count error:", error); return 0; }
+  return count || 0;
+}
+
+/* ---------------- Dashboard cache + refresh ---------------- */
 const ZERO = { leads: 0, appointments: 0, clients: 0, closed: 0, premium: 0 };
 
 let _cache = {
@@ -253,67 +208,61 @@ let _cache = {
   allTime: { ...ZERO },
   _updatedAt: null,
 };
-
-export function dashboardSnapshot() {
-  return _cache;
-}
+export function dashboardSnapshot(){ return _cache; }
 
 export async function refreshDashboardSnapshot(options = {}, now = new Date()) {
-  const end = now;
-  const todayStart = startOfDay(now);
-  const weekStart = startOfWeek(now);
-  const monthStart = startOfMonth(now);
+  // windows
+  const nowISO = now.toISOString();
+  const todayStart = startOfDay(now), todayEnd = endOfDay(now);
+  const weekStart  = startOfWeek(now), weekEnd  = endOfWeek(now);
+  const monthStart = startOfMonth(now), monthEnd = endOfMonth(now);
 
-  const [todayLeads, weekLeads, monthLeads, allLeads] = await Promise.all([
-    countLeadsBetween(todayStart.toISOString(), end.toISOString(), options),
-    countLeadsBetween(weekStart.toISOString(), end.toISOString(), options),
-    countLeadsBetween(monthStart.toISOString(), end.toISOString(), options),
-    countLeadsBetween("1970-01-01T00:00:00.000Z", end.toISOString(), options),
+  // SOLD timeline from local storage (same as Reports)
+  const soldTimeline = getSoldEventsFromStorage();
+
+  // Compute SOLD totals for each bucket using **normalized dates**
+  const todaySold  = getTotals(filterRange(soldTimeline, todayStart, todayEnd));
+  const weekSold   = getTotals(filterRange(soldTimeline, weekStart, weekEnd));
+  const monthSold  = getTotals(filterRange(soldTimeline, monthStart, monthEnd));
+  const allSold    = getTotals(soldTimeline);
+
+  // Fetch Supabase counts for Leads (so-far) & Appointments (to end-of-period)
+  const [
+    todayLeads, weekLeads, monthLeads, allLeads,
+    todayAppts, weekAppts, monthAppts, allAppts,
+  ] = await Promise.all([
+    countLeadsBetween(todayStart.toISOString(), nowISO, options),
+    countLeadsBetween(weekStart.toISOString(),  nowISO, options),
+    countLeadsBetween(monthStart.toISOString(), nowISO, options),
+    countLeadsBetween("1970-01-01T00:00:00.000Z", nowISO, options),
+
+    countAppointmentsBetween(todayStart.toISOString(), todayEnd.toISOString(), options),
+    countAppointmentsBetween(weekStart.toISOString(),  weekEnd.toISOString(),  options),
+    countAppointmentsBetween(monthStart.toISOString(), monthEnd.toISOString(), options),
+    countAppointmentsBetween("1970-01-01T00:00:00.000Z", "9999-12-31T23:59:59.999Z", options),
   ]);
 
-  // SOLD timeline (reports still sync)
-  const soldTimeline = buildSoldTimeline();
-
-  const dayItems = filterRange(soldTimeline, todayStart, end);
-  const weekItems = filterRange(soldTimeline, weekStart, end);
-  const monthItems = filterRange(soldTimeline, monthStart, end);
-  const todayTotals = getTotals(dayItems);
-  const weekTotals = getTotals(weekItems);
-  const monthTotals = getTotals(monthItems);
-  const allTotals = getTotals(soldTimeline);
-
-  // Inject Supabase lead counts
-  todayTotals.leads = todayLeads;
-  weekTotals.leads = weekLeads;
-  monthTotals.leads = monthLeads;
-  allTotals.leads = allLeads;
-
   _cache = {
-    today: todayTotals,
-    thisWeek: weekTotals,
-    thisMonth: monthTotals,
-    allTime: allTotals,
+    today:     { ...todaySold,  leads: todayLeads, appointments: todayAppts },
+    thisWeek:  { ...weekSold,   leads: weekLeads, appointments: weekAppts  },
+    thisMonth: { ...monthSold,  leads: monthLeads,appointments: monthAppts },
+    allTime:   { ...allSold,    leads: allLeads,  appointments: allAppts   },
     _updatedAt: new Date().toISOString(),
   };
 
-  // helpful while debugging
   if (typeof window !== "undefined") {
     window.__statsDebug = {
-      soldTimelineCount: soldTimeline?.length || 0,
-      sampleSold: (soldTimeline || []).slice(0, 5),
-      today: todayTotals,
-      thisWeek: weekTotals,
-      thisMonth: monthTotals,
-      allTime: allTotals,
+      soldTimelineCount: soldTimeline.length,
+      sampleSold: soldTimeline.slice(0, 5),
+      todaySold, weekSold, monthSold, allSold,
+      snapshot: _cache,
     };
   }
 
   return _cache;
 }
 
-/* -----------------------------------------------
-   Helper for Weekly tab label suffix in ReportsPage
--------------------------------------------------*/
+/* ---------------- Reports helper ---------------- */
 export function monthFromWeekKey(weekKey) {
   const d = new Date(weekKey);
   return d.toLocaleDateString(undefined, { month: "short", year: "numeric" });
