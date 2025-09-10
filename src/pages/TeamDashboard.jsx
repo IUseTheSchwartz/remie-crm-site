@@ -1,167 +1,239 @@
 // File: src/pages/TeamDashboard.jsx
 import { useEffect, useMemo, useState } from "react";
-import { supabase } from "../lib/supabaseClient.js";
-import { useAuth } from "../auth.jsx";
-import NumberCard from "../components/NumberCard.jsx";
-import { dashboardSnapshot, refreshDashboardSnapshot } from "../lib/stats.js";
+import { useParams } from "react-router-dom";
+import { supabase } from "../lib/supabaseClient";
+import { getCurrentUserId } from "../lib/teamApi";
+import { BarChart3, TrendingUp, Target } from "lucide-react";
 
-function Card({ title, children }) {
+// small helper
+function parseNumber(x) {
+  if (x == null) return 0;
+  if (typeof x === "number") return x;
+  const n = String(x).replace(/[$,\s]/g, "");
+  const v = parseFloat(n);
+  return Number.isFinite(v) ? v : 0;
+}
+
+export default function TeamDashboard() {
+  const { teamId } = useParams();
+  const [team, setTeam] = useState(null);
+  const [kpis, setKpis] = useState({ leadsThisMonth: 0, apps: 0, policies: 0, premium: 0, conversion: 0 });
+  const [leaderboard, setLeaderboard] = useState([]);
+  const [loading, setLoading] = useState(true);
+
+  const monthStartISO = useMemo(() => {
+    const d = new Date(); d.setDate(1); d.setHours(0,0,0,0); return d.toISOString();
+  }, []);
+
+  useEffect(() => {
+    (async () => {
+      setLoading(true);
+      await getCurrentUserId(); // ensure authed
+
+      /* ---------------- Load Team ---------------- */
+      const { data: t, error: tErr } = await supabase
+        .from("teams")
+        .select("*")
+        .eq("id", teamId)
+        .single();
+      if (tErr) console.warn("[TeamDashboard] load team error:", tErr);
+      setTeam(t || null);
+
+      /* ---------------- Leads this month ---------------- */
+      let leadsCount = 0;
+      {
+        const { count, error } = await supabase
+          .from("leads")
+          .select("id", { count: "exact" })
+          .eq("team_id", teamId)
+          .gte("created_at", monthStartISO)
+          .limit(1);
+        if (error) console.warn("[TeamDashboard] leads count error:", error);
+        leadsCount = count || 0;
+      }
+
+      /* ---------------- Applications ---------------- */
+      // Try applications table first; if not available, fall back to leads by stage/status
+      let appsCount = 0;
+      {
+        const { count, error } = await supabase
+          .from("applications")
+          .select("id", { count: "exact" })
+          .eq("team_id", teamId)
+          .gte("created_at", monthStartISO)
+          .limit(1);
+
+        if (!error) {
+          appsCount = count || 0;
+        } else {
+          // Fallback: detect "application" via leads.stage/status
+          const { count: fallbackCount, error: fbErr } = await supabase
+            .from("leads")
+            .select("id", { count: "exact" })
+            .eq("team_id", teamId)
+            .gte("created_at", monthStartISO)
+            .or("stage.eq.application,stage.eq.applications,status.eq.application,status.eq.application_submitted")
+            .limit(1);
+          if (fbErr) console.warn("[TeamDashboard] apps fallback error:", fbErr);
+          appsCount = fallbackCount || 0;
+        }
+      }
+
+      /* ---------------- Policies sold + premium ---------------- */
+      // Prefer sold_at (if your schema has it); otherwise fall back to created_at window.
+      let policiesRows = [];
+      {
+        // First try filtering by sold_at within this month
+        const { data: rowsBySoldAt, error: soldAtErr } = await supabase
+          .from("leads")
+          .select("id,user_id,premium,monthlyPayment,faceAmount,sold_premium,sold_monthly,sold_face,sold,sold_at,created_at")
+          .eq("team_id", teamId)
+          .or("status.eq.sold,stage.eq.sold")
+          .gte("sold_at", monthStartISO);
+
+        if (soldAtErr) console.warn("[TeamDashboard] policies sold_at query error:", soldAtErr);
+
+        if (rowsBySoldAt && rowsBySoldAt.length) {
+          policiesRows = rowsBySoldAt;
+        } else {
+          // Fallback: if no sold_at column/data, count those created this month and marked sold
+          const { data: rowsByCreated, error: createdErr } = await supabase
+            .from("leads")
+            .select("id,user_id,premium,monthlyPayment,faceAmount,sold_premium,sold_monthly,sold_face,sold,sold_at,created_at")
+            .eq("team_id", teamId)
+            .or("status.eq.sold,stage.eq.sold")
+            .gte("created_at", monthStartISO);
+          if (createdErr) console.warn("[TeamDashboard] policies created_at fallback error:", createdErr);
+          policiesRows = rowsByCreated || [];
+        }
+      }
+
+      const policiesCount = policiesRows.length;
+
+      // Compute premium from best-available columns on leads
+      // Priority: sold_premium -> premium -> monthlyPayment (if you treat it as monthly premium)
+      const premiumSum = policiesRows.reduce((acc, r) => {
+        const v =
+          parseNumber(r.sold_premium) ||
+          parseNumber(r.premium) ||
+          parseNumber(r.monthlyPayment); // adjust if you prefer annualize monthly, etc.
+        return acc + v;
+      }, 0);
+
+      /* ---------------- Conversion ---------------- */
+      const conversion = leadsCount ? Math.round((policiesCount / leadsCount) * 100) : 0;
+
+      setKpis({
+        leadsThisMonth: leadsCount,
+        apps: appsCount,
+        policies: policiesCount,
+        premium: premiumSum,
+        conversion,
+      });
+
+      /* ---------------- Leaderboard (by user) ---------------- */
+      const byUser = {};
+      for (const p of policiesRows) {
+        const uid = p.user_id || "unknown";
+        if (!byUser[uid]) byUser[uid] = { user_id: uid, policies: 0, premium: 0 };
+        byUser[uid].policies += 1;
+        byUser[uid].premium +=
+          parseNumber(p.sold_premium) ||
+          parseNumber(p.premium) ||
+          parseNumber(p.monthlyPayment);
+      }
+
+      const userIds = Object.keys(byUser).filter(Boolean);
+      let profiles = [];
+      if (userIds.length) {
+        const { data: profs, error: profErr } = await supabase
+          .from("profiles")
+          .select("id, full_name, email")
+          .in("id", userIds);
+        if (profErr) console.warn("[TeamDashboard] profiles error:", profErr);
+        profiles = profs || [];
+      }
+
+      const rows = Object.values(byUser)
+        .map((r) => {
+          const p = profiles.find((x) => x.id === r.user_id);
+          return {
+            ...r,
+            name: p?.full_name || (r.user_id ? r.user_id.slice(0, 6) : "—"),
+            email: p?.email || "—",
+          };
+        })
+        .sort((a, b) => b.premium - a.premium);
+
+      setLeaderboard(rows);
+      setLoading(false);
+    })();
+  }, [teamId, monthStartISO]);
+
+  if (loading) return <div className="p-6">Loading...</div>;
+  if (!team) return <div className="p-6">Team not found.</div>;
+
   return (
-    <div className="rounded-2xl border border-white/10 bg-white/[0.03] p-4 ring-1 ring-white/5">
-      <div className="mb-2 text-sm font-semibold">{title}</div>
-      <div className="text-sm text-white/80">{children}</div>
+    <div className="p-6 space-y-8">
+      <header>
+        <h1 className="text-2xl font-semibold flex items-center gap-2">
+          <BarChart3 className="w-6 h-6" /> {team.name} — Team Dashboard
+        </h1>
+        <p className="text-sm text-gray-500">Overview of production and activity for this team.</p>
+      </header>
+
+      {/* KPI Cards */}
+      <section className="grid sm:grid-cols-2 lg:grid-cols-4 gap-4">
+        <KpiCard label="Leads (This Month)" value={kpis.leadsThisMonth} icon={<Target className="w-5 h-5" />} />
+        <KpiCard label="Applications" value={kpis.apps} icon={<TrendingUp className="w-5 h-5" />} />
+        <KpiCard label="Policies Sold" value={kpis.policies} icon={<TrendingUp className="w-5 h-5" />} />
+        <KpiCard label="Premium Volume" value={`$${(kpis.premium || 0).toLocaleString()}`} icon={<TrendingUp className="w-5 h-5" />} />
+      </section>
+
+      {/* Conversion */}
+      <section className="border rounded-2xl p-4">
+        <div className="text-sm text-gray-600">Conversion Rate</div>
+        <div className="text-3xl font-semibold">{kpis.conversion}%</div>
+      </section>
+
+      {/* Leaderboard */}
+      <section className="border rounded-2xl p-4">
+        <div className="font-medium mb-3">Top Producers</div>
+        <div className="overflow-auto">
+          <table className="min-w-[640px] w-full text-sm">
+            <thead className="text-left text-gray-600">
+              <tr>
+                <th className="py-2 pr-3">Agent</th>
+                <th className="py-2 pr-3">Email</th>
+                <th className="py-2 pr-3">Policies</th>
+                <th className="py-2 pr-3">Premium</th>
+              </tr>
+            </thead>
+            <tbody>
+              {leaderboard.map((r) => (
+                <tr key={r.user_id} className="border-t">
+                  <td className="py-2 pr-3">{r.name}</td>
+                  <td className="py-2 pr-3">{r.email}</td>
+                  <td className="py-2 pr-3">{r.policies}</td>
+                  <td className="py-2 pr-3">${(r.premium || 0).toLocaleString()}</td>
+                </tr>
+              ))}
+              {leaderboard.length === 0 && (
+                <tr><td className="py-6 text-gray-500">No production yet this month.</td></tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+      </section>
     </div>
   );
 }
 
-export default function TeamDashboard() {
-  const { user } = useAuth();
-  const [teams, setTeams] = useState([]);
-  const [teamId, setTeamId] = useState(null);
-  const [snap, setSnap] = useState(dashboardSnapshot());
-  const [loading, setLoading] = useState(true);
-
-  // Load teams the user belongs to
-  useEffect(() => {
-    let alive = true;
-    (async () => {
-      if (!user?.id) return;
-      setLoading(true);
-      // Try membership table that joins to teams
-      // Adjust table/column names if yours differ.
-      const { data, error } = await supabase
-        .from("team_members")
-        .select(`
-          team_id,
-          teams!inner(id, name)
-        `)
-        .eq("user_id", user.id);
-
-      if (!alive) return;
-
-      if (error) {
-        console.error("[TeamDashboard] load teams error:", error);
-        setTeams([]);
-        setTeamId(null);
-      } else {
-        const list = (data || []).map((r) => ({ id: r.team_id, name: r.teams?.name || "Team" }));
-        setTeams(list);
-        setTeamId((prev) => prev || list[0]?.id || null);
-      }
-      setLoading(false);
-    })();
-    return () => { alive = false; };
-  }, [user?.id]);
-
-  // Refresh stats for the selected team (IMPORTANT: no user_id here)
-  async function doRefresh(reason = "mount") {
-    if (!teamId) return;
-    setLoading(true);
-    try {
-      const s = await refreshDashboardSnapshot({ team_id: teamId });
-      setSnap({ ...s });
-      // console.debug("[TeamDashboard] refreshed:", reason, s);
-    } finally {
-      setLoading(false);
-    }
-  }
-
-  // Initial + on team change
-  useEffect(() => {
-    if (!teamId) return;
-    let alive = true;
-    (async () => {
-      await doRefresh("team-change");
-    })();
-
-    // Realtime refresh when leads change for any teammate
-    const ch = supabase
-      .channel(`team-dash-${teamId}`)
-      .on("postgres_changes", { event: "*", schema: "public", table: "leads" }, () => {
-        // We don’t filter server-side; simply refresh on any change.
-        doRefresh("realtime:leads");
-      })
-      .subscribe();
-
-    // Polling fallback (optional)
-    const poll = setInterval(() => doRefresh("poll"), 60000);
-
-    return () => {
-      supabase.removeChannel(ch);
-      clearInterval(poll);
-      alive = false;
-    };
-  }, [teamId]);
-
-  const money = (n) =>
-    Intl.NumberFormat(undefined, {
-      style: "currency",
-      currency: "USD",
-      maximumFractionDigits: 0,
-    }).format(n || 0);
-
-  const teamName = useMemo(
-    () => teams.find((t) => t.id === teamId)?.name || "My Team",
-    [teams, teamId]
-  );
-
-  const kpi = [
-    { label: "Closed (today)", value: snap.today.closed, sub: `This month: ${snap.thisMonth.closed}` },
-    { label: "Clients (today)", value: snap.today.clients, sub: `This month: ${snap.thisMonth.clients}` },
-    { label: "Leads (today)", value: snap.today.leads, sub: `This week: ${snap.thisWeek.leads}` },
-    { label: "Appointments (today)", value: snap.today.appointments, sub: `This week: ${snap.thisWeek.appointments}` },
-  ];
-
+function KpiCard({ label, value, icon }) {
   return (
-    <div className="space-y-6">
-      <div className="flex items-center justify-between gap-3">
-        <h1 className="text-xl font-semibold text-white">Team Dashboard — {teamName}</h1>
-
-        <div className="flex items-center gap-2">
-          <select
-            value={teamId || ""}
-            onChange={(e) => setTeamId(e.target.value || null)}
-            className="bg-white/10 border border-white/10 rounded-xl px-3 py-2 text-sm text-white"
-          >
-            {teams.map((t) => (
-              <option key={t.id} value={t.id}>{t.name}</option>
-            ))}
-          </select>
-          <button
-            onClick={() => doRefresh("button")}
-            className="rounded-xl px-3 py-2 text-sm bg-white/10 hover:bg-white/15 border border-white/10 text-white"
-          >
-            {loading ? "Refreshing…" : "Refresh"}
-          </button>
-        </div>
-      </div>
-
-      <div className="grid gap-4 md:grid-cols-4">
-        {kpi.map((x) => (
-          <NumberCard key={x.label} label={x.label} value={x.value} sublabel={x.sub} />
-        ))}
-      </div>
-
-      <div className="grid gap-4 md:grid-cols-2">
-        <Card title="This Week">
-          <div className="grid grid-cols-5 gap-3 text-sm">
-            <NumberCard label="Closed" value={snap.thisWeek.closed} />
-            <NumberCard label="Clients" value={snap.thisWeek.clients} />
-            <NumberCard label="Leads" value={snap.thisWeek.leads} />
-            <NumberCard label="Appts" value={snap.thisWeek.appointments} />
-            <NumberCard label="Premium" value={money(snap.thisWeek.premium)} />
-          </div>
-        </Card>
-        <Card title="This Month">
-          <div className="grid grid-cols-5 gap-3 text-sm">
-            <NumberCard label="Closed" value={snap.thisMonth.closed} />
-            <NumberCard label="Clients" value={snap.thisMonth.clients} />
-            <NumberCard label="Leads" value={snap.thisMonth.leads} />
-            <NumberCard label="Appts" value={snap.thisMonth.appointments} />
-            <NumberCard label="Premium" value={money(snap.thisMonth.premium)} />
-          </div>
-        </Card>
-      </div>
+    <div className="border rounded-2xl p-4">
+      <div className="text-sm text-gray-600 flex items-center gap-2">{icon} {label}</div>
+      <div className="text-2xl font-semibold mt-1">{value}</div>
     </div>
   );
 }
