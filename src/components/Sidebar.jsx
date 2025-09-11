@@ -5,41 +5,41 @@ import { routes } from "../routesConfig.js";
 import { supabase } from "../lib/supabaseClient.js";
 import Logo from "../assets/logo-tight.png";
 
+/* --- Use safe, widely-available Lucide icons --- */
 import {
   Home as HomeIcon,
-  Users,
-  KanbanSquare as PipelineIcon, // ✅ replace Pipeline with KanbanSquare
-  MessagesSquare,
+  Users,               // Leads / Teams
+  ListChecks as PipelineIcon, // Pipeline (stable)
+  MessageSquare,       // Messages
   Calendar as CalendarIcon,
   Settings as SettingsIcon,
-  LifeBuoy,
-  Megaphone,
-  MessageCircleQuestion,
-  PhoneCall,
-  FileBarChart,
-  Toolbox,
-  Globe2,
-  Pencil,
-  UsersRound,
+  LifeBuoy,            // Support
+  Megaphone,           // Mailing
+  Bot,                 // AI Rebuttal Helper (safe alt to exotic names)
+  PhoneCall,           // Call Recorder
+  BarChart3,           // Reports
+  Wrench,              // Agent Tools
+  Globe2,              // View site
+  Pencil,              // Edit site
   ExternalLink,
 } from "lucide-react";
 
-/* ---------- Icon map by label (fallback to dot) ---------- */
+/* ---------- Icon map by label (fallback to no icon) ---------- */
 const ICONS = {
   Home: HomeIcon,
   Leads: Users,
-  Pipeline: PipelineIcon, // ✅ use PipelineIcon here
-  Messages: MessagesSquare,
+  Pipeline: PipelineIcon,
+  Messages: MessageSquare,
   Calendar: CalendarIcon,
   "Messaging Settings": SettingsIcon,
   Mailing: Megaphone,
-  "AI Rebuttal Helper": MessageCircleQuestion,
+  "AI Rebuttal Helper": Bot,
   "Call Recorder": PhoneCall,
-  Reports: FileBarChart,
-  "Agent Tools": Toolbox,
+  Reports: BarChart3,
+  "Agent Tools": Wrench,
   "View My Agent Site": Globe2,
   "Edit Agent Site": Pencil,
-  "My Teams": UsersRound,
+  "My Teams": Users,
   Settings: SettingsIcon,
   Support: LifeBuoy,
 };
@@ -64,7 +64,7 @@ function ItemLink({ r }) {
   );
 }
 
-/* ---------- View/Preview My Agent Site ---------- */
+/* ---------- View/Preview My Agent Site (moved from App.jsx) ---------- */
 function ViewAgentSiteLink() {
   const [slug, setSlug] = useState("");
   const [published, setPublished] = useState(false);
@@ -250,7 +250,7 @@ export default function Sidebar() {
         <Group title="Productivity & Communication" items={sections.productivity} storageKey="grp_productivity" />
         <Group title="Insights & Tools" items={sections.insightsTools} storageKey="grp_insights_tools" />
 
-        {/* Agent site: insert special link + group */}
+        {/* Agent site: special link + group */}
         <div className="pt-2 mt-2 border-t border-white/10" />
         <ViewAgentSiteLink />
         <Group title="Agent Site Management" items={sections.agentSite} storageKey="grp_agent_site" />
