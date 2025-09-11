@@ -1,10 +1,9 @@
 // File: src/App.jsx
-import { useState, useEffect } from "react";
+import { useState } from "react";
 import { Routes, Route, Link, Navigate, useNavigate } from "react-router-dom";
 import { motion } from "framer-motion";
 import {
   Check,
-  Zap, // kept as-is even though not used
   LogOut,
   Shield,
   Star,
@@ -19,7 +18,7 @@ import { AuthProvider, useAuth } from "./auth.jsx";
 import LoginPage from "./pages/LoginPage.jsx";
 import SignupPage from "./pages/LoginPage.jsx"; // keeping exactly what you had
 import AgentPublic from "./pages/AgentPublic.jsx";
-import AcceptInvite from "./pages/AcceptInvite.jsx"; // ✅ NEW
+import AcceptInvite from "./pages/AcceptInvite.jsx";
 
 // Supabase
 import { supabase } from "./lib/supabaseClient.js";
@@ -34,43 +33,15 @@ import PrivacyPage from "./pages/legal/Privacy.jsx";
 // ✅ Logo (tight-cropped PNG)
 import Logo from "./assets/logo-tight.png";
 
+// ✅ New: Sidebar component (moved out of App.jsx)
+import Sidebar from "./components/Sidebar.jsx";
+
 // Brand / theme
 const BRAND = {
   name: "Remie CRM",
   primary: "from-indigo-500 via-purple-500 to-fuchsia-500",
   accentRing: "ring-indigo-400/50",
 };
-
-// ---------- Pricing cards data ----------
-const PLANS = [
-  {
-    name: "Remie CRM",
-    blurb: "All-in-one CRM for agents — pipeline, automations, and more.",
-    monthly: 280,
-    yearly: 250,
-    buyUrl: {
-      monthly: "https://buy.stripe.com/28E4gB8OScYeffg2qg8Ra07",
-      annual: "https://buy.stripe.com/5kQ28tfdg2jA0km7KA8Ra0a",
-    },
-    features: [
-      "AI rebuttal helper",
-      "Automated message system",
-      "Appointment tracker",
-      "Personalized agent website",
-      "Notes & files on contacts",
-      "Easy to use pipeline",
-      "No-show rescue campaigns",
-      "Agent tools",
-      "Automated client mail(coming soon)",
-      "Pay per text $.01",
-      "Team integration (create your own team)",
-      "Personal stat tracker",
-      "Team stat tracker+leaderboard",
-    ],
-    ctaNote: "Take Your Sales To The Next Level",
-    highlighted: true,
-  },
-];
 
 /* --------------------------- Mini Pipeline Demo ---------------------------- */
 
@@ -183,7 +154,6 @@ function PipelineDemo() {
                         </div>
 
                         <div className="mt-2 flex flex-wrap gap-2">
-                          {/* Stage picker */}
                           <select
                             value={c.stage}
                             onChange={(e) => setStage(c.id, e.target.value)}
@@ -206,7 +176,6 @@ function PipelineDemo() {
                           </button>
                         </div>
 
-                        {/* Notes */}
                         <div className="mt-3">
                           <div className="text-xs text-white/60 mb-1">Add a note</div>
                           <div className="flex gap-2">
@@ -245,7 +214,6 @@ function PipelineDemo() {
                       </motion.div>
                     ))}
 
-                  {/* Empty state */}
                   {cards.filter((c) => c.stage === stageId).length === 0 && (
                     <div className="rounded-xl border border-dashed border-white/10 p-4 text-center text-xs text-white/50">
                       No cards in this stage
@@ -263,9 +231,38 @@ function PipelineDemo() {
 
 /* ------------------------------- Main Landing ------------------------------ */
 
-// ---------- Landing Page ----------
 function LandingPage() {
   const [annual, setAnnual] = useState(true);
+
+  const PLANS = [
+    {
+      name: "Remie CRM",
+      blurb: "All-in-one CRM for agents — pipeline, automations, and more.",
+      monthly: 280,
+      yearly: 250,
+      buyUrl: {
+        monthly: "https://buy.stripe.com/28E4gB8OScYeffg2qg8Ra07",
+        annual: "https://buy.stripe.com/5kQ28tfdg2jA0km7KA8Ra0a",
+      },
+      features: [
+        "AI rebuttal helper",
+        "Automated message system",
+        "Appointment tracker",
+        "Personalized agent website",
+        "Notes & files on contacts",
+        "Easy to use pipeline",
+        "No-show rescue campaigns",
+        "Agent tools",
+        "Automated client mail(coming soon)",
+        "Pay per text $.01",
+        "Team integration (create your own team)",
+        "Personal stat tracker",
+        "Team stat tracker+leaderboard",
+      ],
+      ctaNote: "Take Your Sales To The Next Level",
+      highlighted: true,
+    },
+  ];
 
   const displayPrice = (plan) =>
     annual && plan.yearly != null ? plan.yearly : plan.monthly;
@@ -282,18 +279,17 @@ function LandingPage() {
       <header className="relative z-10 border-b border-white/10 backdrop-blur">
         <nav className="mx-auto flex max-w-7xl items-center justify-between px-6 py-4">
           <div className="flex items-centered gap-3">
-            {/* Logo */}
             <div className="grid h-9 w-9 place-items-center">
               <img src={Logo} alt="Logo" className="h-9 w-9 object-contain" />
             </div>
-            <span className="font-semibold tracking-tight">{BRAND.name}</span>
+            <span className="font-semibold tracking-tight">Remie CRM</span>
           </div>
           <div className="flex items-center gap-3">
             <a href="#contact" className="text-sm opacity-80 hover:opacity-100">Contact</a>
             <Link to="/login" className="text-sm opacity-80 hover:opacity-100">Log in</Link>
             <Link
               to="/signup"
-              className={`hidden rounded-xl bg-gradient-to-r ${BRAND.primary} px-4 py-2 text-sm font-medium ring-1 ring-white/10 md:block`}
+              className={`hidden rounded-xl bg-gradient-to-r from-indigo-500 via-purple-500 to-fuchsia-500 px-4 py-2 text-sm font-medium ring-1 ring-white/10 md:block`}
             >
               Start 14-day free trial
             </Link>
@@ -341,10 +337,7 @@ function LandingPage() {
             return (
               <div
                 key={plan.name}
-                className={`relative rounded-3xl border ${
-                  plan.highlighted ? "border-white/30 bg-white/[0.06]" : "border-white/10 bg-white/[0.04]"
-                } p-6 ring-1 ${plan.highlighted ? BRAND.accentRing : "ring-white/5"}
-                   transition hover:border-white/30 hover:bg-white/[0.08] hover:ring-indigo-400/50`}
+                className={`relative rounded-3xl border border-white/10 bg-white/[0.06] p-6 ring-1 ring-white/5 transition hover:border-white/30 hover:bg-white/[0.08] hover:ring-indigo-400/50`}
               >
                 {plan.ctaNote && (
                   <div className="absolute -top-3 left-6 rounded-full border border-white/15 bg-white/10 px-3 py-1 text-xs font-medium backdrop-blur">
@@ -373,9 +366,7 @@ function LandingPage() {
                   href={href}
                   target="_blank"
                   rel="noreferrer"
-                  className={`mt-6 grid w-full place-items-center rounded-2xl border border-white/15 px-4 py-3 font-medium transition
-                    ${plan.highlighted ? `bg-gradient-to-r ${BRAND.primary}` : "bg-white/5"}
-                    hover:bg-gradient-to-r ${BRAND.primary} hover:text-white`}
+                  className={`mt-6 grid w-full place-items-center rounded-2xl border border-white/15 px-4 py-3 font-medium transition bg-white/5 hover:bg-gradient-to-r from-indigo-500 via-purple-500 to-fuchsia-500 hover:text-white`}
                 >
                   <CreditCard className="mr-2 h-5 w-5" /> Buy {plan.name}
                 </a>
@@ -430,7 +421,7 @@ function LandingPage() {
 
       <footer className="relative z-10 border-t border-white/10 bg-black/40">
         <div className="mx-auto max-w-7xl px-6 py-6 text-center text-xs text-white/60 space-y-2">
-          <div>© {new Date().getFullYear()} {BRAND.name}. All rights reserved.</div>
+          <div>© {new Date().getFullYear()} Remie CRM. All rights reserved.</div>
           <div className="text-white/60">PRIETO INSURANCE SOLUTIONS LLC</div>
           <div className="space-x-3">
             <Link to="/legal/terms" className="hover:text-white">Terms of Service</Link>
@@ -443,171 +434,23 @@ function LandingPage() {
   );
 }
 
-// ---------- Sidebar Link ----------
-function DashLink({ to, children }) {
-  return (
-    <Link to={to} className="block rounded-lg px-3 py-2 text-white/80 hover:bg-white/5 hover:text-white">
-      {children}
-    </Link>
-  );
-}
-
-// ---------- ViewAgentSiteLink ----------
-function ViewAgentSiteLink() {
-  const [slug, setSlug] = useState("");
-  const [published, setPublished] = useState(false);
-  const [loading, setLoading] = useState(true);
-
-  async function fetchProfile() {
-    try {
-      const { data: auth } = await supabase.auth.getUser();
-      const uid = auth?.user?.id;
-      if (!uid) {
-        setSlug("");
-        setPublished(false);
-        return;
-      }
-      const { data } = await supabase
-        .from("agent_profiles")
-        .select("slug, published")
-        .eq("user_id", uid)
-        .maybeSingle();
-
-      if (data) {
-        setSlug(data.slug || "");
-        setPublished(!!data.published);
-      } else {
-        setSlug("");
-        setPublished(false);
-      }
-    } finally {
-      setLoading(false);
-    }
-  }
-
-  useEffect(() => {
-    let isMounted = true;
-    (async () => {
-      await fetchProfile();
-
-      const channel = supabase
-        .channel("agent_profiles_self")
-        .on(
-          "postgres_changes",
-          { event: "*", schema: "public", table: "agent_profiles" },
-          async () => {
-            if (!isMounted) return;
-            await fetchProfile();
-          }
-        )
-        .subscribe();
-
-      const onStorage = (e) => {
-        if (e.key === "agent_profile_refresh") {
-          fetchProfile();
-        }
-      };
-      window.addEventListener("storage", onStorage);
-
-      return () => {
-        isMounted = false;
-        try { supabase.removeChannel?.(channel); } catch {}
-        window.removeEventListener("storage", onStorage);
-      };
-    })();
-  }, []);
-
-  if (loading) {
-    return (
-      <div className="block rounded-lg px-3 py-2 text-white/40 cursor-default">
-        View My Agent Site…
-      </div>
-    );
-  }
-
-  if (!slug) {
-    return (
-      <Link
-        to="/app/agent/showcase"
-        className="flex items-center gap-2 rounded-lg px-3 py-2 text-amber-300/90 hover:bg-white/5"
-        title="Finish setup to generate your public link"
-      >
-        <ExternalLink className="h-4 w-4" />
-        <span>Finish Agent Site Setup</span>
-      </Link>
-    );
-  }
-
-  const href = `/a/${slug}`;
-  return (
-    <a
-      href={href}
-      target="_blank"
-      rel="noreferrer"
-      className="flex items-center gap-2 rounded-lg px-3 py-2 text-white/80 hover:bg-white/5 hover:text-white"
-      title={published ? "Open your public agent page" : "Open preview (publish in the wizard)"}
-    >
-      <ExternalLink className="h-4 w-4" />
-      <span>{published ? "View My Agent Site" : "Preview My Agent Site"}</span>
-    </a>
-  );
-}
-
-// ---------- App Layout (sidebar + routes) ----------
+// ---------- App Layout (now uses <Sidebar />) ----------
 function AppLayout() {
   const { user, logout } = useAuth();
   const nav = useNavigate();
 
   return (
     <div className="min-h-screen relative bg-neutral-950 text-white grid md:grid-cols-[240px_1fr] overflow-x-hidden">
-      {/* 🔮 Two subtle brand blobs behind the whole CRM */}
+      {/* subtle brand blobs */}
       <div className="pointer-events-none fixed inset-0 z-0">
-        {/* top-center */}
         <div className="absolute -top-40 left-1/2 h-[36rem] w-[36rem] -translate-x-1/2 rounded-full
                         bg-gradient-to-br from-indigo-600/25 via-fuchsia-500/15 to-rose-500/15 blur-3xl" />
-        {/* bottom-right echo */}
         <div className="absolute -bottom-40 right-[-10%] h-[42rem] w-[42rem] rounded-full
                         bg-gradient-to-tr from-fuchsia-500/10 via-purple-600/10 to-indigo-600/15 blur-3xl" />
       </div>
 
-      <aside className="relative z-10 hidden md:block border-r border-white/10 bg-black/30">
-        <a
-          href="https://remiecrm.com"
-          target="_blank"
-          rel="noopener noreferrer"
-          className="p-4 flex items-center gap-3 border-b border-white/10"
-        >
-          <div className="grid h-9 w-9 place-items-center">
-            <img src={Logo} alt="Logo" className="h-9 w-9 object-contain" />
-          </div>
-          <div className="font-semibold">{BRAND.name}</div>
-        </a>
-        <nav className="p-3 space-y-1 text-sm">
-          {/* MAIN (everything not in 'agent' or 'teams') */}
-          {routes
-            .filter((r) => r.showInSidebar && r.group !== "agent" && r.group !== "teams")
-            .map((r) => (
-              <DashLink key={r.path} to={r.path}>{r.label}</DashLink>
-            ))}
-
-          <div className="pt-2 mt-2 border-t border-white/10" />
-
-          <ViewAgentSiteLink />
-          {routes
-            .filter((r) => r.showInSidebar && r.group === "agent")
-            .map((r) => (
-              <DashLink key={r.path} to={r.path}>{r.label}</DashLink>
-            ))}
-
-          <div className="pt-2 mt-2 border-t border-white/10" />
-
-          {routes
-            .filter((r) => r.showInSidebar && r.group === "teams")
-            .map((r) => (
-              <DashLink key={r.path} to={r.path}>{r.label}</DashLink>
-            ))}
-        </nav>
-      </aside>
+      {/* ✅ Sidebar is now a standalone component */}
+      <Sidebar />
 
       <main className="relative z-10">
         <div
@@ -651,7 +494,7 @@ export default function App() {
         <Route path="/login" element={<LoginPage />} />
         <Route path="/signup" element={<SignupPage />} />
         <Route path="/a/:slug" element={<AgentPublic />} />
-        <Route path="/invite/:token" element={<AcceptInvite />} /> {/* ✅ NEW public invite route */}
+        <Route path="/invite/:token" element={<AcceptInvite />} />
 
         {/* ✅ Legal pages are global */}
         <Route path="/legal/terms" element={<TermsPage />} />
