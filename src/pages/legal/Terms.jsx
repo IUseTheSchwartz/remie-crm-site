@@ -41,6 +41,9 @@ export default function TermsPage() {
         <p className="mt-2 text-white/80">
           You are solely responsible for your outbound communications and compliance with applicable laws, regulations, and carrier policies (including, without limitation, the Telephone Consumer Protection Act (TCPA), CAN-SPAM, CTIA guidelines, and any state-specific rules). You must obtain valid consent from recipients before sending promotional or automated messages and must honor opt-out requests promptly. You must not send illegal, fraudulent, or abusive content.
         </p>
+        <p className="mt-2 text-white/80">
+          By providing your phone number and replying YES to confirm opt-in, you consent to receive SMS reminders and updates from {BRAND}. Frequency is typically 2–3 messages per week depending on account activity. Message and data rates may apply. Reply STOP to unsubscribe at any time, or HELP for help.
+        </p>
 
         <h2 className="mt-8 text-xl font-semibold">5. Acceptable use</h2>
         <ul className="mt-2 list-disc pl-5 text-white/80 space-y-2">
