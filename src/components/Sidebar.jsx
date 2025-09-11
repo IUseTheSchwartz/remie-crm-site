@@ -57,6 +57,7 @@ const ICONS = {
   "View My Agent Site": Globe2,
   "Edit Agent Site": Pencil,
   "My Teams": Users,
+  Contacts: Users,             // ✅ Contacts now has an icon
   Settings: SettingsIcon,
   Support: LifeBuoy,
 };
@@ -337,13 +338,6 @@ export default function Sidebar({ mobileOpen = false, setMobileOpen = () => {} }
             <img src={Logo} alt="Logo" className="h-7 w-7 object-contain" />
             <div className="font-semibold">Remie CRM</div>
           </div>
-          <button
-            onClick={close}
-            className="rounded-md p-2 text-white/70 hover:text-white hover:bg-white/10"
-            aria-label="Close sidebar"
-          >
-            <X className="h-5 w-5" />
-          </button>
         </div>
 
         <SidebarContent onNavigate={close} />
