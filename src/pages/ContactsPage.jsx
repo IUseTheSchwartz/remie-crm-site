@@ -10,6 +10,7 @@ import {
   Plus,
   Minus,
   CheckCircle2,
+  ChevronsUpDown,
 } from "lucide-react";
 
 /* ---------------- Templates catalog (global enable switches) ---------------- */
@@ -24,23 +25,29 @@ const TEMPLATE_DEFS = [
 ];
 const DEFAULT_ENABLED = Object.fromEntries(TEMPLATE_DEFS.map((t) => [t.key, false]));
 
-/* ---------------- Recommended tag catalog (always shown) ---------------- */
-const TAG_CATALOG = [
+/* ---------------- Tag catalogs ---------------- */
+/** Tags that actually map to templates (primary palette) */
+const TEMPLATE_TAGS = [
   "lead",
   "sold",
   "birthday_text",
   "holiday_text",
   "appointment",
   "payment_reminder",
-  "new_lead",
-  "new_lead_military",
-  "military",
-  "bday",
-  "holiday",
+  // helper synonyms that still map to the above templates:
+  "bday",          // -> birthday_text
+  "holiday",       // -> holiday_text
+  "payment",       // -> payment_reminder
+  "military",      // -> new_lead_military (if you want to use tag to trigger)
+];
+
+/** Optional extra suggestions shown only when "Show all tags" is toggled */
+const EXTRA_TAG_SUGGESTIONS = [
   "vip",
   "facebook",
   "instagram",
   "follow_up",
+  "referral",
 ];
 
 /* ---------------- Helpers ---------------- */
@@ -107,6 +114,10 @@ export default function ContactsPage() {
   // saving state for tag operations
   const [savingTagIds, setSavingTagIds] = useState(new Set());
 
+  // per-contact UI state
+  const [openEditors, setOpenEditors] = useState(() => new Set()); // which contact IDs have the tag editor open
+  const [showAllFor, setShowAllFor] = useState(() => new Set());   // which contact IDs show "all tags" vs template-only
+
   useEffect(() => {
     let mounted = true;
     (async () => {
@@ -161,14 +172,22 @@ export default function ContactsPage() {
     };
   }, []);
 
-  // Build the global tag palette (union of all contacts' tags + catalog)
-  const allTags = useMemo(() => {
-    const set = new Set(TAG_CATALOG.map(normalizeTag));
-    for (const c of contacts) {
-      for (const t of c.tags || []) set.add(normalizeTag(t));
-    }
-    return Array.from(set).sort();
+  // Build a global union of all tags to support the "show all" palette
+  const unionOfExistingTags = useMemo(() => {
+    const set = new Set();
+    for (const c of contacts) for (const t of c.tags || []) set.add(normalizeTag(t));
+    return Array.from(set);
   }, [contacts]);
+
+  // Full palette when "show all" is enabled
+  const ALL_TAGS_FULL = useMemo(() => {
+    const set = new Set([
+      ...TEMPLATE_TAGS.map(normalizeTag),
+      ...unionOfExistingTags,
+      ...EXTRA_TAG_SUGGESTIONS.map(normalizeTag),
+    ]);
+    return Array.from(set).sort();
+  }, [unionOfExistingTags]);
 
   const filtered = useMemo(() => {
     const s = q.trim().toLowerCase();
@@ -210,7 +229,7 @@ export default function ContactsPage() {
     }
   }
 
-  /* ---------------- Tag editing: add/remove via palette ---------------- */
+  /* ---------------- Tag editing ---------------- */
   async function addTag(contact, tag) {
     const contactId = contact.id;
     const norm = normalizeTag(tag);
@@ -278,6 +297,24 @@ export default function ContactsPage() {
     }
   }
 
+  // toggle helpers
+  function toggleEditor(contactId) {
+    setOpenEditors((prev) => {
+      const n = new Set(prev);
+      if (n.has(contactId)) n.delete(contactId);
+      else n.add(contactId);
+      return n;
+    });
+  }
+  function toggleShowAll(contactId) {
+    setShowAllFor((prev) => {
+      const n = new Set(prev);
+      if (n.has(contactId)) n.delete(contactId);
+      else n.add(contactId);
+      return n;
+    });
+  }
+
   return (
     <div className="space-y-6">
       {/* Header */}
@@ -289,8 +326,8 @@ export default function ContactsPage() {
           <div className="flex-1 min-w-0">
             <h1 className="text-lg font-semibold">Contacts on Messaging List</h1>
             <p className="text-sm text-white/70">
-              Click +/– to add or remove tags. A contact receives a template only if it’s globally
-              enabled, the contact is subscribed, and their tags match that template’s audience.
+              Manage tags per contact. Click “Manage tags” to open the editor. By default the palette
+              shows only template-related tags; you can toggle to show all tags.
             </p>
           </div>
         </div>
@@ -363,6 +400,9 @@ export default function ContactsPage() {
                   const eligible = eligibleTemplatesForContact(c, enabledMap);
                   const saving = savingTagIds.has(c.id);
                   const has = new Set((c.tags || []).map(normalizeTag));
+                  const editorOpen = openEditors.has(c.id);
+                  const showAll = showAllFor.has(c.id);
+                  const palette = showAll ? ALL_TAGS_FULL : TEMPLATE_TAGS;
 
                   return (
                     <tr key={c.id} className="border-b border-white/5 hover:bg-white/[0.03]">
@@ -375,9 +415,9 @@ export default function ContactsPage() {
 
                       <td className="px-4 py-3">{c.phone || "—"}</td>
 
-                      {/* Tags column with current tags + palette */}
+                      {/* Tags column */}
                       <td className="px-4 py-3">
-                        {/* Current tags (removable pills) */}
+                        {/* Current tags (compact, always visible) */}
                         <div className="mb-2 flex flex-wrap items-center gap-1">
                           {Array.isArray(c.tags) && c.tags.length > 0 ? (
                             c.tags.map((t) => (
@@ -401,41 +441,66 @@ export default function ContactsPage() {
                           )}
                         </div>
 
-                        {/* Tag palette (all available tags with +/-) */}
-                        <div className="rounded-lg border border-white/10 bg-white/[0.03] p-2">
-                          <div className="mb-1 text-[11px] text-white/50">Tag palette</div>
-                          <div className="flex flex-wrap gap-1 max-h-28 overflow-y-auto pr-1">
-                            {allTags.map((t) => {
-                              const active = has.has(t);
-                              return (
-                                <span
-                                  key={t}
-                                  className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[11px] ring-1 ${
-                                    active
-                                      ? "bg-emerald-500/10 text-emerald-300 ring-emerald-400/20"
-                                      : "bg-white/5 text-white/70 ring-white/10"
-                                  }`}
-                                >
-                                  {t}
-                                  <button
-                                    onClick={() =>
-                                      active ? removeTag(c, t) : addTag(c, t)
-                                    }
-                                    className="ml-1 rounded hover:bg-white/10 p-0.5 disabled:opacity-50"
-                                    title={active ? "Remove tag" : "Add tag"}
-                                    disabled={saving}
+                        {/* Toggle editor open/close */}
+                        <button
+                          onClick={() => toggleEditor(c.id)}
+                          className="inline-flex items-center gap-1 rounded-lg border border-white/15 bg-white/5 px-2 py-1 text-[11px] hover:bg-white/10"
+                        >
+                          <ChevronsUpDown className="h-3.5 w-3.5" />
+                          {editorOpen ? "Hide tag editor" : "Manage tags"}
+                        </button>
+
+                        {/* Collapsible tag editor */}
+                        {editorOpen && (
+                          <div className="mt-2 rounded-lg border border-white/10 bg-white/[0.03] p-2">
+                            <div className="mb-1 flex items-center justify-between">
+                              <div className="text-[11px] text-white/50">
+                                {showAll ? "All tags" : "Template-related tags"}
+                              </div>
+                              <label className="flex items-center gap-2 text-[11px] text-white/60 select-none">
+                                <input
+                                  type="checkbox"
+                                  className="h-3 w-3 accent-white/80"
+                                  checked={showAll}
+                                  onChange={() => toggleShowAll(c.id)}
+                                />
+                                Show all tags
+                              </label>
+                            </div>
+
+                            <div className="flex flex-wrap gap-1 max-h-28 overflow-y-auto pr-1">
+                              {palette.map((t) => {
+                                const active = has.has(normalizeTag(t));
+                                return (
+                                  <span
+                                    key={t}
+                                    className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[11px] ring-1 ${
+                                      active
+                                        ? "bg-emerald-500/10 text-emerald-300 ring-emerald-400/20"
+                                        : "bg-white/5 text-white/70 ring-white/10"
+                                    }`}
                                   >
-                                    {active ? (
-                                      <Minus className="h-3 w-3" />
-                                    ) : (
-                                      <Plus className="h-3 w-3" />
-                                    )}
-                                  </button>
-                                </span>
-                              );
-                            })}
+                                    {t}
+                                    <button
+                                      onClick={() =>
+                                        active ? removeTag(c, t) : addTag(c, t)
+                                      }
+                                      className="ml-1 rounded hover:bg-white/10 p-0.5 disabled:opacity-50"
+                                      title={active ? "Remove tag" : "Add tag"}
+                                      disabled={saving}
+                                    >
+                                      {active ? (
+                                        <Minus className="h-3 w-3" />
+                                      ) : (
+                                        <Plus className="h-3 w-3" />
+                                      )}
+                                    </button>
+                                  </span>
+                                );
+                              })}
+                            </div>
                           </div>
-                        </div>
+                        )}
                       </td>
 
                       {/* Eligible templates display */}
