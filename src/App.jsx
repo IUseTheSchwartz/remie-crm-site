@@ -11,6 +11,7 @@ import {
   ExternalLink,
   StickyNote,
   CheckCircle2,
+  Menu, // mobile hamburger
 } from "lucide-react";
 
 import ProtectedRoute from "./components/ProtectedRoute.jsx";
@@ -33,7 +34,7 @@ import PrivacyPage from "./pages/legal/Privacy.jsx";
 // ✅ Logo (tight-cropped PNG)
 import Logo from "./assets/logo-tight.png";
 
-// ✅ New: Sidebar component (moved out of App.jsx)
+// ✅ Sidebar
 import Sidebar from "./components/Sidebar.jsx";
 
 // Brand / theme
@@ -434,14 +435,16 @@ function LandingPage() {
   );
 }
 
-// ---------- App Layout (now uses <Sidebar />) ----------
+// ---------- App Layout (independent scrolls + mobile sidebar) ----------
 function AppLayout() {
   const { user, logout } = useAuth();
   const nav = useNavigate();
+  const [mobileOpen, setMobileOpen] = useState(false);
 
   return (
-    <div className="min-h-screen relative bg-neutral-950 text-white grid md:grid-cols-[240px_1fr] overflow-x-hidden">
-      {/* subtle brand blobs */}
+    // Lock the layout to viewport height and prevent page-level scrolling.
+    <div className="h-screen overflow-hidden relative bg-neutral-950 text-white grid md:grid-cols-[240px_1fr]">
+      {/* background blobs */}
       <div className="pointer-events-none fixed inset-0 z-0">
         <div className="absolute -top-40 left-1/2 h-[36rem] w-[36rem] -translate-x-1/2 rounded-full
                         bg-gradient-to-br from-indigo-600/25 via-fuchsia-500/15 to-rose-500/15 blur-3xl" />
@@ -449,16 +452,29 @@ function AppLayout() {
                         bg-gradient-to-tr from-fuchsia-500/10 via-purple-600/10 to-indigo-600/15 blur-3xl" />
       </div>
 
-      {/* ✅ Sidebar is now a standalone component */}
-      <Sidebar />
+      {/* Sidebar: desktop + mobile drawer */}
+      <Sidebar mobileOpen={mobileOpen} setMobileOpen={setMobileOpen} />
 
-      <main className="relative z-10">
+      <main className="relative z-10 h-screen overflow-y-auto overscroll-contain [scrollbar-gutter:stable]">
         <div
           className="flex items-center justify-between border-b border-white/10
                      bg-gradient-to-r from-indigo-600/10 via-purple-600/10 to-fuchsia-600/10
                      px-4 py-3"
         >
-          <div className="font-medium">Welcome{user?.email ? `, ${user.email}` : ""}</div>
+          <div className="flex items-center gap-3">
+            {/* Mobile hamburger */}
+            <button
+              className="md:hidden rounded-md p-2 text-white/80 hover:text-white hover:bg-white/10"
+              onClick={() => setMobileOpen(true)}
+              aria-label="Open sidebar"
+            >
+              <Menu className="h-5 w-5" />
+            </button>
+            <div className="font-medium">
+              Welcome{user?.email ? `, ${user.email}` : ""}
+            </div>
+          </div>
+
           <button
             onClick={async () => {
               await logout();
