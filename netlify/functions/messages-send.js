@@ -2,13 +2,13 @@
 import fetch from "node-fetch";
 import { createClient } from "@supabase/supabase-js";
 
-/* ---------------- Env sanity checks ---------------- */
+/* ---------------- Env ---------------- */
 const {
   SUPABASE_URL,
   SUPABASE_SERVICE_ROLE,
   TELNYX_API_KEY,
-  TELNYX_FROM_NUMBER, // optional but recommended
-  TELNYX_MESSAGING_PROFILE_ID, // optional if FROM_NUMBER provided
+  TELNYX_FROM_NUMBER,            // REQUIRED (global shared number, E.164 like +18884318203)
+  TELNYX_MESSAGING_PROFILE_ID,   // OPTIONAL (kept if you want to pin a profile)
 } = process.env;
 
 if (!SUPABASE_URL || !SUPABASE_SERVICE_ROLE) {
@@ -16,6 +16,9 @@ if (!SUPABASE_URL || !SUPABASE_SERVICE_ROLE) {
 }
 if (!TELNYX_API_KEY) {
   console.warn("[messages-send] Missing TELNYX_API_KEY");
+}
+if (!TELNYX_FROM_NUMBER) {
+  console.warn("[messages-send] Missing TELNYX_FROM_NUMBER (required)");
 }
 
 /* ---------------- Supabase (admin) ---------------- */
@@ -34,7 +37,6 @@ const json = (statusCode, data) => ({
 });
 
 async function getRequesterUserId(event) {
-  // Expect "Authorization: Bearer <supabase_access_token>"
   const auth =
     event.headers?.authorization ||
     event.headers?.Authorization ||
@@ -76,19 +78,18 @@ export async function handler(event) {
     if (!requesterId) {
       return json(401, { error: "Unauthorized: missing/invalid Supabase token" });
     }
+    if (!TELNYX_FROM_NUMBER) {
+      return json(500, { error: "Server misconfigured: TELNYX_FROM_NUMBER is required" });
+    }
 
-    /* ---------- Build Telnyx message ---------- */
-    const msg = { to, text: body };
-    // Prefer explicit sending number if you have one
-    if (TELNYX_FROM_NUMBER) msg.from = TELNYX_FROM_NUMBER;
-    if (TELNYX_MESSAGING_PROFILE_ID) msg.messaging_profile_id = TELNYX_MESSAGING_PROFILE_ID;
-
-    // Must have either a from number or a messaging_profile_id
-    if (!msg.from && !msg.messaging_profile_id) {
-      return json(500, {
-        error:
-          "Server misconfigured: set TELNYX_FROM_NUMBER or TELNYX_MESSAGING_PROFILE_ID",
-      });
+    /* ---------- Build Telnyx message (single global number) ---------- */
+    const msg = {
+      to,
+      from: TELNYX_FROM_NUMBER,
+      text: body,
+    };
+    if (TELNYX_MESSAGING_PROFILE_ID) {
+      msg.messaging_profile_id = TELNYX_MESSAGING_PROFILE_ID; // optional
     }
 
     /* ---------- Send via Telnyx ---------- */
@@ -102,31 +103,37 @@ export async function handler(event) {
     });
 
     const tData = await tRes.json().catch(() => ({}));
+
     if (!tRes.ok) {
       console.error("[messages-send] Telnyx error:", tData);
-      // Still record the attempt with status=failed
+
+      // Record attempt as failed
       await supabase.from("messages").insert({
         user_id: requesterId,
         lead_id: lead_id ?? null,
         to_number: to,
-        from_number: TELNYX_FROM_NUMBER ?? null,
+        from_number: TELNYX_FROM_NUMBER,
         body,
         provider: "telnyx",
         provider_message_id: tData?.data?.id ?? null,
         status: "failed",
         error_detail: JSON.stringify(tData).slice(0, 8000),
       });
-      return json(502, { error: "Failed to send via Telnyx", details: tData });
+
+      return json(502, {
+        error: "Failed to send via Telnyx",
+        details: tData,
+      });
     }
 
     const messageId = tData?.data?.id ?? null;
 
-    /* ---------- Save to Supabase ---------- */
+    /* ---------- Save success ---------- */
     const { error: dbErr } = await supabase.from("messages").insert({
       user_id: requesterId,
       lead_id: lead_id ?? null,
       to_number: to,
-      from_number: TELNYX_FROM_NUMBER ?? null,
+      from_number: TELNYX_FROM_NUMBER,
       body,
       provider: "telnyx",
       provider_message_id: messageId,
