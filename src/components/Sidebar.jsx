@@ -5,27 +5,43 @@ import { routes } from "../routesConfig.js";
 import { supabase } from "../lib/supabaseClient.js";
 import Logo from "../assets/logo-tight.png";
 
-/* --- Safe, widely-available Lucide icons --- */
+/* Safe, widely-available Lucide icons */
 import {
   Home as HomeIcon,
   Users,
-  ListChecks as PipelineIcon, // Pipeline
-  MessageSquare,              // Messages
+  ListChecks as PipelineIcon,
+  MessageSquare,
   Calendar as CalendarIcon,
   Settings as SettingsIcon,
-  LifeBuoy,                   // Support
-  Megaphone,                  // Mailing
-  Bot,                        // AI Rebuttal Helper
-  PhoneCall,                  // Call Recorder
-  BarChart3,                  // Reports
-  Wrench,                     // Agent Tools
-  Globe2,                     // View site
-  Pencil,                     // Edit site
+  LifeBuoy,
+  Megaphone,
+  Bot,
+  PhoneCall,
+  BarChart3,
+  Wrench,
+  Globe2,
+  Pencil,
   ExternalLink,
   X,
 } from "lucide-react";
 
-/* ---------- Icon map ---------- */
+/* --- Gradient stroke helper (indigo → purple → fuchsia) --- */
+function GradientStrokeIcon({ Icon, id, className = "" }) {
+  // We render a <defs> with a unique id and reference it via stroke="url(#id)"
+  return (
+    <Icon className={className} stroke={`url(#${id})`}>
+      <defs>
+        <linearGradient id={id} x1="0" y1="0" x2="1" y2="1">
+          <stop offset="0%" stopColor="#6366f1" />   {/* indigo-500 */}
+          <stop offset="50%" stopColor="#a855f7" />  {/* purple-500 */}
+          <stop offset="100%" stopColor="#d946ef" /> {/* fuchsia-500 */}
+        </linearGradient>
+      </defs>
+    </Icon>
+  );
+}
+
+/* Icon map */
 const ICONS = {
   Home: HomeIcon,
   Leads: Users,
@@ -47,26 +63,35 @@ const ICONS = {
 
 function ItemLink({ r, onNavigate }) {
   const Icon = ICONS[r.label] || null;
+  const gradId = `remie-grad-${r.key || r.label.replace(/\s+/g, "-").toLowerCase()}`;
   return (
     <NavLink
       to={r.path}
       onClick={onNavigate}
       className={({ isActive }) =>
         [
-          "flex items-center gap-2 px-3 py-2 rounded-md transition",
+          "group flex items-center gap-2 px-3 py-2 rounded-md transition",
           isActive
             ? "bg-white/10 text-white"
             : "text-white/80 hover:bg-white/10 hover:text-white",
         ].join(" ")
       }
     >
-      {Icon ? <Icon className="w-4 h-4 shrink-0" /> : <span className="w-4" />}
+      {Icon ? (
+        <GradientStrokeIcon
+          Icon={Icon}
+          id={gradId}
+          className="w-4 h-4 shrink-0 transition group-hover:scale-105"
+        />
+      ) : (
+        <span className="w-4" />
+      )}
       <span>{r.label}</span>
     </NavLink>
   );
 }
 
-/* ---------- View/Preview My Agent Site ---------- */
+/* View/Preview My Agent Site */
 function ViewAgentSiteLink() {
   const [slug, setSlug] = useState("");
   const [published, setPublished] = useState(false);
@@ -103,6 +128,7 @@ function ViewAgentSiteLink() {
     let isMounted = true;
     (async () => {
       await fetchProfile();
+
       const channel = supabase
         .channel("agent_profiles_self")
         .on(
@@ -122,9 +148,7 @@ function ViewAgentSiteLink() {
 
       return () => {
         isMounted = false;
-        try {
-          supabase.removeChannel?.(channel);
-        } catch {}
+        try { supabase.removeChannel?.(channel); } catch {}
         window.removeEventListener("storage", onStorage);
       };
     })();
@@ -143,6 +167,7 @@ function ViewAgentSiteLink() {
       <NavLink
         to="/app/agent/showcase"
         className="flex items-center gap-2 rounded-lg px-3 py-2 text-amber-300/90 hover:bg-white/5"
+        title="Finish setup to generate your public link"
       >
         <ExternalLink className="h-4 w-4" />
         <span>Finish Agent Site Setup</span>
@@ -157,6 +182,7 @@ function ViewAgentSiteLink() {
       target="_blank"
       rel="noreferrer"
       className="flex items-center gap-2 rounded-lg px-3 py-2 text-white/80 hover:bg-white/5 hover:text-white"
+      title={published ? "Open your public agent page" : "Open preview (publish in the wizard)"}
     >
       <ExternalLink className="h-4 w-4" />
       <span>{published ? "View My Agent Site" : "Preview My Agent Site"}</span>
@@ -164,7 +190,7 @@ function ViewAgentSiteLink() {
   );
 }
 
-/* ---------- Grouped sections ---------- */
+/* Grouped sections */
 function Group({ title, items, storageKey, onNavigate }) {
   const [open, setOpen] = useState(true);
 
@@ -210,7 +236,7 @@ function SimpleList({ items, onNavigate }) {
   );
 }
 
-/* ======================= Sidebar (Desktop + Mobile) ======================= */
+/* Content of the sidebar (used by desktop + mobile) */
 function SidebarContent({ onNavigate }) {
   const sections = useMemo(() => {
     const visible = routes.filter((r) => r.showInSidebar);
@@ -227,6 +253,7 @@ function SidebarContent({ onNavigate }) {
 
   return (
     <>
+      {/* Brand */}
       <a
         href="https://remiecrm.com"
         target="_blank"
@@ -241,13 +268,35 @@ function SidebarContent({ onNavigate }) {
 
       <div className="p-3 text-sm">
         <SimpleList items={sections.top} onNavigate={onNavigate} />
-        <Group title="Productivity & Communication" items={sections.productivity} storageKey="grp_productivity" onNavigate={onNavigate} />
-        <Group title="Insights & Tools" items={sections.insightsTools} storageKey="grp_insights_tools" onNavigate={onNavigate} />
+        <Group
+          title="Productivity & Communication"
+          items={sections.productivity}
+          storageKey="grp_productivity"
+          onNavigate={onNavigate}
+        />
+        <Group
+          title="Insights & Tools"
+          items={sections.insightsTools}
+          storageKey="grp_insights_tools"
+          onNavigate={onNavigate}
+        />
+
         <div className="pt-2 mt-2 border-t border-white/10" />
         <ViewAgentSiteLink />
-        <Group title="Agent Site Management" items={sections.agentSite} storageKey="grp_agent_site" onNavigate={onNavigate} />
+        <Group
+          title="Agent Site Management"
+          items={sections.agentSite}
+          storageKey="grp_agent_site"
+          onNavigate={onNavigate}
+        />
+
         <div className="pt-2 mt-2 border-t border-white/10" />
-        <Group title="Teams" items={sections.teams} storageKey="grp_teams" onNavigate={onNavigate} />
+        <Group
+          title="Teams"
+          items={sections.teams}
+          storageKey="grp_teams"
+          onNavigate={onNavigate}
+        />
       </div>
 
       <div className="mt-6 border-t border-white/10 p-2">
@@ -260,6 +309,7 @@ function SidebarContent({ onNavigate }) {
   );
 }
 
+/* Desktop + Mobile wrappers (keeps hidden scrollbars) */
 export default function Sidebar({ mobileOpen = false, setMobileOpen = () => {} }) {
   const desktopAside = (
     <aside className="relative z-10 hidden md:block border-r border-white/10 bg-black/30 h-screen overflow-y-auto overscroll-contain no-scrollbar">
@@ -272,7 +322,9 @@ export default function Sidebar({ mobileOpen = false, setMobileOpen = () => {} }
   const mobileAside = (
     <>
       <div
-        className={`fixed inset-0 z-40 bg-black/50 backdrop-blur-sm transition-opacity md:hidden ${mobileOpen ? "opacity-100 pointer-events-auto" : "opacity-0 pointer-events-none"}`}
+        className={`fixed inset-0 z-40 bg-black/50 backdrop-blur-sm transition-opacity md:hidden ${
+          mobileOpen ? "opacity-100 pointer-events-auto" : "opacity-0 pointer-events-none"
+        }`}
         onClick={close}
       />
       <div
@@ -288,10 +340,12 @@ export default function Sidebar({ mobileOpen = false, setMobileOpen = () => {} }
           <button
             onClick={close}
             className="rounded-md p-2 text-white/70 hover:text-white hover:bg-white/10"
+            aria-label="Close sidebar"
           >
             <X className="h-5 w-5" />
           </button>
         </div>
+
         <SidebarContent onNavigate={close} />
       </div>
     </>
