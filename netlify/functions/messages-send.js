@@ -102,7 +102,7 @@ export async function handler(event) {
         provider: "telnyx",
         provider_message_id: tData?.data?.id ?? null,
         status: "failed",
-        direction: "outbound",      // <-- required by your schema
+        direction: "outgoing",      // ✅ matches your DB constraint
         error_detail: JSON.stringify(tData).slice(0, 8000),
       });
 
@@ -120,7 +120,7 @@ export async function handler(event) {
       provider: "telnyx",
       provider_message_id: messageId,
       status: "queued",
-      direction: "outbound",        // <-- required by your schema
+      direction: "outgoing",        // ✅ matches your DB constraint
     });
 
     if (dbErr) {
