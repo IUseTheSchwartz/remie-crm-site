@@ -1,6 +1,7 @@
 // netlify/functions/gsheet-webhook.js
 const crypto = require("crypto");
 const { getServiceClient } = require("./_supabase");
+const { sendNewLeadIfEnabled } = require("./lib/messaging.js"); // ✅ added
 
 // Create service client (uses SUPABASE_URL + SUPABASE_SERVICE_ROLE or SUPABASE_SERVICE_ROLE_KEY)
 const supabase = getServiceClient();
@@ -190,6 +191,23 @@ exports.handler = async (event) => {
     }
 
     const insertedId = data?.[0]?.id || null;
+
+    // ✅ NEW: Auto-message for brand new leads (respects per-user toggles)
+    try {
+      await sendNewLeadIfEnabled({
+        userId: wh.user_id,
+        leadId: insertedId,
+        lead: {
+          name: lead.name,
+          phone: lead.phone,
+          state: lead.state,
+          beneficiary: lead.beneficiary,
+          military_branch: lead.military_branch,
+        },
+      });
+    } catch (err) {
+      console.error("sendNewLeadIfEnabled failed:", err);
+    }
 
     // Verify immediately
     const { data: verifyRow, error: verifyErr } = await supabase
