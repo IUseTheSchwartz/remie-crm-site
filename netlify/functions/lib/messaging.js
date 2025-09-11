@@ -1,8 +1,11 @@
-// File: netlify/functions/lib/messaging.js (CommonJS)
-const fetch = global.fetch || ((...a) => import('node-fetch').then(({default: f}) => f(...a)));
-const { getServiceClient } = require("../_supabase.js"); // ← reuse your existing helper
-const supabase = getServiceClient();
+// File: netlify/functions/lib/messaging.js
+// CommonJS helpers for all messaging flows (new lead, sold, birthday/holiday, one-offs).
+// Uses your existing service client via netlify/lib/supabase.js
 
+const fetch = global.fetch || ((...a) => import("node-fetch").then(({ default: f }) => f(...a)));
+const supabase = require("../../lib/supabase.js"); // singleton; also exposes getServiceClient if needed
+
+/* ---------------- Defaults (used if no custom template set) ---------------- */
 const DEFAULTS = {
   new_lead:
     "Hi {{first_name}}, this is {{agent_name}}, a licensed life insurance broker in {{state}}. I just received the form you sent in to my office where you listed {{beneficiary}} as the beneficiary. If I’m unable to reach you or there’s a better time to get back to you, feel free to book an appointment with me here: {{calendly_link}} You can text me anytime at {{agent_phone}} (this business text line doesn’t accept calls).",
@@ -16,6 +19,7 @@ const DEFAULTS = {
     "Hi {{first_name}}, this is {{agent_name}}. Wishing you and your family a happy holiday! If you need anything related to your coverage, I’m here. Text me at {{agent_phone}}.",
 };
 
+/* -------------------------------- Utilities ------------------------------- */
 function renderTemplate(tpl, ctx) {
   return String(tpl || "").replace(/{{\s*([\w.]+)\s*}}/g, (_, k) => (ctx?.[k] ?? ""));
 }
@@ -29,12 +33,14 @@ function toE164(raw) {
   return `+${s}`;
 }
 
+/* ----------------------- Read per-user config & ctx ----------------------- */
 async function getTemplatesAndFlags(userId) {
   const { data } = await supabase
     .from("message_templates")
     .select("templates, enabled")
     .eq("user_id", userId)
     .maybeSingle();
+
   return {
     templates: (data?.templates ?? {}) || {},
     enabled: (data?.enabled ?? {}) || {},
@@ -58,13 +64,14 @@ async function getAgentContext(userId) {
   };
 }
 
+/* --------------------------- Contacts management -------------------------- */
 async function ensureMessageContact(userId, { full_name, phone, tags = [], meta = {} }) {
   const normalized = toE164(phone);
   if (!normalized) return null;
 
   const { data: existing } = await supabase
     .from("message_contacts")
-    .select("id, subscribed")
+    .select("id, subscribed, meta")
     .eq("user_id", userId)
     .eq("phone", normalized)
     .maybeSingle();
@@ -75,7 +82,7 @@ async function ensureMessageContact(userId, { full_name, phone, tags = [], meta 
       .update({
         full_name: full_name || undefined,
         tags: tags.length ? tags : undefined,
-        meta: Object.keys(meta || {}).length ? meta : undefined,
+        meta: Object.keys(meta || {}).length ? { ...(existing.meta || {}), ...meta } : undefined,
       })
       .eq("id", existing.id);
     return { id: existing.id, phone: normalized, subscribed: existing.subscribed };
@@ -83,13 +90,14 @@ async function ensureMessageContact(userId, { full_name, phone, tags = [], meta 
 
   const { data: row, error } = await supabase
     .from("message_contacts")
-    .insert([{ user_id: userId, full_name, phone: normalized, tags, meta }])
+    .insert([{ user_id: userId, full_name: full_name || "", phone: normalized, tags, meta }])
     .select("id, subscribed")
     .single();
   if (error) throw error;
   return { id: row.id, phone: normalized, subscribed: row.subscribed };
 }
 
+/* --------------------------------- Sending -------------------------------- */
 async function sendSmsTelnyx({ to, text }) {
   const apiKey = process.env.TELNYX_API_KEY;
   const fromNumber = process.env.TELNYX_FROM_NUMBER;
@@ -125,8 +133,7 @@ async function logEvent({ userId, contactId, leadId, templateKey, to, body, meta
   }]);
 }
 
-/* ---------------- High-level flows ---------------- */
-
+/* ------------------------------- High-level APIs -------------------------- */
 async function sendNewLeadIfEnabled({ userId, lead, leadId = null }) {
   const contact = await ensureMessageContact(userId, {
     full_name: lead.name || lead.full_name || "",
@@ -198,7 +205,7 @@ async function sendSoldIfEnabled({ userId, lead, leadId = null, sendNow = true }
   return { sent: true };
 }
 
-/* optional generic helper for one-off sends */
+/* Generic one-off sender (manual endpoint can call this) */
 async function sendTemplateIfEnabled({ userId, contact, templateKey, extraCtx = {}, leadId = null }) {
   const ensured = await ensureMessageContact(userId, { full_name: contact.full_name || "", phone: contact.phone });
   if (!ensured || !ensured.subscribed) return { sent: false, reason: "not_subscribed_or_missing" };
@@ -223,13 +230,18 @@ async function sendTemplateIfEnabled({ userId, contact, templateKey, extraCtx = 
 }
 
 module.exports = {
+  // utils
   renderTemplate,
   toE164,
+  // reads
   getTemplatesAndFlags,
   getAgentContext,
+  // contacts
   ensureMessageContact,
+  // sending + logs
   sendSmsTelnyx,
   logEvent,
+  // flows
   sendNewLeadIfEnabled,
   sendSoldIfEnabled,
   sendTemplateIfEnabled,
