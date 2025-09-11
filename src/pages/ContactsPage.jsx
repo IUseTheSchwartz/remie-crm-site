@@ -8,6 +8,7 @@ import {
   MessageSquare,
   X,
   Plus,
+  Minus,
   CheckCircle2,
 } from "lucide-react";
 
@@ -21,15 +22,33 @@ const TEMPLATE_DEFS = [
   { key: "birthday_text", label: "Birthday" },
   { key: "holiday_text", label: "Holiday" },
 ];
-
 const DEFAULT_ENABLED = Object.fromEntries(TEMPLATE_DEFS.map((t) => [t.key, false]));
+
+/* ---------------- Recommended tag catalog (always shown) ---------------- */
+const TAG_CATALOG = [
+  "lead",
+  "sold",
+  "birthday_text",
+  "holiday_text",
+  "appointment",
+  "payment_reminder",
+  "new_lead",
+  "new_lead_military",
+  "military",
+  "bday",
+  "holiday",
+  "vip",
+  "facebook",
+  "instagram",
+  "follow_up",
+];
 
 /* ---------------- Helpers ---------------- */
 function normalizeTag(s) {
   return String(s || "")
     .trim()
     .toLowerCase()
-    .replace(/\s+/g, "_"); // "Birthday Text" -> "birthday_text"
+    .replace(/\s+/g, "_");
 }
 function uniqueTags(arr) {
   const out = [];
@@ -44,57 +63,31 @@ function uniqueTags(arr) {
   return out;
 }
 
-/**
- * Decide which templates this contact is eligible for, given:
- * - enabledMap (global switches)
- * - contact tags
- * - subscribed (must be true)
- *
- * Mapping rules (adjust to your strategy):
- * - 'sold' tag -> 'sold' template
- * - 'birthday_text' or 'bday' tag -> 'birthday_text' template
- * - 'holiday_text' or 'holiday' tag -> 'holiday_text' template
- * - 'payment_reminder' or 'payment' tag -> 'payment_reminder' template
- * - 'appointment' tag -> 'appointment' template
- * - 'lead' tag -> 'new_lead' template
- * (new_lead_military not auto-mapped here; usually triggered by a field, not a tag)
- */
+/** Template eligibility from tags + subscribed + global enables */
 function eligibleTemplatesForContact({ tags = [], subscribed }, enabledMap) {
-  if (!subscribed) return []; // can't send if unsubscribed
-
+  if (!subscribed) return [];
   const set = new Set(tags.map(normalizeTag));
   const elig = [];
 
   if (enabledMap.sold && set.has("sold")) elig.push({ key: "sold", label: "Sold" });
-
   if (enabledMap.birthday_text && (set.has("birthday_text") || set.has("bday"))) {
     elig.push({ key: "birthday_text", label: "Birthday" });
   }
-
   if (enabledMap.holiday_text && (set.has("holiday_text") || set.has("holiday"))) {
     elig.push({ key: "holiday_text", label: "Holiday" });
   }
-
-  if (
-    enabledMap.payment_reminder &&
-    (set.has("payment_reminder") || set.has("payment"))
-  ) {
+  if (enabledMap.payment_reminder && (set.has("payment_reminder") || set.has("payment"))) {
     elig.push({ key: "payment_reminder", label: "Payment" });
   }
-
   if (enabledMap.appointment && set.has("appointment")) {
     elig.push({ key: "appointment", label: "Appointment" });
   }
-
   if (enabledMap.new_lead && set.has("lead")) {
     elig.push({ key: "new_lead", label: "New Lead" });
   }
-
-  // Example: if you want to treat 'military' tag as the military template
   if (enabledMap.new_lead_military && set.has("military")) {
     elig.push({ key: "new_lead_military", label: "New Lead (military)" });
   }
-
   return elig;
 }
 
@@ -111,9 +104,8 @@ export default function ContactsPage() {
     error: "",
   });
 
-  // Inline tag editor state per-contact
-  const [tagDraft, setTagDraft] = useState({}); // { [contactId]: "" }
-  const [savingTagIds, setSavingTagIds] = useState(new Set()); // contacts currently saving
+  // saving state for tag operations
+  const [savingTagIds, setSavingTagIds] = useState(new Set());
 
   useEffect(() => {
     let mounted = true;
@@ -142,7 +134,7 @@ export default function ContactsPage() {
       if (!mounted) return;
       setEnabledMap(initialEnabled);
 
-      // 3) Get contacts (include subscribed for eligibility)
+      // 3) Get contacts
       const { data: rows, error } = await supabase
         .from("message_contacts")
         .select("id, full_name, phone, tags, meta, created_at, subscribed")
@@ -154,7 +146,6 @@ export default function ContactsPage() {
         console.error(error);
         setContacts([]);
       } else {
-        // normalize tags client-side
         const normalized = (rows || []).map((c) => ({
           ...c,
           tags: uniqueTags(c.tags || []),
@@ -169,6 +160,15 @@ export default function ContactsPage() {
       mounted = false;
     };
   }, []);
+
+  // Build the global tag palette (union of all contacts' tags + catalog)
+  const allTags = useMemo(() => {
+    const set = new Set(TAG_CATALOG.map(normalizeTag));
+    for (const c of contacts) {
+      for (const t of c.tags || []) set.add(normalizeTag(t));
+    }
+    return Array.from(set).sort();
+  }, [contacts]);
 
   const filtered = useMemo(() => {
     const s = q.trim().toLowerCase();
@@ -210,35 +210,28 @@ export default function ContactsPage() {
     }
   }
 
-  /* ---------------- Tag editing actions ---------------- */
-
-  async function addTag(contact) {
+  /* ---------------- Tag editing: add/remove via palette ---------------- */
+  async function addTag(contact, tag) {
     const contactId = contact.id;
-    const draft = normalizeTag(tagDraft[contactId] || "");
-    if (!draft) return;
+    const norm = normalizeTag(tag);
+    if (!norm) return;
 
-    const nextTags = uniqueTags([...(contact.tags || []), draft]);
-    if (nextTags.join(",") === (contact.tags || []).join(",")) {
-      // no change
-      setTagDraft((d) => ({ ...d, [contactId]: "" }));
-      return;
-    }
+    const nextTags = uniqueTags([...(contact.tags || []), norm]);
+    if (nextTags.join(",") === (contact.tags || []).join(",")) return; // no change
 
     // optimistic UI
     setContacts((prev) =>
       prev.map((c) => (c.id === contactId ? { ...c, tags: nextTags } : c))
     );
     setSavingTagIds((s) => new Set(s).add(contactId));
-
     try {
       const { error } = await supabase
         .from("message_contacts")
         .update({ tags: nextTags })
         .eq("id", contactId);
       if (error) throw error;
-      setTagDraft((d) => ({ ...d, [contactId]: "" }));
     } catch (e) {
-      // rollback on error
+      // rollback
       setContacts((prev) =>
         prev.map((c) => (c.id === contactId ? { ...c, tags: contact.tags } : c))
       );
@@ -252,10 +245,10 @@ export default function ContactsPage() {
     }
   }
 
-  async function removeTag(contact, tagToRemove) {
+  async function removeTag(contact, tag) {
     const contactId = contact.id;
     const nextTags = (contact.tags || []).filter(
-      (t) => normalizeTag(t) !== normalizeTag(tagToRemove)
+      (t) => normalizeTag(t) !== normalizeTag(tag)
     );
 
     // optimistic UI
@@ -264,7 +257,6 @@ export default function ContactsPage() {
       prev.map((c) => (c.id === contactId ? { ...c, tags: nextTags } : c))
     );
     setSavingTagIds((s) => new Set(s).add(contactId));
-
     try {
       const { error } = await supabase
         .from("message_contacts")
@@ -297,8 +289,8 @@ export default function ContactsPage() {
           <div className="flex-1 min-w-0">
             <h1 className="text-lg font-semibold">Contacts on Messaging List</h1>
             <p className="text-sm text-white/70">
-              View & manage tags. A contact receives a template only if it’s globally enabled,
-              the contact is subscribed, and their tags match that template’s audience.
+              Click +/– to add or remove tags. A contact receives a template only if it’s globally
+              enabled, the contact is subscribed, and their tags match that template’s audience.
             </p>
           </div>
         </div>
@@ -370,6 +362,8 @@ export default function ContactsPage() {
                 filtered.map((c) => {
                   const eligible = eligibleTemplatesForContact(c, enabledMap);
                   const saving = savingTagIds.has(c.id);
+                  const has = new Set((c.tags || []).map(normalizeTag));
+
                   return (
                     <tr key={c.id} className="border-b border-white/5 hover:bg-white/[0.03]">
                       <td className="px-4 py-3">
@@ -378,11 +372,13 @@ export default function ContactsPage() {
                           {new Date(c.created_at).toLocaleString()}
                         </div>
                       </td>
+
                       <td className="px-4 py-3">{c.phone || "—"}</td>
 
-                      {/* Tags with add/remove editor */}
+                      {/* Tags column with current tags + palette */}
                       <td className="px-4 py-3">
-                        <div className="flex flex-wrap items-center gap-1">
+                        {/* Current tags (removable pills) */}
+                        <div className="mb-2 flex flex-wrap items-center gap-1">
                           {Array.isArray(c.tags) && c.tags.length > 0 ? (
                             c.tags.map((t) => (
                               <span
@@ -405,36 +401,40 @@ export default function ContactsPage() {
                           )}
                         </div>
 
-                        {/* Add tag input */}
-                        <div className="mt-2 flex items-center gap-2">
-                          <input
-                            value={tagDraft[c.id] || ""}
-                            onChange={(e) =>
-                              setTagDraft((d) => ({ ...d, [c.id]: e.target.value }))
-                            }
-                            onKeyDown={(e) => {
-                              if (e.key === "Enter") addTag(c);
-                            }}
-                            placeholder="Add tag (e.g., sold, bday)…"
-                            className="w-44 rounded-lg border border-white/15 bg-white/5 px-2 py-1 text-xs text-white/90 placeholder:text-white/40 outline-none"
-                            disabled={saving}
-                          />
-                          <button
-                            onClick={() => addTag(c)}
-                            disabled={saving || !tagDraft[c.id]}
-                            className="inline-flex items-center gap-1 rounded-lg border border-white/15 bg-white/5 px-2 py-1 text-xs hover:bg-white/10 disabled:opacity-50"
-                            title="Add tag"
-                          >
-                            {saving ? (
-                              <>
-                                <Loader2 className="h-3.5 w-3.5 animate-spin" /> Saving…
-                              </>
-                            ) : (
-                              <>
-                                <Plus className="h-3.5 w-3.5" /> Add
-                              </>
-                            )}
-                          </button>
+                        {/* Tag palette (all available tags with +/-) */}
+                        <div className="rounded-lg border border-white/10 bg-white/[0.03] p-2">
+                          <div className="mb-1 text-[11px] text-white/50">Tag palette</div>
+                          <div className="flex flex-wrap gap-1 max-h-28 overflow-y-auto pr-1">
+                            {allTags.map((t) => {
+                              const active = has.has(t);
+                              return (
+                                <span
+                                  key={t}
+                                  className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[11px] ring-1 ${
+                                    active
+                                      ? "bg-emerald-500/10 text-emerald-300 ring-emerald-400/20"
+                                      : "bg-white/5 text-white/70 ring-white/10"
+                                  }`}
+                                >
+                                  {t}
+                                  <button
+                                    onClick={() =>
+                                      active ? removeTag(c, t) : addTag(c, t)
+                                    }
+                                    className="ml-1 rounded hover:bg-white/10 p-0.5 disabled:opacity-50"
+                                    title={active ? "Remove tag" : "Add tag"}
+                                    disabled={saving}
+                                  >
+                                    {active ? (
+                                      <Minus className="h-3 w-3" />
+                                    ) : (
+                                      <Plus className="h-3 w-3" />
+                                    )}
+                                  </button>
+                                </span>
+                              );
+                            })}
+                          </div>
                         </div>
                       </td>
 
