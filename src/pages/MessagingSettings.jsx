@@ -112,10 +112,10 @@ function fillTemplate(text, data) {
 const DEFAULT_TEST_DATA = {
   first_name: "Jacob",
   last_name: "Prieto",
-  agent_name: "Jacob Prieto",
+  agent_name: "",        // will be auto-filled from agent_profiles if available
   company: "Prieto Insurance Solutions LLC",
-  agent_phone: "(555) 123-4567",
-  agent_email: "jacob@example.com",
+  agent_phone: "",       // auto-filled
+  agent_email: "",       // auto-filled
   appt_time: "Tue 3:30 PM",
   carrier: "Americo",
   policy_number: "A1B2C3D4",
@@ -123,7 +123,7 @@ const DEFAULT_TEST_DATA = {
   state: "TN",
   beneficiary: "Maria Prieto",
   military_branch: "US Army",
-  calendly_link: "https://calendly.com/your-link",
+  calendly_link: "",     // auto-filled
   today: "", // auto-fills if left blank
 };
 
@@ -160,6 +160,14 @@ export default function MessagingSettings() {
   const [testOpen, setTestOpen] = useState(false);
   const [testKey, setTestKey] = useState(null); // which template we're previewing
   const [testData, setTestData] = useState({ ...DEFAULT_TEST_DATA });
+
+  // --- Agent vars from agent_profiles (NEW) ---
+  const [agentVars, setAgentVars] = useState({
+    agent_name: "",
+    agent_email: "",
+    agent_phone: "",
+    calendly_link: "",
+  });
 
   const balanceDollars = (balanceCents / 100).toFixed(2);
 
@@ -240,6 +248,32 @@ export default function MessagingSettings() {
           } catch {}
         }
       }
+
+      // ➜ Load agent profile for test data (NEW)
+      const { data: profile } = await supabase
+        .from("agent_profiles")
+        .select("full_name, email, phone, calendly_url")
+        .eq("user_id", uid)
+        .maybeSingle();
+
+      if (!mounted) return;
+
+      const nextAgentVars = {
+        agent_name: profile?.full_name || "",
+        agent_email: profile?.email || "",
+        agent_phone: profile?.phone || "",
+        calendly_link: profile?.calendly_url || "",
+      };
+      setAgentVars(nextAgentVars);
+
+      // Prime test data with agent values if they’re empty
+      setTestData((d) => ({
+        ...d,
+        agent_name: d.agent_name || nextAgentVars.agent_name,
+        agent_email: d.agent_email || nextAgentVars.agent_email,
+        agent_phone: d.agent_phone || nextAgentVars.agent_phone,
+        calendly_link: d.calendly_link || nextAgentVars.calendly_link,
+      }));
 
       setLoading(false);
     })();
@@ -417,7 +451,9 @@ export default function MessagingSettings() {
   // --- Derived preview content
   const activePreviewKey = testKey;
   const activePreviewTemplate = activePreviewKey ? templates[activePreviewKey] ?? "" : "";
-  const activePreviewFilled = activePreviewKey ? fillTemplate(activePreviewTemplate, testData) : "";
+  const activePreviewFilled = activePreviewKey
+    ? fillTemplate(activePreviewTemplate, { ...agentVars, ...testData })
+    : "";
 
   return (
     <div className="space-y-6">
@@ -438,7 +474,7 @@ export default function MessagingSettings() {
             <div className="mt-1 text-xs text-white/50">Texts are billed per segment.</div>
           </div>
 
-          <div className="flex flex-col gap-2 md:items-end">
+        <div className="flex flex-col gap-2 md:items-end">
             <div className="flex flex-wrap gap-2">
               <button type="button" onClick={() => addFunds(500)} disabled={topping} className="inline-flex items-center gap-1 rounded-lg border border-white/15 bg-white/5 px-3 py-2 text-sm hover:bg-white/10 disabled:opacity-50"><CreditCard className="h-4 w-4" /> +$5</button>
               <button type="button" onClick={() => addFunds(1000)} disabled={topping} className="inline-flex items-center gap-1 rounded-lg border border-white/15 bg-white/5 px-3 py-2 text-sm hover:bg-white/10 disabled:opacity-50"><CreditCard className="h-4 w-4" /> +$10</button>
@@ -689,9 +725,14 @@ export default function MessagingSettings() {
                 <div className="grid grid-cols-2 gap-2">
                   {Object.keys(DEFAULT_TEST_DATA).map((k) => (
                     <label key={k} className="text-[11px] text-white/70">
-                      <div className="mb-1">{k}</div>
+                      <div className="mb-1">
+                        {k}
+                        {["agent_name","agent_email","agent_phone","calendly_link"].includes(k) && (
+                          <span className="ml-1 rounded bg-white/10 px-1 py-[1px] text-[10px] text-white/60">from profile</span>
+                        )}
+                      </div>
                       <input
-                        value={testData[k] ?? ""}
+                        value={(k in testData ? testData[k] : "")}
                         onChange={(e) => setTestData((d) => ({ ...d, [k]: e.target.value }))}
                         className="w-full rounded-md border border-white/15 bg-white/5 px-2 py-1 text-sm outline-none focus:ring-1 focus:ring-indigo-400/40"
                         placeholder={String(DEFAULT_TEST_DATA[k] ?? "")}
@@ -704,17 +745,21 @@ export default function MessagingSettings() {
                   <button
                     type="button"
                     className="rounded-md border border-white/15 bg-white/5 px-2 py-1 text-[11px] hover:bg-white/10"
-                    onClick={() => setTestData({ ...DEFAULT_TEST_DATA })}
+                    onClick={() => setTestData((d) => ({
+                      ...DEFAULT_TEST_DATA,
+                      // keep latest agent profile values
+                      agent_name: agentVars.agent_name || DEFAULT_TEST_DATA.agent_name,
+                      agent_email: agentVars.agent_email || DEFAULT_TEST_DATA.agent_email,
+                      agent_phone: agentVars.agent_phone || DEFAULT_TEST_DATA.agent_phone,
+                      calendly_link: agentVars.calendly_link || DEFAULT_TEST_DATA.calendly_link,
+                    }))}
                   >
                     Reset Test Data
                   </button>
                   <button
                     type="button"
                     className="rounded-md border border-white/15 bg-white/5 px-2 py-1 text-[11px] hover:bg-white/10"
-                    onClick={() => {
-                      // force refresh preview (no-op set)
-                      setTestData((d) => ({ ...d }));
-                    }}
+                    onClick={() => setTestData((d) => ({ ...d }))}
                   >
                     Refresh Preview
                   </button>
@@ -728,7 +773,7 @@ export default function MessagingSettings() {
                   {activePreviewFilled}
                 </pre>
                 <div className="mt-2 text-[11px] text-white/50">
-                  Tokens like {"{{first_name}}"} are replaced using the Test Data on the left.
+                  Tokens like {"{{first_name}}"} are replaced using your Agent Profile (for agent_* fields) and the Test Data on the left.
                 </div>
               </div>
             </div>
