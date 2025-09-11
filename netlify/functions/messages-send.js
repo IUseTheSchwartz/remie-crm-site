@@ -2,19 +2,16 @@
 import fetch from "node-fetch";
 import { createClient } from "@supabase/supabase-js";
 
-/* ---------------- Env ---------------- */
 const {
   SUPABASE_URL,
   SUPABASE_SERVICE_ROLE,
   TELNYX_API_KEY,
-  TELNYX_FROM_NUMBER,            // REQUIRED (e.g. +18884318203)
-  TELNYX_MESSAGING_PROFILE_ID,   // OPTIONAL
+  TELNYX_FROM_NUMBER,
+  TELNYX_MESSAGING_PROFILE_ID,
 } = process.env;
 
-/* ---------------- Supabase (admin) ---------------- */
 const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE);
 
-/* ---------------- Helpers ---------------- */
 const json = (statusCode, data) => ({
   statusCode,
   headers: {
@@ -38,48 +35,25 @@ async function getRequesterUserId(event) {
   return data?.user?.id || null;
 }
 
-/**
- * Normalize a phone string to E.164 (US/CA default).
- * - If already +E.164, keep it.
- * - If 10 digits, assume US and prefix +1.
- * - If 11 digits and starts with 1, make +<digits>.
- * - Otherwise return null.
- * Also rejects commas/semicolons to ensure it's a single number.
- */
 function normalizeToE164(phone) {
   if (!phone || typeof phone !== "string") return null;
   if (phone.includes(",") || phone.includes(";")) return null;
-
   const trimmed = phone.trim();
-
-  // Already E.164?
   if (/^\+\d{8,15}$/.test(trimmed)) return trimmed;
-
-  // Strip all non-digits
   const digits = trimmed.replace(/\D+/g, "");
-
-  // 10-digit NANP -> +1##########
   if (/^\d{10}$/.test(digits)) return `+1${digits}`;
-
-  // 11 digits starting with 1 -> +###########
   if (/^1\d{10}$/.test(digits)) return `+${digits}`;
-
-  // Anything else: not supported by our simple normalizer
   return null;
 }
 
-/* ---------------- Netlify handler ---------------- */
 export async function handler(event) {
   try {
     if (event.httpMethod === "OPTIONS") return json(200, { ok: true });
     if (event.httpMethod !== "POST") return json(405, { error: "Method Not Allowed" });
 
     let payload;
-    try {
-      payload = JSON.parse(event.body || "{}");
-    } catch {
-      return json(400, { error: "Invalid JSON body" });
-    }
+    try { payload = JSON.parse(event.body || "{}"); }
+    catch { return json(400, { error: "Invalid JSON body" }); }
 
     const { to, body, lead_id } = payload || {};
     const requesterId = await getRequesterUserId(event);
@@ -89,18 +63,15 @@ export async function handler(event) {
     if (!TELNYX_API_KEY) return json(500, { error: "Server misconfigured: TELNYX_API_KEY missing" });
     if (!TELNYX_FROM_NUMBER) return json(500, { error: "Server misconfigured: TELNYX_FROM_NUMBER is required" });
 
-    // Normalize destination
     const toE164 = normalizeToE164(to);
     if (!toE164) {
       return json(400, {
         error: "Invalid 'to' phone number",
-        hint:
-          "Pass a single valid E.164 number. For US numbers, you can send 10 digits and we will convert to +1##########.",
+        hint: "Send a single valid E.164 number. US 10-digits are auto-converted to +1##########.",
         received: to,
       });
     }
 
-    // Build Telnyx message (single shared number)
     const msg = {
       to: toE164,
       from: TELNYX_FROM_NUMBER,
@@ -108,7 +79,6 @@ export async function handler(event) {
     };
     if (TELNYX_MESSAGING_PROFILE_ID) msg.messaging_profile_id = TELNYX_MESSAGING_PROFILE_ID;
 
-    /* ---------- Send via Telnyx ---------- */
     const tRes = await fetch("https://api.telnyx.com/v2/messages", {
       method: "POST",
       headers: {
@@ -123,7 +93,6 @@ export async function handler(event) {
     if (!tRes.ok) {
       console.error("[messages-send] Telnyx error:", tData);
 
-      // Record attempt as failed
       await supabase.from("messages").insert({
         user_id: requesterId,
         lead_id: lead_id ?? null,
@@ -133,6 +102,7 @@ export async function handler(event) {
         provider: "telnyx",
         provider_message_id: tData?.data?.id ?? null,
         status: "failed",
+        direction: "outbound",      // <-- required by your schema
         error_detail: JSON.stringify(tData).slice(0, 8000),
       });
 
@@ -141,7 +111,6 @@ export async function handler(event) {
 
     const messageId = tData?.data?.id ?? null;
 
-    // Save success
     const { error: dbErr } = await supabase.from("messages").insert({
       user_id: requesterId,
       lead_id: lead_id ?? null,
@@ -151,6 +120,7 @@ export async function handler(event) {
       provider: "telnyx",
       provider_message_id: messageId,
       status: "queued",
+      direction: "outbound",        // <-- required by your schema
     });
 
     if (dbErr) {
