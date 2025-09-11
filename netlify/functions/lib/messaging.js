@@ -1,9 +1,10 @@
 // File: netlify/functions/lib/messaging.js
 // CommonJS helpers for all messaging flows (new lead, sold, birthday/holiday, one-offs).
-// Uses your existing service client via netlify/lib/supabase.js
+// Uses your existing service client via netlify/functions/_supabase.js
 
 const fetch = global.fetch || ((...a) => import("node-fetch").then(({ default: f }) => f(...a)));
-const supabase = require("../../lib/supabase.js"); // singleton; also exposes getServiceClient if needed
+const { getServiceClient } = require("../_supabase.js");
+const supabase = getServiceClient();
 
 /* ---------------- Defaults (used if no custom template set) ---------------- */
 const DEFAULTS = {
