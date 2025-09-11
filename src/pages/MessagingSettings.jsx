@@ -14,6 +14,9 @@ const TEMPLATE_DEFS = [
   { key: "holiday_text", label: "Holiday Text" },
 ];
 
+/* Default enabled map: ALL OFF by default */
+const DEFAULT_ENABLED = Object.fromEntries(TEMPLATE_DEFS.map((t) => [t.key, false]));
+
 /* ---------------- Suggested defaults ---------------- */
 const DEFAULTS = {
   new_lead:
@@ -51,6 +54,38 @@ const DEFAULTS = {
     "Text me anytime at {{agent_phone}} (this business text line doesn’t accept calls).",
 };
 
+/* Small toggle */
+function Toggle({ checked, onChange, label }) {
+  return (
+    <button
+      type="button"
+      role="switch"
+      aria-checked={checked}
+      onClick={() => onChange(!checked)}
+      className={[
+        "inline-flex items-center rounded-full border border-white/15 px-2 py-1 text-[11px] select-none",
+        checked ? "bg-emerald-500/15 text-emerald-300" : "bg-white/5 text-white/70 hover:bg-white/10",
+      ].join(" ")}
+      title={label}
+    >
+      <span
+        className={[
+          "mr-2 inline-block h-3.5 w-6 rounded-full transition",
+          checked ? "bg-emerald-400/30" : "bg-white/15",
+        ].join(" ")}
+      >
+        <span
+          className={[
+            "block h-3 w-3 rounded-full bg-white shadow transition-transform",
+            checked ? "translate-x-3" : "translate-x-0",
+          ].join(" ")}
+        />
+      </span>
+      {checked ? "Enabled" : "Disabled"}
+    </button>
+  );
+}
+
 export default function MessagingSettings() {
   const [loading, setLoading] = useState(true);
 
@@ -71,6 +106,11 @@ export default function MessagingSettings() {
   const [templates, setTemplates] = useState(() => ({ ...DEFAULTS }));
   const [saveState, setSaveState] = useState("idle");
   const saveTimer = useRef(null);
+
+  // Enabled map (per-template)
+  const [enabledMap, setEnabledMap] = useState({ ...DEFAULT_ENABLED });
+  const [enabledSaveState, setEnabledSaveState] = useState("idle");
+  const enabledTimer = useRef(null);
 
   // Drawer state
   const [cheatOpen, setCheatOpen] = useState(false);
@@ -101,16 +141,18 @@ export default function MessagingSettings() {
       if (!mounted) return;
       setBalanceCents(wallet?.balance_cents || 0);
 
-      // templates
-      const { data: tmpl } = await supabase
+      // templates + enabled flags
+      const { data: tmpl, error: tmplErr } = await supabase
         .from("message_templates")
-        .select("templates")
+        .select("templates, enabled") // 'enabled' may or may not exist in your schema
         .eq("user_id", uid)
         .maybeSingle();
 
       if (!mounted) return;
+
+      // Templates text
       if (tmpl?.templates && typeof tmpl.templates === "object") {
-        setTemplates((prev) => ({ ...DEFAULTS, ...tmpl.templates }));
+        setTemplates((prev) => ({ ...DEFAULTS, ...tmpl.templates, __enabled: undefined }));
       } else {
         try {
           await supabase
@@ -118,6 +160,38 @@ export default function MessagingSettings() {
             .upsert({ user_id: uid, templates: DEFAULTS });
         } catch {}
         setTemplates({ ...DEFAULTS });
+      }
+
+      // Enabled flags: prefer row.enabled; else templates.__enabled; else defaults
+      let initialEnabled = { ...DEFAULT_ENABLED };
+      const maybeEnabledFromCol = tmpl?.enabled && typeof tmpl.enabled === "object" ? tmpl.enabled : null;
+      const maybeEnabledFromTemplates = tmpl?.templates?.__enabled && typeof tmpl.templates.__enabled === "object"
+        ? tmpl.templates.__enabled
+        : null;
+
+      if (maybeEnabledFromCol) {
+        initialEnabled = { ...DEFAULT_ENABLED, ...maybeEnabledFromCol };
+      } else if (maybeEnabledFromTemplates) {
+        initialEnabled = { ...DEFAULT_ENABLED, ...maybeEnabledFromTemplates };
+      }
+      setEnabledMap(initialEnabled);
+
+      // If nothing existed, try to persist a proper record (best effort)
+      if (!maybeEnabledFromCol && !maybeEnabledFromTemplates) {
+        // Try writing to 'enabled' column first
+        try {
+          await supabase
+            .from("message_templates")
+            .upsert({ user_id: uid, enabled: initialEnabled });
+        } catch {
+          // Fallback: embed into templates.__enabled
+          try {
+            const merged = { ...DEFAULTS, __enabled: initialEnabled };
+            await supabase
+              .from("message_templates")
+              .upsert({ user_id: uid, templates: merged });
+          } catch {}
+        }
       }
 
       setLoading(false);
@@ -141,10 +215,12 @@ export default function MessagingSettings() {
         supabase.removeChannel?.(ch);
       } catch {}
       mounted = false;
+      if (saveTimer.current) clearTimeout(saveTimer.current);
+      if (enabledTimer.current) clearTimeout(enabledTimer.current);
     };
   }, [userId]);
 
-  /* -------- Autosave templates -------- */
+  /* -------- Autosave templates (unchanged) -------- */
   async function saveTemplates(next) {
     if (!userId) return;
     setSaveState("saving");
@@ -184,6 +260,46 @@ export default function MessagingSettings() {
     const next = { ...DEFAULTS };
     setTemplates(next);
     saveTemplates(next);
+  }
+
+  /* -------- Save enabled flags (new) -------- */
+  async function persistEnabled(nextMap) {
+    if (!userId) return;
+    setEnabledSaveState("saving");
+    // Try preferred: save top-level 'enabled' JSON column
+    try {
+      const { error } = await supabase
+        .from("message_templates")
+        .upsert({ user_id: userId, enabled: nextMap });
+      if (error) throw error;
+      setEnabledSaveState("saved");
+      setTimeout(() => setEnabledSaveState("idle"), 1200);
+      return;
+    } catch (e) {
+      console.warn("No 'enabled' column available, embedding into templates.__enabled", e?.message);
+    }
+    // Fallback: embed into templates.__enabled
+    try {
+      const nextTemplates = { ...templates, __enabled: nextMap };
+      setTemplates(nextTemplates);
+      const { error } = await supabase
+        .from("message_templates")
+        .upsert({ user_id: userId, templates: nextTemplates });
+      if (error) throw error;
+      setEnabledSaveState("saved");
+      setTimeout(() => setEnabledSaveState("idle"), 1200);
+    } catch (e2) {
+      console.error(e2);
+      setEnabledSaveState("error");
+    }
+  }
+
+  function setEnabled(key, val) {
+    const next = { ...enabledMap, [key]: !!val };
+    setEnabledMap(next);
+    setEnabledSaveState("saving");
+    if (enabledTimer.current) clearTimeout(enabledTimer.current);
+    enabledTimer.current = setTimeout(() => persistEnabled(next), 500);
   }
 
   /* -------- Stripe top-up -------- */
@@ -320,6 +436,21 @@ export default function MessagingSettings() {
 
           {/* RIGHT-SIDE ACTIONS */}
           <div className="ml-auto flex items-center gap-2">
+            {/* Save status for enabled flags */}
+            {enabledSaveState === "saving" && (
+              <span className="inline-flex items-center gap-1 text-xs text-white/70">
+                <Loader2 className="h-3 w-3 animate-spin" /> Updating toggles…
+              </span>
+            )}
+            {enabledSaveState === "saved" && (
+              <span className="inline-flex items-center gap-1 text-xs text-emerald-300">
+                <Check className="h-3 w-3" /> Toggles saved
+              </span>
+            )}
+            {enabledSaveState === "error" && (
+              <span className="text-xs text-rose-300">Toggle save failed</span>
+            )}
+
             <button
               type="button"
               onClick={resetAllTemplates}
@@ -359,10 +490,22 @@ export default function MessagingSettings() {
         <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
           {TEMPLATE_DEFS.map(({ key, label }) => {
             const isDirty = (templates[key] ?? "") !== (DEFAULTS[key] ?? "");
+            const enabled = !!enabledMap[key];
+
             return (
               <div key={key} className="rounded-xl border border-white/10 bg-white/[0.02] p-3">
-                <div className="mb-1 flex items-center">
+                <div className="mb-1 flex items-center gap-2">
                   <div className="text-xs text-white/70">{label}</div>
+
+                  {/* NEW: Enable/Disable toggle (default OFF) */}
+                  <div className="ml-2">
+                    <Toggle
+                      checked={enabled}
+                      onChange={(v) => setEnabled(key, v)}
+                      label={enabled ? "Disable this template" : "Enable this template"}
+                    />
+                  </div>
+
                   <button
                     type="button"
                     onClick={() => resetTemplate(key)}
@@ -378,9 +521,19 @@ export default function MessagingSettings() {
                   value={templates[key] ?? ""}
                   onChange={(e) => updateTemplate(key, e.target.value)}
                   rows={5}
-                  className="w-full rounded-lg border border-white/15 bg-white/5 px-3 py-2 text-sm outline-none focus:ring-1 focus:ring-indigo-400/50"
+                  className={[
+                    "w-full rounded-lg border px-3 py-2 text-sm outline-none focus:ring-1",
+                    "border-white/15 bg-white/5 focus:ring-indigo-400/50",
+                    enabled ? "" : "opacity-70",
+                  ].join(" ")}
                   placeholder={DEFAULTS[key]}
                 />
+
+                {!enabled && (
+                  <div className="mt-2 text-[11px] text-amber-300/90">
+                    Disabled — this template will not send until you enable it.
+                  </div>
+                )}
               </div>
             );
           })}
