@@ -5,23 +5,24 @@ import { routes } from "../routesConfig.js";
 import { supabase } from "../lib/supabaseClient.js";
 import Logo from "../assets/logo-tight.png";
 
-/* --- Use safe, widely-available Lucide icons --- */
+/* --- Safe, widely-available Lucide icons --- */
 import {
   Home as HomeIcon,
-  Users,               // Leads / Teams
-  ListChecks as PipelineIcon, // Pipeline (stable)
-  MessageSquare,       // Messages
+  Users,
+  ListChecks as PipelineIcon, // Pipeline
+  MessageSquare,              // Messages
   Calendar as CalendarIcon,
   Settings as SettingsIcon,
-  LifeBuoy,            // Support
-  Megaphone,           // Mailing
-  Bot,                 // AI Rebuttal Helper (safe alt to exotic names)
-  PhoneCall,           // Call Recorder
-  BarChart3,           // Reports
-  Wrench,              // Agent Tools
-  Globe2,              // View site
-  Pencil,              // Edit site
+  LifeBuoy,                   // Support
+  Megaphone,                  // Mailing
+  Bot,                        // AI Rebuttal Helper
+  PhoneCall,                  // Call Recorder
+  BarChart3,                  // Reports
+  Wrench,                     // Agent Tools
+  Globe2,                     // View site
+  Pencil,                     // Edit site
   ExternalLink,
+  X,
 } from "lucide-react";
 
 /* ---------- Icon map by label (fallback to no icon) ---------- */
@@ -44,11 +45,12 @@ const ICONS = {
   Support: LifeBuoy,
 };
 
-function ItemLink({ r }) {
+function ItemLink({ r, onNavigate }) {
   const Icon = ICONS[r.label] || null;
   return (
     <NavLink
       to={r.path}
+      onClick={onNavigate}
       className={({ isActive }) =>
         [
           "flex items-center gap-2 px-3 py-2 rounded-md",
@@ -123,7 +125,9 @@ function ViewAgentSiteLink() {
 
       return () => {
         isMounted = false;
-        try { supabase.removeChannel?.(channel); } catch {}
+        try {
+          supabase.removeChannel?.(channel);
+        } catch {}
         window.removeEventListener("storage", onStorage);
       };
     })();
@@ -166,7 +170,7 @@ function ViewAgentSiteLink() {
 }
 
 /* ---------- Collapsible group ---------- */
-function Group({ title, items, storageKey }) {
+function Group({ title, items, storageKey, onNavigate }) {
   const [open, setOpen] = useState(true);
 
   useEffect(() => {
@@ -194,7 +198,7 @@ function Group({ title, items, storageKey }) {
       {open && (
         <nav className="mt-1 space-y-1">
           {items.map((r) => (
-            <ItemLink key={r.key} r={r} />
+            <ItemLink key={r.key} r={r} onNavigate={onNavigate} />
           ))}
         </nav>
       )}
@@ -202,18 +206,20 @@ function Group({ title, items, storageKey }) {
   );
 }
 
-function SimpleList({ items }) {
+function SimpleList({ items, onNavigate }) {
   if (!items.length) return null;
   return (
     <nav className="mt-2 space-y-1">
       {items.map((r) => (
-        <ItemLink key={r.key} r={r} />
+        <ItemLink key={r.key} r={r} onNavigate={onNavigate} />
       ))}
     </nav>
   );
 }
 
-export default function Sidebar() {
+/* ======================= Desktop + Mobile Sidebar ======================= */
+
+function SidebarContent({ onNavigate }) {
   const sections = useMemo(() => {
     const visible = routes.filter((r) => r.showInSidebar);
     const by = (section) => visible.filter((r) => r.section === section);
@@ -228,7 +234,7 @@ export default function Sidebar() {
   }, []);
 
   return (
-    <aside className="relative z-10 hidden md:block border-r border-white/10 bg-black/30 min-h-screen">
+    <>
       {/* Brand */}
       <a
         href="https://remiecrm.com"
@@ -244,20 +250,40 @@ export default function Sidebar() {
 
       <div className="p-3 text-sm">
         {/* Top level */}
-        <SimpleList items={sections.top} />
+        <SimpleList items={sections.top} onNavigate={onNavigate} />
 
         {/* Groups */}
-        <Group title="Productivity & Communication" items={sections.productivity} storageKey="grp_productivity" />
-        <Group title="Insights & Tools" items={sections.insightsTools} storageKey="grp_insights_tools" />
+        <Group
+          title="Productivity & Communication"
+          items={sections.productivity}
+          storageKey="grp_productivity"
+          onNavigate={onNavigate}
+        />
+        <Group
+          title="Insights & Tools"
+          items={sections.insightsTools}
+          storageKey="grp_insights_tools"
+          onNavigate={onNavigate}
+        />
 
         {/* Agent site: special link + group */}
         <div className="pt-2 mt-2 border-t border-white/10" />
         <ViewAgentSiteLink />
-        <Group title="Agent Site Management" items={sections.agentSite} storageKey="grp_agent_site" />
+        <Group
+          title="Agent Site Management"
+          items={sections.agentSite}
+          storageKey="grp_agent_site"
+          onNavigate={onNavigate}
+        />
 
         {/* Teams */}
         <div className="pt-2 mt-2 border-t border-white/10" />
-        <Group title="Teams" items={sections.teams} storageKey="grp_teams" />
+        <Group
+          title="Teams"
+          items={sections.teams}
+          storageKey="grp_teams"
+          onNavigate={onNavigate}
+        />
       </div>
 
       {/* Bottom (Account & Help) */}
@@ -265,8 +291,63 @@ export default function Sidebar() {
         <div className="text-xs uppercase tracking-wide text-white/50 px-3 pb-2">
           Account &amp; Help
         </div>
-        <SimpleList items={sections.bottom} />
+        <SimpleList items={sections.bottom} onNavigate={onNavigate} />
       </div>
-    </aside>
+    </>
+  );
+}
+
+/**
+ * Desktop sidebar (md+): column with its own scroll.
+ * Mobile sidebar (sm): slide-out drawer controlled via props.
+ */
+export default function Sidebar({ mobileOpen = false, setMobileOpen = () => {} }) {
+  /* Desktop */
+  const desktopAside =
+    // independent scroll + stable gutter
+    <aside className="relative z-10 hidden md:block border-r border-white/10 bg-black/30 h-screen overflow-y-auto overscroll-contain [scrollbar-gutter:stable]">
+      <SidebarContent />
+    </aside>;
+
+  /* Mobile Drawer */
+  const close = () => setMobileOpen(false);
+
+  const mobileAside = (
+    <>
+      {/* Backdrop */}
+      <div
+        className={`fixed inset-0 z-40 bg-black/50 backdrop-blur-sm transition-opacity md:hidden ${mobileOpen ? "opacity-100 pointer-events-auto" : "opacity-0 pointer-events-none"}`}
+        onClick={close}
+      />
+      {/* Panel */}
+      <div
+        className={`fixed inset-y-0 left-0 z-50 w-[80%] max-w-[280px] transform bg-neutral-950 border-r border-white/10 md:hidden
+        h-screen overflow-y-auto overscroll-contain [scrollbar-gutter:stable]
+        transition-transform duration-300 ${mobileOpen ? "translate-x-0" : "-translate-x-full"}`}
+      >
+        <div className="flex items-center justify-between px-4 py-3 border-b border-white/10">
+          <div className="flex items-center gap-2">
+            <img src={Logo} alt="Logo" className="h-7 w-7 object-contain" />
+            <div className="font-semibold">Remie CRM</div>
+          </div>
+          <button
+            onClick={close}
+            className="rounded-md p-2 text-white/70 hover:text-white hover:bg-white/10"
+            aria-label="Close sidebar"
+          >
+            <X className="h-5 w-5" />
+          </button>
+        </div>
+
+        <SidebarContent onNavigate={close} />
+      </div>
+    </>
+  );
+
+  return (
+    <>
+      {desktopAside}
+      {mobileAside}
+    </>
   );
 }
