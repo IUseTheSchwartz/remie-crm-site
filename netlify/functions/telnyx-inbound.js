@@ -1,55 +1,41 @@
-// netlify/functions/telnyx-inbound.js
-const { createClient } = require("@supabase/supabase-js");
+import { createClient } from "@supabase/supabase-js";
 
-const supabase = createClient(
-  process.env.SUPABASE_URL,
-  process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_SERVICE_ROLE
-);
+const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_ROLE_KEY);
 
-// Optional: verify Telnyx signature (you can add later with TELNYX_WEBHOOK_SECRET)
-exports.handler = async (event) => {
+export async function handler(event) {
   try {
-    if (event.httpMethod !== "POST") return { statusCode: 405, body: "Method Not Allowed" };
     const body = JSON.parse(event.body || "{}");
-
-    // Telnyx wraps events as { data: { event_type, payload: {...} } }
-    const evt = body?.data?.event_type;
     const payload = body?.data?.payload || {};
+    const text = payload.text;
+    const fromNum = payload.from?.phone_number;
+    const toNum = payload.to?.phone_number;
+    const providerId = payload.id;
 
-    if (evt !== "message.received") {
-      return { statusCode: 200, body: "ignored" };
+    if (!text || !fromNum || !toNum) {
+      return { statusCode: 400, body: "Missing fields" };
     }
 
-    const from = payload?.from?.phone_number || "";
-    const to = payload?.to?.phone_number || "";
-    const text = payload?.text || "";
-    const providerSid = payload?.id;
+    const userId = process.env.DEFAULT_OWNER_USER_ID; // set this in Netlify if single-user
 
-    // ⚠️ If you map by user/number, look up owner by `to`
-    // Example: if you store per-user outbound number in a table:
-    let userId = null;
-
-    // If you use a single global TFN:
-    const { data: users } = await supabase
-      .from("profiles")
-      .select("id")
-      .limit(1);
-    userId = users?.[0]?.id || null;
-
-    await supabase.from("messages").insert({
+    const { error } = await supabase.from("messages").insert({
       user_id: userId,
       provider: "telnyx",
       direction: "in",
-      from_number: from,
-      to_number: to,
+      from_number: fromNum,
+      to_number: toNum,
       body: text,
-      provider_sid: providerSid,
       status: "received",
+      provider_sid: providerId,
     });
 
-    return { statusCode: 200, body: "ok" };
+    if (error) {
+      console.error("inbound insert error", error);
+      return { statusCode: 500, body: "DB insert failed" };
+    }
+
+    return { statusCode: 200, body: JSON.stringify({ ok: true }) };
   } catch (e) {
-    console.error("[telnyx-inbound] error:", e);
-    return { statusCode: 500, body: "err" };
+    console.error("inbound fatal", e);
+    return { statusCode: 500, body: "error" };
   }
-};
+}
