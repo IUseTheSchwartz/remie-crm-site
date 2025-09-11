@@ -86,6 +86,47 @@ function Toggle({ checked, onChange, label }) {
   );
 }
 
+/* ---------- Template filler (for Test) ---------- */
+function formatToday() {
+  try {
+    const d = new Date();
+    return d.toLocaleDateString(undefined, { year: "numeric", month: "long", day: "numeric" });
+  } catch {
+    return "Today";
+  }
+}
+function fillTemplate(text, data) {
+  if (!text) return "";
+  const map = {
+    ...data,
+    today: data?.today || formatToday(),
+    full_name: data?.full_name || [data?.first_name, data?.last_name].filter(Boolean).join(" ").trim(),
+  };
+  return text.replace(/{{\s*([\w.]+)\s*}}/g, (_, key) => {
+    const v = map[key];
+    return v == null ? "" : String(v);
+  });
+}
+
+/* Default test values shown in the preview form */
+const DEFAULT_TEST_DATA = {
+  first_name: "Jacob",
+  last_name: "Prieto",
+  agent_name: "Jacob Prieto",
+  company: "Prieto Insurance Solutions LLC",
+  agent_phone: "(555) 123-4567",
+  agent_email: "jacob@example.com",
+  appt_time: "Tue 3:30 PM",
+  carrier: "Americo",
+  policy_number: "A1B2C3D4",
+  premium: "84.12",
+  state: "TN",
+  beneficiary: "Maria Prieto",
+  military_branch: "US Army",
+  calendly_link: "https://calendly.com/your-link",
+  today: "", // auto-fills if left blank
+};
+
 export default function MessagingSettings() {
   const [loading, setLoading] = useState(true);
 
@@ -115,6 +156,11 @@ export default function MessagingSettings() {
   // Drawer state
   const [cheatOpen, setCheatOpen] = useState(false);
 
+  // --- Test preview state (NEW) ---
+  const [testOpen, setTestOpen] = useState(false);
+  const [testKey, setTestKey] = useState(null); // which template we're previewing
+  const [testData, setTestData] = useState({ ...DEFAULT_TEST_DATA });
+
   const balanceDollars = (balanceCents / 100).toFixed(2);
 
   /* -------- Load data -------- */
@@ -142,7 +188,7 @@ export default function MessagingSettings() {
       setBalanceCents(wallet?.balance_cents || 0);
 
       // templates + enabled flags
-      const { data: tmpl, error: tmplErr } = await supabase
+      const { data: tmpl } = await supabase
         .from("message_templates")
         .select("templates, enabled") // 'enabled' may or may not exist in your schema
         .eq("user_id", uid)
@@ -165,9 +211,10 @@ export default function MessagingSettings() {
       // Enabled flags: prefer row.enabled; else templates.__enabled; else defaults
       let initialEnabled = { ...DEFAULT_ENABLED };
       const maybeEnabledFromCol = tmpl?.enabled && typeof tmpl.enabled === "object" ? tmpl.enabled : null;
-      const maybeEnabledFromTemplates = tmpl?.templates?.__enabled && typeof tmpl.templates.__enabled === "object"
-        ? tmpl.templates.__enabled
-        : null;
+      const maybeEnabledFromTemplates =
+        tmpl?.templates?.__enabled && typeof tmpl.templates.__enabled === "object"
+          ? tmpl.templates.__enabled
+          : null;
 
       if (maybeEnabledFromCol) {
         initialEnabled = { ...DEFAULT_ENABLED, ...maybeEnabledFromCol };
@@ -367,6 +414,11 @@ export default function MessagingSettings() {
     (k) => (templates[k] ?? "") === (DEFAULTS[k] ?? "")
   );
 
+  // --- Derived preview content
+  const activePreviewKey = testKey;
+  const activePreviewTemplate = activePreviewKey ? templates[activePreviewKey] ?? "" : "";
+  const activePreviewFilled = activePreviewKey ? fillTemplate(activePreviewTemplate, testData) : "";
+
   return (
     <div className="space-y-6">
       {/* Header */}
@@ -515,6 +567,19 @@ export default function MessagingSettings() {
                   >
                     <RotateCcw className="h-3.5 w-3.5" /> Reset
                   </button>
+
+                  {/* NEW: Test button */}
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setTestKey(key);
+                      setTestOpen(true);
+                    }}
+                    className="inline-flex items-center gap-1 rounded-md border border-white/15 bg-white/5 px-2 py-1 text-[11px] hover:bg-white/10"
+                    title="Preview with sample data"
+                  >
+                    Test
+                  </button>
                 </div>
 
                 <textarea
@@ -589,6 +654,83 @@ export default function MessagingSettings() {
               <pre className="whitespace-pre-wrap rounded-lg border border-white/10 bg-black/30 p-3 text-[11px] leading-5">
 {'"Hello {{first_name}}, this is {{agent_name}}. I see your {{military_branch}} background. Let’s connect to square away your coverage. (Text: {{agent_phone}} — no calls)"'}
               </pre>
+            </div>
+          </aside>
+        )}
+
+        {/* NEW: Test Preview Panel */}
+        {testOpen && (
+          <aside
+            className="fixed bottom-0 left-0 right-0 z-50 mx-auto w-full max-w-5xl rounded-t-2xl border border-white/10 bg-[#0b0b12] p-4 shadow-2xl"
+            role="dialog"
+            aria-modal="true"
+            aria-label="Template Test Preview"
+          >
+            <div className="mb-3 flex items-center justify-between">
+              <div className="inline-flex items-center gap-2">
+                <MessageSquare className="h-5 w-5" />
+                <h2 className="text-sm font-semibold">
+                  Test Preview — {TEMPLATE_DEFS.find(t => t.key === activePreviewKey)?.label || activePreviewKey}
+                </h2>
+              </div>
+              <button
+                type="button"
+                onClick={() => setTestOpen(false)}
+                className="rounded-lg border border-white/15 bg-white/5 px-2 py-1 text-xs hover:bg-white/10"
+              >
+                Close
+              </button>
+            </div>
+
+            <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+              {/* Test data form */}
+              <div className="rounded-xl border border-white/10 bg-white/[0.02] p-3">
+                <div className="mb-2 text-xs font-semibold">Test Data</div>
+                <div className="grid grid-cols-2 gap-2">
+                  {Object.keys(DEFAULT_TEST_DATA).map((k) => (
+                    <label key={k} className="text-[11px] text-white/70">
+                      <div className="mb-1">{k}</div>
+                      <input
+                        value={testData[k] ?? ""}
+                        onChange={(e) => setTestData((d) => ({ ...d, [k]: e.target.value }))}
+                        className="w-full rounded-md border border-white/15 bg-white/5 px-2 py-1 text-sm outline-none focus:ring-1 focus:ring-indigo-400/40"
+                        placeholder={String(DEFAULT_TEST_DATA[k] ?? "")}
+                      />
+                    </label>
+                  ))}
+                </div>
+
+                <div className="mt-3 flex flex-wrap gap-2">
+                  <button
+                    type="button"
+                    className="rounded-md border border-white/15 bg-white/5 px-2 py-1 text-[11px] hover:bg-white/10"
+                    onClick={() => setTestData({ ...DEFAULT_TEST_DATA })}
+                  >
+                    Reset Test Data
+                  </button>
+                  <button
+                    type="button"
+                    className="rounded-md border border-white/15 bg-white/5 px-2 py-1 text-[11px] hover:bg-white/10"
+                    onClick={() => {
+                      // force refresh preview (no-op set)
+                      setTestData((d) => ({ ...d }));
+                    }}
+                  >
+                    Refresh Preview
+                  </button>
+                </div>
+              </div>
+
+              {/* Filled preview */}
+              <div className="rounded-xl border border-white/10 bg-white/[0.02] p-3">
+                <div className="mb-2 text-xs font-semibold">Rendered Message</div>
+                <pre className="min-h-[180px] whitespace-pre-wrap rounded-lg border border-white/10 bg-black/30 p-3 text-[12px] leading-5">
+                  {activePreviewFilled}
+                </pre>
+                <div className="mt-2 text-[11px] text-white/50">
+                  Tokens like {"{{first_name}}"} are replaced using the Test Data on the left.
+                </div>
+              </div>
             </div>
           </aside>
         )}
