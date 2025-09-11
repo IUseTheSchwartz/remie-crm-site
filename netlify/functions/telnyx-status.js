@@ -1,41 +1,30 @@
-// netlify/functions/telnyx-status.js
-const { createClient } = require("@supabase/supabase-js");
-const supabase = createClient(
-  process.env.SUPABASE_URL,
-  process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_SERVICE_ROLE
-);
+import { createClient } from "@supabase/supabase-js";
 
-function mapStatus(s) {
-  s = String(s || "").toLowerCase();
-  if (["queued", "accepted"].includes(s)) return "queued";
-  if (["sending", "delivered"].includes(s)) return s;
-  if (["sent"].includes(s)) return "sending";
-  if (["undeliverable", "delivery_failed", "rejected"].includes(s)) return "failed";
-  return s;
-}
+const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_ROLE_KEY);
 
-exports.handler = async (event) => {
+export async function handler(event) {
   try {
-    if (event.httpMethod !== "POST") return { statusCode: 405, body: "Method Not Allowed" };
     const body = JSON.parse(event.body || "{}");
-    const evt = body?.data?.event_type;
-    const p = body?.data?.payload || {};
+    const data = body?.data || {};
+    const p = data.payload || {};
+    const id = p.id || p.message_id;
+    const status = p.status || p.to?.[0]?.status || data?.event_type || "unknown";
 
-    if (!evt || !p?.id) return { statusCode: 200, body: "ignored" };
+    if (!id) return { statusCode: 200, body: "no id" };
 
-    if (evt === "message.finalized" || evt === "message.delivered" || evt === "message.failed") {
-      const status = mapStatus(p?.to[0]?.status || p?.delivery_status || p?.status);
-      await supabase
-        .from("messages")
-        .update({ status })
-        .eq("provider_sid", p.id);
+    const { error } = await supabase
+      .from("messages")
+      .update({ status })
+      .eq("provider_sid", id);
 
-      return { statusCode: 200, body: "OK" };
+    if (error) {
+      console.error("status update error", error);
+      return { statusCode: 500, body: "DB update failed" };
     }
 
-    return { statusCode: 200, body: "ignored" };
+    return { statusCode: 200, body: JSON.stringify({ ok: true }) };
   } catch (e) {
-    console.error("[telnyx-status] error:", e);
-    return { statusCode: 500, body: "Internal error" };
+    console.error("status fatal", e);
+    return { statusCode: 200, body: "ok" }; // Telnyx retries if 5xx
   }
-};
+}
