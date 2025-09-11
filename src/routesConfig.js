@@ -30,6 +30,9 @@ import RebuttalChat from "./pages/RebuttalChat.jsx";
 // ---- Call Recorder ----
 import CallRecorder from "./pages/CallRecorder.jsx";
 
+// ---- Contacts (NEW) ----
+import ContactsPage from "./pages/ContactsPage.jsx";
+
 // Sidebar sections:
 // "top" → Top-Level (Most Used Daily)
 // "productivity" → Productivity & Communication
@@ -48,10 +51,11 @@ export const routes = [
   { key: "calendar", path: "/app/calendar", label: "Calendar", component: CalendarPage,              showInSidebar: true, section: "top" },
 
   // Productivity & Communication
-  { key: "msgSettings",  path: "/app/messaging-settings", label: "Messaging Settings", component: MessagingSettings, showInSidebar: true, section: "productivity" },
-  { key: "mailing",      path: "/app/mailing",            label: "Mailing",            component: MailingPage,      showInSidebar: true, section: "productivity" },
-  { key: "rebuttal",     path: "/app/rebuttal",           label: "AI Rebuttal Helper", component: RebuttalChat,     showInSidebar: true, section: "productivity" },
-  { key: "call-recorder",path: "/app/call-recorder",      label: "Call Recorder",      component: CallRecorder,     showInSidebar: true, section: "productivity" },
+  { key: "contacts",     path: "/app/contacts",           label: "Contacts",            component: ContactsPage,     showInSidebar: true, section: "productivity" }, // NEW
+  { key: "msgSettings",  path: "/app/messaging-settings", label: "Messaging Settings",  component: MessagingSettings, showInSidebar: true, section: "productivity" },
+  { key: "mailing",      path: "/app/mailing",            label: "Mailing",             component: MailingPage,      showInSidebar: true, section: "productivity" },
+  { key: "rebuttal",     path: "/app/rebuttal",           label: "AI Rebuttal Helper",  component: RebuttalChat,     showInSidebar: true, section: "productivity" },
+  { key: "call-recorder",path: "/app/call-recorder",      label: "Call Recorder",       component: CallRecorder,     showInSidebar: true, section: "productivity" },
 
   // Insights & Tools
   { key: "reports", path: "/app/reports", label: "Reports",     component: ReportsPage, showInSidebar: true, section: "insights_tools" },
@@ -62,9 +66,9 @@ export const routes = [
   // (If you add "View My Agent Site" route, place it here too.)
 
   // Teams
-  { key: "my-teams",       path: "/app/teams",                 label: "My Teams",       component: MyTeams,        showInSidebar: true,  section: "teams" },
-  { key: "team-manage",    path: "/app/team/manage/:teamId",   label: "Manage Team",    component: TeamManagement, showInSidebar: false, section: "hidden" },
-  { key: "team-dashboard", path: "/app/team/:teamId/dashboard",label: "Team Dashboard", component: TeamDashboard,  showInSidebar: false, section: "hidden" },
+  { key: "my-teams",       path: "/app/teams",                  label: "My Teams",       component: MyTeams,        showInSidebar: true,  section: "teams" },
+  { key: "team-manage",    path: "/app/team/manage/:teamId",    label: "Manage Team",    component: TeamManagement, showInSidebar: false, section: "hidden" },
+  { key: "team-dashboard", path: "/app/team/:teamId/dashboard", label: "Team Dashboard", component: TeamDashboard,  showInSidebar: false, section: "hidden" },
 
   // Bottom (Account & Help)
   { key: "settings", path: "/app/settings", label: "Settings", component: SettingsPage, showInSidebar: true, section: "bottom" },
