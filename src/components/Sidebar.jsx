@@ -25,6 +25,26 @@ import {
   X,
 } from "lucide-react";
 
+/* ---------------- Gradient stroke helper for Lucide icons ----------------
+   This paints the SVG stroke using a <linearGradient>, giving a true
+   gradient-colored icon (not a background).
+   - `id` must be unique per instance to avoid collisions in the DOM.
+   - The gradient matches your brand: indigo → purple → fuchsia.
+--------------------------------------------------------------------------- */
+function GradientStrokeIcon({ Icon, id, className = "" }) {
+  return (
+    <Icon className={className} stroke={`url(#${id})`}>
+      <defs>
+        <linearGradient id={id} x1="0" y1="0" x2="1" y2="1">
+          <stop offset="0%" stopColor="#6366f1" />  {/* indigo-500 */}
+          <stop offset="50%" stopColor="#a855f7" /> {/* purple-500 */}
+          <stop offset="100%" stopColor="#d946ef" />{/* fuchsia-500 */}
+        </linearGradient>
+      </defs>
+    </Icon>
+  );
+}
+
 /* ---------- Icon map by label (fallback to no icon) ---------- */
 const ICONS = {
   Home: HomeIcon,
@@ -47,20 +67,25 @@ const ICONS = {
 
 function ItemLink({ r, onNavigate }) {
   const Icon = ICONS[r.label] || null;
+  const gradId = `remie-grad-${r.key || r.label.replace(/\s+/g, "-").toLowerCase()}`;
   return (
     <NavLink
       to={r.path}
       onClick={onNavigate}
       className={({ isActive }) =>
         [
-          "flex items-center gap-2 px-3 py-2 rounded-md",
+          "flex items-center gap-2 px-3 py-2 rounded-md transition",
           isActive
             ? "bg-white/10 text-white"
             : "text-white/80 hover:bg-white/10 hover:text-white",
         ].join(" ")
       }
     >
-      {Icon ? <Icon className="w-4 h-4 shrink-0" /> : <span className="w-4" />}
+      {Icon ? (
+        <GradientStrokeIcon Icon={Icon} id={gradId} className="w-4 h-4 shrink-0" />
+      ) : (
+        <span className="w-4" />
+      )}
       <span>{r.label}</span>
     </NavLink>
   );
