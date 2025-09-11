@@ -52,6 +52,9 @@ export default function PrivacyPage() {
         <p className="mt-2 text-white/80">
           If you use messaging features, you must obtain appropriate consent from recipients and honor opt-outs. You are responsible for the content of your messages and for compliance with TCPA, CAN-SPAM, CTIA guidelines, and applicable state laws.
         </p>
+        <p className="mt-2 text-white/80">
+          By providing your phone number and opting in, you consent to receive SMS messages from {BRAND}. Message frequency may vary, typically 2–3 messages per week depending on account activity. Message and data rates may apply. You can opt out at any time by replying STOP, or get help by replying HELP.
+        </p>
 
         <h2 className="mt-8 text-xl font-semibold">5. Data retention</h2>
         <p className="mt-2 text-white/80">
