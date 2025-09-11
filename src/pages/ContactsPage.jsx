@@ -5,13 +5,13 @@ import {
   Loader2,
   Trash2,
   Search,
-  UserPlus,
-  AlertTriangle,
-  CheckCircle2,
   MessageSquare,
+  X,
+  Plus,
+  CheckCircle2,
 } from "lucide-react";
 
-// The templates we support (same keys you use elsewhere)
+/* ---------------- Templates catalog (global enable switches) ---------------- */
 const TEMPLATE_DEFS = [
   { key: "new_lead", label: "New Lead" },
   { key: "new_lead_military", label: "New Lead (military)" },
@@ -22,7 +22,81 @@ const TEMPLATE_DEFS = [
   { key: "holiday_text", label: "Holiday" },
 ];
 
-const DEFAULT_ENABLED = Object.fromEntries(TEMPLATE_DEFS.map(t => [t.key, false]));
+const DEFAULT_ENABLED = Object.fromEntries(TEMPLATE_DEFS.map((t) => [t.key, false]));
+
+/* ---------------- Helpers ---------------- */
+function normalizeTag(s) {
+  return String(s || "")
+    .trim()
+    .toLowerCase()
+    .replace(/\s+/g, "_"); // "Birthday Text" -> "birthday_text"
+}
+function uniqueTags(arr) {
+  const out = [];
+  const seen = new Set();
+  for (const t of arr || []) {
+    const n = normalizeTag(t);
+    if (n && !seen.has(n)) {
+      seen.add(n);
+      out.push(n);
+    }
+  }
+  return out;
+}
+
+/**
+ * Decide which templates this contact is eligible for, given:
+ * - enabledMap (global switches)
+ * - contact tags
+ * - subscribed (must be true)
+ *
+ * Mapping rules (adjust to your strategy):
+ * - 'sold' tag -> 'sold' template
+ * - 'birthday_text' or 'bday' tag -> 'birthday_text' template
+ * - 'holiday_text' or 'holiday' tag -> 'holiday_text' template
+ * - 'payment_reminder' or 'payment' tag -> 'payment_reminder' template
+ * - 'appointment' tag -> 'appointment' template
+ * - 'lead' tag -> 'new_lead' template
+ * (new_lead_military not auto-mapped here; usually triggered by a field, not a tag)
+ */
+function eligibleTemplatesForContact({ tags = [], subscribed }, enabledMap) {
+  if (!subscribed) return []; // can't send if unsubscribed
+
+  const set = new Set(tags.map(normalizeTag));
+  const elig = [];
+
+  if (enabledMap.sold && set.has("sold")) elig.push({ key: "sold", label: "Sold" });
+
+  if (enabledMap.birthday_text && (set.has("birthday_text") || set.has("bday"))) {
+    elig.push({ key: "birthday_text", label: "Birthday" });
+  }
+
+  if (enabledMap.holiday_text && (set.has("holiday_text") || set.has("holiday"))) {
+    elig.push({ key: "holiday_text", label: "Holiday" });
+  }
+
+  if (
+    enabledMap.payment_reminder &&
+    (set.has("payment_reminder") || set.has("payment"))
+  ) {
+    elig.push({ key: "payment_reminder", label: "Payment" });
+  }
+
+  if (enabledMap.appointment && set.has("appointment")) {
+    elig.push({ key: "appointment", label: "Appointment" });
+  }
+
+  if (enabledMap.new_lead && set.has("lead")) {
+    elig.push({ key: "new_lead", label: "New Lead" });
+  }
+
+  // Example: if you want to treat 'military' tag as the military template
+  if (enabledMap.new_lead_military && set.has("military")) {
+    elig.push({ key: "new_lead_military", label: "New Lead (military)" });
+  }
+
+  return elig;
+}
 
 export default function ContactsPage() {
   const [loading, setLoading] = useState(true);
@@ -30,7 +104,16 @@ export default function ContactsPage() {
   const [enabledMap, setEnabledMap] = useState({ ...DEFAULT_ENABLED });
 
   const [q, setQ] = useState("");
-  const [confirm, setConfirm] = useState({ open: false, contact: null, deleting: false, error: "" });
+  const [confirm, setConfirm] = useState({
+    open: false,
+    contact: null,
+    deleting: false,
+    error: "",
+  });
+
+  // Inline tag editor state per-contact
+  const [tagDraft, setTagDraft] = useState({}); // { [contactId]: "" }
+  const [savingTagIds, setSavingTagIds] = useState(new Set()); // contacts currently saving
 
   useEffect(() => {
     let mounted = true;
@@ -45,7 +128,7 @@ export default function ContactsPage() {
         return;
       }
 
-      // 2) Get global enabled flags (from message_templates.enabled)
+      // 2) Get global enabled flags
       const { data: mtRow } = await supabase
         .from("message_templates")
         .select("enabled")
@@ -59,10 +142,10 @@ export default function ContactsPage() {
       if (!mounted) return;
       setEnabledMap(initialEnabled);
 
-      // 3) Get contacts on message list
+      // 3) Get contacts (include subscribed for eligibility)
       const { data: rows, error } = await supabase
         .from("message_contacts")
-        .select("id, full_name, phone, tags, meta, created_at")
+        .select("id, full_name, phone, tags, meta, created_at, subscribed")
         .eq("user_id", userId)
         .order("created_at", { ascending: false });
 
@@ -71,7 +154,12 @@ export default function ContactsPage() {
         console.error(error);
         setContacts([]);
       } else {
-        setContacts(rows || []);
+        // normalize tags client-side
+        const normalized = (rows || []).map((c) => ({
+          ...c,
+          tags: uniqueTags(c.tags || []),
+        }));
+        setContacts(normalized);
       }
 
       setLoading(false);
@@ -86,10 +174,11 @@ export default function ContactsPage() {
     const s = q.trim().toLowerCase();
     if (!s) return contacts;
     return contacts.filter((c) => {
+      const tagsStr = Array.isArray(c.tags) ? c.tags.join(",").toLowerCase() : "";
       return (
         (c.full_name || "").toLowerCase().includes(s) ||
         (c.phone || "").toLowerCase().includes(s) ||
-        (Array.isArray(c.tags) ? c.tags.join(",").toLowerCase() : "").includes(s)
+        tagsStr.includes(s)
       );
     });
   }, [contacts, q]);
@@ -113,7 +202,87 @@ export default function ContactsPage() {
       setContacts((prev) => prev.filter((c) => c.id !== confirm.contact.id));
       closeConfirm();
     } catch (e) {
-      setConfirm((c) => ({ ...c, deleting: false, error: e.message || "Failed to delete." }));
+      setConfirm((c) => ({
+        ...c,
+        deleting: false,
+        error: e.message || "Failed to delete.",
+      }));
+    }
+  }
+
+  /* ---------------- Tag editing actions ---------------- */
+
+  async function addTag(contact) {
+    const contactId = contact.id;
+    const draft = normalizeTag(tagDraft[contactId] || "");
+    if (!draft) return;
+
+    const nextTags = uniqueTags([...(contact.tags || []), draft]);
+    if (nextTags.join(",") === (contact.tags || []).join(",")) {
+      // no change
+      setTagDraft((d) => ({ ...d, [contactId]: "" }));
+      return;
+    }
+
+    // optimistic UI
+    setContacts((prev) =>
+      prev.map((c) => (c.id === contactId ? { ...c, tags: nextTags } : c))
+    );
+    setSavingTagIds((s) => new Set(s).add(contactId));
+
+    try {
+      const { error } = await supabase
+        .from("message_contacts")
+        .update({ tags: nextTags })
+        .eq("id", contactId);
+      if (error) throw error;
+      setTagDraft((d) => ({ ...d, [contactId]: "" }));
+    } catch (e) {
+      // rollback on error
+      setContacts((prev) =>
+        prev.map((c) => (c.id === contactId ? { ...c, tags: contact.tags } : c))
+      );
+      alert(e.message || "Failed to add tag.");
+    } finally {
+      setSavingTagIds((s) => {
+        const n = new Set(s);
+        n.delete(contactId);
+        return n;
+      });
+    }
+  }
+
+  async function removeTag(contact, tagToRemove) {
+    const contactId = contact.id;
+    const nextTags = (contact.tags || []).filter(
+      (t) => normalizeTag(t) !== normalizeTag(tagToRemove)
+    );
+
+    // optimistic UI
+    const prevTags = contact.tags || [];
+    setContacts((prev) =>
+      prev.map((c) => (c.id === contactId ? { ...c, tags: nextTags } : c))
+    );
+    setSavingTagIds((s) => new Set(s).add(contactId));
+
+    try {
+      const { error } = await supabase
+        .from("message_contacts")
+        .update({ tags: nextTags })
+        .eq("id", contactId);
+      if (error) throw error;
+    } catch (e) {
+      // rollback
+      setContacts((prev) =>
+        prev.map((c) => (c.id === contactId ? { ...c, tags: prevTags } : c))
+      );
+      alert(e.message || "Failed to remove tag.");
+    } finally {
+      setSavingTagIds((s) => {
+        const n = new Set(s);
+        n.delete(contactId);
+        return n;
+      });
     }
   }
 
@@ -128,8 +297,8 @@ export default function ContactsPage() {
           <div className="flex-1 min-w-0">
             <h1 className="text-lg font-semibold">Contacts on Messaging List</h1>
             <p className="text-sm text-white/70">
-              View who is eligible to receive automated messages and what templates are enabled globally.
-              Delete a contact to stop future messages immediately.
+              View & manage tags. A contact receives a template only if it’s globally enabled,
+              the contact is subscribed, and their tags match that template’s audience.
             </p>
           </div>
         </div>
@@ -154,9 +323,13 @@ export default function ContactsPage() {
               <span>Enabled templates:</span>
             </span>
             <span className="ml-2">
-              {TEMPLATE_DEFS.filter(t => enabledMap[t.key]).length === 0
-                ? <span className="text-white/50">None</span>
-                : TEMPLATE_DEFS.filter(t => enabledMap[t.key]).map(t => t.label).join(", ")}
+              {TEMPLATE_DEFS.filter((t) => enabledMap[t.key]).length === 0 ? (
+                <span className="text-white/50">None</span>
+              ) : (
+                TEMPLATE_DEFS.filter((t) => enabledMap[t.key])
+                  .map((t) => t.label)
+                  .join(", ")
+              )}
             </span>
           </div>
         </div>
@@ -171,7 +344,8 @@ export default function ContactsPage() {
                 <th className="px-4 py-3 text-left font-medium text-white/70">Name</th>
                 <th className="px-4 py-3 text-left font-medium text-white/70">Phone</th>
                 <th className="px-4 py-3 text-left font-medium text-white/70">Tags</th>
-                <th className="px-4 py-3 text-left font-medium text-white/70">Templates (enabled)</th>
+                <th className="px-4 py-3 text-left font-medium text-white/70">Eligible (by tags)</th>
+                <th className="px-4 py-3 text-left font-medium text-white/70">Subscribed</th>
                 <th className="px-4 py-3 text-right font-medium text-white/70">Actions</th>
               </tr>
             </thead>
@@ -179,7 +353,7 @@ export default function ContactsPage() {
             <tbody>
               {loading ? (
                 <tr>
-                  <td colSpan={5} className="px-4 py-10 text-center text-white/70">
+                  <td colSpan={6} className="px-4 py-10 text-center text-white/70">
                     <div className="inline-flex items-center gap-2">
                       <Loader2 className="h-4 w-4 animate-spin" />
                       Loading…
@@ -188,70 +362,134 @@ export default function ContactsPage() {
                 </tr>
               ) : filtered.length === 0 ? (
                 <tr>
-                  <td colSpan={5} className="px-4 py-10 text-center text-white/60">
+                  <td colSpan={6} className="px-4 py-10 text-center text-white/60">
                     No contacts found.
                   </td>
                 </tr>
               ) : (
-                filtered.map((c) => (
-                  <tr key={c.id} className="border-b border-white/5 hover:bg-white/[0.03]">
-                    <td className="px-4 py-3">
-                      <div className="font-medium">{c.full_name || "—"}</div>
-                      <div className="text-xs text-white/50">{new Date(c.created_at).toLocaleString()}</div>
-                    </td>
-                    <td className="px-4 py-3">{c.phone || "—"}</td>
-                    <td className="px-4 py-3">
-                      {Array.isArray(c.tags) && c.tags.length > 0 ? (
-                        <div className="flex flex-wrap gap-1">
-                          {c.tags.map((t) => (
-                            <span
-                              key={t}
-                              className="rounded-full bg-white/5 px-2 py-0.5 text-[11px] text-white/70 ring-1 ring-white/10"
-                            >
-                              {t}
-                            </span>
-                          ))}
+                filtered.map((c) => {
+                  const eligible = eligibleTemplatesForContact(c, enabledMap);
+                  const saving = savingTagIds.has(c.id);
+                  return (
+                    <tr key={c.id} className="border-b border-white/5 hover:bg-white/[0.03]">
+                      <td className="px-4 py-3">
+                        <div className="font-medium">{c.full_name || "—"}</div>
+                        <div className="text-xs text-white/50">
+                          {new Date(c.created_at).toLocaleString()}
                         </div>
-                      ) : (
-                        <span className="text-white/50">—</span>
-                      )}
-                    </td>
-                    <td className="px-4 py-3">
-                      {/* Show only enabled templates as badges */}
-                      {TEMPLATE_DEFS.filter(t => enabledMap[t.key]).length === 0 ? (
-                        <span className="text-white/50">None</span>
-                      ) : (
-                        <div className="flex flex-wrap gap-1">
-                          {TEMPLATE_DEFS.filter(t => enabledMap[t.key]).map(t => (
-                            <span
-                              key={t.key}
-                              className="rounded-full bg-emerald-500/10 px-2 py-0.5 text-[11px] text-emerald-300 ring-1 ring-emerald-400/20"
-                            >
-                              {t.label}
-                            </span>
-                          ))}
+                      </td>
+                      <td className="px-4 py-3">{c.phone || "—"}</td>
+
+                      {/* Tags with add/remove editor */}
+                      <td className="px-4 py-3">
+                        <div className="flex flex-wrap items-center gap-1">
+                          {Array.isArray(c.tags) && c.tags.length > 0 ? (
+                            c.tags.map((t) => (
+                              <span
+                                key={t}
+                                className="inline-flex items-center gap-1 rounded-full bg-white/5 px-2 py-0.5 text-[11px] text-white/70 ring-1 ring-white/10"
+                              >
+                                {t}
+                                <button
+                                  onClick={() => removeTag(c, t)}
+                                  className="ml-1 rounded hover:bg-white/10 p-0.5"
+                                  title="Remove tag"
+                                  disabled={saving}
+                                >
+                                  <X className="h-3 w-3 opacity-70" />
+                                </button>
+                              </span>
+                            ))
+                          ) : (
+                            <span className="text-white/50">—</span>
+                          )}
                         </div>
-                      )}
-                    </td>
-                    <td className="px-4 py-3 text-right">
-                      <button
-                        onClick={() => openConfirm(c)}
-                        className="inline-flex items-center gap-1 rounded-lg border border-white/15 bg-white/5 px-3 py-1.5 text-xs hover:bg-white/10"
-                        title="Delete contact (stop future messages)"
-                      >
-                        <Trash2 className="h-4 w-4" />
-                        Delete
-                      </button>
-                    </td>
-                  </tr>
-                ))
+
+                        {/* Add tag input */}
+                        <div className="mt-2 flex items-center gap-2">
+                          <input
+                            value={tagDraft[c.id] || ""}
+                            onChange={(e) =>
+                              setTagDraft((d) => ({ ...d, [c.id]: e.target.value }))
+                            }
+                            onKeyDown={(e) => {
+                              if (e.key === "Enter") addTag(c);
+                            }}
+                            placeholder="Add tag (e.g., sold, bday)…"
+                            className="w-44 rounded-lg border border-white/15 bg-white/5 px-2 py-1 text-xs text-white/90 placeholder:text-white/40 outline-none"
+                            disabled={saving}
+                          />
+                          <button
+                            onClick={() => addTag(c)}
+                            disabled={saving || !tagDraft[c.id]}
+                            className="inline-flex items-center gap-1 rounded-lg border border-white/15 bg-white/5 px-2 py-1 text-xs hover:bg-white/10 disabled:opacity-50"
+                            title="Add tag"
+                          >
+                            {saving ? (
+                              <>
+                                <Loader2 className="h-3.5 w-3.5 animate-spin" /> Saving…
+                              </>
+                            ) : (
+                              <>
+                                <Plus className="h-3.5 w-3.5" /> Add
+                              </>
+                            )}
+                          </button>
+                        </div>
+                      </td>
+
+                      {/* Eligible templates display */}
+                      <td className="px-4 py-3">
+                        {c.subscribed ? (
+                          eligible.length === 0 ? (
+                            <span className="text-white/50">None</span>
+                          ) : (
+                            <div className="flex flex-wrap gap-1">
+                              {eligible.map((e) => (
+                                <span
+                                  key={e.key}
+                                  className="rounded-full bg-emerald-500/10 px-2 py-0.5 text-[11px] text-emerald-300 ring-1 ring-emerald-400/20"
+                                >
+                                  {e.label}
+                                </span>
+                              ))}
+                            </div>
+                          )
+                        ) : (
+                          <span className="text-white/50">Unsubscribed</span>
+                        )}
+                      </td>
+
+                      {/* Subscribed */}
+                      <td className="px-4 py-3">
+                        {c.subscribed ? (
+                          <span className="text-emerald-300">Yes</span>
+                        ) : (
+                          <span className="text-white/50">No</span>
+                        )}
+                      </td>
+
+                      {/* Actions */}
+                      <td className="px-4 py-3 text-right">
+                        <button
+                          onClick={() => openConfirm(c)}
+                          className="inline-flex items-center gap-1 rounded-lg border border-white/15 bg-white/5 px-3 py-1.5 text-xs hover:bg-white/10"
+                          title="Delete contact (stop future messages)"
+                        >
+                          <Trash2 className="h-4 w-4" />
+                          Delete
+                        </button>
+                      </td>
+                    </tr>
+                  );
+                })
               )}
             </tbody>
           </table>
         </div>
       </section>
 
-      {/* Confirm delete drawer/modal */}
+      {/* Confirm delete modal */}
       {confirm.open && (
         <div
           role="dialog"
@@ -264,12 +502,14 @@ export default function ContactsPage() {
             onClick={(e) => e.stopPropagation()}
           >
             <div className="mb-3 flex items-center gap-2">
-              <AlertTriangle className="h-5 w-5 text-amber-300" />
+              <MessageSquare className="h-5 w-5 text-amber-300" />
               <h2 className="text-sm font-semibold">Delete contact?</h2>
             </div>
             <p className="text-sm text-white/70">
               This will remove{" "}
-              <span className="font-medium">{confirm.contact?.full_name || confirm.contact?.phone}</span>{" "}
+              <span className="font-medium">
+                {confirm.contact?.full_name || confirm.contact?.phone}
+              </span>{" "}
               from your messaging list so they won’t receive future automated messages.
               This action cannot be undone.
             </p>
