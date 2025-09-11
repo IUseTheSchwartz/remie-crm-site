@@ -8,7 +8,7 @@ import Logo from "../assets/logo-tight.png";
 import {
   Home as HomeIcon,
   Users,
-  Pipeline,
+  KanbanSquare as PipelineIcon, // ✅ replace Pipeline with KanbanSquare
   MessagesSquare,
   Calendar as CalendarIcon,
   Settings as SettingsIcon,
@@ -28,7 +28,7 @@ import {
 const ICONS = {
   Home: HomeIcon,
   Leads: Users,
-  Pipeline,
+  Pipeline: PipelineIcon, // ✅ use PipelineIcon here
   Messages: MessagesSquare,
   Calendar: CalendarIcon,
   "Messaging Settings": SettingsIcon,
@@ -64,7 +64,7 @@ function ItemLink({ r }) {
   );
 }
 
-/* ---------- View/Preview My Agent Site (moved here from App.jsx) ---------- */
+/* ---------- View/Preview My Agent Site ---------- */
 function ViewAgentSiteLink() {
   const [slug, setSlug] = useState("");
   const [published, setPublished] = useState(false);
