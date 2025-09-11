@@ -1,4 +1,9 @@
 // File: src/routesConfig.js
+// Minimal, backwards-compatible update:
+// - Adds `section` to control sidebar grouping
+// - Renames "Tools" -> "Agent Tools" (UI label only; path unchanged)
+// - Moves Settings/Support to bottom section via `section: "bottom"`
+
 import DashboardHome from "./pages/DashboardHome.jsx";
 import LeadsPage from "./pages/LeadsPage.jsx";
 import PipelinePage from "./pages/PipelinePage.jsx";
@@ -14,7 +19,7 @@ import SupportPage from "./pages/SupportPage.jsx";
 import TermsPage from "./pages/legal/Terms.jsx";
 import PrivacyPage from "./pages/legal/Privacy.jsx";
 
-// ---- Team pages (NEW) ----
+// ---- Team pages ----
 import MyTeams from "./pages/MyTeams.jsx";
 import TeamManagement from "./pages/TeamManagement.jsx";
 import TeamDashboard from "./pages/TeamDashboard.jsx";
@@ -22,49 +27,64 @@ import TeamDashboard from "./pages/TeamDashboard.jsx";
 // ---- Admin-only Support Inbox (wrapper with ProtectedRoute) ----
 import AdminSupportInbox from "./pages/AdminSupportInbox.jsx";
 
-// ---- AI Rebuttal Helper (NEW) ----
+// ---- AI Rebuttal Helper ----
 import RebuttalChat from "./pages/RebuttalChat.jsx";
 
-// ---- Call Recorder (NEW) ----
+// ---- Call Recorder ----
 import CallRecorder from "./pages/CallRecorder.jsx";
 
+// SECTION KEYS used by Sidebar:
+// "top"                      → Top-Level (Most Used Daily)
+// "productivity"             → Productivity & Communication
+// "insights_tools"           → Insights & Tools
+// "agent_site"               → Agent Site Management
+// "teams"                    → Teams
+// "bottom"                   → Account & Help (footer area)
+// anything else or omitted   → hidden from sidebar unless showInSidebar true with known section
+
 export const routes = [
-  { key: "home",     path: "/app",            label: "Home",     component: DashboardHome, index: true,  showInSidebar: true, group: "main" },
-  { key: "leads",    path: "/app/leads",      label: "Leads",    component: LeadsPage,                    showInSidebar: true, group: "main" },
-  { key: "pipeline", path: "/app/pipeline",   label: "Pipeline", component: PipelinePage,                 showInSidebar: true, group: "main" },
-  { key: "reports",  path: "/app/reports",    label: "Reports",  component: ReportsPage,                  showInSidebar: true, group: "main" },
-  { key: "messages", path: "/app/messages",   label: "Messages", component: MessagesPage,                 showInSidebar: true, group: "main" },
-  { key: "msgSettings", path: "/app/messaging-settings", label: "Messaging Settings", component: MessagingSettings, showInSidebar: true, group: "main" },
-  { key: "mailing",  path: "/app/mailing",    label: "Mailing",  component: MailingPage,                  showInSidebar: true, group: "main" },
-  { key: "calendar", path: "/app/calendar",   label: "Calendar", component: CalendarPage,                 showInSidebar: true, group: "main" },
-  { key: "tools",    path: "/app/tools",      label: "Tools",    component: ToolsPage,                    showInSidebar: true, group: "main" },
+  // Top-level (Most Used Daily)
+  { key: "home",     path: "/app",            label: "Home",     component: DashboardHome, index: true,  showInSidebar: true, section: "top" },
+  { key: "leads",    path: "/app/leads",      label: "Leads",    component: LeadsPage,                    showInSidebar: true, section: "top" },
+  { key: "pipeline", path: "/app/pipeline",   label: "Pipeline", component: PipelinePage,                 showInSidebar: true, section: "top" },
+  { key: "messages", path: "/app/messages",   label: "Messages", component: MessagesPage,                 showInSidebar: true, section: "top" },
+  { key: "calendar", path: "/app/calendar",   label: "Calendar", component: CalendarPage,                 showInSidebar: true, section: "top" },
 
-  { key: "settings", path: "/app/settings",   label: "Settings", component: SettingsPage,                 showInSidebar: true, group: "main" },
+  // Productivity & Communication
+  { key: "msgSettings", path: "/app/messaging-settings", label: "Messaging Settings", component: MessagingSettings, showInSidebar: true, section: "productivity" },
+  { key: "mailing",     path: "/app/mailing",             label: "Mailing",             component: MailingPage,     showInSidebar: true, section: "productivity" },
+  { key: "rebuttal",    path: "/app/rebuttal",            label: "AI Rebuttal Helper", component: RebuttalChat,    showInSidebar: true, section: "productivity" },
+  { key: "call-recorder", path: "/app/call-recorder",     label: "Call Recorder",      component: CallRecorder,    showInSidebar: true, section: "productivity" },
 
-  { key: "agentShowcase", path: "/app/agent/showcase", label: "Edit Agent Site", component: AgentShowcase, showInSidebar: true, group: "agent" },
+  // Insights & Tools
+  { key: "reports",  path: "/app/reports",  label: "Reports",     component: ReportsPage,  showInSidebar: true, section: "insights_tools" },
+  // UI shows "Agent Tools" but keeps your existing /app/tools route
+  { key: "tools",    path: "/app/tools",    label: "Agent Tools", component: ToolsPage,    showInSidebar: true, section: "insights_tools" },
 
-  { key: "support", path: "/app/support", label: "Support", component: SupportPage, showInSidebar: true, group: "agent" },
+  // Agent Site Management
+  { key: "agentShowcase", path: "/app/agent/showcase", label: "Edit Agent Site", component: AgentShowcase, showInSidebar: true, section: "agent_site" },
+  // (Optional) If you have a “View My Agent Site” route/page, add it here with section: "agent_site"
 
-  // Admin-only Support Inbox (hidden from sidebar; show conditionally in Sidebar)
+  // Teams
+  { key: "my-teams",       path: "/app/teams",                 label: "My Teams",       component: MyTeams,        showInSidebar: true,  section: "teams" },
+  { key: "team-manage",    path: "/app/team/manage/:teamId",   label: "Manage Team",    component: TeamManagement, showInSidebar: false, section: "teams" },
+  { key: "team-dashboard", path: "/app/team/:teamId/dashboard",label: "Team Dashboard", component: TeamDashboard,  showInSidebar: false, section: "teams" },
+
+  // Bottom (Account & Help)
+  { key: "settings", path: "/app/settings", label: "Settings", component: SettingsPage, showInSidebar: true, section: "bottom" },
+  { key: "support",  path: "/app/support",  label: "Support",  component: SupportPage,  showInSidebar: true, section: "bottom" },
+
+  // Admin-only (hidden from sidebar)
   {
     key: "support-inbox",
     path: "/app/support-inbox",
     label: "Support Inbox",
     component: AdminSupportInbox,
     showInSidebar: false,
-    group: "agent",
+    section: "hidden",
   },
 
-  { key: "my-teams", path: "/app/teams", label: "My Teams", component: MyTeams, showInSidebar: true, group: "teams" },
-  { key: "team-manage", path: "/app/team/manage/:teamId", label: "Manage Team", component: TeamManagement, showInSidebar: false, group: "teams" },
-  { key: "team-dashboard", path: "/app/team/:teamId/dashboard", label: "Team Dashboard", component: TeamDashboard, showInSidebar: false, group: "teams" },
-
-  // ---- NEW: AI Rebuttal Helper ----
-  { key: "rebuttal", path: "/app/rebuttal", label: "AI Rebuttal Helper", component: RebuttalChat, showInSidebar: true, group: "tools" },
-
-  // ---- NEW: Call Recorder ----
-  { key: "call-recorder", path: "/app/call-recorder", label: "Call Recorder", component: CallRecorder, showInSidebar: true, group: "tools" },
-
-  { key: "terms",   path: "/legal/terms",   label: "Terms of Service", component: TermsPage,   showInSidebar: false, group: "legal" },
-  { key: "privacy", path: "/legal/privacy", label: "Privacy Policy",   component: PrivacyPage, showInSidebar: false, group: "legal" },
+  // Legal (hidden from sidebar)
+  { key: "terms",   path: "/legal/terms",   label: "Terms of Service", component: TermsPage,   showInSidebar: false, section: "hidden" },
+  { key: "privacy", path: "/legal/privacy", label: "Privacy Policy",   component: PrivacyPage, showInSidebar: false, section: "hidden" },
 ];
