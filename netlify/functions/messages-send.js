@@ -1,96 +1,73 @@
-// netlify/functions/messages-send.js
-import { createClient } from "@supabase/supabase-js";
+// File: netlify/functions/messages-send.js
 import fetch from "node-fetch";
+import { createClient } from "@supabase/supabase-js";
 
-// Supabase envs (make sure these exist in Netlify → Environment variables)
-const SUPABASE_URL = process.env.SUPABASE_URL;
-const SUPABASE_SERVICE_ROLE = process.env.SUPABASE_SERVICE_ROLE;
+/* ---------- Setup Supabase (Service Role) ---------- */
+const supabase = createClient(
+  process.env.SUPABASE_URL,
+  process.env.SUPABASE_SERVICE_ROLE
+);
 
-// Telnyx envs (make sure these exist too)
-const TELNYX_API_KEY = process.env.TELNYX_API_KEY;
-const TELNYX_MESSAGING_PROFILE_ID = process.env.TELNYX_MESSAGING_PROFILE_ID;
-const TELNYX_FROM_NUMBER = process.env.TELNYX_FROM_NUMBER;
-
-if (!SUPABASE_URL || !SUPABASE_SERVICE_ROLE) {
-  throw new Error("Missing SUPABASE_URL or SUPABASE_SERVICE_ROLE env vars");
-}
-if (!TELNYX_API_KEY || !TELNYX_MESSAGING_PROFILE_ID || !TELNYX_FROM_NUMBER) {
-  throw new Error("Missing Telnyx env vars");
-}
-
-// Supabase client with service role (server-side only)
-const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE);
-
+/* ---------- Main handler ---------- */
 export async function handler(event) {
   try {
     if (event.httpMethod !== "POST") {
       return { statusCode: 405, body: "Method Not Allowed" };
     }
 
-    const authHeader = event.headers.authorization || "";
-    const token = authHeader.replace("Bearer ", "");
+    const { to, body, lead_id, user_id } = JSON.parse(event.body || "{}");
 
-    // Verify user session with Supabase
-    const { data: userData, error: userError } = await supabase.auth.getUser(token);
-    if (userError || !userData?.user) {
-      return { statusCode: 401, body: "Unauthorized" };
-    }
-    const user = userData.user;
-
-    const { to, body } = JSON.parse(event.body || "{}");
-    if (!to || !body) {
-      return { statusCode: 400, body: "Missing 'to' or 'body'" };
+    if (!to || !body || !user_id) {
+      return { statusCode: 400, body: "Missing required fields" };
     }
 
-    // Call Telnyx SMS API
-    const telnyxResp = await fetch("https://api.telnyx.com/v2/messages", {
+    /* ---------- Send SMS via Telnyx ---------- */
+    const telnyxRes = await fetch("https://api.telnyx.com/v2/messages", {
       method: "POST",
       headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${TELNYX_API_KEY}`,
+        "Authorization": `Bearer ${process.env.TELNYX_API_KEY}`,
+        "Content-Type": "application/json"
       },
       body: JSON.stringify({
-        from: TELNYX_FROM_NUMBER,
+        from: process.env.TELNYX_MESSAGING_PROFILE_ID,
         to,
-        text: body,
-        messaging_profile_id: TELNYX_MESSAGING_PROFILE_ID,
-      }),
+        text: body
+      })
     });
 
-    const telnyxData = await telnyxResp.json();
-    if (!telnyxResp.ok) {
+    const telnyxData = await telnyxRes.json();
+
+    if (!telnyxRes.ok) {
       console.error("Telnyx error:", telnyxData);
-      return {
-        statusCode: 500,
-        body: JSON.stringify({ error: "Telnyx send failed", details: telnyxData }),
-      };
+      return { statusCode: 500, body: "Failed to send message" };
     }
 
-    // Save message in Supabase "messages" table
-    const { error: dbError } = await supabase.from("messages").insert([
-      {
-        user_id: user.id,
-        to_number: to,
-        from_number: TELNYX_FROM_NUMBER,
-        body,
-        direction: "out",
-        status: "queued",
-        created_at: new Date().toISOString(),
-        telnyx_message_id: telnyxData.data?.id || null,
-      },
-    ]);
+    const messageId = telnyxData.data?.id || null;
 
-    if (dbError) {
-      console.error("Supabase insert error:", dbError);
-      return { statusCode: 500, body: "Failed to save message to DB" };
+    /* ---------- Save record in Supabase ---------- */
+    const { error } = await supabase
+      .from("messages")
+      .insert({
+        user_id,
+        lead_id,
+        to_number: to,
+        body,
+        provider: "telnyx",
+        provider_message_id: messageId,
+        status: "queued"
+      });
+
+    if (error) {
+      console.error("Supabase insert error:", error);
+      return { statusCode: 500, body: "Message sent but failed to save" };
     }
 
     return {
       statusCode: 200,
-      body: JSON.stringify({ success: true, telnyx: telnyxData }),
+      body: JSON.stringify({ success: true, messageId })
     };
   } catch (err) {
-    console.error("messages-send error:", err);
-    return { statusCode: 500, body: "Server error: " + err.message };
+    console.error("Unhandled error:", err);
+    return { statusCode: 500, body: "Server error" };
   }
 }
