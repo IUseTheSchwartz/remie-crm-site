@@ -6,13 +6,6 @@ import { Send, CreditCard, Plus, Loader2, Trash2, Edit3 } from "lucide-react";
 
 /* ---------------- Phone helpers (US/CA default) ---------------- */
 
-/** Normalize arbitrary user input to E.164.
- * - Accepts "+1XXXXXXXXXX" as-is (spaces removed)
- * - Strips non-digits from local formats like "(615) 555-1234"
- * - If 10 digits, prefixes +1
- * - If 11 digits and starts with "1", prefixes +
- * - Returns null if it can't be made E.164 safely
- */
 function normalizeToE164_US_CA(input) {
   if (typeof input !== "string") return null;
   const trimmed = input.trim();
@@ -27,7 +20,6 @@ function normalizeToE164_US_CA(input) {
   return null;
 }
 
-/** Pretty local mask for small UI hints (does NOT affect what we send) */
 function formatPhoneLocalMask(p) {
   if (!p) return "";
   const d = String(p).replace(/\D+/g, "");
@@ -40,32 +32,10 @@ function formatPhoneLocalMask(p) {
   return p;
 }
 
-/** For contact map keys: 10 digits only */
 const normalizeDigits10 = (s) => {
   const d = String(s || "").replace(/\D/g, "");
   return d.length === 11 && d.startsWith("1") ? d.slice(1) : d.slice(0, 10);
 };
-
-/** Generate common storage variants so deletes catch old formats too */
-function numberVariants(numLike) {
-  const variants = new Set();
-  const e164 = normalizeToE164_US_CA(String(numLike));
-  const digits = String(numLike).replace(/\D/g, "");
-
-  if (e164) variants.add(e164);
-  if (digits.length === 10) {
-    variants.add(digits);             // 10 digits
-    variants.add("1" + digits);       // 11 digits no plus
-    variants.add("+1" + digits);      // E.164
-  } else if (digits.length === 11 && digits.startsWith("1")) {
-    variants.add(digits);             // 11 digits no plus
-    variants.add("+" + digits);       // +1XXXXXXXXXX
-    variants.add(digits.slice(1));    // 10 digits
-  }
-  // Also keep the raw just in case
-  variants.add(String(numLike).trim());
-  return Array.from(variants);
-}
 
 function classNames(...xs) {
   return xs.filter(Boolean).join(" ");
@@ -85,12 +55,12 @@ export default function MessagesPage() {
   );
 
   // Threads & conversation
-  const [threads, setThreads] = useState([]); // [{partnerNumber, lastMessage, lastAt}]
-  const [activeNumber, setActiveNumber] = useState(null); // always E.164 when possible
-  const [conversation, setConversation] = useState([]); // messages ordered asc
+  const [threads, setThreads] = useState([]);
+  const [activeNumber, setActiveNumber] = useState(null); // E.164
+  const [conversation, setConversation] = useState([]);
 
   // Contacts name map
-  const [nameMap, setNameMap] = useState({}); // key: normalized 10-digit -> {id, name, rawPhone}
+  const [nameMap, setNameMap] = useState({}); // key: 10-digit -> {id, name, rawPhone}
 
   // Compose
   const [text, setText] = useState("");
@@ -101,21 +71,20 @@ export default function MessagesPage() {
 
   async function fetchWallet() {
     if (!user?.id) return;
-    const { data, error } = await supabase
+    const { data } = await supabase
       .from("user_wallets")
       .select("balance_cents")
       .eq("user_id", user.id)
       .maybeSingle();
-    if (!error && data) setBalanceCents(data.balance_cents || 0);
+    if (data) setBalanceCents(data.balance_cents || 0);
   }
 
   async function fetchNameMap() {
     if (!user?.id) return;
-    const { data, error } = await supabase
+    const { data } = await supabase
       .from("message_contacts")
       .select("id, phone, full_name")
       .eq("user_id", user.id);
-    if (error) return;
     const m = {};
     (data || []).forEach((c) => {
       const key = normalizeDigits10(c.phone);
@@ -127,28 +96,22 @@ export default function MessagesPage() {
 
   async function fetchThreads() {
     if (!user?.id) return;
-    const { data, error } = await supabase
+    const { data } = await supabase
       .from("messages")
-      .select(
-        "id, direction, to_number, from_number, body, status, created_at"
-      )
+      .select("id, direction, to_number, from_number, body, status, created_at")
       .eq("user_id", user.id)
       .order("created_at", { ascending: false })
       .limit(200);
-    if (error) return;
 
     const grouped = [];
-    const seenPartners = new Set();
-    for (const m of data) {
+    const seen = new Set();
+    for (const m of data || []) {
       const isOut = m.direction === "out" || m.direction === "outgoing";
       const partnerRaw = isOut ? m.to_number : m.from_number;
       if (!partnerRaw) continue;
-
-      // prefer E.164 if we can normalize; otherwise keep as-is
       const partner = normalizeToE164_US_CA(String(partnerRaw)) || String(partnerRaw).trim();
-      if (seenPartners.has(partner)) continue;
-      seenPartners.add(partner);
-
+      if (seen.has(partner)) continue;
+      seen.add(partner);
       grouped.push({
         partnerNumber: partner,
         lastMessage: m.body,
@@ -156,24 +119,18 @@ export default function MessagesPage() {
       });
     }
     setThreads(grouped);
-
-    if (!activeNumber && grouped[0]?.partnerNumber) {
-      setActiveNumber(grouped[0].partnerNumber);
-    }
+    if (!activeNumber && grouped[0]?.partnerNumber) setActiveNumber(grouped[0].partnerNumber);
   }
 
   async function fetchConversation(numberE164) {
     if (!user?.id || !numberE164) return;
-    const { data, error } = await supabase
+    const { data } = await supabase
       .from("messages")
-      .select(
-        "id, direction, to_number, from_number, body, status, created_at"
-      )
+      .select("id, direction, to_number, from_number, body, status, created_at")
       .eq("user_id", user.id)
       .or(`to_number.eq.${numberE164},from_number.eq.${numberE164}`)
       .order("created_at", { ascending: true })
       .limit(500);
-    if (error) return;
     setConversation(data || []);
     queueMicrotask(() => {
       scrollerRef.current?.scrollTo({
@@ -204,38 +161,32 @@ export default function MessagesPage() {
       "Name this conversation:",
       current.startsWith("(") || current.startsWith("+") ? "" : current
     );
-    if (proposed == null) return; // cancel
+    if (proposed == null) return;
     const name = proposed.trim();
     const norm10 = normalizeDigits10(partnerNumberE164);
-
     const existing = nameMap[norm10];
 
     try {
       if (existing?.id) {
-        const { error } = await supabase
-          .from("message_contacts")
-          .update({ full_name: name || null })
-          .eq("id", existing.id);
-        if (error) throw error;
+        await supabase.from("message_contacts").update({ full_name: name || null }).eq("id", existing.id);
       } else {
-        const { error } = await supabase.from("message_contacts").insert([{
+        await supabase.from("message_contacts").insert([{
           user_id: user.id,
           phone: partnerNumberE164,
           full_name: name || null,
           tags: [],
           meta: {},
         }]);
-        if (error) throw error;
       }
       await fetchNameMap();
-      setThreads((ts) => [...ts]); // re-render
+      setThreads((ts) => [...ts]);
     } catch (e) {
       console.error(e);
       alert("Could not save name.");
     }
   }
 
-  /** Robust delete: find all messages for this user where to/from equals ANY variant, then delete by IDs */
+  // NEW: safe delete by IDs gathered from to_number and from_number with .in(...) filters
   async function removeConversation(partnerNumberE164) {
     if (!user?.id || !partnerNumberE164) return;
     const confirmDelete = confirm(
@@ -244,44 +195,44 @@ export default function MessagesPage() {
     if (!confirmDelete) return;
 
     try {
-      const variants = numberVariants(partnerNumberE164); // E.164, 10-digit, 11-digit, raw
+      // Build variant sets to catch older stored formats
+      const digits = partnerNumberE164.replace(/\D/g, "");
+      const ten = digits.length === 11 && digits.startsWith("1") ? digits.slice(1) : digits.slice(0, 10);
+      const variants = new Set([
+        partnerNumberE164,
+        ten,
+        "1" + ten,
+        "+1" + ten,
+      ]);
 
-      // Build dynamic OR filter like: to_number.eq.X,from_number.eq.X,to_number.eq.Y,from_number.eq.Y,...
-      const orClauses = [];
-      for (const v of variants) {
-        // escape commas if any (unlikely)
-        const safe = String(v).replace(/,/g, "%2C");
-        orClauses.push(`to_number.eq.${safe}`);
-        orClauses.push(`from_number.eq.${safe}`);
-      }
-      const filter = orClauses.join(",");
-
-      // 1) Select IDs to delete
-      const { data: rows, error: selErr } = await supabase
+      // 1) ids where to_number IN variants
+      const { data: toRows } = await supabase
         .from("messages")
         .select("id")
         .eq("user_id", user.id)
-        .or(filter)
-        .limit(10000);
-      if (selErr) throw selErr;
+        .in("to_number", Array.from(variants));
+      // 2) ids where from_number IN variants
+      const { data: fromRows } = await supabase
+        .from("messages")
+        .select("id")
+        .eq("user_id", user.id)
+        .in("from_number", Array.from(variants));
 
-      const ids = (rows || []).map((r) => r.id);
-      if (ids.length === 0) {
-        // No rows matched — still clear the panel/thread locally
-        setConversation([]);
-        if (activeNumber === partnerNumberE164) setActiveNumber(null);
-        await fetchThreads();
-        return;
+      const ids = [
+        ...(toRows || []).map((r) => r.id),
+        ...(fromRows || []).map((r) => r.id),
+      ];
+      // Dedupe
+      const idSet = Array.from(new Set(ids));
+      if (idSet.length > 0) {
+        const { error: delErr } = await supabase
+          .from("messages")
+          .delete()
+          .in("id", idSet);
+        if (delErr) throw delErr;
       }
 
-      // 2) Delete by IDs
-      const { error: delErr } = await supabase
-        .from("messages")
-        .delete()
-        .in("id", ids);
-      if (delErr) throw delErr;
-
-      // Reset UI
+      // Update UI
       setConversation([]);
       if (activeNumber === partnerNumberE164) setActiveNumber(null);
       await fetchThreads();
@@ -301,7 +252,6 @@ export default function MessagesPage() {
       setLoading(false);
     })();
 
-    // Realtime: listen for new messages for this user
     const channel = supabase
       .channel("messages_rt")
       .on(
@@ -347,7 +297,6 @@ export default function MessagesPage() {
       const { data: session } = await supabase.auth.getSession();
       const token = session?.session?.access_token;
 
-      // Ensure we always send an E.164 number
       const toE164 = normalizeToE164_US_CA(activeNumber);
       if (!toE164) {
         alert("Invalid phone number format. Please enter a valid US/CA number.");
@@ -364,7 +313,7 @@ export default function MessagesPage() {
         body: JSON.stringify({
           to: toE164,
           body: text,
-          requesterId: user?.id,   // ✅ ensure rows show up for this user
+          requesterId: user?.id, // <-- critical so rows show up for you
         }),
       });
       const out = await res.json().catch(() => ({}));
@@ -376,15 +325,13 @@ export default function MessagesPage() {
         );
       }
       setText("");
-      // Snap to bottom
       scrollerRef.current?.scrollTo({
         top: scrollerRef.current.scrollHeight,
         behavior: "smooth",
       });
       fetchWallet();
-      // refresh conversation to show the queued row immediately
       await fetchConversation(toE164);
-      setActiveNumber(toE164); // keep normalized as the key
+      setActiveNumber(toE164);
     } catch (e) {
       console.error(e);
       alert("Failed to send message.\n" + (e?.message || ""));
@@ -422,7 +369,7 @@ export default function MessagesPage() {
 
   return (
     <div className="grid h-[calc(100vh-140px)] grid-cols-1 gap-4 md:grid-cols-[320px_1fr]">
-      {/* Left: threads (follow-ups panel removed) */}
+      {/* Left: threads */}
       <aside className="flex flex-col rounded-2xl border border-white/10 bg-white/[0.03]">
         {/* Wallet */}
         <div className="flex items-center justify-between border-b border-white/10 p-3">
@@ -454,7 +401,7 @@ export default function MessagesPage() {
           <button
             onClick={() => {
               const raw = prompt(
-                "Text a new number.\nEnter any format (e.g., 615-555-1234 or +16155551234):"
+                "Text a new number.\nEnter any format (e.g., 915-494-3286 or +19154943286):"
               );
               if (!raw) return;
               const e164 = normalizeToE164_US_CA(raw);
