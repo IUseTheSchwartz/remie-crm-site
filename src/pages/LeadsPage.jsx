@@ -9,7 +9,7 @@ import {
 
 import {
   scheduleWelcomeText,
-  // schedulePolicyKickoffEmail  // removed (we no longer use this)
+  // schedulePolicyKickoffEmail  // removed (unused)
 } from "../lib/automation.js";
 
 // Supabase helpers
@@ -72,7 +72,7 @@ function buildHeaderIndex(headers) {
   const normalized = headers.map(norm);
   const find = (candidates) => {
     for (let i = 0; i < normalized.length; i++) {
-      if (candidates.includes(normalized[i])) return headers[i]; // return original header
+      if (candidates.includes(normalized[i])) return headers[i]; // original header
     }
     return null;
   };
@@ -163,24 +163,25 @@ async function findContactByUserAndPhone(userId, rawPhone) {
   return (data || []).find((c) => normalizePhone(c.phone) === phoneNorm) || null;
 }
 
-/** Build final tags for SOLD: replace status with 'sold' and optionally add birthday/holiday */
-function buildSoldTags(currentTags, { addBdayHoliday }) {
+/** Build final tags for SOLD: replace status → 'sold', optionally add birthday/holiday/payment_reminder */
+function buildSoldTags(currentTags, { addBdayHoliday, addPaymentReminder }) {
   const base = (currentTags || []).filter(
     (t) => !["lead", "military", "sold"].includes(normalizeTag(t))
   );
   const out = [...base, "sold"];
   if (addBdayHoliday) out.push("birthday_text", "holiday_text");
+  if (addPaymentReminder) out.push("payment_reminder");
   return uniqTags(out);
 }
 
 /** Update existing contact or insert a new one with SOLD tags */
-async function upsertSoldContact({ userId, phone, fullName, addBdayHoliday }) {
+async function upsertSoldContact({ userId, phone, fullName, addBdayHoliday, addPaymentReminder }) {
   if (!phone) return;
 
   const existing = await findContactByUserAndPhone(userId, phone);
 
   if (existing) {
-    const nextTags = buildSoldTags(existing.tags, { addBdayHoliday });
+    const nextTags = buildSoldTags(existing.tags, { addBdayHoliday, addPaymentReminder });
     const { error } = await supabase
       .from("message_contacts")
       .update({ full_name: fullName || existing.full_name || null, tags: nextTags })
@@ -188,7 +189,7 @@ async function upsertSoldContact({ userId, phone, fullName, addBdayHoliday }) {
     if (error) throw error;
     return existing.id;
   } else {
-    const nextTags = buildSoldTags([], { addBdayHoliday });
+    const nextTags = buildSoldTags([], { addBdayHoliday, addPaymentReminder });
     const { data, error } = await supabase
       .from("message_contacts")
       .insert([{ user_id: userId, phone, full_name: fullName || null, tags: nextTags }])
@@ -450,7 +451,7 @@ export default function LeadsPage() {
       phone: soldPayload.phone || base.phone || "",
       email: soldPayload.email || base.email || "",
 
-      // Keep only bday/holiday toggle; Message Policy Info removed
+      // Keep only bday/holiday toggle; "Message Policy Info" removed
       automationPrefs: {
         bdayHolidayTexts: !!soldPayload.enableBdayHolidayTexts,
       },
@@ -464,7 +465,6 @@ export default function LeadsPage() {
     setClients(nextClients);
     setLeads(nextLeads);
 
-    // (Optional) Welcome text still supported if you later surface the checkbox
     if (soldPayload.sendWelcomeText) {
       scheduleWelcomeText({
         name: updated.name,
@@ -486,7 +486,7 @@ export default function LeadsPage() {
       setServerMsg(`⚠️ SOLD sync failed: ${e.message || e}`);
     }
 
-    // 🔁 Reflect to contacts: replace lead/military with sold (+ optional birthday/holiday)
+    // 🔁 Reflect to contacts: replace lead/military with sold (+ bday/holiday + payment_reminder if start date)
     try {
       const { data: authData } = await supabase.auth.getUser();
       const userId = authData?.user?.id;
@@ -496,11 +496,12 @@ export default function LeadsPage() {
           phone: updated.phone,
           fullName: updated.name,
           addBdayHoliday: !!soldPayload.enableBdayHolidayTexts,
+          addPaymentReminder: !!soldPayload.startDate, // <-- add payment_reminder when start date is set
         });
       }
     } catch (err) {
       console.error("Contact tag sync (sold) failed:", err);
-      // Non-fatal; the lead is sold. You could show a toast if you want.
+      // Non-fatal; lead is sold. Optionally toast.
     }
   }
 
@@ -759,7 +760,7 @@ function PolicyViewer({ person, onClose }) {
 /* ------------------------------ Sold Drawer ------------------------------- */
 function SoldDrawer({ initial, allClients, onClose, onSave }) {
   const [form, setForm] = useState({
-    id: initial?.id || crypto.randomUUID(),
+    id: initial?.id || (self && self.crypto && self.crypto.randomUUID ? self.crypto.randomUUID() : Math.random().toString(36).slice(2)),
     name: initial?.name || "",
     phone: initial?.phone || "",
     email: initial?.email || "",
