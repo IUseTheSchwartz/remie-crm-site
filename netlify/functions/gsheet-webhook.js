@@ -85,21 +85,32 @@ function getRawBody(event) {
   return raw;
 }
 
-// --- military vs lead tag helpers ---
+// --- contact tag + dedupe helpers ---
 function normalizeTag(s) {
   return String(s ?? "").trim().toLowerCase().replace(/\s+/g, "_");
 }
 function uniqTags(arr) {
   return Array.from(new Set((arr || []).map(normalizeTag))).filter(Boolean);
 }
+function normalizePhone(s) {
+  const d = String(s || "").replace(/\D/g, "");
+  return d.length === 11 && d.startsWith("1") ? d.slice(1) : d;
+}
+
 async function computeNextContactTags({ supabase, user_id, phone, full_name, military_branch }) {
-  const { data: existing, error } = await supabase
+  const phoneNorm = normalizePhone(phone);
+
+  // fetch existing by user + normalized phone
+  const { data: candidates, error } = await supabase
     .from("message_contacts")
-    .select("id, tags")
-    .eq("user_id", user_id)
-    .eq("phone", phone)
-    .maybeSingle();
+    .select("id, phone, tags")
+    .eq("user_id", user_id);
+
   if (error) throw error;
+
+  const existing = (candidates || []).find(
+    (c) => normalizePhone(c.phone) === phoneNorm
+  );
 
   const current = Array.isArray(existing?.tags) ? existing.tags : [];
   const statusTag = normalizeTag(military_branch) ? "military" : "lead";
@@ -111,14 +122,20 @@ async function computeNextContactTags({ supabase, user_id, phone, full_name, mil
 
   return { contactId: existing?.id ?? null, tags: next };
 }
+
 async function upsertContactByUserPhone(supabase, { user_id, phone, full_name, tags }) {
-  const { data: existing, error } = await supabase
+  const phoneNorm = normalizePhone(phone);
+
+  const { data: candidates, error } = await supabase
     .from("message_contacts")
-    .select("id")
-    .eq("user_id", user_id)
-    .eq("phone", phone)
-    .maybeSingle();
+    .select("id, phone")
+    .eq("user_id", user_id);
+
   if (error) throw error;
+
+  const existing = (candidates || []).find(
+    (c) => normalizePhone(c.phone) === phoneNorm
+  );
 
   if (existing?.id) {
     const { error: uErr } = await supabase
@@ -237,10 +254,8 @@ exports.handler = async (event) => {
         };
       }
     }
-    // ------------------------------------------------------
 
     const { data, error: insErr } = await supabase.from("leads").insert([lead]).select("id");
-
     if (insErr) {
       console.error("Insert error:", insErr);
       return { statusCode: 500, body: JSON.stringify({ ok: false, error: insErr }) };
@@ -264,7 +279,7 @@ exports.handler = async (event) => {
       console.error("sendNewLeadIfEnabled failed:", err);
     }
 
-    // ✅ NEW: sync tags in message_contacts (lead vs military)
+    // ✅ sync tags in message_contacts (lead vs military)
     try {
       if (lead.phone) {
         const { tags } = await computeNextContactTags({
