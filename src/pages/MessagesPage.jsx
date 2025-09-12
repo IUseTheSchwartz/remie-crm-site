@@ -2,7 +2,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { supabase } from "../lib/supabaseClient.js";
 import { useAuth } from "../auth.jsx";
-import { Send, CreditCard, Plus, Loader2 } from "lucide-react";
+import { Send, CreditCard, Plus, Loader2, Trash2, Edit3 } from "lucide-react";
 
 /* ---------------- Upcoming follow-ups (Pipeline) ---------------- */
 
@@ -35,7 +35,7 @@ function UpcomingFollowUps() {
       setError(null);
       const { data, error } = await supabase
         .from("leads")
-        .select("id,next_follow_up_at,phone,email") // only existing columns
+        .select("id,next_follow_up_at,phone,email")
         .eq("user_id", user.id)
         .not("next_follow_up_at", "is", null)
         .gte("next_follow_up_at", new Date().toISOString())
@@ -96,6 +96,10 @@ function formatPhone(p) {
   }
   return p;
 }
+const normalizeDigits = (s) => {
+  const d = String(s || "").replace(/\D/g, "");
+  return d.length === 11 && d.startsWith("1") ? d.slice(1) : d;
+};
 
 function classNames(...xs) {
   return xs.filter(Boolean).join(" ");
@@ -115,9 +119,12 @@ export default function MessagesPage() {
   );
 
   // Threads & conversation
-  const [threads, setThreads] = useState([]); // [{partnerNumber, lastMessage, unread}]
+  const [threads, setThreads] = useState([]); // [{partnerNumber, lastMessage, lastAt}]
   const [activeNumber, setActiveNumber] = useState(null);
   const [conversation, setConversation] = useState([]); // messages ordered asc
+
+  // Contacts name map
+  const [nameMap, setNameMap] = useState({}); // key: normalized phone -> {id, name, rawPhone}
 
   // Compose
   const [text, setText] = useState("");
@@ -136,9 +143,24 @@ export default function MessagesPage() {
     if (!error && data) setBalanceCents(data.balance_cents || 0);
   }
 
+  async function fetchNameMap() {
+    if (!user?.id) return;
+    const { data, error } = await supabase
+      .from("message_contacts")
+      .select("id, phone, full_name")
+      .eq("user_id", user.id);
+    if (error) return;
+    const m = {};
+    (data || []).forEach((c) => {
+      const key = normalizeDigits(c.phone);
+      if (!key) return;
+      if (!m[key]) m[key] = { id: c.id, name: c.full_name || "", rawPhone: c.phone };
+    });
+    setNameMap(m);
+  }
+
   async function fetchThreads() {
     if (!user?.id) return;
-    // Get latest messages (both directions), then group by counterparty number.
     const { data, error } = await supabase
       .from("messages")
       .select(
@@ -163,7 +185,6 @@ export default function MessagesPage() {
     }
     setThreads(grouped);
 
-    // If no active thread, pick the most recent
     if (!activeNumber && grouped[0]?.partnerNumber) {
       setActiveNumber(grouped[0].partnerNumber);
     }
@@ -182,7 +203,6 @@ export default function MessagesPage() {
       .limit(500);
     if (error) return;
     setConversation(data || []);
-    // Scroll to bottom
     queueMicrotask(() => {
       scrollerRef.current?.scrollTo({
         top: scrollerRef.current.scrollHeight,
@@ -191,13 +211,92 @@ export default function MessagesPage() {
     });
   }
 
+  /* ---------- Mutations: rename & remove ---------- */
+
+  function displayForNumber(num) {
+    const key = normalizeDigits(num);
+    const entry = nameMap[key];
+    return entry?.name?.trim() ? entry.name.trim() : formatPhone(num);
+  }
+  function smallPhoneForNumber(num) {
+    const key = normalizeDigits(num);
+    const entry = nameMap[key];
+    // If we have a name, show phone as secondary small; else nothing
+    return entry?.name?.trim() ? formatPhone(num) : "";
+  }
+
+  async function renameConversation(partnerNumber) {
+    if (!user?.id || !partnerNumber) return;
+    const current = displayForNumber(partnerNumber);
+    const proposed = prompt("Name this conversation:", current.startsWith("(") ? "" : current);
+    if (proposed == null) return; // cancel
+    const name = proposed.trim();
+    const norm = normalizeDigits(partnerNumber);
+
+    // Find existing contact by normalized phone in our map
+    const existing = nameMap[norm];
+
+    try {
+      if (existing?.id) {
+        const { error } = await supabase
+          .from("message_contacts")
+          .update({ full_name: name || null })
+          .eq("id", existing.id);
+        if (error) throw error;
+      } else {
+        // Create a contact row so the name sticks
+        const { error } = await supabase.from("message_contacts").insert([{
+          user_id: user.id,
+          phone: partnerNumber,
+          full_name: name || null,
+          tags: [],
+          meta: {},
+        }]);
+        if (error) throw error;
+      }
+      // Refresh name map
+      await fetchNameMap();
+      // Also force a thread re-render
+      setThreads((ts) => [...ts]);
+    } catch (e) {
+      console.error(e);
+      alert("Could not save name.");
+    }
+  }
+
+  async function removeConversation(partnerNumber) {
+    if (!user?.id || !partnerNumber) return;
+    const confirmDelete = confirm(
+      `Remove this conversation?\nThis deletes all messages with ${formatPhone(partnerNumber)}.`
+    );
+    if (!confirmDelete) return;
+    try {
+      const { error } = await supabase
+        .from("messages")
+        .delete()
+        .eq("user_id", user.id)
+        .or(`to_number.eq.${partnerNumber},from_number.eq.${partnerNumber}`);
+      if (error) throw error;
+
+      // If we were viewing it, clear the right pane
+      setConversation([]);
+      if (activeNumber === partnerNumber) setActiveNumber(null);
+
+      // Refresh threads list
+      await fetchThreads();
+    } catch (e) {
+      console.error(e);
+      alert("Could not remove conversation.");
+    }
+  }
+
   /* ---------- Effects ---------- */
 
   useEffect(() => {
     let mounted = true;
     (async () => {
       setLoading(true);
-      await Promise.all([fetchWallet(), fetchThreads()]);
+      await Promise.all([fetchWallet(), fetchNameMap(), fetchThreads()]);
       setLoading(false);
     })();
 
@@ -259,12 +358,10 @@ export default function MessagesPage() {
         throw new Error(t || "Send failed");
       }
       setText("");
-      // optimistic scroll to bottom
       scrollerRef.current?.scrollTo({
         top: scrollerRef.current.scrollHeight,
         behavior: "smooth",
       });
-      // wallet may have been debited (reserved) — refresh
       fetchWallet();
     } catch (e) {
       console.error(e);
@@ -337,9 +434,7 @@ export default function MessagesPage() {
           <div>Conversations</div>
           <button
             onClick={() => {
-              const v = prompt(
-                "Text a new number (E.164, e.g. +15551234567):"
-              );
+              const v = prompt("Text a new number (E.164, e.g. +15551234567):");
               if (v) setActiveNumber(v.trim());
             }}
             className="inline-flex items-center gap-1 rounded-md border border-white/15 bg-white/5 px-2 py-1 hover:bg-white/10"
@@ -353,25 +448,49 @@ export default function MessagesPage() {
           {threads.length === 0 ? (
             <div className="p-3 text-xs text-white/50">No conversations yet.</div>
           ) : (
-            threads.map((t) => (
-              <button
-                key={t.partnerNumber}
-                onClick={() => setActiveNumber(t.partnerNumber)}
-                className={classNames(
-                  "w-full rounded-xl p-3 text-left hover:bg-white/5",
-                  activeNumber === t.partnerNumber
-                    ? "bg-white/5 ring-1 ring-indigo-400/50"
-                    : ""
-                )}
-              >
-                <div className="text-sm font-medium">
-                  {formatPhone(t.partnerNumber)}
+            threads.map((t) => {
+              const name = displayForNumber(t.partnerNumber);
+              const small = smallPhoneForNumber(t.partnerNumber);
+              return (
+                <div
+                  key={t.partnerNumber}
+                  className={classNames(
+                    "group relative w-full rounded-xl p-3 hover:bg-white/5",
+                    activeNumber === t.partnerNumber
+                      ? "bg-white/5 ring-1 ring-indigo-400/50"
+                      : ""
+                  )}
+                >
+                  <button
+                    onClick={() => setActiveNumber(t.partnerNumber)}
+                    className="block w-full text-left"
+                  >
+                    <div className="text-sm font-medium truncate">{name}</div>
+                    <div className="truncate text-xs text-white/60">{small || t.lastMessage}</div>
+                    {small && (
+                      <div className="truncate text-[11px] text-white/40">{t.lastMessage}</div>
+                    )}
+                  </button>
+
+                  <div className="absolute right-2 top-2 hidden gap-1 group-hover:flex">
+                    <button
+                      onClick={() => renameConversation(t.partnerNumber)}
+                      className="rounded-md border border-white/15 bg-white/5 px-2 py-1 text-[11px] hover:bg-white/10"
+                      title="Rename"
+                    >
+                      <Edit3 className="h-3.5 w-3.5" />
+                    </button>
+                    <button
+                      onClick={() => removeConversation(t.partnerNumber)}
+                      className="rounded-md border border-rose-400/30 bg-rose-500/10 px-2 py-1 text-[11px] text-rose-200 hover:bg-rose-500/20"
+                      title="Remove conversation"
+                    >
+                      <Trash2 className="h-3.5 w-3.5" />
+                    </button>
+                  </div>
                 </div>
-                <div className="truncate text-xs text-white/60">
-                  {t.lastMessage}
-                </div>
-              </button>
-            ))
+              );
+            })
           )}
         </div>
       </aside>
@@ -383,9 +502,30 @@ export default function MessagesPage() {
           <div className="text-sm">
             <div className="text-white/60">Chatting with</div>
             <div className="font-semibold">
-              {activeNumber ? formatPhone(activeNumber) : "—"}
+              {activeNumber ? displayForNumber(activeNumber) : "—"}
             </div>
+            {activeNumber && smallPhoneForNumber(activeNumber) && (
+              <div className="text-xs text-white/50">{smallPhoneForNumber(activeNumber)}</div>
+            )}
           </div>
+          {activeNumber && (
+            <div className="flex items-center gap-2">
+              <button
+                onClick={() => renameConversation(activeNumber)}
+                className="inline-flex items-center gap-1 rounded-md border border-white/15 bg-white/5 px-2 py-1 text-xs hover:bg-white/10"
+                title="Rename"
+              >
+                <Edit3 className="h-3.5 w-3.5" /> Rename
+              </button>
+              <button
+                onClick={() => removeConversation(activeNumber)}
+                className="inline-flex items-center gap-1 rounded-md border border-rose-400/30 bg-rose-500/10 px-2 py-1 text-xs text-rose-200 hover:bg-rose-500/20"
+                title="Remove conversation"
+              >
+                <Trash2 className="h-3.5 w-3.5" /> Remove
+              </button>
+            </div>
+          )}
         </div>
 
         {/* Messages */}
