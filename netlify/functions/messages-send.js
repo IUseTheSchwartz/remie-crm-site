@@ -1,8 +1,26 @@
-// Sends an SMS via Telnyx and writes an outgoing message row to Supabase.
-// Also sets a per-message webhook_url so Telnyx can POST delivery/status events
-// even if your Messaging Profile has no "outbound" webhook fields.
-
 const { createClient } = require("@supabase/supabase-js");
+
+/** Basic E.164 normalizer for US/CA
+ * - Accepts "+1XXXXXXXXXX" as-is
+ * - Strips non-digits from local formats like "(615) 555-1234"
+ * - If 10 digits, prefixes +1
+ * - If 11 digits and starts with "1", prefixes +
+ * - Otherwise returns null
+ */
+function normalizeToE164_US_CA(input) {
+  if (typeof input !== "string") return null;
+  const trimmed = input.trim();
+  if (trimmed.startsWith("+")) {
+    // remove spaces
+    const compact = trimmed.replace(/\s+/g, "");
+    // very loose validation: + then 10+ digits
+    return /^\+\d{10,15}$/.test(compact) ? compact : null;
+  }
+  const digits = trimmed.replace(/\D+/g, "");
+  if (digits.length === 10) return `+1${digits}`;
+  if (digits.length === 11 && digits.startsWith("1")) return `+${digits}`;
+  return null;
+}
 
 function json(status, body) {
   return {
@@ -17,15 +35,14 @@ exports.handler = async (event) => {
     return json(405, { error: "Method not allowed" });
   }
 
-  // ---- Env ----
   const {
     SUPABASE_URL,
-    SUPABASE_SERVICE_ROLE, // <-- you said you use this exact name
+    SUPABASE_SERVICE_ROLE,
     TELNYX_API_KEY,
     TELNYX_MESSAGING_PROFILE_ID,
-    TELNYX_FROM_NUMBER, // E164 (e.g., +18xxxxxxxxx)
-    SITE_URL, // preferred
-    URL,      // Netlify fallback
+    TELNYX_FROM_NUMBER,
+    SITE_URL,
+    URL,
   } = process.env;
 
   if (!SUPABASE_URL || !SUPABASE_SERVICE_ROLE) {
@@ -35,11 +52,6 @@ exports.handler = async (event) => {
     return json(500, { error: "Telnyx env not set (API key / from number)" });
   }
 
-  const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE, {
-    auth: { persistSession: false },
-  });
-
-  // ---- Input ----
   let payload;
   try {
     payload = JSON.parse(event.body || "{}");
@@ -47,27 +59,36 @@ exports.handler = async (event) => {
     return json(400, { error: "Invalid JSON body" });
   }
 
-  const { to, body, lead_id, requesterId } = payload; // requesterId optional
+  const { to, body, lead_id, requesterId } = payload || {};
   if (!to || !body) {
     return json(400, { error: "`to` and `body` are required" });
   }
+  if (Array.isArray(to)) {
+    return json(400, { error: "`to` must be a single phone number string, not an array" });
+  }
 
-  const toE164 = String(to).trim();
+  const toE164 = normalizeToE164_US_CA(String(to));
+  if (!toE164) {
+    return json(400, {
+      error: "Invalid `to` number",
+      hint: "Use a single E.164 number like +16155551234 (US/CA).",
+      got: String(to),
+    });
+  }
+
   const statusWebhookBase = SITE_URL || URL;
   if (!statusWebhookBase) {
     return json(500, { error: "SITE_URL or URL must be set for webhooks" });
   }
-  const statusWebhook =
-    `${statusWebhookBase}/.netlify/functions/telnyx-status`;
+  const statusWebhook = `${statusWebhookBase}/.netlify/functions/telnyx-status`;
 
-  // ---- Send via Telnyx ----
   const msg = {
     to: toE164,
     from: TELNYX_FROM_NUMBER,
-    text: body,
+    text: String(body),
     webhook_url: statusWebhook,
     webhook_failover_url: statusWebhook,
-    use_profile_webhooks: false, // force using our per-message webhook
+    use_profile_webhooks: false,
   };
   if (TELNYX_MESSAGING_PROFILE_ID) {
     msg.messaging_profile_id = TELNYX_MESSAGING_PROFILE_ID;
@@ -76,7 +97,7 @@ exports.handler = async (event) => {
   const tRes = await fetch("https://api.telnyx.com/v2/messages", {
     method: "POST",
     headers: {
-      "Authorization": `Bearer ${TELNYX_API_KEY}`,
+      Authorization: `Bearer ${TELNYX_API_KEY}`,
       "Content-Type": "application/json",
     },
     body: JSON.stringify(msg),
@@ -89,23 +110,22 @@ exports.handler = async (event) => {
     tData = null;
   }
 
-  // Telnyx message id (if any)
-  const telnyxId =
-    tData?.data?.id ||
-    tData?.id ||
-    null;
+  const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE, {
+    auth: { persistSession: false },
+  });
+
+  const telnyxId = tData?.data?.id || tData?.id || null;
 
   if (!tRes.ok) {
-    // Write a failed attempt so the UI shows it
     await supabase.from("messages").insert({
       user_id: requesterId || null,
       lead_id: lead_id ?? null,
       provider: "telnyx",
-      provider_sid: telnyxId, // keep consistent with status handler
+      provider_sid: telnyxId,
       direction: "outgoing",
       to_number: toE164,
       from_number: TELNYX_FROM_NUMBER,
-      body,
+      body: String(body),
       status: "failed",
       error_detail: JSON.stringify(tData || { status: tRes.status }).slice(0, 8000),
     });
@@ -117,7 +137,6 @@ exports.handler = async (event) => {
     });
   }
 
-  // Record as queued; webhooks will update status later
   const { error: dbErr } = await supabase.from("messages").insert({
     user_id: requesterId || null,
     lead_id: lead_id ?? null,
@@ -126,12 +145,11 @@ exports.handler = async (event) => {
     direction: "outgoing",
     to_number: toE164,
     from_number: TELNYX_FROM_NUMBER,
-    body,
+    body: String(body),
     status: "queued",
   });
 
   if (dbErr) {
-    // We still sent the SMS; report the DB issue to help troubleshooting.
     return json(200, {
       ok: true,
       telnyx_id: telnyxId,
