@@ -39,7 +39,7 @@ const STAGE_STYLE = {
 };
 
 const CARD_H = 150;
-the GAP_Y = 8;
+const GAP_Y = 8;
 const MAX_VISIBLE = 5;
 const SCROLL_H = CARD_H * MAX_VISIBLE + GAP_Y * (MAX_VISIBLE - 1);
 
