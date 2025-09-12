@@ -496,7 +496,7 @@ export default function LeadsPage() {
           phone: updated.phone,
           fullName: updated.name,
           addBdayHoliday: !!soldPayload.enableBdayHolidayTexts,
-          addPaymentReminder: !!soldPayload.startDate, // <-- add payment_reminder when start date is set
+          addPaymentReminder: Boolean((soldPayload.startDate || "").trim()), // robust truthy check
         });
       }
     } catch (err) {
@@ -735,7 +735,7 @@ function PolicyViewer({ person, onClose }) {
           <Field label="Phone"><div className="ro">{s.phone || person?.phone || "—"}</div></Field>
           <Field label="Email"><div className="ro break-all">{s.email || person?.email || "—"}</div></Field>
 
-          <Field label="Carrier"><div className="ro">{s.carrier || "—"}</div></Field>
+        <Field label="Carrier"><div className="ro">{s.carrier || "—"}</div></Field>
           <Field label="Face Amount"><div className="ro">{s.faceAmount || "—"}</div></Field>
           <Field label="AP (Annual premium)"><div className="ro">{s.premium || "—"}</div></Field>
           <Field label="Monthly Payment"><div className="ro">{s.monthlyPayment || "—"}</div></Field>
