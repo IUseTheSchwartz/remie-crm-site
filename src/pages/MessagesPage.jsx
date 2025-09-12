@@ -4,101 +4,46 @@ import { supabase } from "../lib/supabaseClient.js";
 import { useAuth } from "../auth.jsx";
 import { Send, CreditCard, Plus, Loader2, Trash2, Edit3 } from "lucide-react";
 
-/* ---------------- Upcoming follow-ups (Pipeline) ---------------- */
+/* ---------------- Phone helpers (US/CA default) ---------------- */
 
-function fmt(dt) {
-  try {
-    const d = new Date(dt);
-    return `${d.toLocaleDateString()} ${d.toLocaleTimeString([], {
-      hour: "2-digit",
-      minute: "2-digit",
-    })}`;
-  } catch {
-    return "—";
+/** Normalize arbitrary user input to E.164.
+ * - Accepts "+1XXXXXXXXXX" as-is (spaces removed)
+ * - Strips non-digits from local formats like "(615) 555-1234"
+ * - If 10 digits, prefixes +1
+ * - If 11 digits and starts with "1", prefixes +
+ * - Returns null if it can't be made E.164 safely
+ */
+function normalizeToE164_US_CA(input) {
+  if (typeof input !== "string") return null;
+  const trimmed = input.trim();
+  if (!trimmed) return null;
+  if (trimmed.startsWith("+")) {
+    const compact = trimmed.replace(/\s+/g, "");
+    return /^\+\d{10,15}$/.test(compact) ? compact : null;
   }
-}
-function leadLabel(l) {
-  return l.phone || l.email || "Lead";
-}
-
-function UpcomingFollowUps() {
-  const { user } = useAuth();
-  const [items, setItems] = useState([]);
-  const [error, setError] = useState(null);
-  const [loading, setLoading] = useState(true);
-
-  useEffect(() => {
-    if (!user?.id) return;
-    let active = true;
-    (async () => {
-      setLoading(true);
-      setError(null);
-      const { data, error } = await supabase
-        .from("leads")
-        .select("id,next_follow_up_at,phone,email")
-        .eq("user_id", user.id)
-        .not("next_follow_up_at", "is", null)
-        .gte("next_follow_up_at", new Date().toISOString())
-        .order("next_follow_up_at", { ascending: true })
-        .limit(25);
-      if (!active) return;
-      if (error) setError(error.message);
-      else setItems(data || []);
-      setLoading(false);
-    })();
-    return () => {
-      active = false;
-    };
-  }, [user?.id]);
-
-  return (
-    <section className="mx-2 mt-2 rounded-2xl border border-white/10 bg-white/[0.03]">
-      <div className="border-b border-white/10 px-3 py-2 text-sm font-medium">
-        Upcoming follow-ups (Pipeline)
-      </div>
-      <div className="p-3 text-sm">
-        {loading ? (
-          <div className="text-white/60">Loading…</div>
-        ) : error ? (
-          <div className="text-rose-400">Could not load follow-ups. {error}</div>
-        ) : items.length === 0 ? (
-          <div className="text-white/60">No upcoming follow-ups.</div>
-        ) : (
-          <ul className="space-y-2">
-            {items.map((l) => (
-              <li
-                key={l.id}
-                className="flex items-center justify-between rounded-lg border border-white/10 bg-black/30 px-3 py-2"
-              >
-                <div className="truncate">{leadLabel(l)}</div>
-                <div className="ml-3 shrink-0 text-white/70">
-                  {fmt(l.next_follow_up_at)}
-                </div>
-              </li>
-            ))}
-          </ul>
-        )}
-      </div>
-    </section>
-  );
+  const digits = trimmed.replace(/\D+/g, "");
+  if (digits.length === 10) return `+1${digits}`;
+  if (digits.length === 11 && digits.startsWith("1")) return `+${digits}`;
+  return null;
 }
 
-/* ---------------- Helpers ---------------- */
-
-function formatPhone(p) {
+/** Pretty local mask for small UI hints (does NOT affect what we send) */
+function formatPhoneLocalMask(p) {
   if (!p) return "";
-  const d = (p + "").replace(/[^\d]/g, "");
+  const d = String(p).replace(/\D+/g, "");
   if (d.length === 11 && d.startsWith("1")) {
-    return `+1 (${d.slice(1, 4)}) ${d.slice(4, 7)}-${d.slice(7)}`;
+    return `1 ${d.slice(1, 4)}-${d.slice(4, 7)}-${d.slice(7, 11)}`;
   }
-  if (d.length === 10) {
-    return `(${d.slice(0, 3)}) ${d.slice(3, 6)}-${d.slice(6)}`;
+  if (d.length >= 10) {
+    return `(${d.slice(0, 3)}) ${d.slice(3, 6)}-${d.slice(6, 10)}`;
   }
   return p;
 }
+
+/** Old helper kept for contact-map keys (normalize to 10 digits) */
 const normalizeDigits = (s) => {
   const d = String(s || "").replace(/\D/g, "");
-  return d.length === 11 && d.startsWith("1") ? d.slice(1) : d;
+  return d.length === 11 && d.startsWith("1") ? d.slice(1) : d.slice(0, 10);
 };
 
 function classNames(...xs) {
@@ -120,11 +65,11 @@ export default function MessagesPage() {
 
   // Threads & conversation
   const [threads, setThreads] = useState([]); // [{partnerNumber, lastMessage, lastAt}]
-  const [activeNumber, setActiveNumber] = useState(null);
+  const [activeNumber, setActiveNumber] = useState(null); // always E.164
   const [conversation, setConversation] = useState([]); // messages ordered asc
 
   // Contacts name map
-  const [nameMap, setNameMap] = useState({}); // key: normalized phone -> {id, name, rawPhone}
+  const [nameMap, setNameMap] = useState({}); // key: normalized 10-digit -> {id, name, rawPhone}
 
   // Compose
   const [text, setText] = useState("");
@@ -174,11 +119,17 @@ export default function MessagesPage() {
     const grouped = [];
     const seenPartners = new Set();
     for (const m of data) {
-      const partner = m.direction === "out" ? m.to_number : m.from_number;
-      if (!partner || seenPartners.has(partner)) continue;
-      seenPartners.add(partner);
+      const isOut = m.direction === "out" || m.direction === "outgoing";
+      const partner = isOut ? m.to_number : m.from_number;
+      if (!partner) continue;
+
+      // normalize partner to E.164 if possible for consistent keys
+      const norm = normalizeToE164_US_CA(String(partner)) || String(partner).trim();
+      if (seenPartners.has(norm)) continue;
+      seenPartners.add(norm);
+
       grouped.push({
-        partnerNumber: partner,
+        partnerNumber: norm,
         lastMessage: m.body,
         lastAt: m.created_at,
       });
@@ -190,15 +141,15 @@ export default function MessagesPage() {
     }
   }
 
-  async function fetchConversation(number) {
-    if (!user?.id || !number) return;
+  async function fetchConversation(numberE164) {
+    if (!user?.id || !numberE164) return;
     const { data, error } = await supabase
       .from("messages")
       .select(
         "id, direction, to_number, from_number, body, status, created_at"
       )
       .eq("user_id", user.id)
-      .or(`to_number.eq.${number},from_number.eq.${number}`)
+      .or(`to_number.eq.${numberE164},from_number.eq.${numberE164}`)
       .order("created_at", { ascending: true })
       .limit(500);
     if (error) return;
@@ -213,28 +164,32 @@ export default function MessagesPage() {
 
   /* ---------- Mutations: rename & remove ---------- */
 
-  function displayForNumber(num) {
-    const key = normalizeDigits(num);
+  function displayForNumber(numLike) {
+    const key = normalizeDigits(numLike);
     const entry = nameMap[key];
-    return entry?.name?.trim() ? entry.name.trim() : formatPhone(num);
+    if (entry?.name?.trim()) return entry.name.trim();
+    // fallback: show pretty mask
+    return formatPhoneLocalMask(numLike);
   }
-  function smallPhoneForNumber(num) {
-    const key = normalizeDigits(num);
+  function smallPhoneForNumber(numLike) {
+    const key = normalizeDigits(numLike);
     const entry = nameMap[key];
-    // If we have a name, show phone as secondary small; else nothing
-    return entry?.name?.trim() ? formatPhone(num) : "";
+    // If we have a name, show phone as secondary; else nothing
+    return entry?.name?.trim() ? formatPhoneLocalMask(numLike) : "";
   }
 
-  async function renameConversation(partnerNumber) {
-    if (!user?.id || !partnerNumber) return;
-    const current = displayForNumber(partnerNumber);
-    const proposed = prompt("Name this conversation:", current.startsWith("(") ? "" : current);
+  async function renameConversation(partnerNumberE164) {
+    if (!user?.id || !partnerNumberE164) return;
+    const current = displayForNumber(partnerNumberE164);
+    const proposed = prompt(
+      "Name this conversation:",
+      current.startsWith("(") || current.startsWith("+") ? "" : current
+    );
     if (proposed == null) return; // cancel
     const name = proposed.trim();
-    const norm = normalizeDigits(partnerNumber);
+    const norm10 = normalizeDigits(partnerNumberE164);
 
-    // Find existing contact by normalized phone in our map
-    const existing = nameMap[norm];
+    const existing = nameMap[norm10];
 
     try {
       if (existing?.id) {
@@ -247,27 +202,25 @@ export default function MessagesPage() {
         // Create a contact row so the name sticks
         const { error } = await supabase.from("message_contacts").insert([{
           user_id: user.id,
-          phone: partnerNumber,
+          phone: partnerNumberE164,
           full_name: name || null,
           tags: [],
           meta: {},
         }]);
         if (error) throw error;
       }
-      // Refresh name map
       await fetchNameMap();
-      // Also force a thread re-render
-      setThreads((ts) => [...ts]);
+      setThreads((ts) => [...ts]); // re-render
     } catch (e) {
       console.error(e);
       alert("Could not save name.");
     }
   }
 
-  async function removeConversation(partnerNumber) {
-    if (!user?.id || !partnerNumber) return;
+  async function removeConversation(partnerNumberE164) {
+    if (!user?.id || !partnerNumberE164) return;
     const confirmDelete = confirm(
-      `Remove this conversation?\nThis deletes all messages with ${formatPhone(partnerNumber)}.`
+      `Remove this conversation?\nThis deletes all messages with ${formatPhoneLocalMask(partnerNumberE164)}.`
     );
     if (!confirmDelete) return;
     try {
@@ -275,14 +228,12 @@ export default function MessagesPage() {
         .from("messages")
         .delete()
         .eq("user_id", user.id)
-        .or(`to_number.eq.${partnerNumber},from_number.eq.${partnerNumber}`);
+        .or(`to_number.eq.${partnerNumberE164},from_number.eq.${partnerNumberE164}`);
       if (error) throw error;
 
-      // If we were viewing it, clear the right pane
       setConversation([]);
-      if (activeNumber === partnerNumber) setActiveNumber(null);
+      if (activeNumber === partnerNumberE164) setActiveNumber(null);
 
-      // Refresh threads list
       await fetchThreads();
     } catch (e) {
       console.error(e);
@@ -345,17 +296,30 @@ export default function MessagesPage() {
     try {
       const { data: session } = await supabase.auth.getSession();
       const token = session?.session?.access_token;
+
+      // Ensure we always send an E.164 number
+      const toE164 = normalizeToE164_US_CA(activeNumber);
+      if (!toE164) {
+        alert("Invalid phone number format. Please enter a valid US/CA number.");
+        setSending(false);
+        return;
+      }
+
       const res = await fetch("/.netlify/functions/messages-send", {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
           Authorization: `Bearer ${token}`,
         },
-        body: JSON.stringify({ to: activeNumber, body: text }),
+        body: JSON.stringify({ to: toE164, body: text }),
       });
+      const out = await res.json().catch(() => ({}));
       if (!res.ok) {
-        const t = await res.text();
-        throw new Error(t || "Send failed");
+        throw new Error(
+          out?.telnyx_response?.errors?.[0]?.detail ||
+            out?.error ||
+            "Send failed"
+        );
       }
       setText("");
       scrollerRef.current?.scrollTo({
@@ -363,9 +327,13 @@ export default function MessagesPage() {
         behavior: "smooth",
       });
       fetchWallet();
+      // refresh conversation to show the queued row immediately
+      await fetchConversation(toE164);
+      // also ensure thread key stays normalized
+      setActiveNumber(toE164);
     } catch (e) {
       console.error(e);
-      alert("Failed to send message.");
+      alert("Failed to send message.\n" + (e?.message || ""));
     } finally {
       setSending(false);
     }
@@ -400,7 +368,7 @@ export default function MessagesPage() {
 
   return (
     <div className="grid h-[calc(100vh-140px)] grid-cols-1 gap-4 md:grid-cols-[320px_1fr]">
-      {/* Left: threads + follow-ups */}
+      {/* Left: threads (follow-ups panel removed) */}
       <aside className="flex flex-col rounded-2xl border border-white/10 bg-white/[0.03]">
         {/* Wallet */}
         <div className="flex items-center justify-between border-b border-white/10 p-3">
@@ -426,16 +394,21 @@ export default function MessagesPage() {
           </div>
         </div>
 
-        {/* Follow-ups panel */}
-        <UpcomingFollowUps />
-
         {/* Threads header */}
         <div className="flex items-center justify-between px-3 pt-2 text-xs text-white/60">
           <div>Conversations</div>
           <button
             onClick={() => {
-              const v = prompt("Text a new number (E.164, e.g. +15551234567):");
-              if (v) setActiveNumber(v.trim());
+              const raw = prompt(
+                "Text a new number.\nEnter any format (e.g., 615-555-1234 or +16155551234):"
+              );
+              if (!raw) return;
+              const e164 = normalizeToE164_US_CA(raw);
+              if (!e164) {
+                alert("Invalid number. Use a valid US/CA number.");
+                return;
+              }
+              setActiveNumber(e164);
             }}
             className="inline-flex items-center gap-1 rounded-md border border-white/15 bg-white/5 px-2 py-1 hover:bg-white/10"
           >
@@ -451,14 +424,13 @@ export default function MessagesPage() {
             threads.map((t) => {
               const name = displayForNumber(t.partnerNumber);
               const small = smallPhoneForNumber(t.partnerNumber);
+              const isActive = activeNumber === t.partnerNumber;
               return (
                 <div
                   key={t.partnerNumber}
                   className={classNames(
                     "group relative w-full rounded-xl p-3 hover:bg-white/5",
-                    activeNumber === t.partnerNumber
-                      ? "bg-white/5 ring-1 ring-indigo-400/50"
-                      : ""
+                    isActive ? "bg-white/5 ring-1 ring-indigo-400/50" : ""
                   )}
                 >
                   <button
@@ -466,9 +438,13 @@ export default function MessagesPage() {
                     className="block w-full text-left"
                   >
                     <div className="text-sm font-medium truncate">{name}</div>
-                    <div className="truncate text-xs text-white/60">{small || t.lastMessage}</div>
+                    <div className="truncate text-xs text-white/60">
+                      {small || t.lastMessage}
+                    </div>
                     {small && (
-                      <div className="truncate text-[11px] text-white/40">{t.lastMessage}</div>
+                      <div className="truncate text-[11px] text-white/40">
+                        {t.lastMessage}
+                      </div>
                     )}
                   </button>
 
@@ -505,7 +481,14 @@ export default function MessagesPage() {
               {activeNumber ? displayForNumber(activeNumber) : "—"}
             </div>
             {activeNumber && smallPhoneForNumber(activeNumber) && (
-              <div className="text-xs text-white/50">{smallPhoneForNumber(activeNumber)}</div>
+              <div className="text-xs text-white/50">
+                {smallPhoneForNumber(activeNumber)}
+              </div>
+            )}
+            {activeNumber && (
+              <div className="text-[11px] text-white/40 mt-0.5">
+                E.164: <span className="font-mono">{activeNumber}</span>
+              </div>
             )}
           </div>
           {activeNumber && (
@@ -536,32 +519,35 @@ export default function MessagesPage() {
                 No messages yet.
               </div>
             ) : (
-              conversation.map((m) => (
-                <div
-                  key={m.id}
-                  className={classNames(
-                    "mb-2 flex",
-                    m.direction === "out" ? "justify-end" : "justify-start"
-                  )}
-                >
+              conversation.map((m) => {
+                const isOut = m.direction === "out" || m.direction === "outgoing";
+                return (
                   <div
+                    key={m.id}
                     className={classNames(
-                      "max-w-[75%] rounded-2xl px-3 py-2 text-sm ring-1",
-                      m.direction === "out"
-                        ? "bg-gradient-to-r from-indigo-500/30 via-purple-500/30 to-fuchsia-500/30 ring-indigo-400/30"
-                        : "bg-white/5 ring-white/10"
+                      "mb-2 flex",
+                      isOut ? "justify-end" : "justify-start"
                     )}
-                    title={new Date(m.created_at).toLocaleString()}
                   >
-                    <div>{m.body}</div>
-                    {m.direction === "out" && (
-                      <div className="mt-1 text-[10px] uppercase tracking-wide text-white/50">
-                        {m.status}
-                      </div>
-                    )}
+                    <div
+                      className={classNames(
+                        "max-w-[75%] rounded-2xl px-3 py-2 text-sm ring-1",
+                        isOut
+                          ? "bg-gradient-to-r from-indigo-500/30 via-purple-500/30 to-fuchsia-500/30 ring-indigo-400/30"
+                          : "bg-white/5 ring-white/10"
+                      )}
+                      title={new Date(m.created_at).toLocaleString()}
+                    >
+                      <div>{m.body}</div>
+                      {isOut && (
+                        <div className="mt-1 text-[10px] uppercase tracking-wide text-white/50">
+                          {m.status}
+                        </div>
+                      )}
+                    </div>
                   </div>
-                </div>
-              ))
+                );
+              })
             )
           ) : (
             <div className="grid h-full place-items-center text-sm text-white/50">
