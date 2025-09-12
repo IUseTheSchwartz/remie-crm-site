@@ -272,9 +272,9 @@ function LandingPage() {
     annual && plan.buyUrl?.annual ? plan.buyUrl.annual : plan.buyUrl?.monthly;
 
   return (
-    <div className="min-h-screen bg-neutral-950 text-white">
+    <div className="min-h-screen text-white bg-gradient-to-br from-indigo-700 via-fuchsia-600 to-purple-700">
       <div className="pointer-events-none fixed inset-0 overflow-hidden">
-        <div className="absolute -top-56 left-1/2 h-[36rem] w-[36rem] -translate-x-1/2 rounded-full bg-gradient-to-br from-indigo-600/20 via-fuchsia-500/10 to-rose-500/10 blur-3xl" />
+        <div className="absolute -top-56 left-1/2 h-[36rem] w-[36rem] -translate-x-1/2 rounded-full bg-gradient-to-br from-indigo-400/40 via-fuchsia-400/30 to-rose-400/30 blur-3xl" />
       </div>
 
       <header className="relative z-10 border-b border-white/10 backdrop-blur">
@@ -443,13 +443,13 @@ function AppLayout() {
 
   return (
     // Lock the layout to viewport height and prevent page-level scrolling.
-    <div className="h-screen overflow-hidden relative bg-neutral-950 text-white grid md:grid-cols-[240px_1fr]">
+    <div className="h-screen overflow-hidden relative text-white grid md:grid-cols-[240px_1fr] bg-gradient-to-br from-indigo-800 via-fuchsia-700 to-purple-800">
       {/* background blobs */}
       <div className="pointer-events-none fixed inset-0 z-0">
         <div className="absolute -top-40 left-1/2 h-[36rem] w-[36rem] -translate-x-1/2 rounded-full
-                        bg-gradient-to-br from-indigo-600/25 via-fuchsia-500/15 to-rose-500/15 blur-3xl" />
+                        bg-gradient-to-br from-indigo-600/25 via-fuchsia-500/20 to-rose-500/20 blur-3xl" />
         <div className="absolute -bottom-40 right-[-10%] h-[42rem] w-[42rem] rounded-full
-                        bg-gradient-to-tr from-fuchsia-500/10 via-purple-600/10 to-indigo-600/15 blur-3xl" />
+                        bg-gradient-to-tr from-fuchsia-500/15 via-purple-600/15 to-indigo-600/20 blur-3xl" />
       </div>
 
       {/* Sidebar: desktop + mobile drawer */}
