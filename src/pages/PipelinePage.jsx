@@ -151,6 +151,61 @@ function parseFollowupRawToISO(raw) {
   return isNaN(d.getTime()) ? null : d.toISOString();
 }
 
+/* ------------------------ Contacts tagging helpers ------------------------- */
+
+const normalizeTag = (s) => String(s ?? "").trim().toLowerCase().replace(/\s+/g, "_");
+const uniqTags = (arr) => Array.from(new Set((arr || []).map(normalizeTag))).filter(Boolean);
+const normalizePhone = (s) => {
+  const d = String(s || "").replace(/\D/g, "");
+  return d.length === 11 && d.startsWith("1") ? d.slice(1) : d;
+};
+
+/** Find a contact by user+phone using normalized digits */
+async function findContactByUserAndPhone(userId, rawPhone) {
+  const phoneNorm = normalizePhone(rawPhone);
+  if (!phoneNorm) return null;
+  const { data, error } = await supabase
+    .from("message_contacts")
+    .select("id, phone, full_name, tags, meta")
+    .eq("user_id", userId);
+  if (error) throw error;
+  return (data || []).find((c) => normalizePhone(c.phone) === phoneNorm) || null;
+}
+
+/** Ensure contact exists, add 'appointment' tag, and store follow-up in meta */
+async function ensureAppointmentContact({ userId, person, followUpIso }) {
+  if (!person?.phone) return;
+
+  const existing = await findContactByUserAndPhone(userId, person.phone);
+  const fullName = person.name || person.email || null;
+
+  if (existing) {
+    const nextTags = uniqTags([...(existing.tags || []), "appointment"]);
+    const nextMeta = {
+      ...(existing.meta && typeof existing.meta === "object" ? existing.meta : {}),
+      next_follow_up_at: followUpIso || null,
+    };
+    await supabase
+      .from("message_contacts")
+      .update({
+        full_name: fullName || existing.full_name || null,
+        tags: nextTags,
+        meta: nextMeta,
+      })
+      .eq("id", existing.id);
+  } else {
+    await supabase
+      .from("message_contacts")
+      .insert([{
+        user_id: userId,
+        phone: person.phone,
+        full_name: fullName,
+        tags: ["appointment"],
+        meta: followUpIso ? { next_follow_up_at: followUpIso } : {},
+      }]);
+  }
+}
+
 /* --------------------------------- Component -------------------------------- */
 
 export default function PipelinePage() {
@@ -284,6 +339,8 @@ export default function PipelinePage() {
    * Save follow-up using the real Supabase UUID id.
    * First try with `user_id = auth.uid()` (RLS-friendly). If 0 rows updated,
    * retry without the user_id filter to detect a mismatch.
+   * Also: when a follow-up is SET (not cleared), ensure contact exists, add 'appointment' tag,
+   * and store the follow-up time in message_contacts.meta.next_follow_up_at
    */
   async function setNextFollowUp(person, dateIso) {
     const withNext = { ...person, next_follow_up_at: dateIso || null };
@@ -291,44 +348,54 @@ export default function PipelinePage() {
     // Update local cache/UI immediately so you see the change
     updatePerson(withNext);
 
+    // Get user id independently so tagging runs even if the DB update throws earlier
+    let uid = null;
     try {
       const { data: ses } = await supabase.auth.getSession();
-      const uid = ses?.session?.user?.id || null;
+      uid = ses?.session?.user?.id || null;
+    } catch {}
 
+    // Persist next_follow_up_at to leads
+    try {
       const supaId = await resolveLeadSupabaseId(withNext);
-      if (!supaId) return;
+      if (supaId) {
+        // Attempt #1: with user_id filter (common RLS policy)
+        let resp = await supabase
+          .from("leads")
+          .update({ next_follow_up_at: dateIso || null })
+          .eq("id", supaId)
+          .eq("user_id", uid || "")
+          .select("id,next_follow_up_at");
 
-      // Attempt #1: with user_id filter (common RLS policy)
-      let resp = await supabase
-        .from("leads")
-        .update({ next_follow_up_at: dateIso || null })
-        .eq("id", supaId)
-        .eq("user_id", uid)
-        .select("id,next_follow_up_at");
+        if (!resp.error && resp.data?.length) {
+          const serverVal = resp.data[0]?.next_follow_up_at || null;
+          updatePerson({ ...withNext, id: supaId, next_follow_up_at: serverVal });
+        } else {
+          // Attempt #2: retry without user_id filter (diagnostic)
+          resp = await supabase
+            .from("leads")
+            .update({ next_follow_up_at: dateIso || null })
+            .eq("id", supaId)
+            .select("id,next_follow_up_at");
 
-      if (resp.error) return;
-
-      if (resp.data?.length) {
-        const serverVal = resp.data[0]?.next_follow_up_at || null;
-        updatePerson({ ...withNext, id: supaId, next_follow_up_at: serverVal });
-        return;
-      }
-
-      // Attempt #2: retry without user_id filter (diagnostic)
-      resp = await supabase
-        .from("leads")
-        .update({ next_follow_up_at: dateIso || null })
-        .eq("id", supaId)
-        .select("id,next_follow_up_at");
-
-      if (resp.error) return;
-
-      if (resp.data?.length) {
-        const serverVal = resp.data[0]?.next_follow_up_at || null;
-        updatePerson({ ...withNext, id: supaId, next_follow_up_at: serverVal });
+          if (!resp.error && resp.data?.length) {
+            const serverVal = resp.data[0]?.next_follow_up_at || null;
+            updatePerson({ ...withNext, id: supaId, next_follow_up_at: serverVal });
+          }
+        }
       }
     } catch {
       // swallow; UI already updated
+    }
+
+    // Tag contact + ensure existence (and stash follow-up in meta) ONLY when a follow-up is set
+    if (dateIso && uid) {
+      try {
+        await ensureAppointmentContact({ userId: uid, person: withNext, followUpIso: dateIso });
+      } catch (e) {
+        // Non-fatal; continue silently
+        console.error("Failed to ensure contact / add 'appointment' tag:", e);
+      }
     }
   }
 
@@ -533,7 +600,7 @@ function Drawer({
       className={`rounded-full px-3 py-1 text-xs border ${
         selectedStage === id
           ? "bg-white text-black border-white/10"
-          : "bg白/5 text-white border-white/15 hover:bg-white/10"
+          : "bg-white/5 text-white border-white/15 hover:bg-white/10"
       }`}
     >
       {children}
@@ -647,7 +714,7 @@ function Drawer({
               <div className="mt-1 grid gap-2">
                 {notes.map(n => (
                   <div key={n.id} className="rounded-lg border border-white/10 bg-black/30 p-2">
-                    <div className="mb-1 flex items-center justify-between text-xs text白/60">
+                    <div className="mb-1 flex items-center justify-between text-xs text-white/60">
                       <span>{new Date(n.created_at).toLocaleString()}</span>
                       <div className="flex items-center gap-3">
                         <button
