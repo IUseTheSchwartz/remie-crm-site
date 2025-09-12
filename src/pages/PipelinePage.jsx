@@ -39,7 +39,7 @@ const STAGE_STYLE = {
 };
 
 const CARD_H = 150;
-const GAP_Y = 8;
+the GAP_Y = 8;
 const MAX_VISIBLE = 5;
 const SCROLL_H = CARD_H * MAX_VISIBLE + GAP_Y * (MAX_VISIBLE - 1);
 
@@ -151,7 +151,7 @@ function parseFollowupRawToISO(raw) {
   return isNaN(d.getTime()) ? null : d.toISOString();
 }
 
-/* ------------------------ Contacts tagging helpers ------------------------- */
+/* ------------------------ Contacts + Calendar wiring ----------------------- */
 
 const normalizeTag = (s) => String(s ?? "").trim().toLowerCase().replace(/\s+/g, "_");
 const uniqTags = (arr) => Array.from(new Set((arr || []).map(normalizeTag))).filter(Boolean);
@@ -172,18 +172,28 @@ async function findContactByUserAndPhone(userId, rawPhone) {
   return (data || []).find((c) => normalizePhone(c.phone) === phoneNorm) || null;
 }
 
-/** Ensure contact exists, add 'appointment' tag, and store follow-up in meta */
+/** Ensure contact exists, add 'appointment' tag, and store follow-up in meta (multiple keys for Calendar compatibility) */
 async function ensureAppointmentContact({ userId, person, followUpIso }) {
   if (!person?.phone) return;
 
   const existing = await findContactByUserAndPhone(userId, person.phone);
   const fullName = person.name || person.email || null;
 
+  const metaPatch = followUpIso
+    ? {
+        next_follow_up_at: followUpIso,
+        follow_up_at: followUpIso,
+        appointment_at: followUpIso,
+        calendar_type: "follow_up",
+        appointment: { when: followUpIso, source: "pipeline" },
+      }
+    : {}; // if cleared, we don't change contacts here
+
   if (existing) {
     const nextTags = uniqTags([...(existing.tags || []), "appointment"]);
     const nextMeta = {
       ...(existing.meta && typeof existing.meta === "object" ? existing.meta : {}),
-      next_follow_up_at: followUpIso || null,
+      ...metaPatch,
     };
     await supabase
       .from("message_contacts")
@@ -201,7 +211,7 @@ async function ensureAppointmentContact({ userId, person, followUpIso }) {
         phone: person.phone,
         full_name: fullName,
         tags: ["appointment"],
-        meta: followUpIso ? { next_follow_up_at: followUpIso } : {},
+        meta: metaPatch,
       }]);
   }
 }
@@ -340,7 +350,7 @@ export default function PipelinePage() {
    * First try with `user_id = auth.uid()` (RLS-friendly). If 0 rows updated,
    * retry without the user_id filter to detect a mismatch.
    * Also: when a follow-up is SET (not cleared), ensure contact exists, add 'appointment' tag,
-   * and store the follow-up time in message_contacts.meta.next_follow_up_at
+   * and store the follow-up time in message_contacts.meta (multiple keys for calendar compatibility).
    */
   async function setNextFollowUp(person, dateIso) {
     const withNext = { ...person, next_follow_up_at: dateIso || null };
@@ -348,15 +358,11 @@ export default function PipelinePage() {
     // Update local cache/UI immediately so you see the change
     updatePerson(withNext);
 
-    // Get user id independently so tagging runs even if the DB update throws earlier
     let uid = null;
     try {
       const { data: ses } = await supabase.auth.getSession();
       uid = ses?.session?.user?.id || null;
-    } catch {}
 
-    // Persist next_follow_up_at to leads
-    try {
       const supaId = await resolveLeadSupabaseId(withNext);
       if (supaId) {
         // Attempt #1: with user_id filter (common RLS policy)
@@ -364,7 +370,7 @@ export default function PipelinePage() {
           .from("leads")
           .update({ next_follow_up_at: dateIso || null })
           .eq("id", supaId)
-          .eq("user_id", uid || "")
+          .eq("user_id", uid)
           .select("id,next_follow_up_at");
 
         if (!resp.error && resp.data?.length) {
@@ -388,13 +394,13 @@ export default function PipelinePage() {
       // swallow; UI already updated
     }
 
-    // Tag contact + ensure existence (and stash follow-up in meta) ONLY when a follow-up is set
+    // Tag contact + ensure existence (+ stash follow-up in several meta keys) ONLY when a follow-up is set
     if (dateIso && uid) {
       try {
         await ensureAppointmentContact({ userId: uid, person: withNext, followUpIso: dateIso });
       } catch (e) {
         // Non-fatal; continue silently
-        console.error("Failed to ensure contact / add 'appointment' tag:", e);
+        console.error("Failed to ensure contact / add 'appointment' meta:", e);
       }
     }
   }
