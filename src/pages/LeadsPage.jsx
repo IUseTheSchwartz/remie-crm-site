@@ -9,7 +9,7 @@ import {
 
 import {
   scheduleWelcomeText,
-  schedulePolicyKickoffEmail
+  // schedulePolicyKickoffEmail  // removed (we no longer use this)
 } from "../lib/automation.js";
 
 // Supabase helpers
@@ -141,6 +141,62 @@ function preserveStage(existingList, incoming) {
     if (found[k] !== undefined && found[k] !== null) keep[k] = found[k];
   }
   return keep;
+}
+
+/* -------------------- Contacts sync helpers (Sold flow) -------------------- */
+const normalizeTag = (s) => String(s ?? "").trim().toLowerCase().replace(/\s+/g, "_");
+const uniqTags = (arr) => Array.from(new Set((arr || []).map(normalizeTag))).filter(Boolean);
+const normalizePhone = (s) => {
+  const d = String(s || "").replace(/\D/g, "");
+  return d.length === 11 && d.startsWith("1") ? d.slice(1) : d; // drop leading US '1'
+};
+
+/** Find a contact by user+phone using normalized digits */
+async function findContactByUserAndPhone(userId, rawPhone) {
+  const phoneNorm = normalizePhone(rawPhone);
+  if (!phoneNorm) return null;
+  const { data, error } = await supabase
+    .from("message_contacts")
+    .select("id, phone, full_name, tags")
+    .eq("user_id", userId);
+  if (error) throw error;
+  return (data || []).find((c) => normalizePhone(c.phone) === phoneNorm) || null;
+}
+
+/** Build final tags for SOLD: replace status with 'sold' and optionally add birthday/holiday */
+function buildSoldTags(currentTags, { addBdayHoliday }) {
+  const base = (currentTags || []).filter(
+    (t) => !["lead", "military", "sold"].includes(normalizeTag(t))
+  );
+  const out = [...base, "sold"];
+  if (addBdayHoliday) out.push("birthday_text", "holiday_text");
+  return uniqTags(out);
+}
+
+/** Update existing contact or insert a new one with SOLD tags */
+async function upsertSoldContact({ userId, phone, fullName, addBdayHoliday }) {
+  if (!phone) return;
+
+  const existing = await findContactByUserAndPhone(userId, phone);
+
+  if (existing) {
+    const nextTags = buildSoldTags(existing.tags, { addBdayHoliday });
+    const { error } = await supabase
+      .from("message_contacts")
+      .update({ full_name: fullName || existing.full_name || null, tags: nextTags })
+      .eq("id", existing.id);
+    if (error) throw error;
+    return existing.id;
+  } else {
+    const nextTags = buildSoldTags([], { addBdayHoliday });
+    const { data, error } = await supabase
+      .from("message_contacts")
+      .insert([{ user_id: userId, phone, full_name: fullName || null, tags: nextTags }])
+      .select("id")
+      .single();
+    if (error) throw error;
+    return data.id;
+  }
 }
 
 export default function LeadsPage() {
@@ -394,8 +450,8 @@ export default function LeadsPage() {
       phone: soldPayload.phone || base.phone || "",
       email: soldPayload.email || base.email || "",
 
+      // Keep only bday/holiday toggle; Message Policy Info removed
       automationPrefs: {
-        messagePolicyInfo: !!soldPayload.sendPolicyEmailOrMail,
         bdayHolidayTexts: !!soldPayload.enableBdayHolidayTexts,
       },
     };
@@ -408,23 +464,13 @@ export default function LeadsPage() {
     setClients(nextClients);
     setLeads(nextLeads);
 
+    // (Optional) Welcome text still supported if you later surface the checkbox
     if (soldPayload.sendWelcomeText) {
       scheduleWelcomeText({
         name: updated.name,
         phone: updated.phone,
         carrier: updated.sold?.carrier,
         startDate: updated.sold?.startDate,
-      });
-    }
-    if (soldPayload.sendPolicyEmailOrMail) {
-      schedulePolicyKickoffEmail({
-        name: updated.name,
-        email: updated.email,
-        carrier: updated.sold?.carrier,
-        faceAmount: updated.sold?.faceAmount,
-        monthlyPayment: updated.sold?.monthlyPayment,
-        startDate: updated.sold?.startDate,
-        address: undefined, // no address data
       });
     }
 
@@ -438,6 +484,23 @@ export default function LeadsPage() {
     } catch (e) {
       console.error("SOLD sync error:", e);
       setServerMsg(`⚠️ SOLD sync failed: ${e.message || e}`);
+    }
+
+    // 🔁 Reflect to contacts: replace lead/military with sold (+ optional birthday/holiday)
+    try {
+      const { data: authData } = await supabase.auth.getUser();
+      const userId = authData?.user?.id;
+      if (userId) {
+        await upsertSoldContact({
+          userId,
+          phone: updated.phone,
+          fullName: updated.name,
+          addBdayHoliday: !!soldPayload.enableBdayHolidayTexts,
+        });
+      }
+    } catch (err) {
+      console.error("Contact tag sync (sold) failed:", err);
+      // Non-fatal; the lead is sold. You could show a toast if you want.
     }
   }
 
@@ -708,7 +771,7 @@ function SoldDrawer({ initial, allClients, onClose, onSave }) {
     startDate: initial?.sold?.startDate || "",
     // Automations
     sendWelcomeText: false,
-    sendPolicyEmailOrMail: true,
+    // sendPolicyEmailOrMail: true,            // removed from UI/logic
     enableBdayHolidayTexts: true,
   });
 
@@ -803,21 +866,7 @@ function SoldDrawer({ initial, allClients, onClose, onSave }) {
           <div className="rounded-2xl border border-white/15 bg-white/[0.03] p-3">
             <div className="mb-2 text-sm font-semibold text-white/90">Post-sale options</div>
             <div className="grid gap-2">
-              <label className="flex items-start gap-3 rounded-xl border border-white/10 bg-black/30 p-3 hover:bg-white/[0.06]">
-                <input
-                  type="checkbox"
-                  className="mt-1"
-                  checked={form.sendPolicyEmailOrMail}
-                  onChange={(e)=>setForm({...form, sendPolicyEmailOrMail:e.target.checked})}
-                />
-                <div className="flex-1">
-                  <div className="text-sm">Message Policy Info</div>
-                  <p className="mt-1 text-xs text-white/50">
-                    Sends the policy kickoff info (email or printable letter when messaging is enabled).
-                  </p>
-                </div>
-              </label>
-
+              {/* Message Policy Info block removed */}
               <label className="flex items-start gap-3 rounded-xl border border-white/10 bg-black/30 p-3 hover:bg-white/[0.06]">
                 <input
                   type="checkbox"
@@ -828,7 +877,7 @@ function SoldDrawer({ initial, allClients, onClose, onSave }) {
                 <div className="flex-1">
                   <div className="text-sm">Bday Texts + Holiday Texts</div>
                   <p className="mt-1 text-xs text-white/50">
-                    Opt-in to automated birthday & holiday greetings.
+                    Opt-in to automated birthday &amp; holiday greetings.
                   </p>
                 </div>
               </label>
