@@ -1,5 +1,5 @@
 // Sends the “new lead” auto text by rendering the user’s template.
-// Tries to send via messages-send (so it records a row), and returns JSON.
+// Pulls agent info from public.agent_profiles and sends via messages-send.
 const { createClient } = require("@supabase/supabase-js");
 
 const CORS_HEADERS = {
@@ -30,6 +30,7 @@ exports.handler = async (event) => {
     SUPABASE_SERVICE_ROLE,
     SITE_URL,
     URL,
+    TELNYX_FROM_NUMBER, // fallback for agent_phone
   } = process.env;
 
   if (!SUPABASE_URL || !SUPABASE_SERVICE_ROLE) {
@@ -37,7 +38,9 @@ exports.handler = async (event) => {
   }
 
   let body;
-  try { body = JSON.parse(event.body || "{}"); } catch { return json(400, { error: "Invalid JSON" }); }
+  try { body = JSON.parse(event.body || "{}"); }
+  catch { return json(400, { error: "Invalid JSON" }); }
+
   const leadId = body.lead_id || body.leadId;
   const requesterId = body.requesterId || null;
   if (!leadId || !requesterId) {
@@ -48,7 +51,7 @@ exports.handler = async (event) => {
     auth: { persistSession: false },
   });
 
-  // Load lead & template
+  // 1) Load lead
   const { data: lead, error: LErr } = await supabase
     .from("leads")
     .select("id, user_id, name, phone, state, beneficiary, beneficiary_name, military_branch")
@@ -56,6 +59,7 @@ exports.handler = async (event) => {
     .maybeSingle();
   if (LErr || !lead) return json(404, { error: "lead_not_found" });
 
+  // 2) Load template row
   const { data: mt, error: TErr } = await supabase
     .from("message_templates")
     .select("*")
@@ -75,15 +79,49 @@ exports.handler = async (event) => {
   if (!S(tpl)) return json(200, { sent: false, reason: "empty_template" });
   if (!phone)   return json(200, { sent: false, reason: "missing_phone" });
 
+  // 3) Load agent profile (your table)
+  let agent_name = "";
+  let agent_phone = S(TELNYX_FROM_NUMBER);  // fallback to sending number
+  let calendly_link = "";
+  try {
+    const { data: agent, error: AErr } = await supabase
+      .from("agent_profiles")
+      .select("full_name, phone, calendly_url")
+      .eq("user_id", lead.user_id)
+      .maybeSingle();
+
+    if (!AErr && agent) {
+      agent_name    = S(agent.full_name) || agent_name;
+      agent_phone   = S(agent.phone) || agent_phone;
+      calendly_link = S(agent.calendly_url) || calendly_link;
+    }
+  } catch (e) {
+    // non-fatal
+  }
+
+  // 4) Build render context (match your placeholders)
+  const first_name  = S(lead.name).split(/\s+/)[0] || "";
+  const beneficiary = S(lead.beneficiary) || S(lead.beneficiary_name);
+
   const ctx = {
+    // lead values
+    first_name,
     name: S(lead.name),
     state: S(lead.state),
-    beneficiary: S(lead.beneficiary) || S(lead.beneficiary_name),
+    beneficiary,
+    // agent values
+    agent_name,
+    agent_phone,
+    calendly_link,
   };
-  const textBody = String(tpl).replace(/\{\{\s*([a-zA-Z0-9_]+)\s*\}\}/g, (_, k) => S(ctx[k])).trim();
+
+  // 5) Render template {{var}}
+  const textBody = String(tpl)
+    .replace(/\{\{\s*([a-zA-Z0-9_]+)\s*\}\}/g, (_, k) => S(ctx[k]))
+    .trim();
   if (!textBody) return json(200, { sent: false, reason: "render_empty" });
 
-  // Call messages-send so it logs to public.messages
+  // 6) Send through messages-send so it records in public.messages
   const base = SITE_URL || URL;
   if (!base) return json(500, { error: "Missing SITE_URL/URL" });
 
@@ -93,7 +131,7 @@ exports.handler = async (event) => {
     body: JSON.stringify({
       to: phone,
       body: textBody,
-      requesterId,          // <- critical for your UI filter
+      requesterId,          // <- critical so your UI filters by user
       lead_id: lead.id,
     }),
   });
