@@ -1,3 +1,4 @@
+// File: src/pages/MessageTestPage.jsx
 import { useEffect, useMemo, useState } from "react";
 import { supabase } from "../lib/supabaseClient.js";
 import { useAuth } from "../auth.jsx";
@@ -7,6 +8,7 @@ const FN_BASE = import.meta.env?.VITE_FUNCTIONS_BASE || "/.netlify/functions";
 
 /* ---- Helpers ---- */
 const S = (x) => (x == null ? "" : String(x).trim());
+
 function normalizeToE164_US_CA(input) {
   if (typeof input !== "string") return null;
   const trimmed = input.trim();
@@ -20,23 +22,28 @@ function normalizeToE164_US_CA(input) {
   if (digits.length === 11 && digits.startsWith("1")) return `+${digits}`;
   return null;
 }
+
 const normalizeTag = (s) => String(s ?? "").trim().toLowerCase().replace(/\s+/g, "_");
 const uniqTags = (arr) => Array.from(new Set((arr || []).map(normalizeTag))).filter(Boolean);
 const normalizePhoneKey = (s) => {
   const d = String(s || "").replace(/\D/g, "");
   return d.length === 11 && d.startsWith("1") ? d.slice(1) : d; // 10-digit key
 };
+
 function renderTemplate(tpl, ctx) {
   return String(tpl || "").replace(/\{\{\s*([a-zA-Z0-9_]+)\s*\}\}/g, (_, k) => S(ctx[k]));
 }
+
 function extractTemplateMap(mt) {
   if (!mt) return {};
   const out = {};
+  // Preferred JSON blob
   if (mt.templates && typeof mt.templates === "object") {
     for (const [k, v] of Object.entries(mt.templates)) {
       if (typeof v === "string" && v.trim()) out[k] = v;
     }
   }
+  // Accept legacy top-level columns
   const candidates = ["new_lead","new_lead_military","follow_up_2d","birthday","holiday","payment_reminder","sold_welcome"];
   for (const k of candidates) {
     if (typeof mt[k] === "string" && mt[k].trim()) out[k] = mt[k];
@@ -53,14 +60,9 @@ export default function MessageTestPage() {
   const [agent, setAgent] = useState(null);
 
   const [toNumber, setToNumber] = useState("");
-  const [selectedKey, setSelectedKey] = useState("");
+  const [selectedKey, setSelectedKey] = useState(""); // includes synthetic automation options
   const [sending, setSending] = useState(false);
   const [serverMsg, setServerMsg] = useState("");
-
-  // Follow-up panel state
-  const [followMsg, setFollowMsg] = useState("");
-  const [tagMode, setTagMode] = useState("lead"); // "lead" | "military"
-  const [scanMsg, setScanMsg] = useState("");
 
   // Context for rendering
   const [ctx, setCtx] = useState({
@@ -73,6 +75,7 @@ export default function MessageTestPage() {
     calendly_link: "",
   });
 
+  // Load templates + agent profile
   useEffect(() => {
     (async () => {
       if (!allowed || !user?.id) return;
@@ -105,59 +108,43 @@ export default function MessageTestPage() {
     })();
   }, [allowed, user?.id]);
 
-  const templates = useMemo(() => extractTemplateMap(mt), [mt]);
-  const templateKeys = useMemo(() => Object.keys(templates), [templates]);
+  const rawTemplates = useMemo(() => extractTemplateMap(mt), [mt]);
 
+  // Build unified dropdown: normal templates + automation scenarios (if follow_up_2d exists)
+  const dropdownOptions = useMemo(() => {
+    const opts = Object.keys(rawTemplates).map((k) => ({ key: k, label: k, type: "template" }));
+    if (rawTemplates["follow_up_2d"]) {
+      opts.push(
+        { key: "auto_follow_up_2d__lead", label: "No-reply follow-up (lead)", type: "automation" },
+        { key: "auto_follow_up_2d__military", label: "No-reply follow-up (military)", type: "automation" },
+      );
+    }
+    return opts;
+  }, [rawTemplates]);
+
+  // Choose first option by default
   useEffect(() => {
-    if (!selectedKey && templateKeys.length) setSelectedKey(templateKeys[0]);
-  }, [templateKeys, selectedKey]);
+    if (!selectedKey && dropdownOptions.length) setSelectedKey(dropdownOptions[0].key);
+  }, [dropdownOptions, selectedKey]);
 
-  const rendered = useMemo(() => renderTemplate(templates[selectedKey] || "", ctx), [templates, selectedKey, ctx]);
-
-  async function sendOne(key) {
-    if (!key) return;
-    const e164 = normalizeToE164_US_CA(toNumber);
-    if (!e164) return alert("Enter a valid US/CA number (e.g. +16155551234).");
-    const text = renderTemplate(templates[key] || "", ctx).trim();
-    if (!text) return alert("Template rendered empty. Adjust context.");
-
-    setSending(true);
-    setServerMsg("");
-    try {
-      const { data: session } = await supabase.auth.getSession();
-      const token = session?.session?.access_token;
-
-      const res = await fetch(`${FN_BASE}/messages-send`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json", ...(token ? { Authorization: `Bearer ${token}` } : {}) },
-        body: JSON.stringify({ to: e164, body: text, requesterId: user?.id || null, lead_id: null }),
-      });
-      const out = await res.json().catch(() => ({}));
-      if (!res.ok || out?.error) throw new Error(out?.telnyx_response?.errors?.[0]?.detail || out?.error || "Send failed");
-      setServerMsg(`✅ Sent via Telnyx (id: ${out.telnyx_id || "n/a"})`);
-    } catch (e) {
-      console.error(e);
-      setServerMsg(`❌ ${e.message || e}`);
-    } finally {
-      setSending(false);
+  // Which template text to render?
+  const effectiveTemplateText = useMemo(() => {
+    if (!selectedKey) return "";
+    if (selectedKey.startsWith("auto_follow_up_2d__")) {
+      return rawTemplates["follow_up_2d"] || "";
     }
-  }
+    return rawTemplates[selectedKey] || "";
+  }, [selectedKey, rawTemplates]);
 
-  async function sendAll() {
-    for (const k of templateKeys) {
-      // eslint-disable-next-line no-await-in-loop
-      await sendOne(k);
-    }
-  }
+  const preview = useMemo(() => renderTemplate(effectiveTemplateText, ctx), [effectiveTemplateText, ctx]);
 
-  // --- Follow-up tester helpers ---
-  async function ensureContactTagForUserPhone(mode) {
+  // --- Contact tag mutation used by automation scenarios ---
+  async function ensureExclusiveStatusTag(mode /* "lead" | "military" */) {
     if (!user?.id) throw new Error("Not signed in.");
     const e164 = normalizeToE164_US_CA(toNumber);
     if (!e164) throw new Error("Enter a valid test number first.");
     const key10 = normalizePhoneKey(e164);
 
-    // fetch contacts for user; find by normalized phone
     const { data: contacts, error } = await supabase
       .from("message_contacts")
       .select("id, phone, full_name, tags")
@@ -165,9 +152,8 @@ export default function MessageTestPage() {
     if (error) throw error;
     const existing = (contacts || []).find((c) => normalizePhoneKey(c.phone) === key10);
 
-    // compute next tags: remove status, add chosen
     const current = Array.isArray(existing?.tags) ? existing.tags : [];
-    const withoutStatus = current.filter((t) => !["lead","military"].includes(normalizeTag(t)));
+    const withoutStatus = current.filter((t) => !["lead", "military"].includes(normalizeTag(t)));
     const next = uniqTags([...withoutStatus, mode]); // exclusive
 
     if (existing?.id) {
@@ -188,71 +174,64 @@ export default function MessageTestPage() {
     }
   }
 
-  async function sendFollowUpNow() {
+  // --- Send current selection ---
+  async function handleSendSelected() {
+    const e164 = normalizeToE164_US_CA(toNumber);
+    if (!e164) return alert("Enter a valid US/CA number (e.g. +16155551234).");
+
+    const text = renderTemplate(effectiveTemplateText, ctx).trim();
+    if (!text) return alert("Template rendered empty. Adjust context.");
+
+    setSending(true);
+    setServerMsg("");
+
     try {
-      setFollowMsg("Applying tag and sending…");
-      // 1) Ensure tag matches your rule: either 'lead' or 'military'
-      await ensureContactTagForUserPhone(tagMode);
+      let client_ref = null;
 
-      // 2) Render the follow_up_2d template
-      const tpl = templates["follow_up_2d"] || "";
-      if (!tpl.trim()) {
-        setFollowMsg("❌ No follow_up_2d template configured.");
-        return;
-      }
-      const body = renderTemplate(tpl, ctx).trim();
-      if (!body) {
-        setFollowMsg("❌ Template rendered empty. Adjust context.");
-        return;
+      // If this is an automation scenario, enforce tag + set client_ref
+      if (selectedKey === "auto_follow_up_2d__lead") {
+        await ensureExclusiveStatusTag("lead");
+        client_ref = "followup_2d";
+      } else if (selectedKey === "auto_follow_up_2d__military") {
+        await ensureExclusiveStatusTag("military");
+        client_ref = "followup_2d";
       }
 
-      const e164 = normalizeToE164_US_CA(toNumber);
-      if (!e164) {
-        setFollowMsg("❌ Enter a valid number.");
-        return;
-      }
+      const { data: session } = await supabase.auth.getSession();
+      const token = session?.session?.access_token;
 
-      // 3) Send through messages-send with client_ref
       const res = await fetch(`${FN_BASE}/messages-send`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json", ...(token ? { Authorization: `Bearer ${token}` } : {}) },
         body: JSON.stringify({
           to: e164,
-          body,
+          body: text,
           requesterId: user?.id || null,
           lead_id: null,
-          client_ref: "followup_2d",
+          ...(client_ref ? { client_ref } : {}), // tag rows for follow-up dedupe if applicable
         }),
       });
+
       const out = await res.json().catch(() => ({}));
       if (!res.ok || out?.error) {
-        setFollowMsg(`❌ Send failed: ${out?.telnyx_response?.errors?.[0]?.detail || out?.error || res.status}`);
-      } else {
-        setFollowMsg(`✅ Sent follow_up_2d (id: ${out.telnyx_id || "n/a"})`);
+        throw new Error(out?.telnyx_response?.errors?.[0]?.detail || out?.error || "Send failed");
       }
+      setServerMsg(`✅ Sent (id: ${out.telnyx_id || "n/a"})`);
     } catch (e) {
       console.error(e);
-      setFollowMsg(`❌ ${e.message || e}`);
+      setServerMsg(`❌ ${e.message || e}`);
+    } finally {
+      setSending(false);
     }
   }
 
-  async function triggerServerScan() {
-    try {
-      setScanMsg("Running server scan…");
-      const res = await fetch(`${FN_BASE}/followup-2d`, { method: "GET" });
-      const out = await res.json().catch(() => ({}));
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      setScanMsg(`✅ Scan OK — processed: ${out.processed ?? "?"}, sent: ${out.sent ?? "?"}`);
-    } catch (e) {
-      console.error(e);
-      setScanMsg(`❌ ${e.message || e}`);
-    }
-  }
-
+  // --- UI ---
   if (!allowed) {
     return (
       <div className="min-h-[60vh] grid place-items-center">
-        <div className="rounded-xl border border-white/15 bg-white/[0.03] px-4 py-3 text-sm">403 — Not authorized</div>
+        <div className="rounded-xl border border-white/15 bg-white/[0.03] px-4 py-3 text-sm">
+          403 — Not authorized
+        </div>
       </div>
     );
   }
@@ -269,7 +248,7 @@ export default function MessageTestPage() {
       <div className="text-xl font-semibold">Message Lab (private)</div>
 
       <div className="grid gap-4 md:grid-cols-2">
-        {/* Left: general tester */}
+        {/* Left: controls */}
         <div className="rounded-2xl border border-white/15 bg-white/[0.03] p-4 space-y-3">
           <div className="text-sm font-medium">Destination</div>
           <input
@@ -301,8 +280,8 @@ export default function MessageTestPage() {
             ))}
           </div>
 
-          <div className="mt-3 text-sm font-medium">Template</div>
-          {templateKeys.length === 0 ? (
+          <div className="mt-3 text-sm font-medium">What to send</div>
+          {dropdownOptions.length === 0 ? (
             <div className="text-sm text-white/60">No templates found for your account.</div>
           ) : (
             <>
@@ -311,23 +290,20 @@ export default function MessageTestPage() {
                 value={selectedKey}
                 onChange={(e)=>setSelectedKey(e.target.value)}
               >
-                {templateKeys.map(k => <option key={k} value={k}>{k}</option>)}
+                {dropdownOptions.map(opt => (
+                  <option key={opt.key} value={opt.key}>
+                    {opt.label}
+                  </option>
+                ))}
               </select>
 
               <div className="flex gap-2">
                 <button
-                  onClick={()=>sendOne(selectedKey)}
+                  onClick={handleSendSelected}
                   disabled={sending || !toNumber.trim()}
                   className="rounded-xl border border-white/15 bg-white text-black px-3 py-2 text-sm disabled:opacity-50"
                 >
-                  Send this template
-                </button>
-                <button
-                  onClick={sendAll}
-                  disabled={sending || !toNumber.trim()}
-                  className="rounded-xl border border-white/15 bg-white/5 px-3 py-2 text-sm hover:bg-white/10 disabled:opacity-50"
-                >
-                  Send ALL
+                  Send
                 </button>
               </div>
 
@@ -344,75 +320,24 @@ export default function MessageTestPage() {
         <div className="rounded-2xl border border-white/15 bg-white/[0.03] p-4">
           <div className="text-sm font-medium mb-2">Rendered preview</div>
           <div className="rounded-xl border border-white/10 bg-black/30 p-3 text-sm whitespace-pre-wrap">
-            {rendered || "—"}
+            {preview || "—"}
           </div>
           {selectedKey && (
             <div className="mt-3 text-xs text-white/50">
-              Template key: <code className="text-white/70">{selectedKey}</code>
+              Selected: <code className="text-white/70">{dropdownOptions.find(o=>o.key===selectedKey)?.label}</code>
+              {selectedKey.startsWith("auto_follow_up_2d__") && (
+                <span className="ml-1 text-white/50">
+                  &nbsp;• This uses your <code>follow_up_2d</code> template and sets the contact tag accordingly.
+                </span>
+              )}
             </div>
           )}
         </div>
       </div>
 
-      {/* Follow-Up Tester */}
-      <div className="rounded-2xl border border-white/15 bg-white/[0.04] p-4 space-y-3">
-        <div className="text-sm font-semibold">2-Day Follow-Up Tester</div>
-        <p className="text-xs text-white/60">
-          Applies a contact tag (<code>lead</code> or <code>military</code>) to the number above and sends the
-          <code> follow_up_2d</code> template immediately (logged with <code>provider_message_id=followup_2d</code>).
-        </p>
-
-        <div className="flex gap-3 items-center">
-          <label className="inline-flex items-center gap-2 text-sm">
-            <input
-              type="radio"
-              name="tagMode"
-              value="lead"
-              checked={tagMode === "lead"}
-              onChange={()=>setTagMode("lead")}
-            />
-            <span>Tag as <b>lead</b></span>
-          </label>
-          <label className="inline-flex items-center gap-2 text-sm">
-            <input
-              type="radio"
-              name="tagMode"
-              value="military"
-              checked={tagMode === "military"}
-              onChange={()=>setTagMode("military")}
-            />
-            <span>Tag as <b>military</b></span>
-          </label>
-        </div>
-
-        <div className="flex gap-2">
-          <button
-            onClick={sendFollowUpNow}
-            disabled={!toNumber.trim()}
-            className="rounded-xl bg-white text-black px-3 py-2 text-sm"
-          >
-            Send follow_up_2d NOW
-          </button>
-
-          <button
-            onClick={triggerServerScan}
-            className="rounded-xl border border-white/15 bg-white/5 px-3 py-2 text-sm hover:bg-white/10"
-            title="Calls /.netlify/functions/followup-2d once"
-          >
-            Trigger server follow-up scan
-          </button>
-        </div>
-
-        {followMsg && (
-          <div className="rounded-xl border border-white/10 bg-white/[0.04] px-3 py-2 text-sm text-white/80">
-            {followMsg}
-          </div>
-        )}
-        {scanMsg && (
-          <div className="rounded-xl border border-white/10 bg-white/[0.04] px-3 py-2 text-sm text-white/80">
-            {scanMsg}
-          </div>
-        )}
+      <div className="text-xs text-white/50">
+        Note: The live 2-day automation keeps sending this <code>follow_up_2d</code> message every 2 days (per your scheduled function)
+        until the contact replies. This tester just sends a single instance now, with the same tag/row semantics.
       </div>
     </div>
   );
