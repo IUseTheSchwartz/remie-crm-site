@@ -97,10 +97,13 @@ function normalizePhone(s) {
   return d.length === 11 && d.startsWith("1") ? d.slice(1) : d;
 }
 
+/**
+ * ✅ Replacement #1:
+ * Always keep 'lead' and add 'military' (in addition), not one-or-the-other.
+ */
 async function computeNextContactTags({ supabase, user_id, phone, full_name, military_branch }) {
   const phoneNorm = normalizePhone(phone);
 
-  // fetch existing by user + normalized phone
   const { data: candidates, error } = await supabase
     .from("message_contacts")
     .select("id, phone, tags")
@@ -108,46 +111,62 @@ async function computeNextContactTags({ supabase, user_id, phone, full_name, mil
 
   if (error) throw error;
 
-  const existing = (candidates || []).find(
-    (c) => normalizePhone(c.phone) === phoneNorm
-  );
-
+  const existing = (candidates || []).find((c) => normalizePhone(c.phone) === phoneNorm);
   const current = Array.isArray(existing?.tags) ? existing.tags : [];
-  const statusTag = normalizeTag(military_branch) ? "military" : "lead";
 
-  const withoutStatus = current.filter(
-    (t) => !["lead", "military"].includes(normalizeTag(t))
-  );
-  const next = uniqTags([...withoutStatus, statusTag]);
+  // ✅ Always keep 'lead'; add 'military' if branch present
+  const statusTags = ["lead", ...(normalizeTag(military_branch) ? ["military"] : [])];
+
+  // Remove old status tags then add fresh set
+  const withoutStatus = current.filter((t) => !["lead", "military"].includes(normalizeTag(t)));
+  const next = uniqTags([...withoutStatus, ...statusTags]);
 
   return { contactId: existing?.id ?? null, tags: next };
 }
 
-async function upsertContactByUserPhone(supabase, { user_id, phone, full_name, tags }) {
+/**
+ * ✅ Replacement #2:
+ * Upsert contact and MERGE meta so we can store `beneficiary` + `lead_id` safely.
+ */
+async function upsertContactByUserPhone(
+  supabase,
+  { user_id, phone, full_name, tags, meta = {} }
+) {
   const phoneNorm = normalizePhone(phone);
 
   const { data: candidates, error } = await supabase
     .from("message_contacts")
-    .select("id, phone")
+    .select("id, phone, full_name, tags, meta")
     .eq("user_id", user_id);
 
   if (error) throw error;
 
-  const existing = (candidates || []).find(
-    (c) => normalizePhone(c.phone) === phoneNorm
-  );
+  const existing = (candidates || []).find((c) => normalizePhone(c.phone) === phoneNorm);
 
   if (existing?.id) {
+    const mergedMeta = { ...(existing.meta || {}), ...(meta || {}) };
     const { error: uErr } = await supabase
       .from("message_contacts")
-      .update({ full_name: full_name || null, tags })
+      .update({
+        full_name: full_name || existing.full_name || null,
+        tags,
+        meta: mergedMeta,
+      })
       .eq("id", existing.id);
     if (uErr) throw uErr;
     return existing.id;
   } else {
     const { data: ins, error: iErr } = await supabase
       .from("message_contacts")
-      .insert([{ user_id, phone, full_name: full_name || null, tags }])
+      .insert([
+        {
+          user_id,
+          phone,
+          full_name: full_name || null,
+          tags,
+          meta,
+        },
+      ])
       .select("id")
       .single();
     if (iErr) throw iErr;
@@ -279,7 +298,10 @@ exports.handler = async (event) => {
       console.error("sendNewLeadIfEnabled failed:", err);
     }
 
-    // ✅ sync tags in message_contacts (lead vs military)
+    /**
+     * ✅ Replacement #3: sync tags + meta (beneficiary + lead_id) into message_contacts
+     *    We keep 'lead' and add 'military' if present; we MERGE meta.
+     */
     try {
       if (lead.phone) {
         const { tags } = await computeNextContactTags({
@@ -289,15 +311,23 @@ exports.handler = async (event) => {
           full_name: lead.name,
           military_branch: lead.military_branch,
         });
+
+        // Prefer beneficiary if present; fall back to beneficiary_name if Sheets provided that
+        const beneficiary = lead.beneficiary || lead.beneficiary_name || "";
+
         await upsertContactByUserPhone(supabase, {
           user_id: wh.user_id,
           phone: lead.phone,
           full_name: lead.name,
           tags,
+          meta: {
+            beneficiary,
+            lead_id: insertedId,
+          },
         });
       }
     } catch (err) {
-      console.error("contact tag sync failed:", err);
+      console.error("contact tag/meta sync failed:", err);
     }
 
     const { data: verifyRow, error: verifyErr } = await supabase
