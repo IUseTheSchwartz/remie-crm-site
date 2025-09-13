@@ -1,299 +1,257 @@
-// File: netlify/functions/lib/messaging.js
-// CommonJS helpers for messaging flows (new lead, sold, birthday/holiday, one-offs)
+const { createClient } = require("@supabase/supabase-js");
 
-const fetch = global.fetch || ((...a) => import("node-fetch").then(({ default: f }) => f(...a)));
-const { getServiceClient } = require("../_supabase.js");
-const supabase = getServiceClient();
-
-/* ---------- Basic helpers ---------- */
-function toE164(raw) {
-  const s = String(raw || "").replace(/\D/g, "");
-  if (!s) return "";
-  if (s.startsWith("1") && s.length === 11) return `+${s}`;
-  if (s.length === 10) return `+1${s}`;
-  if (String(raw).startsWith("+")) return String(raw);
-  return `+${s}`;
+/** Basic E.164 normalizer for US/CA */
+function normalizeToE164_US_CA(input) {
+  if (typeof input !== "string") return null;
+  const trimmed = input.trim();
+  if (trimmed.startsWith("+")) {
+    const compact = trimmed.replace(/\s+/g, "");
+    return /^\+\d{10,15}$/.test(compact) ? compact : null;
+  }
+  const digits = trimmed.replace(/\D+/g, "");
+  if (digits.length === 10) return `+1${digits}`;
+  if (digits.length === 11 && digits.startsWith("1")) return `+${digits}`;
+  return null;
 }
 
-function renderTemplate(str, ctx) {
-  return String(str || "").replace(/\{\{\s*([a-zA-Z0-9_]+)\s*\}\}/g, (_, k) => (ctx?.[k] ?? ""));
-}
-
-/* ---------- Defaults (shortened for brevity — keep yours if already set) ---------- */
-const DEFAULTS = {
-  new_lead:
-    "Hi {{first_name}}, this is {{agent_name}}. I received your life insurance request. Quick 5–10 min call to confirm info? You can also pick a time: {{calendly_link}}",
-  new_lead_military:
-    "Hi {{first_name}}, this is {{agent_name}}. I see a military background—thank you for your service. I’ll tailor options accordingly. Book here: {{calendly_link}}",
-  sold:
-    "Hi {{first_name}}, it’s {{agent_name}}. Your policy details are on file. If anything looks off or you have questions, text me anytime at {{agent_phone}}.",
-  nudge_48h:
-    "Hey {{first_name}}, haven’t heard back. Let’s book your life insurance consult from the form you submitted (beneficiary: {{beneficiary}}). Here’s my link: {{calendly_link}}",
-};
-
-const DEFAULT_ENABLED = {
-  new_lead: true,
-  new_lead_military: true,
-  sold: true,
-  nudge_48h: true,
-};
-
-/* ---------- Reads ---------- */
-async function getTemplatesAndFlags(userId) {
-  const { data } = await supabase
-    .from("message_templates")
-    .select("templates, enabled")
-    .eq("user_id", userId)
-    .maybeSingle();
-
-  const templates = (data?.templates ?? {}) || {};
-  const enabled = (data?.enabled ?? templates.__enabled ?? {}) || {};
-  return { templates: { ...DEFAULTS, ...templates }, enabled: { ...DEFAULT_ENABLED, ...enabled } };
-}
-
-async function getAgentContext(userId) {
-  const { data } = await supabase
-    .from("agent_profiles")
-    .select("full_name, phone, calendly_url, company, email")
-    .eq("user_id", userId)
-    .maybeSingle();
-
+function json(status, body) {
   return {
-    agent_name: data?.full_name || "Your agent",
-    agent_phone: data?.phone || "",
-    agent_email: data?.email || "",
-    company: data?.company || "Agency",
-    calendly_link: data?.calendly_url || "",
-    today: new Date().toLocaleDateString(),
+    statusCode: status,
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
   };
 }
 
-/* ---------- Contacts ---------- */
-async function ensureMessageContact(userId, { full_name, phone, tags = [], meta = {} }) {
-  const normalized = toE164(phone);
-  if (!normalized) return null;
+const COST_CENTS = 1;
 
-  const { data: existing } = await supabase
-    .from("message_contacts")
-    .select("id, subscribed, tags, meta")
-    .eq("user_id", userId)
-    .eq("phone", normalized)
-    .maybeSingle();
-
-  const nextTags = Array.from(new Set([...(existing?.tags || []), ...tags])).filter(Boolean);
-  const nextMeta = { ...(existing?.meta || {}), ...meta };
-
-  if (existing) {
-    await supabase
-      .from("message_contacts")
-      .update({ full_name: full_name || existing.full_name || "", tags: nextTags, meta: nextMeta })
-      .eq("id", existing.id);
-    return { id: existing.id, phone: normalized, subscribed: existing.subscribed };
-  }
-
-  const { data: row, error } = await supabase
-    .from("message_contacts")
-    .insert([{ user_id: userId, full_name: full_name || "", phone: normalized, tags: nextTags, meta: nextMeta }])
-    .select("id, subscribed")
-    .single();
-  if (error) throw error;
-  return { id: row.id, phone: normalized, subscribed: row.subscribed };
-}
-
-/* ---------- Wallet + recording ---------- */
-async function debitWalletOrThrow(userId, cents = 1) {
-  // Atomic-ish: only update if enough balance
-  const { data, error } = await supabase
-    .from("user_wallets")
-    .update({ balance_cents: supabase.rpc ? undefined : undefined }) // no-op to please linter
-    .eq("user_id", userId)
-    .gte("balance_cents", cents)
-    .select("balance_cents")
-    .limit(1);
-
-  // Supabase JS doesn’t do atomic math client-side; use RPC if you have it; fallback to guarded update:
-  // Prefer this RPC in SQL section below: rpc: wallet_debit(user_id uuid, amount int)
-  if (error || !data || !data.length) {
-    // Try RPC if present
-    try {
-      const { data: ok, error: rpcErr } = await supabase.rpc("wallet_debit", { p_user_id: userId, p_amount: cents });
-      if (rpcErr || ok !== true) throw rpcErr || new Error("Insufficient balance");
-      return;
-    } catch (e) {
-      throw new Error("Insufficient balance");
-    }
-  }
-}
-
-async function recordOutgoingMessage({ userId, contactId, leadId, to, from, body, providerSid, costCents = 1 }) {
-  await supabase.from("messages").insert([{
-    user_id: userId,
-    contact_id: contactId || null,
-    lead_id: leadId || null,
+async function insertMessageRow(supabase, {
+  user_id, lead_id = null, to, from, body, status,
+  provider_sid = null, cost_cents = 0, error_detail = null
+}) {
+  const payload = {
+    user_id,
+    lead_id,
     provider: "telnyx",
-    provider_sid: providerSid || null,
+    provider_sid,
     direction: "outgoing",
-    from_number: from || null,
     to_number: to,
+    from_number: from,
+    body: String(body || "").slice(0, 1600),
+    status,
+    cost_cents,
+  };
+  if (error_detail) payload.error_detail = String(error_detail).slice(0, 8000);
+
+  const { error } = await supabase.from("messages").insert(payload);
+  if (error) console.log("messages insert error:", error.message);
+}
+
+async function debitWalletOrThrow(supabase, userId, amount = COST_CENTS) {
+  if (!userId) throw new Error("Missing requesterId for wallet debit");
+  // Preferred: RPC (atomic)
+  const { data, error } = await supabase.rpc("wallet_debit", {
+    p_user_id: userId,
+    p_amount: amount,
+  });
+  if (error || data !== true) throw new Error("Insufficient balance");
+}
+
+exports.handler = async (event) => {
+  if (event.httpMethod !== "POST") {
+    return json(405, { error: "Method not allowed" });
+  }
+
+  const {
+    SUPABASE_URL,
+    SUPABASE_SERVICE_ROLE,
+    TELNYX_API_KEY,
+    TELNYX_MESSAGING_PROFILE_ID, // optional
+    TELNYX_FROM_NUMBER,          // optional
+    SITE_URL,
+    URL,
+  } = process.env;
+
+  const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE, {
+    auth: { persistSession: false },
+  });
+
+  let payload;
+  try {
+    payload = JSON.parse(event.body || "{}");
+  } catch {
+    return json(400, { error: "Invalid JSON body" });
+  }
+
+  const { to, body, lead_id, requesterId } = payload || {};
+  const toE164 = normalizeToE164_US_CA(String(to || ""));
+  const fromNumber = TELNYX_FROM_NUMBER || null;
+  const statusWebhookBase = SITE_URL || URL; // may be undefined
+
+  // Validate early — but ALWAYS log a row so it appears in UI
+  if (!SUPABASE_URL || !SUPABASE_SERVICE_ROLE) {
+    await insertMessageRow(supabase, {
+      user_id: requesterId || null,
+      lead_id,
+      to: toE164 || String(to || ""),
+      from: fromNumber,
+      body,
+      status: "blocked_env",
+      cost_cents: 0,
+      error_detail: "Supabase env not set",
+    });
+    return json(500, { error: "Supabase env not set" });
+  }
+
+  if (!toE164 || !body) {
+    await insertMessageRow(supabase, {
+      user_id: requesterId || null,
+      lead_id,
+      to: String(to || ""),
+      from: fromNumber,
+      body: body || "",
+      status: "blocked_bad_number",
+      cost_cents: 0,
+      error_detail: !toE164 ? "Invalid `to`" : "Missing `body`",
+    });
+    return json(400, { error: !toE164 ? "Invalid `to` number" : "`body` is required" });
+  }
+
+  if (!TELNYX_API_KEY) {
+    await insertMessageRow(supabase, {
+      user_id: requesterId || null,
+      lead_id,
+      to: toE164,
+      from: fromNumber,
+      body,
+      status: "blocked_env",
+      cost_cents: 0,
+      error_detail: "TELNYX_API_KEY not set",
+    });
+    return json(500, { error: "Telnyx API key not set" });
+  }
+
+  if (!TELNYX_MESSAGING_PROFILE_ID && !TELNYX_FROM_NUMBER) {
+    await insertMessageRow(supabase, {
+      user_id: requesterId || null,
+      lead_id,
+      to: toE164,
+      from: fromNumber,
+      body,
+      status: "blocked_env",
+      cost_cents: 0,
+      error_detail: "Provide TELNYX_MESSAGING_PROFILE_ID or TELNYX_FROM_NUMBER",
+    });
+    return json(500, { error: "Provide TELNYX_MESSAGING_PROFILE_ID or TELNYX_FROM_NUMBER" });
+  }
+
+  // 1) Debit wallet (1¢). On failure, still log row.
+  try {
+    await debitWalletOrThrow(supabase, requesterId, COST_CENTS);
+  } catch (e) {
+    await insertMessageRow(supabase, {
+      user_id: requesterId || null,
+      lead_id,
+      to: toE164,
+      from: fromNumber,
+      body,
+      status: "blocked_insufficient_funds",
+      cost_cents: 0,
+      error_detail: e?.message || "Insufficient balance",
+    });
+    return json(402, { error: "Insufficient balance" });
+  }
+
+  // 2) Build Telnyx payload
+  const msg = {
+    to: toE164,
+    text: String(body).slice(0, 1600),
+  };
+  if (TELNYX_MESSAGING_PROFILE_ID) msg.messaging_profile_id = TELNYX_MESSAGING_PROFILE_ID;
+  else msg.from = TELNYX_FROM_NUMBER;
+
+  // Optional webhooks; if not configured, we still send
+  if (statusWebhookBase) {
+    const statusWebhook = `${statusWebhookBase}/.netlify/functions/telnyx-status`;
+    msg.webhook_url = statusWebhook;
+    msg.webhook_failover_url = statusWebhook;
+    msg.use_profile_webhooks = false;
+  }
+
+  // 3) Send via Telnyx
+  let telnyxData = null;
+  let telnyxId = null;
+  try {
+    const res = await fetch("https://api.telnyx.com/v2/messages", {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${TELNYX_API_KEY}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(msg),
+    });
+    telnyxData = await res.json().catch(() => ({}));
+    telnyxId = telnyxData?.data?.id || telnyxData?.id || null;
+
+    if (!res.ok) {
+      await insertMessageRow(supabase, {
+        user_id: requesterId || null,
+        lead_id,
+        to: toE164,
+        from: fromNumber,
+        body,
+        status: "failed",
+        provider_sid: telnyxId,
+        cost_cents: COST_CENTS,
+        error_detail: JSON.stringify(telnyxData),
+      });
+      return json(502, {
+        error: "Failed to send via Telnyx",
+        telnyx_status: res.status,
+        telnyx_response: telnyxData,
+      });
+    }
+  } catch (e) {
+    await insertMessageRow(supabase, {
+      user_id: requesterId || null,
+      lead_id,
+      to: toE164,
+      from: fromNumber,
+      body,
+      status: "failed",
+      provider_sid: telnyxId,
+      cost_cents: COST_CENTS,
+      error_detail: e?.message || "Telnyx network error",
+    });
+    return json(502, { error: "Telnyx request failed" });
+  }
+
+  // 4) Insert the queued message row (success path)
+  await insertMessageRow(supabase, {
+    user_id: requesterId || null,
+    lead_id,
+    to: toE164,
+    from: fromNumber,
     body,
     status: "queued",
-    cost_cents: costCents,
-  }]);
-  // touch contact meta last_outgoing_at
-  await supabase.from("message_contacts").update({
-    meta: { last_outgoing_at: new Date().toISOString() },
-  }).eq("id", contactId);
-}
-
-/* ---------- Telnyx send ---------- */
-async function sendSmsTelnyx({ to, text }) {
-  const apiKey = process.env.TELNYX_API_KEY;
-  const fromNumber = process.env.TELNYX_FROM_NUMBER;
-  const profileId = process.env.TELNYX_MESSAGING_PROFILE_ID;
-  if (!apiKey) throw new Error("TELNYX_API_KEY not configured");
-  if (!fromNumber && !profileId) throw new Error("TELNYX_FROM_NUMBER or TELNYX_MESSAGING_PROFILE_ID required");
-
-  const body = { to, text, ...(profileId ? { messaging_profile_id: profileId } : { from: fromNumber }) };
-  const res = await fetch("https://api.telnyx.com/v2/messages", {
-    method: "POST",
-    headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
-    body: JSON.stringify(body),
+    provider_sid: telnyxId,
+    cost_cents: COST_CENTS,
   });
 
-  const j = await res.json().catch(() => ({}));
-  if (!res.ok) {
-    const detail = j?.errors?.[0]?.detail || "Telnyx send failed";
-    const err = new Error(detail);
-    err.telnyx = j;
-    throw err;
-  }
-  return { telnyxId: j?.data?.id || null, fromUsed: fromNumber || null };
-}
+  // 5) Touch contact meta.last_outgoing_at (helps follow-up logic)
+  try {
+    const { data: contact } = await supabase
+      .from("message_contacts")
+      .select("id, meta")
+      .eq("user_id", requesterId || null)
+      .eq("phone", toE164)
+      .maybeSingle();
+    if (contact?.id) {
+      await supabase
+        .from("message_contacts")
+        .update({ meta: { ...(contact.meta || {}), last_outgoing_at: new Date().toISOString() } })
+        .eq("id", contact.id);
+    }
+  } catch {}
 
-/* ---------- Event log ---------- */
-async function logEvent({ userId, contactId, leadId, templateKey, to, body, meta = {} }) {
-  await supabase.from("message_events").insert([{
-    user_id: userId,
-    contact_id: contactId || null,
-    lead_id: leadId || null,
-    template_key: templateKey,
-    to_phone: to,
-    body,
-    meta,
-  }]);
-}
-
-/* ---------- Flow: New Lead ---------- */
-async function sendNewLeadIfEnabled({ userId, lead, leadId = null }) {
-  const contact = await ensureMessageContact(userId, {
-    full_name: lead.name || lead.full_name || "",
-    phone: lead.phone,
-    tags: ["lead", ...(lead.military_branch ? ["military"] : [])],
-    meta: { beneficiary: lead.beneficiary || "" },
-  });
-  if (!contact || !contact.subscribed) return { sent: false, reason: "not_subscribed_or_missing" };
-
-  const [{ templates, enabled }, agent] = await Promise.all([
-    getTemplatesAndFlags(userId),
-    getAgentContext(userId),
-  ]);
-
-  const isMilitary = !!String(lead.military_branch || "").trim();
-  const templateKey = isMilitary ? "new_lead_military" : "new_lead";
-  if (!enabled?.[templateKey]) return { sent: false, reason: "template_disabled" };
-
-  const first_name = String(lead.name || lead.full_name || "").trim().split(/\s+/)[0] || "";
-  const ctx = {
-    ...agent,
-    first_name,
-    full_name: lead.name || lead.full_name || "",
-    beneficiary: lead.beneficiary || "",
-    military_branch: lead.military_branch || "",
-  };
-
-  const tpl = templates?.[templateKey] || DEFAULTS[templateKey];
-  const text = renderTemplate(tpl, ctx).trim();
-  const to = contact.phone;
-
-  // Wallet debit then send + record
-  await debitWalletOrThrow(userId, 1);
-  const { telnyxId, fromUsed } = await sendSmsTelnyx({ to, text });
-  await recordOutgoingMessage({ userId, contactId: contact.id, leadId, to, from: fromUsed, body: text, providerSid: telnyxId, costCents: 1 });
-  await logEvent({ userId, contactId: contact.id, leadId, templateKey, to, body: text });
-  return { sent: true };
-}
-
-/* ---------- Flow: Sold ---------- */
-async function sendSoldIfEnabled({ userId, lead, leadId = null, sendNow = true }) {
-  if (!sendNow) return { sent: false, reason: "ui_opt_out" };
-
-  const contact = await ensureMessageContact(userId, {
-    full_name: lead.name || lead.full_name || "",
-    phone: lead.phone,
-    tags: ["sold"],
-  });
-  if (!contact || !contact.subscribed) return { sent: false, reason: "not_subscribed_or_missing" };
-
-  const [{ templates, enabled }, agent] = await Promise.all([
-    getTemplatesAndFlags(userId),
-    getAgentContext(userId),
-  ]);
-  if (!enabled?.sold) return { sent: false, reason: "template_disabled" };
-
-  const first_name = String(lead.name || lead.full_name || "").trim().split(/\s+/)[0] || "";
-  const ctx = { ...agent, first_name, full_name: lead.name || lead.full_name || "", carrier: lead.carrier || "", policy_number: lead.policy_number || "", premium: lead.premium || "" };
-
-  const tpl = templates?.sold || DEFAULTS.sold;
-  const text = renderTemplate(tpl, ctx).trim();
-  const to = contact.phone;
-
-  await debitWalletOrThrow(userId, 1);
-  const { telnyxId, fromUsed } = await sendSmsTelnyx({ to, text });
-  await recordOutgoingMessage({ userId, contactId: contact.id, leadId, to, from: fromUsed, body: text, providerSid: telnyxId, costCents: 1 });
-  await logEvent({ userId, contactId: contact.id, leadId, templateKey: "sold", to, body: text });
-  return { sent: true };
-}
-
-/* ---------- Generic template sender ---------- */
-async function sendTemplateIfEnabled({ userId, contact, templateKey, extraCtx = {}, leadId = null }) {
-  const ensured = await ensureMessageContact(userId, { full_name: contact.full_name || "", phone: contact.phone });
-  if (!ensured || !ensured.subscribed) return { sent: false, reason: "not_subscribed_or_missing" };
-
-  const [{ templates, enabled }, agent] = await Promise.all([
-    getTemplatesAndFlags(userId),
-    getAgentContext(userId),
-  ]);
-  if (!enabled?.[templateKey]) return { sent: false, reason: "template_disabled" };
-
-  const first_name = (contact.full_name || "").trim().split(/\s+/)[0] || "";
-  const ctx = { ...agent, first_name, full_name: contact.full_name || "", ...extraCtx };
-  const tpl = templates?.[templateKey] || DEFAULTS[templateKey] || "";
-  if (!tpl) return { sent: false, reason: "no_template" };
-
-  const text = renderTemplate(tpl, ctx).trim();
-  const to = ensured.phone;
-
-  await debitWalletOrThrow(userId, 1);
-  const { telnyxId, fromUsed } = await sendSmsTelnyx({ to, text });
-  await recordOutgoingMessage({ userId, contactId: ensured.id, leadId, to, from: fromUsed, body: text, providerSid: telnyxId, costCents: 1 });
-  await logEvent({ userId, contactId: ensured.id, leadId, templateKey, to, body: text });
-  return { sent: true };
-}
-
-module.exports = {
-  // utils
-  renderTemplate,
-  toE164,
-  // reads
-  getTemplatesAndFlags,
-  getAgentContext,
-  // contacts
-  ensureMessageContact,
-  // sending + logs
-  sendSmsTelnyx,
-  logEvent,
-  // flows
-  sendNewLeadIfEnabled,
-  sendSoldIfEnabled,
-  sendTemplateIfEnabled,
+  return json(200, { ok: true, telnyx_id: telnyxId });
 };
