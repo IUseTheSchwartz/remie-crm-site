@@ -143,7 +143,7 @@ function preserveStage(existingList, incoming) {
   return keep;
 }
 
-/* -------------------- Contacts sync helpers (Sold flow) -------------------- */
+/* -------------------- Contacts sync helpers (Lead & Sold) -------------------- */
 const normalizeTag = (s) => String(s ?? "").trim().toLowerCase().replace(/\s+/g, "_");
 const uniqTags = (arr) => Array.from(new Set((arr || []).map(normalizeTag))).filter(Boolean);
 const normalizePhone = (s) => {
@@ -161,6 +161,32 @@ async function findContactByUserAndPhone(userId, rawPhone) {
     .eq("user_id", userId);
   if (error) throw error;
   return (data || []).find((c) => normalizePhone(c.phone) === phoneNorm) || null;
+}
+
+/** Ensure 'lead' (+ optional 'military') tags for newly created leads */
+async function upsertLeadContact({ userId, phone, fullName, militaryBranch }) {
+  if (!phone) return;
+  const existing = await findContactByUserAndPhone(userId, phone);
+  const wantsMilitary = Boolean((militaryBranch || "").trim());
+  const addTags = wantsMilitary ? ["lead", "military"] : ["lead"];
+
+  if (existing) {
+    const nextTags = uniqTags([...(existing.tags || []), ...addTags]);
+    const { error } = await supabase
+      .from("message_contacts")
+      .update({ full_name: fullName || existing.full_name || null, tags: nextTags })
+      .eq("id", existing.id);
+    if (error) throw error;
+    return existing.id;
+  } else {
+    const { data, error } = await supabase
+      .from("message_contacts")
+      .insert([{ user_id: userId, phone, full_name: fullName || null, tags: addTags }])
+      .select("id")
+      .single();
+    if (error) throw error;
+    return data.id;
+  }
 }
 
 /** Build final tags for SOLD: replace status → 'sold', optionally add birthday/holiday/payment_reminder */
@@ -210,6 +236,7 @@ export default function LeadsPage() {
 
   const [serverMsg, setServerMsg] = useState("");
   const [showConnector, setShowConnector] = useState(false);
+  const [showAdd, setShowAdd] = useState(false); // NEW: manual add modal
 
   useEffect(() => {
     setLeads(loadLeads());
@@ -410,6 +437,24 @@ export default function LeadsPage() {
           console.error("CSV sync error:", e);
           setServerMsg(`⚠️ CSV sync failed: ${e.message || e}`);
         }
+
+        // Reflect to contacts for each
+        try {
+          const { data: authData } = await supabase.auth.getUser();
+          const userId = authData?.user?.id;
+          if (userId) {
+            for (const person of uniqueToAdd) {
+              await upsertLeadContact({
+                userId,
+                phone: person.phone,
+                fullName: person.name,
+                militaryBranch: person.military_branch,
+              });
+            }
+          }
+        } catch (err) {
+          console.error("Contact tag sync (CSV import) failed:", err);
+        }
       },
       error: (err) => alert("CSV parse error: " + err.message),
     });
@@ -534,6 +579,56 @@ export default function LeadsPage() {
     setSelected(null);
   }
 
+  // NEW: Manual add handler
+  async function handleManualAdd(personInput) {
+    // Normalize just like CSV import
+    const person = normalizePerson({
+      ...personInput,
+      stage: "no_pickup",
+    });
+
+    if (!(person.name || person.phone || person.email)) {
+      alert("Enter at least a name, phone, or email.");
+      return;
+    }
+
+    // Optimistic local
+    const newLeads = [person, ...leads];
+    const newClients = [person, ...clients];
+    saveLeads(newLeads);
+    saveClients(newClients);
+    setLeads(newLeads);
+    setClients(newClients);
+    setTab("clients");
+    setShowAdd(false);
+
+    // Server upsert
+    try {
+      setServerMsg("Saving lead to Supabase…");
+      await upsertLeadServer(person);
+      setServerMsg("✅ Lead saved");
+    } catch (e) {
+      console.error("Manual add sync error:", e);
+      setServerMsg(`⚠️ Save failed: ${e.message || e}`);
+    }
+
+    // Reflect to contacts
+    try {
+      const { data: authData } = await supabase.auth.getUser();
+      const userId = authData?.user?.id;
+      if (userId) {
+        await upsertLeadContact({
+          userId,
+          phone: person.phone,
+          fullName: person.name,
+          militaryBranch: person.military_branch,
+        });
+      }
+    } catch (err) {
+      console.error("Contact tag sync (manual add) failed:", err);
+    }
+  }
+
   // Sold tab uses SAME columns as Leads (no policy columns visible)
   const baseHeaders = ["Name","Phone","Email","DOB","State","Beneficiary","Beneficiary Name","Gender","Military Branch","Stage"];
   const colCount = baseHeaders.length + 1; // + Actions
@@ -565,6 +660,15 @@ export default function LeadsPage() {
           title="Setup Google Sheets auto-import"
         >
           {showConnector ? "Close setup" : "Setup auto import leads"}
+        </button>
+
+        {/* NEW: Manually add lead */}
+        <button
+          onClick={() => setShowAdd(true)}
+          className="rounded-xl border border-emerald-500/40 bg-emerald-500/10 px-3 py-2 text-sm"
+          title="Manually add a single lead"
+        >
+          Add lead
         </button>
 
         <label className="ml-auto inline-flex items-center gap-2 rounded-xl border border-white/15 bg-white/5 px-3 py-2 text-sm cursor-pointer">
@@ -715,6 +819,14 @@ export default function LeadsPage() {
           onClose={() => setViewSelected(null)}
         />
       )}
+
+      {/* NEW: Manual Add Lead modal */}
+      {showAdd && (
+        <ManualAddLeadModal
+          onClose={() => setShowAdd(false)}
+          onSave={handleManualAdd}
+        />
+      )}
     </div>
   );
 }
@@ -735,7 +847,7 @@ function PolicyViewer({ person, onClose }) {
           <Field label="Phone"><div className="ro">{s.phone || person?.phone || "—"}</div></Field>
           <Field label="Email"><div className="ro break-all">{s.email || person?.email || "—"}</div></Field>
 
-        <Field label="Carrier"><div className="ro">{s.carrier || "—"}</div></Field>
+          <Field label="Carrier"><div className="ro">{s.carrier || "—"}</div></Field>
           <Field label="Face Amount"><div className="ro">{s.faceAmount || "—"}</div></Field>
           <Field label="AP (Annual premium)"><div className="ro">{s.premium || "—"}</div></Field>
           <Field label="Monthly Payment"><div className="ro">{s.monthlyPayment || "—"}</div></Field>
@@ -893,6 +1005,139 @@ function SoldDrawer({ initial, allClients, onClose, onSave }) {
             <button type="submit"
               className="rounded-xl bg-white px-4 py-2 text-sm font-medium text-black hover:bg-white/90">
               Save as SOLD
+            </button>
+          </div>
+        </form>
+      </div>
+
+      <style>{`.inp{width:100%; border-radius:0.75rem; border:1px solid rgba(255,255,255,.1); background:#00000066; padding:.5rem .75rem; outline:none}
+        .inp:focus{box-shadow:0 0 0 2px rgba(99,102,241,.4)}`}</style>
+    </div>
+  );
+}
+
+/* --------------------------- Manual Add Lead Modal --------------------------- */
+function ManualAddLeadModal({ onClose, onSave }) {
+  const [form, setForm] = useState({
+    name: "",
+    phone: "",
+    email: "",
+    notes: "",
+    dob: "",
+    state: "",
+    beneficiary: "",
+    beneficiary_name: "",
+    gender: "",
+    military_branch: "",
+  });
+
+  function submit(e) {
+    e.preventDefault();
+    onSave(form);
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 grid bg-black/60 p-3">
+      <div className="relative m-auto w-full max-w-xl rounded-2xl border border-white/15 bg-neutral-950 p-4">
+        <div className="mb-2 flex items-center justify-between">
+          <div className="text-base font-semibold">Add lead</div>
+          <button onClick={onClose} className="rounded-lg px-2 py-1 text-sm hover:bg-white/10">Close</button>
+        </div>
+
+        <form onSubmit={submit} className="grid gap-3">
+          <div className="grid gap-3 sm:grid-cols-2">
+            <Field label="Name">
+              <input
+                className="inp"
+                placeholder="Jane Doe"
+                value={form.name}
+                onChange={(e)=>setForm({...form, name:e.target.value})}
+              />
+            </Field>
+            <Field label="Phone">
+              <input
+                className="inp"
+                placeholder="(555) 123-4567"
+                value={form.phone}
+                onChange={(e)=>setForm({...form, phone:e.target.value})}
+              />
+            </Field>
+          </div>
+
+          <Field label="Email">
+            <input
+              className="inp"
+              placeholder="jane@example.com"
+              value={form.email}
+              onChange={(e)=>setForm({...form, email:e.target.value})}
+            />
+          </Field>
+
+          <Field label="Notes">
+            <input
+              className="inp"
+              placeholder="Any context about the lead"
+              value={form.notes}
+              onChange={(e)=>setForm({...form, notes:e.target.value})}
+            />
+          </Field>
+
+          <div className="grid gap-3 sm:grid-cols-2">
+            <Field label="DOB">
+              <input
+                className="inp"
+                placeholder="YYYY-MM-DD"
+                value={form.dob}
+                onChange={(e)=>setForm({...form, dob:e.target.value})}
+              />
+            </Field>
+            <Field label="State">
+              <input
+                className="inp"
+                placeholder="TN"
+                value={form.state}
+                onChange={(e)=>setForm({...form, state:e.target.value.toUpperCase()})}
+              />
+            </Field>
+            <Field label="Beneficiary">
+              <input
+                className="inp"
+                value={form.beneficiary}
+                onChange={(e)=>setForm({...form, beneficiary:e.target.value})}
+              />
+            </Field>
+            <Field label="Beneficiary Name">
+              <input
+                className="inp"
+                value={form.beneficiary_name}
+                onChange={(e)=>setForm({...form, beneficiary_name:e.target.value})}
+              />
+            </Field>
+            <Field label="Gender">
+              <input
+                className="inp"
+                value={form.gender}
+                onChange={(e)=>setForm({...form, gender:e.target.value})}
+              />
+            </Field>
+            <Field label="Military Branch">
+              <input
+                className="inp"
+                placeholder="Army / Navy / …"
+                value={form.military_branch}
+                onChange={(e)=>setForm({...form, military_branch:e.target.value})}
+              />
+            </Field>
+          </div>
+
+          <div className="mt-3 flex items-center justify-end gap-2">
+            <button type="button" onClick={onClose}
+              className="rounded-xl border border-white/15 px-4 py-2 text-sm hover:bg-white/10">
+              Cancel
+            </button>
+            <button type="submit"
+              className="rounded-xl bg-white px-4 py-2 text-sm font-medium text-black hover:bg-white/90">
+              Save lead
             </button>
           </div>
         </form>
