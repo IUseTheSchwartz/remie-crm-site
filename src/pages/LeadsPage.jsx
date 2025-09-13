@@ -131,6 +131,44 @@ const buildMilitaryBranch = (row, map) => pick(row, map.military_branch);
 const onlyDigits = (s) => String(s || "").replace(/\D+/g, "");
 const normEmail  = (s) => String(s || "").trim().toLowerCase();
 
+/* ---------------- DOB: normalize to MM-DD-YYYY (hyphen) ---------------- */
+function toMMDDYYYYDash(v) {
+  if (v == null) return "";
+  const s = String(v).trim();
+  if (!s) return "";
+
+  // Match YYYY-MM-DD or YYYY/MM/DD
+  let m = s.match(/^(\d{4})[\/\-\.](\d{1,2})[\/\-\.](\d{1,2})$/);
+  if (m) {
+    const y = parseInt(m[1], 10);
+    const mm = String(parseInt(m[2], 10)).padStart(2, "0");
+    const dd = String(parseInt(m[3], 10)).padStart(2, "0");
+    return `${mm}-${dd}-${y}`;
+  }
+
+  // Match MM-DD-YYYY or MM/DD/YYYY or M-D-YY, etc.
+  m = s.match(/^(\d{1,2})[\/\-\.](\d{1,2})[\/\-\.](\d{2,4})$/);
+  if (m) {
+    let mm = String(parseInt(m[1], 10)).padStart(2, "0");
+    let dd = String(parseInt(m[2], 10)).padStart(2, "0");
+    let yy = m[3];
+    if (yy.length === 2) yy = (yy >= "50" ? "19" : "20") + yy;
+    return `${mm}-${dd}-${yy}`;
+  }
+
+  // Fallback: Date parse
+  const d = new Date(s);
+  if (!Number.isNaN(d.getTime())) {
+    const mm = String(d.getMonth() + 1).padStart(2, "0");
+    const dd = String(d.getDate()).padStart(2, "0");
+    const yy = d.getFullYear();
+    return `${mm}-${dd}-${yy}`;
+  }
+
+  // Unparseable -> return original
+  return s;
+}
+
 /** Preserve local pipeline fields if they already exist for this id */
 function preserveStage(existingList, incoming) {
   const found = existingList.find(x => x.id === incoming.id);
@@ -224,6 +262,56 @@ async function upsertSoldContact({ userId, phone, fullName, addBdayHoliday, addP
     if (error) throw error;
     return data.id;
   }
+}
+
+/* --------------- Auto-send helpers for manual add / CSV import --------------- */
+
+/** Resolve the new lead_id on the server for this user & person (by phone/email, recent 10min). */
+async function resolveLeadIdOnServer(userId, person) {
+  if (!userId) return null;
+  const or = [];
+  if (person.email) or.push(`email.eq.${encodeURIComponent(person.email)}`);
+  if (person.phone) or.push(`phone.eq.${encodeURIComponent(person.phone)}`);
+  const cutoffISO = new Date(Date.now() - 10 * 60 * 1000).toISOString();
+
+  try {
+    let q = supabase
+      .from("leads")
+      .select("id, created_at")
+      .eq("user_id", userId)
+      .gte("created_at", cutoffISO)
+      .order("created_at", { ascending: false })
+      .limit(1);
+
+    if (or.length) {
+      q = q.or(or.join(","));
+    }
+    const { data, error } = await q;
+    if (error) return null;
+    return data?.[0]?.id || null;
+  } catch {
+    return null;
+  }
+}
+
+/** Trigger the server-side auto-send flow using the lead id. */
+async function triggerAutoSendForLead(leadId, userId) {
+  if (!leadId || !userId) return;
+  try {
+    const { data: session } = await supabase.auth.getSession();
+    const token = session?.session?.access_token;
+
+    const res = await fetch("/.netlify/functions/lead-new-auto", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      },
+      body: JSON.stringify({ lead_id: leadId, requesterId: userId }),
+    });
+    // Non-fatal if fails; UI already saved the lead
+    await res.json().catch(() => ({}));
+  } catch {}
 }
 
 export default function LeadsPage() {
@@ -385,8 +473,9 @@ export default function LeadsPage() {
           const email = buildEmail(r, map);
           const notes = buildNotes(r, map);
 
-          // NEW fields
-          const dob  = buildDob(r, map);
+          // NEW fields with DOB normalized to MM-DD-YYYY as requested
+          const dobRaw  = buildDob(r, map);
+          const dob  = toMMDDYYYYDash(dobRaw);
           const state = buildState(r, map);
           const beneficiary = buildBeneficiary(r, map);
           const beneficiary_name = buildBeneficiaryName(r, map);
@@ -438,22 +527,47 @@ export default function LeadsPage() {
           setServerMsg(`⚠️ CSV sync failed: ${e.message || e}`);
         }
 
-        // Reflect to contacts for each
+        // Reflect to contacts + trigger auto-send for each
         try {
           const { data: authData } = await supabase.auth.getUser();
           const userId = authData?.user?.id;
           if (userId) {
+            const { data: session } = await supabase.auth.getSession();
+            const token = session?.session?.access_token;
+
             for (const person of uniqueToAdd) {
-              await upsertLeadContact({
-                userId,
-                phone: person.phone,
-                fullName: person.name,
-                militaryBranch: person.military_branch,
-              });
+              // Contacts (tags)
+              try {
+                await upsertLeadContact({
+                  userId,
+                  phone: person.phone,
+                  fullName: person.name,
+                  militaryBranch: person.military_branch,
+                });
+              } catch (e) {
+                console.error("Contact tag sync (CSV import) failed:", e);
+              }
+
+              // Resolve lead id then trigger auto-send
+              try {
+                const leadId = await resolveLeadIdOnServer(userId, person);
+                if (leadId) {
+                  await fetch("/.netlify/functions/lead-new-auto", {
+                    method: "POST",
+                    headers: {
+                      "Content-Type": "application/json",
+                      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+                    },
+                    body: JSON.stringify({ lead_id: leadId, requesterId: userId }),
+                  }).then(r => r.json()).catch(() => ({}));
+                }
+              } catch (e) {
+                console.error("Auto-send (CSV) failed:", e);
+              }
             }
           }
         } catch (err) {
-          console.error("Contact tag sync (CSV import) failed:", err);
+          console.error("Post-import followups failed:", err);
         }
       },
       error: (err) => alert("CSV parse error: " + err.message),
@@ -581,9 +695,10 @@ export default function LeadsPage() {
 
   // NEW: Manual add handler
   async function handleManualAdd(personInput) {
-    // Normalize just like CSV import
+    // Normalize just like CSV import, ensure DOB is MM-DD-YYYY (your requested format)
     const person = normalizePerson({
       ...personInput,
+      dob: toMMDDYYYYDash(personInput?.dob || ""),
       stage: "no_pickup",
     });
 
@@ -612,7 +727,7 @@ export default function LeadsPage() {
       setServerMsg(`⚠️ Save failed: ${e.message || e}`);
     }
 
-    // Reflect to contacts
+    // Reflect to contacts + trigger auto-send
     try {
       const { data: authData } = await supabase.auth.getUser();
       const userId = authData?.user?.id;
@@ -623,9 +738,15 @@ export default function LeadsPage() {
           fullName: person.name,
           militaryBranch: person.military_branch,
         });
+
+        // Resolve lead id then trigger auto-send (same path as Sheets webhook)
+        const leadId = await resolveLeadIdOnServer(userId, person);
+        if (leadId) {
+          await triggerAutoSendForLead(leadId, userId);
+        }
       }
     } catch (err) {
-      console.error("Contact tag sync (manual add) failed:", err);
+      console.error("Manual add followups failed:", err);
     }
   }
 
@@ -1086,7 +1207,7 @@ function ManualAddLeadModal({ onClose, onSave }) {
             <Field label="DOB">
               <input
                 className="inp"
-                placeholder="YYYY-MM-DD"
+                placeholder="MM-DD-YYYY"  // ← requested format
                 value={form.dob}
                 onChange={(e)=>setForm({...form, dob:e.target.value})}
               />
