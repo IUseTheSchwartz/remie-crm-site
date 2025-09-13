@@ -1,7 +1,6 @@
 // netlify/functions/gsheet-webhook.js
 const crypto = require("crypto");
 const { getServiceClient } = require("./_supabase");
-const { sendNewLeadIfEnabled } = require("./lib/messaging.js"); // ✅ existing
 
 // Create service client (uses SUPABASE_URL + SUPABASE_SERVICE_ROLE or SUPABASE_SERVICE_ROLE_KEY)
 const supabase = getServiceClient();
@@ -98,8 +97,9 @@ function normalizePhone(s) {
 }
 
 /**
- * ✅ Replacement #1:
- * Always keep 'lead' and add 'military' (in addition), not one-or-the-other.
+ * ✅ FIXED: Status tags are now **exclusive**.
+ * If military_branch is present → ["military"]; else → ["lead"].
+ * (We also preserve any non-status tags.)
  */
 async function computeNextContactTags({ supabase, user_id, phone, full_name, military_branch }) {
   const phoneNorm = normalizePhone(phone);
@@ -114,18 +114,17 @@ async function computeNextContactTags({ supabase, user_id, phone, full_name, mil
   const existing = (candidates || []).find((c) => normalizePhone(c.phone) === phoneNorm);
   const current = Array.isArray(existing?.tags) ? existing.tags : [];
 
-  // ✅ Always keep 'lead'; add 'military' if branch present
-  const statusTags = ["lead", ...(normalizeTag(military_branch) ? ["military"] : [])];
+  const withoutStatus = current.filter(
+    (t) => !["lead", "military"].includes(normalizeTag(t))
+  );
 
-  // Remove old status tags then add fresh set
-  const withoutStatus = current.filter((t) => !["lead", "military"].includes(normalizeTag(t)));
-  const next = uniqTags([...withoutStatus, ...statusTags]);
+  const status = (S(military_branch) ? "military" : "lead");
+  const next = uniqTags([...withoutStatus, status]);
 
   return { contactId: existing?.id ?? null, tags: next };
 }
 
 /**
- * ✅ Replacement #2:
  * Upsert contact and MERGE meta so we can store `beneficiary` + `lead_id` safely.
  */
 async function upsertContactByUserPhone(
@@ -173,8 +172,68 @@ async function upsertContactByUserPhone(
     return ins.id;
   }
 }
-// --- end helpers ---
 
+// --- templates → send helper (centralized via messages-send) ---
+function renderTemplate(tpl, ctx) {
+  return String(tpl || "").replace(/\{\{\s*([a-zA-Z0-9_]+)\s*\}\}/g, (_, k) => S(ctx[k]));
+}
+
+async function trySendNewLeadText({ userId, leadId, lead }) {
+  // Require phone
+  if (!S(lead.phone)) return { sent: false, reason: "missing_phone" };
+
+  // Load messaging templates/prefs
+  const { data: mt, error: tErr } = await supabase
+    .from("message_templates")
+    .select("*")
+    .eq("user_id", userId)
+    .maybeSingle();
+
+  if (tErr) return { sent: false, reason: "templates_lookup_failed", detail: tErr.message };
+  if (!mt || mt.enabled === false || mt.enabled?.new_lead === false) {
+    return { sent: false, reason: "template_disabled" };
+  }
+
+  const ctx = {
+    name: lead.name || "",
+    state: lead.state || "",
+    beneficiary: lead.beneficiary || lead.beneficiary_name || "",
+  };
+
+  const hasBranch = !!S(lead.military_branch);
+  const tpl = hasBranch
+    ? (mt.templates?.new_lead_military || mt.new_lead_military || mt.templates?.new_lead || mt.new_lead || "")
+    : (mt.templates?.new_lead || mt.new_lead || "");
+
+  const body = renderTemplate(tpl, ctx).trim();
+  if (!body) return { sent: false, reason: "empty_template" };
+
+  const base = process.env.SITE_URL || process.env.URL;
+  if (!base) return { sent: false, reason: "no_site_url" };
+
+  try {
+    const res = await fetch(`${base}/.netlify/functions/messages-send`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        to: lead.phone,
+        body,
+        lead_id: leadId,
+        requesterId: userId,
+        contact_id: null,
+      }),
+    });
+    const out = await res.json().catch(() => ({}));
+    if (!res.ok || out?.error) {
+      return { sent: false, reason: "send_failed", detail: out };
+    }
+    return { sent: true, telnyx_id: out?.telnyx_id };
+  } catch (e) {
+    return { sent: false, reason: "messages_send_unreachable", detail: e?.message };
+  }
+}
+
+// --- main handler ---
 exports.handler = async (event) => {
   try {
     if (event.httpMethod !== "POST") {
@@ -267,9 +326,55 @@ exports.handler = async (event) => {
         .limit(1);
 
       if (!qErr && existing && existing.length) {
+        // Even if deduped, we still want to update contact tags/meta and (optionally) send.
+        const dupId = existing[0].id;
+
+        // tags/meta sync
+        try {
+          if (lead.phone) {
+            const { tags } = await computeNextContactTags({
+              supabase,
+              user_id: wh.user_id,
+              phone: lead.phone,
+              full_name: lead.name,
+              military_branch: lead.military_branch,
+            });
+
+            const beneficiary = lead.beneficiary || lead.beneficiary_name || "";
+
+            await upsertContactByUserPhone(supabase, {
+              user_id: wh.user_id,
+              phone: lead.phone,
+              full_name: lead.name,
+              tags,
+              meta: { beneficiary, lead_id: dupId },
+            });
+          }
+        } catch (err) {
+          console.error("contact tag/meta sync (dedup) failed:", err);
+        }
+
+        // try send (centralized via messages-send)
+        try {
+          await trySendNewLeadText({
+            userId: wh.user_id,
+            leadId: dupId,
+            lead: {
+              name: lead.name,
+              phone: lead.phone,
+              state: lead.state,
+              beneficiary: lead.beneficiary,
+              beneficiary_name: lead.beneficiary_name,
+              military_branch: lead.military_branch,
+            },
+          });
+        } catch (e) {
+          console.error("send (dedup) failed:", e);
+        }
+
         return {
           statusCode: 200,
-          body: JSON.stringify({ ok: true, id: existing[0].id, deduped: true }),
+          body: JSON.stringify({ ok: true, id: dupId, deduped: true }),
         };
       }
     }
@@ -282,8 +387,9 @@ exports.handler = async (event) => {
 
     const insertedId = data?.[0]?.id || null;
 
+    // 🔔 Send welcome/new-lead message via centralized sender so it lands in public.messages
     try {
-      await sendNewLeadIfEnabled({
+      await trySendNewLeadText({
         userId: wh.user_id,
         leadId: insertedId,
         lead: {
@@ -291,17 +397,15 @@ exports.handler = async (event) => {
           phone: lead.phone,
           state: lead.state,
           beneficiary: lead.beneficiary,
+          beneficiary_name: lead.beneficiary_name,
           military_branch: lead.military_branch,
         },
       });
     } catch (err) {
-      console.error("sendNewLeadIfEnabled failed:", err);
+      console.error("send new lead failed:", err);
     }
 
-    /**
-     * ✅ Replacement #3: sync tags + meta (beneficiary + lead_id) into message_contacts
-     *    We keep 'lead' and add 'military' if present; we MERGE meta.
-     */
+    // ✅ sync tags + meta (beneficiary + lead_id) into message_contacts (exclusive status tag)
     try {
       if (lead.phone) {
         const { tags } = await computeNextContactTags({
@@ -311,10 +415,7 @@ exports.handler = async (event) => {
           full_name: lead.name,
           military_branch: lead.military_branch,
         });
-
-        // Prefer beneficiary if present; fall back to beneficiary_name if Sheets provided that
         const beneficiary = lead.beneficiary || lead.beneficiary_name || "";
-
         await upsertContactByUserPhone(supabase, {
           user_id: wh.user_id,
           phone: lead.phone,
