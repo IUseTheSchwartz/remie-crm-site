@@ -1,19 +1,11 @@
 const { createClient } = require("@supabase/supabase-js");
 
-/** Basic E.164 normalizer for US/CA
- * - Accepts "+1XXXXXXXXXX" as-is
- * - Strips non-digits from local formats like "(615) 555-1234"
- * - If 10 digits, prefixes +1
- * - If 11 digits and starts with "1", prefixes +
- * - Otherwise returns null
- */
+/** Basic E.164 normalizer for US/CA */
 function normalizeToE164_US_CA(input) {
   if (typeof input !== "string") return null;
   const trimmed = input.trim();
   if (trimmed.startsWith("+")) {
-    // remove spaces
     const compact = trimmed.replace(/\s+/g, "");
-    // very loose validation: + then 10+ digits
     return /^\+\d{10,15}$/.test(compact) ? compact : null;
   }
   const digits = trimmed.replace(/\D+/g, "");
@@ -30,6 +22,36 @@ function json(status, body) {
   };
 }
 
+const COST_CENTS = 1;
+
+async function debitWalletOrThrow(supabase, userId, amount = COST_CENTS) {
+  if (!userId) throw new Error("Missing requesterId for wallet debit");
+
+  // 1) Try RPC (recommended)
+  try {
+    const { data, error } = await supabase.rpc("wallet_debit", {
+      p_user_id: userId,
+      p_amount: amount,
+    });
+    if (error || data !== true) throw error || new Error("Insufficient balance");
+    return;
+  } catch (e) {
+    // 2) Fallback: guarded read+write (not fully atomic, but better than nothing)
+    const { data: row, error: selErr } = await supabase
+      .from("user_wallets")
+      .select("balance_cents")
+      .eq("user_id", userId)
+      .maybeSingle();
+    if (selErr || !row) throw new Error("Wallet not found");
+    if ((row.balance_cents ?? 0) < amount) throw new Error("Insufficient balance");
+    const { error: updErr } = await supabase
+      .from("user_wallets")
+      .update({ balance_cents: (row.balance_cents ?? 0) - amount })
+      .eq("user_id", userId);
+    if (updErr) throw new Error("Wallet debit failed");
+  }
+}
+
 exports.handler = async (event) => {
   if (event.httpMethod !== "POST") {
     return json(405, { error: "Method not allowed" });
@@ -39,8 +61,8 @@ exports.handler = async (event) => {
     SUPABASE_URL,
     SUPABASE_SERVICE_ROLE,
     TELNYX_API_KEY,
-    TELNYX_MESSAGING_PROFILE_ID,
-    TELNYX_FROM_NUMBER,
+    TELNYX_MESSAGING_PROFILE_ID, // optional
+    TELNYX_FROM_NUMBER,          // optional
     SITE_URL,
     URL,
   } = process.env;
@@ -48,8 +70,12 @@ exports.handler = async (event) => {
   if (!SUPABASE_URL || !SUPABASE_SERVICE_ROLE) {
     return json(500, { error: "Supabase env not set" });
   }
-  if (!TELNYX_API_KEY || !TELNYX_FROM_NUMBER) {
-    return json(500, { error: "Telnyx env not set (API key / from number)" });
+  if (!TELNYX_API_KEY) {
+    return json(500, { error: "Telnyx API key not set" });
+  }
+  // Allow EITHER messaging profile OR from number
+  if (!TELNYX_MESSAGING_PROFILE_ID && !TELNYX_FROM_NUMBER) {
+    return json(500, { error: "Provide TELNYX_MESSAGING_PROFILE_ID or TELNYX_FROM_NUMBER" });
   }
 
   let payload;
@@ -82,9 +108,20 @@ exports.handler = async (event) => {
   }
   const statusWebhook = `${statusWebhookBase}/.netlify/functions/telnyx-status`;
 
+  const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE, {
+    auth: { persistSession: false },
+  });
+
+  // 0) Debit wallet first (1¢)
+  try {
+    await debitWalletOrThrow(supabase, requesterId, COST_CENTS);
+  } catch (e) {
+    return json(402, { error: e.message || "Insufficient balance" });
+  }
+
+  // 1) Build Telnyx payload
   const msg = {
     to: toE164,
-    from: TELNYX_FROM_NUMBER,
     text: String(body),
     webhook_url: statusWebhook,
     webhook_failover_url: statusWebhook,
@@ -92,6 +129,8 @@ exports.handler = async (event) => {
   };
   if (TELNYX_MESSAGING_PROFILE_ID) {
     msg.messaging_profile_id = TELNYX_MESSAGING_PROFILE_ID;
+  } else {
+    msg.from = TELNYX_FROM_NUMBER;
   }
 
   const tRes = await fetch("https://api.telnyx.com/v2/messages", {
@@ -109,13 +148,9 @@ exports.handler = async (event) => {
   } catch {
     tData = null;
   }
-
-  const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE, {
-    auth: { persistSession: false },
-  });
-
   const telnyxId = tData?.data?.id || tData?.id || null;
 
+  // 2) On Telnyx failure: log failed message (you could refund here if you want)
   if (!tRes.ok) {
     await supabase.from("messages").insert({
       user_id: requesterId || null,
@@ -124,12 +159,12 @@ exports.handler = async (event) => {
       provider_sid: telnyxId,
       direction: "outgoing",
       to_number: toE164,
-      from_number: TELNYX_FROM_NUMBER,
+      from_number: TELNYX_FROM_NUMBER || null,
       body: String(body),
       status: "failed",
+      cost_cents: COST_CENTS,
       error_detail: JSON.stringify(tData || { status: tRes.status }).slice(0, 8000),
     });
-
     return json(502, {
       error: "Failed to send via Telnyx",
       telnyx_status: tRes.status,
@@ -137,6 +172,7 @@ exports.handler = async (event) => {
     });
   }
 
+  // 3) Insert queued message
   const { error: dbErr } = await supabase.from("messages").insert({
     user_id: requesterId || null,
     lead_id: lead_id ?? null,
@@ -144,10 +180,27 @@ exports.handler = async (event) => {
     provider_sid: telnyxId,
     direction: "outgoing",
     to_number: toE164,
-    from_number: TELNYX_FROM_NUMBER,
+    from_number: TELNYX_FROM_NUMBER || null,
     body: String(body),
     status: "queued",
+    cost_cents: COST_CENTS,
   });
+
+  // 4) Touch contact meta.last_outgoing_at (keeps your 48h nudge logic accurate)
+  try {
+    const { data: contact } = await supabase
+      .from("message_contacts")
+      .select("id, meta")
+      .eq("user_id", requesterId || null)
+      .eq("phone", toE164)
+      .maybeSingle();
+    if (contact?.id) {
+      await supabase
+        .from("message_contacts")
+        .update({ meta: { ...(contact.meta || {}), last_outgoing_at: new Date().toISOString() } })
+        .eq("id", contact.id);
+    }
+  } catch {}
 
   if (dbErr) {
     return json(200, {
