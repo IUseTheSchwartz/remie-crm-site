@@ -36,6 +36,9 @@ import ContactsPage from "./pages/ContactsPage.jsx";
 // ---- Bootcamp (NEW) ----
 import BootcampPage from "./pages/BootcampPage.jsx";
 
+// ---- Message Lab (PRIVATE) ----
+import MessageTestPage from "./pages/MessageTestPage.jsx"; // <— NEW
+
 // Sidebar sections:
 // "top" → Top-Level (Most Used Daily)
 // "productivity" → Productivity & Communication
@@ -80,6 +83,9 @@ export const routes = [
 
   // Admin-only (hidden)
   { key: "support-inbox", path: "/app/support-inbox", label: "Support Inbox", component: AdminSupportInbox, showInSidebar: false, section: "hidden" },
+
+  // PRIVATE: Message Lab (hidden)
+  { key: "message-lab", path: "/app/message-lab", label: "Message Lab", component: MessageTestPage, showInSidebar: false, section: "hidden" }, // <— NEW
 
   // Legal (hidden)
   { key: "terms",   path: "/legal/terms",   label: "Terms of Service", component: TermsPage,   showInSidebar: false, section: "hidden" },
