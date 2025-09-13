@@ -8,7 +8,8 @@ import {
 } from "../lib/storage.js";
 
 import {
-  scheduleWelcomeText, // (kept; optional local UX)
+  scheduleWelcomeText,
+  // schedulePolicyKickoffEmail  // removed (unused)
 } from "../lib/automation.js";
 
 // Supabase helpers
@@ -24,7 +25,8 @@ import { supabase } from "../lib/supabaseClient.js";
 // Google Sheets connector
 import GoogleSheetsConnector from "../components/GoogleSheetsConnector.jsx";
 
-const TEMPLATE_HEADERS = ["name","phone","email"]; // minimal CSV template
+/* ---------------- Functions base (Netlify) ---------------- */
+const FN_BASE = import.meta.env?.VITE_FUNCTIONS_BASE || "/.netlify/functions";
 
 /* ---------------- Stage labels/styles (match PipelinePage) ------------------ */
 const STAGE_STYLE = {
@@ -48,6 +50,8 @@ function labelForStage(id) {
 }
 
 /* --------------------------- Header alias helpers --------------------------- */
+const TEMPLATE_HEADERS = ["name","phone","email"]; // minimal CSV template
+
 const H = {
   first: ["first","first name","firstname","given name","given_name","fname","first_name"],
   last:  ["last","last name","lastname","surname","family name","lname","last_name","family_name"],
@@ -162,17 +166,20 @@ async function findContactByUserAndPhone(userId, rawPhone) {
   return (data || []).find((c) => normalizePhone(c.phone) === phoneNorm) || null;
 }
 
-/** ✅ EXCLUSIVE STATUS: 'military' OR 'lead' (never both) */
+/** Ensure EXCLUSIVE status: 'military' OR 'lead' (not both). */
 async function upsertLeadContact({ userId, phone, fullName, militaryBranch }) {
   if (!phone) return;
   const existing = await findContactByUserAndPhone(userId, phone);
-  const status = (militaryBranch || "").trim() ? "military" : "lead";
+  const wantsMilitary = Boolean((militaryBranch || "").trim());
+
+  // Remove old status tags, then add exactly one
+  const baseTags = (existing?.tags || []).filter(
+    (t) => !["lead", "military"].includes(normalizeTag(t))
+  );
+  const statusTag = wantsMilitary ? "military" : "lead";
+  const nextTags = uniqTags([...baseTags, statusTag]);
 
   if (existing) {
-    const base = (existing.tags || []).filter(
-      (t) => !["lead", "military"].includes(normalizeTag(t))
-    );
-    const nextTags = uniqTags([...base, status]);
     const { error } = await supabase
       .from("message_contacts")
       .update({ full_name: fullName || existing.full_name || null, tags: nextTags })
@@ -182,7 +189,7 @@ async function upsertLeadContact({ userId, phone, fullName, militaryBranch }) {
   } else {
     const { data, error } = await supabase
       .from("message_contacts")
-      .insert([{ user_id: userId, phone, full_name: fullName || null, tags: [status] }])
+      .insert([{ user_id: userId, phone, full_name: fullName || null, tags: nextTags }])
       .select("id")
       .single();
     if (error) throw error;
@@ -227,40 +234,103 @@ async function upsertSoldContact({ userId, phone, fullName, addBdayHoliday, addP
   }
 }
 
-/** After inserting a lead, look up its ID (10-min window, match by email/phone) */
+/* -------------------- Auto-text helpers (server + fallback) -------------------- */
+
+// Find the recently inserted lead row for this user (match by email/phone within 10m)
 async function findRecentlyInsertedLeadId({ userId, person }) {
-  const orFilters = [];
-  if (person.email) orFilters.push(`email.eq.${encodeURIComponent(person.email)}`);
-  if (person.phone) orFilters.push(`phone.eq.${encodeURIComponent(person.phone)}`);
-  if (orFilters.length === 0) return null;
+  if (!userId || !person) return null;
+
+  const orParts = [];
+  const S = (x) => (x == null ? "" : String(x).trim());
+  if (S(person.email)) orParts.push(`email.eq.${encodeURIComponent(S(person.email))}`);
+  if (S(person.phone)) orParts.push(`phone.eq.${encodeURIComponent(S(person.phone))}`);
+  if (orParts.length === 0) return null;
 
   const cutoffISO = new Date(Date.now() - 10 * 60 * 1000).toISOString();
-  const { data: rows, error } = await supabase
+
+  const { data, error } = await supabase
     .from("leads")
     .select("id, created_at")
     .eq("user_id", userId)
     .gte("created_at", cutoffISO)
-    .or(orFilters.join(","))
+    .or(orParts.join(","))
     .order("created_at", { ascending: false })
     .limit(1);
-  if (error) {
-    console.error("findRecentlyInsertedLeadId error:", error);
-    return null;
-  }
-  return rows?.[0]?.id || null;
+
+  if (error || !data?.length) return null;
+  return data[0].id;
 }
 
-/** Ask the server to send the new-lead text (centralized; writes to public.messages) */
-async function triggerAutoTextForLeadId({ leadId, userId }) {
+// Try server function first; if it fails, render template client-side and call messages-send
+async function triggerAutoTextForLeadId({ leadId, userId, person }) {
   if (!leadId || !userId) return;
+
+  // 1) Preferred: call server function
   try {
-    await fetch("/.netlify/functions/lead-new-auto", {
+    const res = await fetch(`${FN_BASE}/lead-new-auto`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ lead_id: leadId, requesterId: userId }),
     });
+    if (res.ok) return; // done
+    console.warn("lead-new-auto non-OK:", res.status);
   } catch (e) {
-    console.error("lead-new-auto failed:", e);
+    console.warn("lead-new-auto unreachable:", e?.message || e);
+  }
+
+  // 2) Fallback: render template client-side and call messages-send directly
+  try {
+    // fetch templates for this user
+    const { data: mt, error } = await supabase
+      .from("message_templates")
+      .select("*")
+      .eq("user_id", userId)
+      .maybeSingle();
+    if (error || !mt) return;
+
+    const enabled =
+      typeof mt.enabled === "boolean" ? mt.enabled : (mt.enabled?.new_lead ?? true);
+    if (!enabled) return;
+
+    const S = (x) => (x == null ? "" : String(x).trim());
+    const hasBranch = !!S(person?.military_branch);
+    const tpl = hasBranch
+      ? (mt.templates?.new_lead_military || mt.new_lead_military || mt.templates?.new_lead || mt.new_lead || "")
+      : (mt.templates?.new_lead || mt.new_lead || "");
+    if (!S(tpl)) return;
+
+    const ctx = {
+      name: person?.name || "",
+      state: person?.state || "",
+      beneficiary: person?.beneficiary || person?.beneficiary_name || "",
+    };
+    const body = String(tpl).replace(/\{\{\s*([a-zA-Z0-9_]+)\s*\}\}/g, (_, k) => S(ctx[k])).trim();
+    if (!body || !S(person?.phone)) return;
+
+    // same auth path your MessagesPage uses
+    const { data: session } = await supabase.auth.getSession();
+    const token = session?.session?.access_token;
+
+    const res2 = await fetch(`${FN_BASE}/messages-send`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      },
+      body: JSON.stringify({
+        to: person.phone,
+        body,
+        requesterId: userId,
+        lead_id: leadId,
+      }),
+    });
+
+    if (!res2.ok) {
+      const dbg = await res2.json().catch(() => ({}));
+      console.warn("messages-send fallback failed:", res2.status, dbg);
+    }
+  } catch (e) {
+    console.warn("client-side fallback errored:", e?.message || e);
   }
 }
 
@@ -424,7 +494,7 @@ export default function LeadsPage() {
           const notes = buildNotes(r, map);
 
           // NEW fields
-          const dob  = buildDob(r, map);                // Accepts "MM-DD-YYYY" as-is
+          const dob  = buildDob(r, map);
           const state = buildState(r, map);
           const beneficiary = buildBeneficiary(r, map);
           const beneficiary_name = buildBeneficiaryName(r, map);
@@ -476,7 +546,7 @@ export default function LeadsPage() {
           setServerMsg(`⚠️ CSV sync failed: ${e.message || e}`);
         }
 
-        // Reflect to contacts for each (EXCLUSIVE status tag)
+        // Reflect to contacts for each + trigger auto text
         try {
           const { data: authData } = await supabase.auth.getUser();
           const userId = authData?.user?.id;
@@ -488,30 +558,16 @@ export default function LeadsPage() {
                 fullName: person.name,
                 militaryBranch: person.military_branch,
               });
-            }
-          }
-        } catch (err) {
-          console.error("Contact tag sync (CSV import) failed:", err);
-        }
 
-        // 🔔 Trigger auto text (server function inserts into public.messages)
-        try {
-          const { data: authData } = await supabase.auth.getUser();
-          const userId = authData?.user?.id;
-          if (userId) {
-            for (const person of uniqueToAdd) {
-              try {
-                const leadId = await findRecentlyInsertedLeadId({ userId, person });
-                if (leadId) {
-                  await triggerAutoTextForLeadId({ leadId, userId });
-                }
-              } catch (e) {
-                console.error("Auto text (CSV) failed for person:", person, e);
+              // find the server row and trigger auto text (server func → fallback)
+              const leadId = await findRecentlyInsertedLeadId({ userId, person });
+              if (leadId) {
+                await triggerAutoTextForLeadId({ leadId, userId, person });
               }
             }
           }
-        } catch (e) {
-          console.error("Auto text trigger (CSV) outer error:", e);
+        } catch (err) {
+          console.error("Contact tag sync / auto-text (CSV) failed:", err);
         }
       },
       error: (err) => alert("CSV parse error: " + err.message),
@@ -637,7 +693,7 @@ export default function LeadsPage() {
     setSelected(null);
   }
 
-  // NEW: Manual add handler
+  // NEW: Manual add handler (auto-text included)
   async function handleManualAdd(personInput) {
     // Normalize just like CSV import
     const person = normalizePerson({
@@ -670,7 +726,7 @@ export default function LeadsPage() {
       setServerMsg(`⚠️ Save failed: ${e.message || e}`);
     }
 
-    // Reflect to contacts (EXCLUSIVE status)
+    // Reflect to contacts + trigger auto-text (server func → fallback)
     try {
       const { data: authData } = await supabase.auth.getUser();
       const userId = authData?.user?.id;
@@ -682,14 +738,13 @@ export default function LeadsPage() {
           militaryBranch: person.military_branch,
         });
 
-        // 🔔 Trigger server-side auto text (ensures row in public.messages)
         const leadId = await findRecentlyInsertedLeadId({ userId, person });
         if (leadId) {
-          await triggerAutoTextForLeadId({ leadId, userId });
+          await triggerAutoTextForLeadId({ leadId, userId, person });
         }
       }
     } catch (err) {
-      console.error("Contact sync / auto text (manual add) failed:", err);
+      console.error("Contact tag sync / auto-text (manual add) failed:", err);
     }
   }
 
