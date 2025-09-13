@@ -8,8 +8,7 @@ import {
 } from "../lib/storage.js";
 
 import {
-  scheduleWelcomeText,
-  // schedulePolicyKickoffEmail  // removed (unused)
+  scheduleWelcomeText, // (kept; optional local UX)
 } from "../lib/automation.js";
 
 // Supabase helpers
@@ -131,44 +130,6 @@ const buildMilitaryBranch = (row, map) => pick(row, map.military_branch);
 const onlyDigits = (s) => String(s || "").replace(/\D+/g, "");
 const normEmail  = (s) => String(s || "").trim().toLowerCase();
 
-/* ---------------- DOB: normalize to MM-DD-YYYY (hyphen) ---------------- */
-function toMMDDYYYYDash(v) {
-  if (v == null) return "";
-  const s = String(v).trim();
-  if (!s) return "";
-
-  // Match YYYY-MM-DD or YYYY/MM/DD
-  let m = s.match(/^(\d{4})[\/\-\.](\d{1,2})[\/\-\.](\d{1,2})$/);
-  if (m) {
-    const y = parseInt(m[1], 10);
-    const mm = String(parseInt(m[2], 10)).padStart(2, "0");
-    const dd = String(parseInt(m[3], 10)).padStart(2, "0");
-    return `${mm}-${dd}-${y}`;
-  }
-
-  // Match MM-DD-YYYY or MM/DD/YYYY or M-D-YY, etc.
-  m = s.match(/^(\d{1,2})[\/\-\.](\d{1,2})[\/\-\.](\d{2,4})$/);
-  if (m) {
-    let mm = String(parseInt(m[1], 10)).padStart(2, "0");
-    let dd = String(parseInt(m[2], 10)).padStart(2, "0");
-    let yy = m[3];
-    if (yy.length === 2) yy = (yy >= "50" ? "19" : "20") + yy;
-    return `${mm}-${dd}-${yy}`;
-  }
-
-  // Fallback: Date parse
-  const d = new Date(s);
-  if (!Number.isNaN(d.getTime())) {
-    const mm = String(d.getMonth() + 1).padStart(2, "0");
-    const dd = String(d.getDate()).padStart(2, "0");
-    const yy = d.getFullYear();
-    return `${mm}-${dd}-${yy}`;
-  }
-
-  // Unparseable -> return original
-  return s;
-}
-
 /** Preserve local pipeline fields if they already exist for this id */
 function preserveStage(existingList, incoming) {
   const found = existingList.find(x => x.id === incoming.id);
@@ -201,15 +162,17 @@ async function findContactByUserAndPhone(userId, rawPhone) {
   return (data || []).find((c) => normalizePhone(c.phone) === phoneNorm) || null;
 }
 
-/** Ensure 'lead' (+ optional 'military') tags for newly created leads */
+/** ✅ EXCLUSIVE STATUS: 'military' OR 'lead' (never both) */
 async function upsertLeadContact({ userId, phone, fullName, militaryBranch }) {
   if (!phone) return;
   const existing = await findContactByUserAndPhone(userId, phone);
-  const wantsMilitary = Boolean((militaryBranch || "").trim());
-  const addTags = wantsMilitary ? ["lead", "military"] : ["lead"];
+  const status = (militaryBranch || "").trim() ? "military" : "lead";
 
   if (existing) {
-    const nextTags = uniqTags([...(existing.tags || []), ...addTags]);
+    const base = (existing.tags || []).filter(
+      (t) => !["lead", "military"].includes(normalizeTag(t))
+    );
+    const nextTags = uniqTags([...base, status]);
     const { error } = await supabase
       .from("message_contacts")
       .update({ full_name: fullName || existing.full_name || null, tags: nextTags })
@@ -219,7 +182,7 @@ async function upsertLeadContact({ userId, phone, fullName, militaryBranch }) {
   } else {
     const { data, error } = await supabase
       .from("message_contacts")
-      .insert([{ user_id: userId, phone, full_name: fullName || null, tags: addTags }])
+      .insert([{ user_id: userId, phone, full_name: fullName || null, tags: [status] }])
       .select("id")
       .single();
     if (error) throw error;
@@ -264,54 +227,41 @@ async function upsertSoldContact({ userId, phone, fullName, addBdayHoliday, addP
   }
 }
 
-/* --------------- Auto-send helpers for manual add / CSV import --------------- */
+/** After inserting a lead, look up its ID (10-min window, match by email/phone) */
+async function findRecentlyInsertedLeadId({ userId, person }) {
+  const orFilters = [];
+  if (person.email) orFilters.push(`email.eq.${encodeURIComponent(person.email)}`);
+  if (person.phone) orFilters.push(`phone.eq.${encodeURIComponent(person.phone)}`);
+  if (orFilters.length === 0) return null;
 
-/** Resolve the new lead_id on the server for this user & person (by phone/email, recent 10min). */
-async function resolveLeadIdOnServer(userId, person) {
-  if (!userId) return null;
-  const or = [];
-  if (person.email) or.push(`email.eq.${encodeURIComponent(person.email)}`);
-  if (person.phone) or.push(`phone.eq.${encodeURIComponent(person.phone)}`);
   const cutoffISO = new Date(Date.now() - 10 * 60 * 1000).toISOString();
-
-  try {
-    let q = supabase
-      .from("leads")
-      .select("id, created_at")
-      .eq("user_id", userId)
-      .gte("created_at", cutoffISO)
-      .order("created_at", { ascending: false })
-      .limit(1);
-
-    if (or.length) {
-      q = q.or(or.join(","));
-    }
-    const { data, error } = await q;
-    if (error) return null;
-    return data?.[0]?.id || null;
-  } catch {
+  const { data: rows, error } = await supabase
+    .from("leads")
+    .select("id, created_at")
+    .eq("user_id", userId)
+    .gte("created_at", cutoffISO)
+    .or(orFilters.join(","))
+    .order("created_at", { ascending: false })
+    .limit(1);
+  if (error) {
+    console.error("findRecentlyInsertedLeadId error:", error);
     return null;
   }
+  return rows?.[0]?.id || null;
 }
 
-/** Trigger the server-side auto-send flow using the lead id. */
-async function triggerAutoSendForLead(leadId, userId) {
+/** Ask the server to send the new-lead text (centralized; writes to public.messages) */
+async function triggerAutoTextForLeadId({ leadId, userId }) {
   if (!leadId || !userId) return;
   try {
-    const { data: session } = await supabase.auth.getSession();
-    const token = session?.session?.access_token;
-
-    const res = await fetch("/.netlify/functions/lead-new-auto", {
+    await fetch("/.netlify/functions/lead-new-auto", {
       method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        ...(token ? { Authorization: `Bearer ${token}` } : {}),
-      },
+      headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ lead_id: leadId, requesterId: userId }),
     });
-    // Non-fatal if fails; UI already saved the lead
-    await res.json().catch(() => ({}));
-  } catch {}
+  } catch (e) {
+    console.error("lead-new-auto failed:", e);
+  }
 }
 
 export default function LeadsPage() {
@@ -473,9 +423,8 @@ export default function LeadsPage() {
           const email = buildEmail(r, map);
           const notes = buildNotes(r, map);
 
-          // NEW fields with DOB normalized to MM-DD-YYYY as requested
-          const dobRaw  = buildDob(r, map);
-          const dob  = toMMDDYYYYDash(dobRaw);
+          // NEW fields
+          const dob  = buildDob(r, map);                // Accepts "MM-DD-YYYY" as-is
           const state = buildState(r, map);
           const beneficiary = buildBeneficiary(r, map);
           const beneficiary_name = buildBeneficiaryName(r, map);
@@ -527,47 +476,42 @@ export default function LeadsPage() {
           setServerMsg(`⚠️ CSV sync failed: ${e.message || e}`);
         }
 
-        // Reflect to contacts + trigger auto-send for each
+        // Reflect to contacts for each (EXCLUSIVE status tag)
         try {
           const { data: authData } = await supabase.auth.getUser();
           const userId = authData?.user?.id;
           if (userId) {
-            const { data: session } = await supabase.auth.getSession();
-            const token = session?.session?.access_token;
-
             for (const person of uniqueToAdd) {
-              // Contacts (tags)
-              try {
-                await upsertLeadContact({
-                  userId,
-                  phone: person.phone,
-                  fullName: person.name,
-                  militaryBranch: person.military_branch,
-                });
-              } catch (e) {
-                console.error("Contact tag sync (CSV import) failed:", e);
-              }
-
-              // Resolve lead id then trigger auto-send
-              try {
-                const leadId = await resolveLeadIdOnServer(userId, person);
-                if (leadId) {
-                  await fetch("/.netlify/functions/lead-new-auto", {
-                    method: "POST",
-                    headers: {
-                      "Content-Type": "application/json",
-                      ...(token ? { Authorization: `Bearer ${token}` } : {}),
-                    },
-                    body: JSON.stringify({ lead_id: leadId, requesterId: userId }),
-                  }).then(r => r.json()).catch(() => ({}));
-                }
-              } catch (e) {
-                console.error("Auto-send (CSV) failed:", e);
-              }
+              await upsertLeadContact({
+                userId,
+                phone: person.phone,
+                fullName: person.name,
+                militaryBranch: person.military_branch,
+              });
             }
           }
         } catch (err) {
-          console.error("Post-import followups failed:", err);
+          console.error("Contact tag sync (CSV import) failed:", err);
+        }
+
+        // 🔔 Trigger auto text (server function inserts into public.messages)
+        try {
+          const { data: authData } = await supabase.auth.getUser();
+          const userId = authData?.user?.id;
+          if (userId) {
+            for (const person of uniqueToAdd) {
+              try {
+                const leadId = await findRecentlyInsertedLeadId({ userId, person });
+                if (leadId) {
+                  await triggerAutoTextForLeadId({ leadId, userId });
+                }
+              } catch (e) {
+                console.error("Auto text (CSV) failed for person:", person, e);
+              }
+            }
+          }
+        } catch (e) {
+          console.error("Auto text trigger (CSV) outer error:", e);
         }
       },
       error: (err) => alert("CSV parse error: " + err.message),
@@ -695,10 +639,9 @@ export default function LeadsPage() {
 
   // NEW: Manual add handler
   async function handleManualAdd(personInput) {
-    // Normalize just like CSV import, ensure DOB is MM-DD-YYYY (your requested format)
+    // Normalize just like CSV import
     const person = normalizePerson({
       ...personInput,
-      dob: toMMDDYYYYDash(personInput?.dob || ""),
       stage: "no_pickup",
     });
 
@@ -727,7 +670,7 @@ export default function LeadsPage() {
       setServerMsg(`⚠️ Save failed: ${e.message || e}`);
     }
 
-    // Reflect to contacts + trigger auto-send
+    // Reflect to contacts (EXCLUSIVE status)
     try {
       const { data: authData } = await supabase.auth.getUser();
       const userId = authData?.user?.id;
@@ -739,14 +682,14 @@ export default function LeadsPage() {
           militaryBranch: person.military_branch,
         });
 
-        // Resolve lead id then trigger auto-send (same path as Sheets webhook)
-        const leadId = await resolveLeadIdOnServer(userId, person);
+        // 🔔 Trigger server-side auto text (ensures row in public.messages)
+        const leadId = await findRecentlyInsertedLeadId({ userId, person });
         if (leadId) {
-          await triggerAutoSendForLead(leadId, userId);
+          await triggerAutoTextForLeadId({ leadId, userId });
         }
       }
     } catch (err) {
-      console.error("Manual add followups failed:", err);
+      console.error("Contact sync / auto text (manual add) failed:", err);
     }
   }
 
@@ -1207,7 +1150,7 @@ function ManualAddLeadModal({ onClose, onSave }) {
             <Field label="DOB">
               <input
                 className="inp"
-                placeholder="MM-DD-YYYY"  // ← requested format
+                placeholder="MM-DD-YYYY"
                 value={form.dob}
                 onChange={(e)=>setForm({...form, dob:e.target.value})}
               />
