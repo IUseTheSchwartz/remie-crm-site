@@ -23,6 +23,7 @@ import {
   Pencil,
   ExternalLink,
   X,
+  Shield, // ← added for Bootcamp
 } from "lucide-react";
 
 /* --- Gradient stroke helper (indigo → purple → fuchsia) --- */
@@ -60,11 +61,12 @@ const ICONS = {
   Contacts: Users,             // ✅ Contacts now has an icon
   Settings: SettingsIcon,
   Support: LifeBuoy,
+  Bootcamp: Shield,            // ← Bootcamp uses Shield with gradient
 };
 
 function ItemLink({ r, onNavigate }) {
   const Icon = ICONS[r.label] || null;
-  const gradId = `remie-grad-${r.key || r.label.replace(/\s+/g, "-").toLowerCase()}`;
+  const gradId = `remie-grad-${(r.key || r.label).replace(/\s+/g, "-").toLowerCase()}`;
   return (
     <NavLink
       to={r.path}
