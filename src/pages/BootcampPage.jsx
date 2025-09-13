@@ -36,7 +36,7 @@ const TUTORIALS = [
   {
     id: "bc-dashboard-01",
     title: "Welcome & CRM Overview",
-    yt: "https://youtu.be/dQw4w9WgXcQ", // <-- replace with your real video
+    yt: "", // <-- replace with your real video
     duration: "3:42",
     topic: "Dashboard",
     notes: "Quick tour of navigation, subscriptions, and layout.",
@@ -44,7 +44,7 @@ const TUTORIALS = [
   {
     id: "bc-leads-01",
     title: "Leads Page: Import & Fields",
-    yt: "https://youtu.be/VIDEOID11111",
+    yt: "",
     duration: "6:10",
     topic: "Leads",
     notes: "CSV import, manual add, key columns, dedupe tips.",
@@ -52,7 +52,7 @@ const TUTORIALS = [
   {
     id: "bc-pipeline-01",
     title: "Pipeline: Stages & Follow-ups",
-    yt: "https://youtu.be/VIDEOID22222",
+    yt: "",
     duration: "5:28",
     topic: "Pipeline",
     notes: "Drag & drop, scheduling, reminders, and filters.",
@@ -60,7 +60,7 @@ const TUTORIALS = [
   {
     id: "bc-messages-01",
     title: "Messages: Send, Templates, Tags",
-    yt: "https://youtu.be/VIDEOID33333",
+    yt: "",
     duration: "7:02",
     topic: "Messages",
     notes: "Outbound/inbound flow, templates, opt-outs, delivery tips.",
@@ -68,7 +68,7 @@ const TUTORIALS = [
   {
     id: "bc-calendar-01",
     title: "Calendar: Appointments & Auto-Reminders",
-    yt: "https://youtu.be/VIDEOID44444",
+    yt: "",
     duration: "4:55",
     topic: "Calendar",
     notes: "Booking links, reminders, removing tags at appointment time.",
@@ -76,7 +76,7 @@ const TUTORIALS = [
   {
     id: "bc-contacts-01",
     title: "Contacts: Tags, Unsubscribes, Lists",
-    yt: "https://youtu.be/VIDEOID55555",
+    yt: "",
     duration: "5:17",
     topic: "Contacts",
     notes: "Building audiences with tags, removing via replies.",
@@ -84,7 +84,7 @@ const TUTORIALS = [
   {
     id: "bc-showcase-01",
     title: "Agent Showcase: Profile & Media",
-    yt: "https://youtu.be/VIDEOID66666",
+    yt: "",
     duration: "4:21",
     topic: "Agent Showcase",
     notes: "Step 2 uploads, skipping, CTA links.",
@@ -92,7 +92,7 @@ const TUTORIALS = [
   {
     id: "bc-reports-01",
     title: "Reports: Top Producers & Metrics",
-    yt: "https://youtu.be/VIDEOID77777",
+    yt: "",
     duration: "3:58",
     topic: "Reports",
     notes: "Interpreting dashboards & leaderboards.",
@@ -100,7 +100,7 @@ const TUTORIALS = [
   {
     id: "bc-settings-01",
     title: "Settings: Messaging, Billing, Team",
-    yt: "https://youtu.be/VIDEOID88888",
+    yt: "",
     duration: "6:33",
     topic: "Settings",
     notes: "Templates, wallet, numbers, and team seats.",
@@ -108,7 +108,7 @@ const TUTORIALS = [
   {
     id: "bc-recorder-01",
     title: "Call Recorder & Transcripts",
-    yt: "https://youtu.be/VIDEOID99999",
+    yt: "",
     duration: "5:44",
     topic: "Recorder",
     notes: "Live transcription tips and saving recordings.",
