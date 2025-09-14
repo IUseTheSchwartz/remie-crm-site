@@ -9,19 +9,23 @@ const TELNYX_API_KEY = process.env.TELNYX_API_KEY;
 const TELNYX_MESSAGING_PROFILE_ID = process.env.TELNYX_MESSAGING_PROFILE_ID;
 const TELNYX_FROM_NUMBER = process.env.TELNYX_FROM_NUMBER; // +15551234567
 
+const LOG_PREFIX = '[messages-send]';
 const json = (obj, statusCode = 200) => ({
   statusCode,
   headers: { 'Content-Type': 'application/json' },
   body: JSON.stringify(obj),
 });
-
 const supa = () => createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE);
 
 const norm10 = (p) => {
   const d = String(p || '').replace(/\D/g, '');
   return d.length > 10 ? d.slice(-10) : d;
 };
-
+const maskPhone = (p) => {
+  const d = String(p || '').replace(/\D/g, '');
+  if (d.length < 4) return '***';
+  return `***${d.slice(-4)}`;
+};
 const toE164US = (p) => {
   const d = String(p || '').replace(/\D/g, '');
   if (!d) return null;
@@ -36,146 +40,216 @@ function renderTemplate(raw, vars) {
   return str.replace(/\{\{(\w+)\}\}/g, (_, k) => (vars?.[k] ?? ''));
 }
 
-async function fetchTemplates(supabase, user_id) {
+async function fetchTemplates(supabase, user_id, trace) {
   const { data, error } = await supabase
     .from('message_templates')
     .select('templates')
     .eq('user_id', user_id)
     .maybeSingle();
-  if (error) throw error;
+  if (error) {
+    trace.push({ step: 'fetchTemplates.error', error: error.message });
+    throw error;
+  }
+  trace.push({ step: 'fetchTemplates.ok', hasTemplates: !!data?.templates, keys: data?.templates ? Object.keys(data.templates) : [] });
   return data?.templates || {};
 }
 
-async function fetchAgent(supabase, user_id) {
+async function fetchAgent(supabase, user_id, trace) {
   const { data, error } = await supabase
     .from('agent_profiles')
     .select('full_name, phone, calendly_url')
     .eq('user_id', user_id)
     .maybeSingle();
-  if (error) throw error;
+  if (error) {
+    trace.push({ step: 'fetchAgent.error', error: error.message });
+    throw error;
+  }
+  trace.push({ step: 'fetchAgent.ok', hasAgent: !!data, agentPreview: data ? { full_name: data.full_name || '', phone: maskPhone(data.phone || '') } : null });
   return data || {};
 }
 
-async function findContactByPhone(supabase, user_id, to) {
-  // Try exact match first
+async function findContactByPhone(supabase, user_id, to, trace) {
+  // exact
   const exact = await supabase
     .from('message_contacts')
     .select('id,user_id,full_name,phone,subscribed,tags,meta')
     .eq('user_id', user_id)
     .eq('phone', to)
     .maybeSingle();
-  if (exact?.data) return exact.data;
 
-  // Fallback to last-10-digit match
+  if (exact?.data) {
+    trace.push({ step: 'findContact.exact', found: true, contact_id: exact.data.id, subscribed: exact.data.subscribed, tags: exact.data.tags || [], phone: maskPhone(exact.data.phone) });
+    return exact.data;
+  }
+
+  // last-10 match
   const last10 = norm10(to);
   const { data: candidates, error } = await supabase
     .from('message_contacts')
     .select('id,user_id,full_name,phone,subscribed,tags,meta')
     .eq('user_id', user_id);
-  if (error) throw error;
-
-  return (candidates || []).find((c) => norm10(c.phone) === last10) || null;
+  if (error) {
+    trace.push({ step: 'findContact.candidates.error', error: error.message });
+    throw error;
+  }
+  const match = (candidates || []).find((c) => norm10(c.phone) === last10) || null;
+  trace.push({ step: 'findContact.last10', found: !!match, triedLast10: last10, contact_id: match?.id || null, subscribed: match?.subscribed ?? null, tags: match?.tags || [], phone: match ? maskPhone(match.phone) : null });
+  return match;
 }
 
-async function createMinimalContactForNewLead(supabase, user_id, toRaw, placeholders) {
+async function createMinimalContactForNewLead(supabase, user_id, toRaw, placeholders, trace) {
   const full_name = (placeholders?.first_name || '').trim();
+  const payload = {
+    user_id,
+    full_name,
+    phone: toRaw,
+    subscribed: true,
+    tags: ['lead'],
+    meta: {},
+  };
+  trace.push({ step: 'createMinimalContact.payload', payload: { ...payload, phone: maskPhone(payload.phone) } });
   const { data, error } = await supabase
     .from('message_contacts')
-    .insert([{
-      user_id,
-      full_name,
-      phone: toRaw,
-      subscribed: true,
-      tags: ['lead'],
-      meta: {}
-    }])
+    .insert([payload])
     .select('id,user_id,full_name,phone,subscribed,tags,meta')
     .maybeSingle();
-  if (error) throw error;
+
+  if (error) {
+    trace.push({ step: 'createMinimalContact.error', error: error.message });
+    throw error;
+  }
+  trace.push({ step: 'createMinimalContact.ok', contact_id: data.id, phone: maskPhone(data.phone) });
   return data;
 }
 
-async function insertMessage(supabase, row) {
-  const { data, error } = await supabase
-    .from('messages')
-    .insert([row])
-    .select('id')
-    .maybeSingle();
-  if (error) throw error;
-  return data?.id;
+async function insertMessageFlexible(supabase, row, trace) {
+  // First try: full row
+  try {
+    const { data } = await supabase.from('messages').insert([row]).select('id').maybeSingle();
+    if (data?.id) {
+      trace.push({ step: 'insertMessage.full.ok', message_id: data.id });
+      return data.id;
+    }
+  } catch (e) {
+    trace.push({ step: 'insertMessage.full.error', error: e.message });
+  }
+  // Fallback: minimal, in case schema differs
+  const minimal = {
+    user_id: row.user_id,
+    contact_id: row.contact_id,
+    body: row.body,
+    provider_message_id: row.provider_message_id ?? null,
+    template_key: row.template_key ?? null,
+    status: row.status ?? 'queued',
+  };
+  try {
+    const { data } = await supabase.from('messages').insert([minimal]).select('id').maybeSingle();
+    if (data?.id) {
+      trace.push({ step: 'insertMessage.minimal.ok', message_id: data.id });
+      return data.id;
+    }
+  } catch (e2) {
+    trace.push({ step: 'insertMessage.minimal.error', error: e2.message, minimal });
+    throw e2;
+  }
 }
 
-async function sendViaTelnyx({ to, text, client_ref }) {
+async function sendViaTelnyx({ to, text, client_ref, trace }) {
+  const payload = {
+    from: TELNYX_FROM_NUMBER,
+    to,
+    text,
+    messaging_profile_id: TELNYX_MESSAGING_PROFILE_ID,
+    client_ref,
+  };
+  trace.push({ step: 'telnyx.request', to: maskPhone(to), textPreview: text.slice(0, 80), client_ref: client_ref || null });
   const res = await fetch('https://api.telnyx.com/v2/messages', {
     method: 'POST',
     headers: {
       Authorization: `Bearer ${TELNYX_API_KEY}`,
       'Content-Type': 'application/json',
     },
-    body: JSON.stringify({
-      from: TELNYX_FROM_NUMBER,
-      to,
-      text,
-      messaging_profile_id: TELNYX_MESSAGING_PROFILE_ID,
-      client_ref, // becomes provider_message_id in your DB/webhook flow
-    }),
+    body: JSON.stringify(payload),
   });
 
   const payloadText = await res.text();
-  let payload;
-  try { payload = JSON.parse(payloadText); } catch { payload = { raw: payloadText }; }
+  let parsed;
+  try { parsed = JSON.parse(payloadText); } catch { parsed = { raw: payloadText }; }
+  trace.push({ step: 'telnyx.response', status: res.status, ok: res.ok, hasData: !!parsed?.data });
 
   if (!res.ok) {
-    const info = typeof payload === 'object' ? JSON.stringify(payload) : String(payload);
-    throw new Error(`Telnyx ${res.status}: ${info}`);
+    throw new Error(`Telnyx ${res.status}: ${typeof parsed === 'object' ? JSON.stringify(parsed) : String(parsed)}`);
   }
-  return payload; // { data: { id, ... } }
+  return parsed; // { data: { id, ... } }
 }
 
 export const handler = async (evt) => {
+  const trace = [];
   try {
+    const qs = new URLSearchParams(evt.rawQuery || '');
+    const debug = qs.get('debug') === '1' || process.env.DEBUG_MESSAGES_SEND === '1';
+
+    console.log(LOG_PREFIX, 'start', { debug });
     if (evt.httpMethod !== 'POST') {
-      return json({ error: 'method_not_allowed' }, 405);
+      trace.push({ step: 'httpMethod', method: evt.httpMethod });
+      console.warn(LOG_PREFIX, 'method_not_allowed', evt.httpMethod);
+      return json({ error: 'method_not_allowed', trace: debug ? trace : undefined }, 405);
     }
 
-    // Ensure required envs
+    // Env checks
     if (!SUPABASE_URL || !SUPABASE_SERVICE_ROLE) {
-      return json({ error: 'server_misconfigured_supabase' }, 500);
+      trace.push({ step: 'env.supabase.missing' });
+      console.error(LOG_PREFIX, 'server_misconfigured_supabase');
+      return json({ error: 'server_misconfigured_supabase', trace: debug ? trace : undefined }, 500);
     }
     if (!TELNYX_API_KEY || !TELNYX_MESSAGING_PROFILE_ID || !TELNYX_FROM_NUMBER) {
-      return json({ error: 'server_misconfigured_telnyx' }, 500);
+      trace.push({ step: 'env.telnyx.missing' });
+      console.error(LOG_PREFIX, 'server_misconfigured_telnyx');
+      return json({ error: 'server_misconfigured_telnyx', trace: debug ? trace : undefined }, 500);
     }
 
+    // Parse body
     let body;
     try {
       body = JSON.parse(evt.body || '{}');
     } catch {
-      return json({ error: 'invalid_json' }, 400);
+      trace.push({ step: 'parse.error' });
+      return json({ error: 'invalid_json', trace: debug ? trace : undefined }, 400);
     }
-
     const user_id = body.user_id;
     const templateKey = body.templateKey;
     const toRaw = body.to;
     const placeholders = body.placeholders || {};
     const pmid = body.provider_message_id || body.client_ref || ''; // automation identifier
+    const debugBody = body.debug === true;
+
+    trace.push({ step: 'input', user_id, templateKey, toRawMasked: maskPhone(toRaw), hasPlaceholders: !!placeholders, pmid, debugBody });
 
     if (!user_id || !templateKey || !toRaw) {
-      return json({ error: 'missing_fields' }, 400);
+      trace.push({ step: 'input.missing' });
+      return json({ error: 'missing_fields', trace: debug ? trace : undefined }, 400);
     }
 
     const supabase = supa();
 
-    // 1) Find contact by phone; if it's a NEW LEAD, auto-create if missing
-    let contact = await findContactByPhone(supabase, user_id, toRaw);
+    // 1) Contact lookup; auto-create for new_lead if missing
+    let contact = await findContactByPhone(supabase, user_id, toRaw, trace);
     if (!contact && templateKey === 'new_lead') {
       try {
-        contact = await createMinimalContactForNewLead(supabase, user_id, toRaw, placeholders);
+        contact = await createMinimalContactForNewLead(supabase, user_id, toRaw, placeholders, trace);
       } catch (e) {
-        console.warn('auto-create contact failed for new_lead', e.message);
+        trace.push({ step: 'new_lead.autoCreate.error', error: e.message });
       }
     }
-    if (!contact) return json({ error: 'contact_not_found_for_phone' }, 404);
-    if (!contact.subscribed) return json({ error: 'contact_unsubscribed' }, 400);
+    if (!contact) {
+      trace.push({ step: 'contact.not_found' });
+      console.warn(LOG_PREFIX, 'contact_not_found_for_phone', { user_id, to: maskPhone(toRaw) });
+      return json({ error: 'contact_not_found_for_phone', trace: debug || debugBody ? trace : undefined }, 404);
+    }
+    if (!contact.subscribed) {
+      trace.push({ step: 'contact.unsubscribed', contact_id: contact.id });
+      return json({ error: 'contact_unsubscribed', trace: debug || debugBody ? trace : undefined }, 400);
+    }
 
     // 2) Eligibility gate
     const tags = contact?.tags || [];
@@ -183,18 +257,30 @@ export const handler = async (evt) => {
     const hasSold = tags.includes('sold');
     const isAutomation = typeof pmid === 'string' && pmid.length > 0;
     const automationOK = /^((sold|appt|holiday|birthday|payment|followup_2d|new_lead)_?)/i.test(pmid);
-
     const eligible =
       hasLeadOrMilitary ||
       (isAutomation && (automationOK || hasSold)) ||
       hasSold ||
       templateKey === 'new_lead';
 
+    trace.push({
+      step: 'eligibility',
+      contact_id: contact.id,
+      tags,
+      hasLeadOrMilitary,
+      hasSold,
+      isAutomation,
+      automationOK,
+      templateKey,
+      eligible,
+    });
+
     if (!eligible) {
-      return json({ error: 'contact_not_eligible' }, 400);
+      console.warn(LOG_PREFIX, 'contact_not_eligible', { contact_id: contact.id, tags, pmid, templateKey });
+      return json({ error: 'contact_not_eligible', trace: debug || debugBody ? trace : undefined }, 400);
     }
 
-    // 3) Dedupe by provider_message_id (if provided)
+    // 3) Dedupe
     if (pmid) {
       const { data: dupe, error: dupeErr } = await supabase
         .from('messages')
@@ -203,18 +289,21 @@ export const handler = async (evt) => {
         .eq('contact_id', contact.id)
         .eq('provider_message_id', pmid)
         .limit(1);
-      if (dupeErr) console.warn('dedupe check error', dupeErr);
+      trace.push({ step: 'dedupe.check', dupeErr: dupeErr?.message || null, dupeCount: dupe?.length || 0 });
       if (dupe && dupe.length) {
-        return json({ ok: true, deduped: true, provider_message_id: pmid }, 200);
+        console.log(LOG_PREFIX, 'deduped', { contact_id: contact.id, pmid });
+        return json({ ok: true, deduped: true, provider_message_id: pmid, trace: debug || debugBody ? trace : undefined }, 200);
       }
     }
 
-    // 4) Fetch template + agent vars
-    const templates = await fetchTemplates(supabase, user_id);
+    // 4) Template + agent
+    const templates = await fetchTemplates(supabase, user_id, trace);
     const template = templates?.[templateKey];
-    if (!template) return json({ error: 'template_not_found', templateKey }, 404);
-
-    const agent = await fetchAgent(supabase, user_id);
+    if (!template) {
+      trace.push({ step: 'template.missing', templateKey });
+      return json({ error: 'template_not_found', templateKey, trace: debug || debugBody ? trace : undefined }, 404);
+    }
+    const agent = await fetchAgent(supabase, user_id, trace);
     const vars = {
       agent_name: agent?.full_name || placeholders.agent_name || '',
       agent_phone: agent?.phone || placeholders.agent_phone || '',
@@ -230,23 +319,23 @@ export const handler = async (evt) => {
       policy_start_date: placeholders.policy_start_date || '',
       face_amount: placeholders.face_amount || '',
     };
-
     const text = renderTemplate(template, vars);
     const to = toE164US(toRaw);
-    if (!to) return json({ error: 'invalid_phone' }, 400);
+    if (!to) {
+      trace.push({ step: 'phone.invalid', toRaw });
+      return json({ error: 'invalid_phone', trace: debug || debugBody ? trace : undefined }, 400);
+    }
 
-    // 5) Send via Telnyx
+    // 5) Telnyx send
     let providerResp;
     try {
-      providerResp = await sendViaTelnyx({
-        to,
-        text,
-        client_ref: pmid || undefined,
-      });
+      providerResp = await sendViaTelnyx({ to, text, client_ref: pmid || undefined, trace });
     } catch (e) {
-      console.warn('telnyx send error', e.message);
+      trace.push({ step: 'telnyx.send.error', error: e.message });
+      console.warn(LOG_PREFIX, 'telnyx_error', e.message);
+      // Attempt to write a failed message row (flexible)
       try {
-        await insertMessage(supabase, {
+        await insertMessageFlexible(supabase, {
           user_id,
           contact_id: contact.id,
           direction: 'out',
@@ -257,44 +346,57 @@ export const handler = async (evt) => {
           provider: 'telnyx',
           provider_message_id: pmid || null,
           status: 'failed',
-        });
-      } catch (_) {}
-      return json({ error: 'provider_send_failed', detail: e.message }, 502);
+        }, trace);
+      } catch (e2) {
+        trace.push({ step: 'insert.failed.afterTelnyxError', error: e2.message });
+      }
+      return json({ error: 'provider_send_failed', detail: e.message, trace: debug || debugBody ? trace : undefined }, 502);
     }
 
-    // 6) Record message (queued; telnyx-status webhook updates later)
+    // 6) Record message (queued; webhook will update later)
     const provider_id = providerResp?.data?.id || null;
-    const message_id = await insertMessage(supabase, {
-      user_id,
-      contact_id: contact.id,
-      direction: 'out',
-      to_number: to,
-      from_number: TELNYX_FROM_NUMBER,
-      body: text,
-      template_key: templateKey,
-      provider: 'telnyx',
-      provider_message_id: pmid || provider_id || null,
-      status: 'queued',
-    });
-
-    // 7) Debit wallet 1¢ using your existing table (non-blocking)
+    let message_id;
     try {
-      await supabase.rpc('user_wallets_debit', {
-        p_user_id: user_id,
-        p_amount: 1, // cents
-      });
+      message_id = await insertMessageFlexible(supabase, {
+        user_id,
+        contact_id: contact.id,
+        direction: 'out',
+        to_number: to,
+        from_number: TELNYX_FROM_NUMBER,
+        body: text,
+        template_key: templateKey,
+        provider: 'telnyx',
+        provider_message_id: pmid || provider_id || null,
+        status: 'queued',
+      }, trace);
     } catch (e) {
-      console.warn('user_wallets_debit failed (non-blocking)', e.message);
+      trace.push({ step: 'insertMessage.final.error', error: e.message });
+      // We still return ok because the provider accepted the message; but we reveal the trace in debug
     }
 
-    return json({
+    // 7) Wallet debit (1¢) — non-blocking
+    try {
+      const { error: rpcErr } = await supabase.rpc('user_wallets_debit', {
+        p_user_id: user_id,
+        p_amount: 1,
+      });
+      if (rpcErr) trace.push({ step: 'wallet.debit.error', error: rpcErr.message });
+      else trace.push({ step: 'wallet.debit.ok' });
+    } catch (e) {
+      trace.push({ step: 'wallet.debit.exception', error: e.message });
+    }
+
+    const out = {
       ok: true,
-      message_id,
+      message_id: message_id || null,
       provider_message_id: pmid || provider_id || null,
       provider: 'telnyx',
-    });
+    };
+    if (debug || debugBody) out.trace = trace;
+    console.log(LOG_PREFIX, 'success', { message_id: out.message_id, provider_message_id: out.provider_message_id });
+    return json(out, 200);
   } catch (e) {
-    console.error('messages-send unhandled error', e);
+    console.error(LOG_PREFIX, 'unhandled', e);
     return json({ error: 'unhandled_server_error', detail: String(e?.message || e) }, 500);
   }
 };
