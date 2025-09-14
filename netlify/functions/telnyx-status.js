@@ -1,44 +1,26 @@
-// Minimal + robust Telnyx status webhook.
-// Updates the message row by provider_sid and sets only `status` (and optionally `error_detail`).
-// This avoids errors when optional columns don't exist in your schema.
+// File: netlify/functions/telnyx-status.js
+// Minimal, robust Telnyx status webhook: updates public.messages by provider_sid.
 
-const { createClient } = require("@supabase/supabase-js");
+const { getServiceClient } = require("./_supabase");
 
 function ok(body) {
-  return {
-    statusCode: 200,
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(body || { ok: true }),
-  };
+  return { statusCode: 200, headers: { "Content-Type": "application/json" }, body: JSON.stringify(body || { ok: true }) };
 }
 
 exports.handler = async (event) => {
-  const { SUPABASE_URL, SUPABASE_SERVICE_ROLE } = process.env;
-  if (!SUPABASE_URL || !SUPABASE_SERVICE_ROLE) {
-    console.log("Missing Supabase env");
-    return ok({ ok: true });
-  }
-  const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE, {
-    auth: { persistSession: false },
-  });
+  const supabase = getServiceClient();
 
-  let body;
-  try {
-    body = JSON.parse(event.body || "{}");
-  } catch (e) {
-    console.log("[TELNYX STATUS] Bad JSON:", e?.message);
-    return ok({ ok: true });
-  }
+  let body = null;
+  try { body = JSON.parse(event.body || "{}"); } catch { body = {}; }
 
   const data = body?.data || body;
   const eventType = data?.event_type || data?.type || "unknown";
   const payload = data?.payload || {};
   const providerSid = payload?.id || data?.id || null;
 
-  // Decide status string
-  let status = eventType.replace("message.", ""); // "sent" | "finalized" | ...
+  let status = String(eventType || "unknown").replace(/^message\./, ""); // e.g., sent|delivered|undelivered
   const to0 = Array.isArray(payload?.to) && payload.to.length ? payload.to[0] : null;
-  if (to0?.status) status = String(to0.status).toLowerCase(); // e.g., "delivered", "undelivered"
+  if (to0?.status) status = String(to0.status).toLowerCase(); // delivered / undelivered
 
   if (!providerSid) return ok({ ok: true, note: "no id" });
 
@@ -54,8 +36,6 @@ exports.handler = async (event) => {
     .eq("provider", "telnyx")
     .eq("provider_sid", providerSid);
 
-  if (error) {
-    console.log("[TELNYX STATUS] DB update error:", error.message);
-  }
+  if (error) console.log("[TELNYX STATUS] DB update error:", error.message);
   return ok({ ok: true });
 };
