@@ -1,160 +1,258 @@
-const { createClient } = require("@supabase/supabase-js");
+// File: netlify/functions/messages-send.js
+import { createClient } from '@supabase/supabase-js';
 
-/** Basic E.164 normalizer for US/CA */
-function normalizeToE164_US_CA(input) {
-  if (typeof input !== "string") return null;
-  const trimmed = input.trim();
-  if (trimmed.startsWith("+")) {
-    const compact = trimmed.replace(/\s+/g, "");
-    return /^\+\d{10,15}$/.test(compact) ? compact : null;
-  }
-  const digits = trimmed.replace(/\D+/g, "");
-  if (digits.length === 10) return `+1${digits}`;
-  if (digits.length === 11 && digits.startsWith("1")) return `+${digits}`;
-  return null;
-}
+const SUPABASE_URL = process.env.SUPABASE_URL;
+const SUPABASE_SERVICE_ROLE = process.env.SUPABASE_SERVICE_ROLE;
 
-/** CORS helpers */
-const CORS_HEADERS = {
-  "Access-Control-Allow-Origin": "*",
-  "Access-Control-Allow-Methods": "POST, OPTIONS",
-  "Access-Control-Allow-Headers": "Content-Type, Authorization",
+// Telnyx envs (set these in Netlify UI)
+const TELNYX_API_KEY = process.env.TELNYX_API_KEY;
+const TELNYX_MESSAGING_PROFILE_ID = process.env.TELNYX_MESSAGING_PROFILE_ID;
+const TELNYX_FROM_NUMBER = process.env.TELNYX_FROM_NUMBER; // e.g. +15551234567
+
+const supa = () => createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE);
+
+const norm10 = (p) => {
+  const d = String(p || '').replace(/\D/g, '');
+  return d.length > 10 ? d.slice(-10) : d;
 };
 
-function json(status, body) {
-  return {
-    statusCode: status,
-    headers: { "Content-Type": "application/json", ...CORS_HEADERS },
-    body: JSON.stringify(body),
-  };
+const toE164US = (p) => {
+  const d = String(p || '').replace(/\D/g, '');
+  if (!d) return null;
+  if (d.length === 11 && d.startsWith('1')) return `+${d}`;
+  if (d.length === 10) return `+1${d}`;
+  if (d.startsWith('+')) return d;
+  return `+${d}`;
+};
+
+function renderTemplate(raw, vars) {
+  const str = String(raw || '');
+  return str.replace(/\{\{(\w+)\}\}/g, (_, k) => (vars?.[k] ?? ''));
 }
 
-exports.handler = async (event) => {
-  if (event.httpMethod === "OPTIONS") {
-    return { statusCode: 204, headers: CORS_HEADERS, body: "" };
-  }
-  if (event.httpMethod !== "POST") {
-    return json(405, { error: "Method not allowed" });
-  }
+async function fetchTemplates(supabase, user_id) {
+  const { data, error } = await supabase
+    .from('message_templates')
+    .select('templates')
+    .eq('user_id', user_id)
+    .maybeSingle();
+  if (error) throw error;
+  return data?.templates || {};
+}
 
-  const {
-    SUPABASE_URL,
-    SUPABASE_SERVICE_ROLE,
-    TELNYX_API_KEY,
-    TELNYX_MESSAGING_PROFILE_ID,
-    TELNYX_FROM_NUMBER,
-    SITE_URL,
-    URL,
-  } = process.env;
+async function fetchAgent(supabase, user_id) {
+  const { data, error } = await supabase
+    .from('agent_profiles')
+    .select('full_name, phone, calendly_url')
+    .eq('user_id', user_id)
+    .maybeSingle();
+  if (error) throw error;
+  return data || {};
+}
 
-  if (!SUPABASE_URL || !SUPABASE_SERVICE_ROLE) {
-    return json(500, { error: "Supabase env not set" });
-  }
-  if (!TELNYX_API_KEY || !TELNYX_FROM_NUMBER) {
-    return json(500, { error: "Telnyx env not set (API key / from number)" });
-  }
+async function findContactByPhone(supabase, user_id, to) {
+  // Try exact, then last-10 match
+  const exact = await supabase
+    .from('message_contacts')
+    .select('id,user_id,full_name,phone,subscribed,tags,meta')
+    .eq('user_id', user_id)
+    .eq('phone', to)
+    .maybeSingle();
 
-  let payload;
-  try {
-    payload = JSON.parse(event.body || "{}");
-  } catch {
-    return json(400, { error: "Invalid JSON body" });
-  }
+  if (exact.data) return exact.data;
 
-  const { to, body, lead_id, requesterId } = payload || {};
-  if (!to || !body) {
-    return json(400, { error: "`to` and `body` are required" });
-  }
-  if (Array.isArray(to)) {
-    return json(400, { error: "`to` must be a single phone number string, not an array" });
-  }
+  const last10 = norm10(to);
+  const { data: candidates } = await supabase
+    .from('message_contacts')
+    .select('id,user_id,full_name,phone,subscribed,tags,meta')
+    .eq('user_id', user_id);
 
-  const toE164 = normalizeToE164_US_CA(String(to));
-  if (!toE164) {
-    return json(400, {
-      error: "Invalid `to` number",
-      hint: "Use a single E.164 number like +16155551234 (US/CA).",
-      got: String(to),
-    });
-  }
+  return (candidates || []).find((c) => norm10(c.phone) === last10) || null;
+}
 
-  const statusWebhookBase = SITE_URL || URL;
-  if (!statusWebhookBase) {
-    return json(500, { error: "SITE_URL or URL must be set for webhooks" });
-  }
-  const statusWebhook = `${statusWebhookBase}/.netlify/functions/telnyx-status`;
+async function insertMessage(supabase, row) {
+  // Minimal insert; adjust columns to match your schema if needed
+  const { data, error } = await supabase
+    .from('messages')
+    .insert([row])
+    .select('id')
+    .maybeSingle();
+  if (error) throw error;
+  return data?.id;
+}
 
-  const msg = {
-    to: toE164,
-    from: TELNYX_FROM_NUMBER,
-    text: String(body),
-    webhook_url: statusWebhook,
-    webhook_failover_url: statusWebhook,
-    use_profile_webhooks: false,
-  };
-  if (TELNYX_MESSAGING_PROFILE_ID) {
-    msg.messaging_profile_id = TELNYX_MESSAGING_PROFILE_ID;
-  }
-
-  const tRes = await fetch("https://api.telnyx.com/v2/messages", {
-    method: "POST",
+async function sendViaTelnyx({ to, text, client_ref }) {
+  const res = await fetch('https://api.telnyx.com/v2/messages', {
+    method: 'POST',
     headers: {
       Authorization: `Bearer ${TELNYX_API_KEY}`,
-      "Content-Type": "application/json",
+      'Content-Type': 'application/json',
     },
-    body: JSON.stringify(msg),
+    body: JSON.stringify({
+      from: TELNYX_FROM_NUMBER,
+      to,
+      text,
+      messaging_profile_id: TELNYX_MESSAGING_PROFILE_ID,
+      client_ref, // shows up as provider_message_id in your DB/webhook flow
+    }),
   });
 
-  let tData = null;
-  try { tData = await tRes.json(); } catch { tData = null; }
+  const payload = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    const info = typeof payload === 'object' ? JSON.stringify(payload) : String(payload);
+    throw new Error(`Telnyx error ${res.status}: ${info}`);
+  }
+  return payload; // { data: { id, ... } }
+}
 
-  const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE, {
-    auth: { persistSession: false },
-  });
+export const handler = async (evt) => {
+  if (evt.httpMethod !== 'POST') {
+    return new Response('Method Not Allowed', { status: 405 });
+  }
 
-  const telnyxId = tData?.data?.id || tData?.id || null;
+  const supabase = supa();
+  let body;
+  try {
+    body = JSON.parse(evt.body || '{}');
+  } catch {
+    return new Response(JSON.stringify({ error: 'invalid_json' }), { status: 400 });
+  }
 
-  if (!tRes.ok) {
-    await supabase.from("messages").insert({
-      user_id: requesterId || null,
-      lead_id: lead_id ?? null,
-      provider: "telnyx",
-      provider_sid: telnyxId,
-      direction: "outgoing",
-      to_number: toE164,
-      from_number: TELNYX_FROM_NUMBER,
-      body: String(body),
-      status: "failed",
-      error_detail: JSON.stringify(tData || { status: tRes.status }).slice(0, 8000),
+  const user_id = body.user_id;
+  const templateKey = body.templateKey;
+  const toRaw = body.to;
+  const placeholders = body.placeholders || {};
+  const pmid = body.provider_message_id || body.client_ref || ''; // automation identifier (if present)
+
+  if (!user_id || !templateKey || !toRaw) {
+    return new Response(JSON.stringify({ error: 'missing_fields' }), { status: 400 });
+  }
+
+  // 1) resolve contact
+  const contact = await findContactByPhone(supabase, user_id, toRaw);
+  if (!contact) {
+    return new Response(JSON.stringify({ error: 'contact_not_found_for_phone' }), { status: 404 });
+  }
+  if (!contact.subscribed) {
+    return new Response(JSON.stringify({ error: 'contact_unsubscribed' }), { status: 400 });
+  }
+
+  // 2) eligibility gate (THIS WAS THE BLOCKER)
+  const tags = contact?.tags || [];
+  const hasLeadOrMilitary = tags.includes('lead') || tags.includes('military');
+  const hasSold = tags.includes('sold');
+  const isAutomation = typeof pmid === 'string' && pmid.length > 0;
+  const automationOK = /^((sold|appt|holiday|birthday|payment|followup_2d)_)/i.test(pmid);
+
+  // Rule:
+  // - Manual sends still require lead/military
+  // - Automations are allowed if pmid prefix matches OR the contact has 'sold'
+  const eligible =
+    hasLeadOrMilitary ||
+    (isAutomation && (automationOK || hasSold)) ||
+    hasSold;
+
+  if (!eligible) {
+    return new Response(JSON.stringify({ error: 'contact_not_eligible' }), { status: 400 });
+  }
+
+  // 3) dedupe on provider_message_id if present
+  if (pmid) {
+    const { data: dupe } = await supabase
+      .from('messages')
+      .select('id')
+      .eq('user_id', user_id)
+      .eq('contact_id', contact.id)
+      .eq('provider_message_id', pmid)
+      .limit(1);
+
+    if (dupe && dupe.length) {
+      return new Response(JSON.stringify({ ok: true, deduped: true, provider_message_id: pmid }), {
+        status: 200,
+      });
+    }
+  }
+
+  // 4) fetch template and (optionally) agent info for fallback placeholders
+  const templates = await fetchTemplates(supabase, user_id);
+  const template = templates?.[templateKey];
+  if (!template) {
+    return new Response(JSON.stringify({ error: 'template_not_found', templateKey }), { status: 404 });
+  }
+
+  const agent = await fetchAgent(supabase, user_id);
+  const vars = {
+    agent_name: agent?.full_name || placeholders.agent_name || '',
+    agent_phone: agent?.phone || placeholders.agent_phone || '',
+    calendly_link: agent?.calendly_url || placeholders.calendly_link || '',
+    first_name: placeholders.first_name || (contact.full_name || '').split(/\s+/)[0] || '',
+    state: placeholders.state || contact?.meta?.state || '',
+    beneficiary: placeholders.beneficiary || contact?.meta?.beneficiary || '',
+    monthly_payment: placeholders.monthly_payment || '',
+    carrier: placeholders.carrier || '',
+    policy_number: placeholders.policy_number || '',
+    premium: placeholders.premium || '',
+    policy_start_date: placeholders.policy_start_date || '',
+    face_amount: placeholders.face_amount || '',
+  };
+
+  const text = renderTemplate(template, vars);
+  const to = toE164US(toRaw);
+  if (!to) {
+    return new Response(JSON.stringify({ error: 'invalid_phone' }), { status: 400 });
+  }
+
+  // 5) send via Telnyx
+  let providerResp;
+  try {
+    providerResp = await sendViaTelnyx({
+      to,
+      text,
+      client_ref: pmid || undefined,
     });
-
-    return json(502, {
-      error: "Failed to send via Telnyx",
-      telnyx_status: tRes.status,
-      telnyx_response: tData,
+  } catch (e) {
+    // still record a failed message row for traceability
+    try {
+      await insertMessage(supabase, {
+        user_id,
+        contact_id: contact.id,
+        direction: 'out',
+        to_number: to,
+        from_number: TELNYX_FROM_NUMBER,
+        body: text,
+        template_key: templateKey,
+        provider: 'telnyx',
+        provider_message_id: pmid || null,
+        status: 'failed',
+      });
+    } catch (_) {}
+    return new Response(JSON.stringify({ error: 'provider_send_failed', detail: e.message }), {
+      status: 502,
     });
   }
 
-  const { error: dbErr } = await supabase.from("messages").insert({
-    user_id: requesterId || null,
-    lead_id: lead_id ?? null,
-    provider: "telnyx",
-    provider_sid: telnyxId,
-    direction: "outgoing",
-    to_number: toE164,
+  // 6) record message (status will be updated by your telnyx-status webhook)
+  const provider_id = providerResp?.data?.id || null;
+  const msgId = await insertMessage(supabase, {
+    user_id,
+    contact_id: contact.id,
+    direction: 'out',
+    to_number: to,
     from_number: TELNYX_FROM_NUMBER,
-    body: String(body),
-    status: "queued",
+    body: text,
+    template_key: templateKey,
+    provider: 'telnyx',
+    provider_message_id: pmid || provider_id || null,
+    status: 'queued',
   });
 
-  if (dbErr) {
-    return json(200, {
+  return new Response(
+    JSON.stringify({
       ok: true,
-      telnyx_id: telnyxId,
-      warning: "Sent but failed to insert message row",
-      db_error: dbErr.message,
-    });
-  }
-
-  return json(200, { ok: true, telnyx_id: telnyxId });
+      message_id: msgId,
+      provider_message_id: pmid || provider_id || null,
+      provider: 'telnyx',
+    }),
+    { status: 200 }
+  );
 };
