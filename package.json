@@ -13,6 +13,7 @@
     "groq-sdk": "^0.32.0",
     "lob": "^6.6.3",
     "lucide-react": "^0.452.0",
+    "luxon": "^3.5.0",
     "papaparse": "^5.5.3",
     "react": "^18.2.0",
     "react-calendly": "^4.4.0",
