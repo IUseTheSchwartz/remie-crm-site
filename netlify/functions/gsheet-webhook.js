@@ -179,59 +179,35 @@ function renderTemplate(tpl, ctx) {
 }
 
 async function trySendNewLeadText({ userId, leadId, lead }) {
-  // Require phone
+  // We do NOT render the body here anymore.
+  // We defer to lead-new-auto → messages-send so the send is templated, logged, debited, and traced consistently.
+
   if (!S(lead.phone)) return { sent: false, reason: "missing_phone" };
-
-  // Load messaging templates/prefs
-  const { data: mt, error: tErr } = await supabase
-    .from("message_templates")
-    .select("*")
-    .eq("user_id", userId)
-    .maybeSingle();
-
-  if (tErr) return { sent: false, reason: "templates_lookup_failed", detail: tErr.message };
-  if (!mt || mt.enabled === false || mt.enabled?.new_lead === false) {
-    return { sent: false, reason: "template_disabled" };
-  }
-
-  const ctx = {
-    name: lead.name || "",
-    state: lead.state || "",
-    beneficiary: lead.beneficiary || lead.beneficiary_name || "",
-  };
-
-  const hasBranch = !!S(lead.military_branch);
-  const tpl = hasBranch
-    ? (mt.templates?.new_lead_military || mt.new_lead_military || mt.templates?.new_lead || mt.new_lead || "")
-    : (mt.templates?.new_lead || mt.new_lead || "");
-
-  const body = renderTemplate(tpl, ctx).trim();
-  if (!body) return { sent: false, reason: "empty_template" };
 
   const base = process.env.SITE_URL || process.env.URL;
   if (!base) return { sent: false, reason: "no_site_url" };
 
   try {
-    const res = await fetch(`${base}/.netlify/functions/messages-send`, {
+    const res = await fetch(`${base}/.netlify/functions/lead-new-auto`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        to: lead.phone,
-        body,
-        lead_id: leadId,
-        requesterId: userId,
-        contact_id: null,
-      }),
+      body: JSON.stringify({ lead_id: leadId }),
     });
     const out = await res.json().catch(() => ({}));
-    if (!res.ok || out?.error) {
+
+    if (!res.ok || out?.error || !out?.send?.ok) {
       return { sent: false, reason: "send_failed", detail: out };
     }
-    return { sent: true, telnyx_id: out?.telnyx_id };
+    return {
+      sent: true,
+      telnyx_id: out?.send?.provider_sid || out?.send?.provider_message_id || null,
+      trace: out?.send?.trace || out?.trace || null,
+    };
   } catch (e) {
-    return { sent: false, reason: "messages_send_unreachable", detail: e?.message };
+    return { sent: false, reason: "lead_new_auto_unreachable", detail: e?.message };
   }
 }
+
 
 // --- main handler ---
 exports.handler = async (event) => {
