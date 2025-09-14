@@ -3,6 +3,7 @@ import { createClient } from '@supabase/supabase-js';
 
 const SUPABASE_URL = process.env.SUPABASE_URL;
 const SUPABASE_SERVICE_ROLE = process.env.SUPABASE_SERVICE_ROLE;
+
 const TELNYX_API_KEY = process.env.TELNYX_API_KEY;
 const TELNYX_MESSAGING_PROFILE_ID = process.env.TELNYX_MESSAGING_PROFILE_ID;
 const TELNYX_FROM_NUMBER = process.env.TELNYX_FROM_NUMBER;
@@ -12,6 +13,7 @@ const json = (obj, statusCode = 200) => ({
   headers: { 'Content-Type': 'application/json' },
   body: JSON.stringify(obj),
 });
+
 const supa = () => createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE);
 
 const norm10 = (p) => String(p || '').replace(/\D/g, '').slice(-10);
@@ -23,7 +25,10 @@ const toE164US = (p) => {
   if (d.length === 10) return `+1${d}`;
   return null;
 };
-const mask = (p='') => (String(p).replace(/\D/g,'').slice(-4) ? '***' + String(p).replace(/\D/g,'').slice(-4) : '***');
+const mask = (p = '') => {
+  const d = String(p).replace(/\D/g, '');
+  return d ? `***${d.slice(-4)}` : '***';
+};
 
 function renderTemplate(raw, vars) {
   return String(raw || '').replace(/\{\{(\w+)\}\}/g, (_, k) => (vars?.[k] ?? ''));
@@ -50,7 +55,6 @@ async function fetchAgent(db, user_id) {
 }
 
 async function lookupContactByPhone(db, user_id, toRaw) {
-  // exact
   const exact = await db
     .from('message_contacts')
     .select('id,user_id,full_name,phone,subscribed,tags,meta')
@@ -59,24 +63,23 @@ async function lookupContactByPhone(db, user_id, toRaw) {
     .maybeSingle();
   if (exact?.data) return exact.data;
 
-  // last-10
   const last10 = norm10(toRaw);
   const { data } = await db
     .from('message_contacts')
     .select('id,user_id,full_name,phone,subscribed,tags,meta')
     .eq('user_id', user_id);
+
   return (data || []).find((c) => norm10(c.phone) === last10) || null;
 }
 
 async function insertMessageFlexible(db, row, trace) {
-  // try full insert first
   try {
     const { data } = await db.from('messages').insert([row]).select('id').maybeSingle();
     if (data?.id) return data.id;
   } catch (e) {
     trace.push({ step: 'insert.full.error', error: e.message });
   }
-  // minimal fallback (in case your schema differs)
+
   const minimal = {
     user_id: row.user_id,
     contact_id: row.contact_id,
@@ -118,16 +121,16 @@ async function sendViaTelnyx({ to, text, client_ref, trace }) {
 
   trace.push({ step: 'telnyx.response', status: res.status, ok: res.ok });
 
-  if (!res.ok) throw new Error(`Telnyx ${res.status}: ${typeof parsed === 'object' ? JSON.stringify(parsed) : String(parsed)}`);
+  if (!res.ok) {
+    throw new Error(`Telnyx ${res.status}: ${typeof parsed === 'object' ? JSON.stringify(parsed) : String(parsed)}`);
+  }
   return parsed; // { data: { id, ... } }
 }
 
 export const handler = async (evt) => {
   const trace = [];
   try {
-    const debug = new URLSearchParams(evt.rawQuery || '').get('debug') === '1'
-      || process.env.DEBUG_MESSAGES_SEND === '1';
-
+    // no ?debug needed — we always return trace in the response
     if (evt.httpMethod !== 'POST') return json({ error: 'method_not_allowed' }, 405);
     if (!SUPABASE_URL || !SUPABASE_SERVICE_ROLE || !TELNYX_API_KEY || !TELNYX_MESSAGING_PROFILE_ID || !TELNYX_FROM_NUMBER) {
       return json({ error: 'server_misconfigured' }, 500);
@@ -144,7 +147,7 @@ export const handler = async (evt) => {
 
     trace.push({ step: 'input', has_user_id: !!user_id, has_to: !!toRaw, templateKey, contact_id, lead_id });
 
-    // Hydrate from contact_id if provided
+    // Hydrate from contact_id (optional)
     let contact = null;
     if (contact_id) {
       const { data: c, error } = await db
@@ -152,21 +155,22 @@ export const handler = async (evt) => {
         .select('id,user_id,full_name,phone,subscribed,tags,meta')
         .eq('id', contact_id)
         .maybeSingle();
-      if (error) return json({ error: 'contact_lookup_failed', detail: error.message, trace: debug ? trace : undefined }, 500);
+      if (error) return json({ error: 'contact_lookup_failed', detail: error.message, trace }, 500);
       if (c) { contact = c; user_id = user_id || c.user_id; toRaw = toRaw || c.phone; }
       trace.push({ step: 'contact.hydrated', found: !!c, toRawMasked: mask(toRaw) });
     }
 
-    // Hydrate from lead_id if provided (and gather defaults for placeholders)
-    let lead = null; let leadDefaults = {};
+    // Hydrate from lead_id (optional) and get defaults
+    let lead = null;
+    let leadDefaults = {};
     if (lead_id) {
       const { data: l, error } = await db
         .from('leads')
         .select('id,user_id,name,phone,state,beneficiary,beneficiary_name,sold')
         .eq('id', lead_id)
         .maybeSingle();
-      if (error) return json({ error: 'lead_lookup_failed', detail: error.message, trace: debug ? trace : undefined }, 500);
-      if (!l) return json({ error: 'lead_not_found', lead_id, trace: debug ? trace : undefined }, 404);
+      if (error) return json({ error: 'lead_lookup_failed', detail: error.message, trace }, 500);
+      if (!l) return json({ error: 'lead_not_found', lead_id, trace }, 404);
 
       lead = l;
       user_id = user_id || l.user_id;
@@ -185,19 +189,20 @@ export const handler = async (evt) => {
       trace.push({ step: 'lead.hydrated', user_id, toRawMasked: mask(toRaw) });
     }
 
-    // Require the minimal combination now that we support lead/contact hydration
+    // Minimal requirements (supporting contact/lead hydration)
     if (!templateKey || (!user_id && !lead_id && !contact_id) || (!toRaw && !lead_id && !contact_id)) {
       return json({
         error: 'missing_fields',
         need: ['templateKey', 'and one of: (user_id + to) or (contact_id) or (lead_id)'],
-        got: { user_id: !!user_id, templateKey: !!templateKey, to: !!toRaw, contact_id: !!contact_id, lead_id: !!lead_id }
+        got: { user_id: !!user_id, templateKey: !!templateKey, to: !!toRaw, contact_id: !!contact_id, lead_id: !!lead_id },
+        trace
       }, 400);
     }
 
-    // If still no contact and we have user_id+to, try to find by phone
+    // If still no contact and we have user_id + to, try to find by phone
     if (!contact && toRaw && user_id) contact = await lookupContactByPhone(db, user_id, toRaw);
 
-    // For new leads, auto-create a minimal contact if still missing (rare race)
+    // For new leads, auto-create minimal contact if still missing (rare)
     if (!contact && (templateKey === 'new_lead' || templateKey === 'new_military') && toRaw && user_id) {
       const { data: created, error } = await db
         .from('message_contacts')
@@ -211,15 +216,15 @@ export const handler = async (evt) => {
         }])
         .select('id,user_id,full_name,phone,subscribed,tags,meta')
         .maybeSingle();
-      if (error) return json({ error: 'contact_create_failed', detail: error.message, trace: debug ? trace : undefined }, 500);
+      if (error) return json({ error: 'contact_create_failed', detail: error.message, trace }, 500);
       contact = created;
       trace.push({ step: 'contact.autocreated', contact_id: contact.id });
     }
 
-    if (!contact) return json({ error: 'contact_not_found_for_phone', trace: debug ? trace : undefined }, 404);
-    if (!contact.subscribed) return json({ error: 'contact_unsubscribed', trace: debug ? trace : undefined }, 400);
+    if (!contact) return json({ error: 'contact_not_found_for_phone', trace }, 404);
+    if (!contact.subscribed) return json({ error: 'contact_unsubscribed', trace }, 400);
 
-    // Eligibility by tags (plus automation provider_message_id prefixes)
+    // Eligibility from tags (+ automation prefix if provided)
     const tags = contact?.tags || [];
     const hasLeadOrMil = tags.includes('lead') || tags.includes('military');
     const hasSold = tags.includes('sold');
@@ -228,9 +233,9 @@ export const handler = async (evt) => {
     const eligible = hasLeadOrMil || (isAutomation && (automationOK || hasSold)) || hasSold || templateKey === 'new_lead' || templateKey === 'new_military';
 
     trace.push({ step: 'eligibility', tags, hasLeadOrMil, hasSold, isAutomation, automationOK, templateKey, eligible });
-    if (!eligible) return json({ error: 'contact_not_eligible', trace: debug ? trace : undefined }, 400);
+    if (!eligible) return json({ error: 'contact_not_eligible', trace }, 400);
 
-    // Dedupe by provider_message_id (if caller provided one)
+    // Dedupe by provider_message_id
     if (provider_message_id) {
       const { data: dupe } = await db
         .from('messages')
@@ -239,20 +244,18 @@ export const handler = async (evt) => {
         .eq('contact_id', contact.id)
         .eq('provider_message_id', provider_message_id)
         .limit(1);
-      if (dupe && dupe.length) {
-        return json({ ok: true, deduped: true, provider_message_id, trace: debug ? trace : undefined }, 200);
-      }
+      if (dupe && dupe.length) return json({ ok: true, deduped: true, provider_message_id, trace }, 200);
     }
 
     // Template + agent
     const templates = await fetchTemplates(db, user_id);
     let template = templates?.[templateKey];
-    if (!template && templateKey === 'new_military') template = templates?.['new_lead']; // fallback if no separate military template
-    if (!template) return json({ error: 'template_not_found', templateKey, trace: debug ? trace : undefined }, 404);
+    if (!template && templateKey === 'new_military') template = templates?.['new_lead']; // optional fallback
+    if (!template) return json({ error: 'template_not_found', templateKey, trace }, 404);
 
     const agent = await fetchAgent(db, user_id);
     const vars = {
-      // lead defaults -> contact meta -> incoming placeholders -> agent
+      // precedence: incoming placeholders -> lead defaults -> contact meta -> agent
       first_name: placeholdersIn.first_name || leadDefaults.first_name || (contact.full_name || '').split(/\s+/)[0] || '',
       state: placeholdersIn.state || leadDefaults.state || contact?.meta?.state || '',
       beneficiary: placeholdersIn.beneficiary || leadDefaults.beneficiary || contact?.meta?.beneficiary || '',
@@ -269,7 +272,7 @@ export const handler = async (evt) => {
 
     const text = renderTemplate(template, vars);
     const to = toE164US(toRaw || contact.phone);
-    if (!to) return json({ error: 'invalid_phone', trace: debug ? trace : undefined }, 400);
+    if (!to) return json({ error: 'invalid_phone', trace }, 400);
 
     // Send via Telnyx
     let providerResp;
@@ -291,7 +294,7 @@ export const handler = async (evt) => {
           status: 'failed',
         }, trace);
       } catch (_) {}
-      return json({ error: 'provider_send_failed', detail: e.message, trace: debug ? trace : undefined }, 502);
+      return json({ error: 'provider_send_failed', detail: e.message, trace }, 502);
     }
 
     // Record message (queued; webhook will update status later)
@@ -317,14 +320,13 @@ export const handler = async (evt) => {
       trace.push({ step: 'wallet.debit.error', error: e.message });
     }
 
-    const out = {
+    return json({
       ok: true,
       message_id,
       provider_message_id: provider_message_id || provider_id || null,
       provider: 'telnyx',
-    };
-    if (debug) out.trace = trace;
-    return json(out, 200);
+      trace, // always included so you can see errors in the console/Network view
+    });
   } catch (e) {
     return json({ error: 'unhandled_server_error', detail: String(e?.message || e), trace }, 500);
   }
