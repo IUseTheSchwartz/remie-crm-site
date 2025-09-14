@@ -54,7 +54,7 @@ async function sendTemplate({ to, user_id, templateKey, provider_message_id, pla
 export const handler = async () => {
   const supabase = supa();
 
-  // Subscribed contacts to join by phone
+  // Subscribed contacts for join
   const { data: contacts, error: cErr } = await supabase
     .from('message_contacts')
     .select('id,user_id,full_name,phone,tags,subscribed,meta')
@@ -64,6 +64,7 @@ export const handler = async () => {
     return { statusCode: 500, body: JSON.stringify({ ok: false }) };
   }
 
+  // Index contacts
   const byUser = new Map();
   const phoneMapByUser = new Map();
   for (const c of contacts || []) {
@@ -77,16 +78,20 @@ export const handler = async () => {
   }
   const userIds = Array.from(byUser.keys());
 
-  // Fetch sold leads for those users
+  // Sold leads with sold JSON present
   let leads = [];
   if (userIds.length) {
     const { data: lrows, error: lErr } = await supabase
       .from('leads')
       .select('id,user_id,name,phone,state,beneficiary,beneficiary_name,sold,updated_at')
       .in('user_id', userIds)
-      .eq('status', 'sold');
-    if (lErr) console.error('leads error', lErr);
-    leads = lrows || [];
+      .eq('status', 'sold')
+      .not('sold', 'is', null);
+    if (lErr) {
+      console.error('leads error', lErr);
+    } else {
+      leads = lrows || [];
+    }
   }
 
   let sent = 0;
@@ -106,12 +111,13 @@ export const handler = async () => {
     const userLeads = leads.filter((l) => l.user_id === user_id);
 
     for (const l of userLeads) {
+      const s = l.sold || {};
       const contact = phoneMap.get(normalizePhone(l.phone));
       if (!contact?.phone) continue;
 
       const pmid = `sold_${l.id}`;
 
-      // Dedupe by checking messages table for this provider_message_id
+      // Dedupe
       const { data: existing, error: mErr } = await supabase
         .from('messages')
         .select('id')
@@ -123,7 +129,7 @@ export const handler = async () => {
         console.warn('message check error', mErr);
         continue;
       }
-      if (existing && existing.length) continue; // already sent
+      if (existing && existing.length) continue;
 
       try {
         await sendTemplate({
@@ -136,6 +142,12 @@ export const handler = async () => {
             first_name: firstName(contact.full_name, firstName(l.name || '')),
             state: l.state || contact?.meta?.state || '',
             beneficiary: l.beneficiary_name || l.beneficiary || contact?.meta?.beneficiary || '',
+            carrier: s.carrier || '',
+            policy_number: s.policyNumber || '',
+            premium: s.premium || '',
+            monthly_payment: s.monthlyPayment || '',
+            policy_start_date: s.startDate || '',
+            face_amount: s.faceAmount || '',
           },
         });
         sent++;
