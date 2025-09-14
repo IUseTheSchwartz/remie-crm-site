@@ -77,6 +77,24 @@ async function findContactByPhone(supabase, user_id, to) {
   return (candidates || []).find((c) => norm10(c.phone) === last10) || null;
 }
 
+async function createMinimalContactForNewLead(supabase, user_id, toRaw, placeholders) {
+  const full_name = (placeholders?.first_name || '').trim();
+  const { data, error } = await supabase
+    .from('message_contacts')
+    .insert([{
+      user_id,
+      full_name,
+      phone: toRaw,
+      subscribed: true,
+      tags: ['lead'],
+      meta: {}
+    }])
+    .select('id,user_id,full_name,phone,subscribed,tags,meta')
+    .maybeSingle();
+  if (error) throw error;
+  return data;
+}
+
 async function insertMessage(supabase, row) {
   const { data, error } = await supabase
     .from('messages')
@@ -120,7 +138,7 @@ export const handler = async (evt) => {
       return json({ error: 'method_not_allowed' }, 405);
     }
 
-    // Ensure required envs; if missing, fail early with clear error (not a crash)
+    // Ensure required envs
     if (!SUPABASE_URL || !SUPABASE_SERVICE_ROLE) {
       return json({ error: 'server_misconfigured_supabase' }, 500);
     }
@@ -147,22 +165,30 @@ export const handler = async (evt) => {
 
     const supabase = supa();
 
-    // 1) Find contact by phone (exact -> last10)
-    const contact = await findContactByPhone(supabase, user_id, toRaw);
+    // 1) Find contact by phone; if it's a NEW LEAD, auto-create if missing
+    let contact = await findContactByPhone(supabase, user_id, toRaw);
+    if (!contact && templateKey === 'new_lead') {
+      try {
+        contact = await createMinimalContactForNewLead(supabase, user_id, toRaw, placeholders);
+      } catch (e) {
+        console.warn('auto-create contact failed for new_lead', e.message);
+      }
+    }
     if (!contact) return json({ error: 'contact_not_found_for_phone' }, 404);
     if (!contact.subscribed) return json({ error: 'contact_unsubscribed' }, 400);
 
-    // 2) Eligibility gate (manual vs automations + 'sold' tag)
+    // 2) Eligibility gate
     const tags = contact?.tags || [];
     const hasLeadOrMilitary = tags.includes('lead') || tags.includes('military');
     const hasSold = tags.includes('sold');
     const isAutomation = typeof pmid === 'string' && pmid.length > 0;
-    const automationOK = /^((sold|appt|holiday|birthday|payment|followup_2d)_)/i.test(pmid);
+    const automationOK = /^((sold|appt|holiday|birthday|payment|followup_2d|new_lead)_?)/i.test(pmid);
 
     const eligible =
       hasLeadOrMilitary ||
       (isAutomation && (automationOK || hasSold)) ||
-      hasSold;
+      hasSold ||
+      templateKey === 'new_lead';
 
     if (!eligible) {
       return json({ error: 'contact_not_eligible' }, 400);
@@ -196,7 +222,7 @@ export const handler = async (evt) => {
       first_name: placeholders.first_name || (contact.full_name || '').split(/\s+/)[0] || '',
       state: placeholders.state || contact?.meta?.state || '',
       beneficiary: placeholders.beneficiary || contact?.meta?.beneficiary || '',
-      // sold/payment extras:
+      // extras for sold/payment
       monthly_payment: placeholders.monthly_payment || '',
       carrier: placeholders.carrier || '',
       policy_number: placeholders.policy_number || '',
@@ -236,7 +262,7 @@ export const handler = async (evt) => {
       return json({ error: 'provider_send_failed', detail: e.message }, 502);
     }
 
-    // 6) Record message (queued; telnyx-status webhook will update)
+    // 6) Record message (queued; telnyx-status webhook updates later)
     const provider_id = providerResp?.data?.id || null;
     const message_id = await insertMessage(supabase, {
       user_id,
@@ -250,6 +276,16 @@ export const handler = async (evt) => {
       provider_message_id: pmid || provider_id || null,
       status: 'queued',
     });
+
+    // 7) Debit wallet 1¢ using your existing table (non-blocking)
+    try {
+      await supabase.rpc('user_wallets_debit', {
+        p_user_id: user_id,
+        p_amount: 1, // cents
+      });
+    } catch (e) {
+      console.warn('user_wallets_debit failed (non-blocking)', e.message);
+    }
 
     return json({
       ok: true,
