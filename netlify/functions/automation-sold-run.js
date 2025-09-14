@@ -17,7 +17,8 @@ const firstName = (full = '', fb = '') => {
 };
 
 async function sendTemplate({ to, user_id, provider_message_id, placeholders }) {
-  const res = await fetch(`${SITE_URL}/.netlify/functions/messages-send`, {
+  // NOTE: we pass debug: true so messages-send returns a detailed trace in its JSON
+  const res = await fetch(`${SITE_URL}/.netlify/functions/messages-send?debug=1`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
@@ -27,11 +28,12 @@ async function sendTemplate({ to, user_id, provider_message_id, placeholders }) 
       placeholders,
       client_ref: provider_message_id,
       provider_message_id,
+      debug: true
     }),
   });
   const text = await res.text();
-  if (!res.ok) throw new Error(`messages-send failed (${res.status}): ${text}`);
-  try { return JSON.parse(text); } catch { return { raw: text }; }
+  try { return { status: res.status, ok: res.ok, json: JSON.parse(text) }; }
+  catch { return { status: res.status, ok: res.ok, raw: text }; }
 }
 
 export const handler = async (evt) => {
@@ -41,7 +43,7 @@ export const handler = async (evt) => {
   const leadId = qp.get('lead_id') || null;
   const force = (qp.get('force') || '').toLowerCase() === 'true';
 
-  // Contacts with 'sold' tag (eligible pool)
+  // Contacts with 'sold' tag
   const { data: contacts } = await supabase
     .from('message_contacts')
     .select('id,user_id,full_name,phone,subscribed,tags,meta')
@@ -60,7 +62,7 @@ export const handler = async (evt) => {
     phoneMapByUser.get(c.user_id).set(normPhone(c.phone), c);
   }
 
-  // Resolve user filter via profiles (email -> id)
+  // Resolve user filter
   let filterUserIds = Array.from(byUser.keys());
   if (userEmail) {
     const { data: u } = await supabase
@@ -77,19 +79,18 @@ export const handler = async (evt) => {
     return { statusCode: 200, body: JSON.stringify({ ok: true, sent: 0, reason: 'no_contacts_with_sold_tag' }) };
   }
 
-  // Leads with sold JSON for these users
+  // Leads with sold JSON
   let q = supabase
     .from('leads')
     .select('id,user_id,name,phone,state,beneficiary,beneficiary_name,sold,updated_at')
     .in('user_id', filterUserIds)
     .not('sold', 'is', null);
-
   if (leadId) q = q.eq('id', leadId);
 
   const { data: leads, error: lErr } = await q;
   if (lErr) return { statusCode: 500, body: JSON.stringify({ ok: false, error: lErr.message }) };
 
-  // Build best lead per phone map
+  // Pick best lead per phone (by updated_at)
   const bestLeadByUserPhone = new Map();
   for (const l of leads || []) {
     const candidates = [l.phone, l?.sold?.phone].filter(Boolean).map(normPhone);
@@ -109,7 +110,6 @@ export const handler = async (evt) => {
     const userContacts = (byUser.get(user_id) || []);
 
     for (const c of userContacts) {
-      // If leadId specified, filter to the single matching lead/contact
       let targetLead = bestLeadByUserPhone.get(`${user_id}:${normPhone(c.phone)}`);
       if (leadId && targetLead?.id !== leadId) continue;
       if (!targetLead) {
@@ -141,7 +141,7 @@ export const handler = async (evt) => {
       }
 
       try {
-        const response = await sendTemplate({
+        const resp = await sendTemplate({
           to: c.phone,
           user_id,
           provider_message_id: pmid,
@@ -157,9 +157,9 @@ export const handler = async (evt) => {
             face_amount: s.faceAmount || '',
           },
         });
-        results.attempts.push({ contact_id: c.id, lead_id: targetLead.id, status: 'sent', pmid, response });
-        results.sent += 1;
-        if (leadId) break; // if you targeted a specific lead, stop after sending once
+        results.attempts.push({ contact_id: c.id, lead_id: targetLead.id, status: resp.ok ? 'sent' : 'error', http_status: resp.status, response: resp.json || resp.raw });
+        if (resp.ok) results.sent += 1;
+        if (leadId) break;
       } catch (e) {
         results.attempts.push({ contact_id: c.id, lead_id: targetLead.id, status: 'error', error: e.message });
       }
