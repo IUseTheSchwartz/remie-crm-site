@@ -19,31 +19,23 @@ const firstName = (full = '', fb = '') => {
 };
 
 async function fetchTemplates(supabase, user_id) {
-  const { data, error } = await supabase
+  const { data } = await supabase
     .from('message_templates')
     .select('templates')
     .eq('user_id', user_id)
     .maybeSingle();
-  if (error) {
-    console.error('templates fetch error', user_id, error);
-    return {};
-  }
   return data?.templates || {};
 }
-
 async function fetchAgent(supabase, user_id) {
-  const { data, error } = await supabase
+  const { data } = await supabase
     .from('agent_profiles')
     .select('full_name, phone, calendly_url')
     .eq('user_id', user_id)
     .maybeSingle();
-  if (error) console.error('agent fetch error', user_id, error);
   return data || {};
 }
-
 async function sendTemplate({ to, user_id, provider_message_id, placeholders }) {
-  const url = `${SITE_URL}/.netlify/functions/messages-send`;
-  const res = await fetch(url, {
+  const res = await fetch(`${SITE_URL}/.netlify/functions/messages-send`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
@@ -51,13 +43,13 @@ async function sendTemplate({ to, user_id, provider_message_id, placeholders }) 
       to,
       templateKey: 'sold',
       placeholders,
-      client_ref: provider_message_id,   // maps to provider_message_id in your sender
+      client_ref: provider_message_id,
       provider_message_id,
     }),
   });
   if (!res.ok) {
-    const text = await res.text();
-    throw new Error(`messages-send failed (${res.status}): ${text}`);
+    const txt = await res.text();
+    throw new Error(`messages-send failed: ${res.status} ${txt}`);
   }
   return res.json();
 }
@@ -79,9 +71,9 @@ export const handler = async () => {
     return { statusCode: 200, body: JSON.stringify({ ok: true, sent: 0, reason: 'no_contacts_with_sold_tag' }) };
   }
 
-  // Build indices
-  const byUser = new Map();                  // user_id -> contacts[]
-  const phoneMapByUser = new Map();          // user_id -> Map(last10 -> contact)
+  // Build phone map
+  const byUser = new Map();
+  const phoneMapByUser = new Map();
   const userIds = new Set();
   for (const c of contacts) {
     if (!c.phone) continue;
@@ -94,91 +86,69 @@ export const handler = async () => {
     phoneMapByUser.get(c.user_id).set(normPhone(c.phone), c);
   }
 
-  // 2) Fetch leads for these users that have SOLD json (policy details)
+  // 2) Leads with sold JSON for those users
   let leads = [];
   if (userIds.size) {
     const { data: lrows, error: lErr } = await supabase
       .from('leads')
       .select('id,user_id,name,phone,state,beneficiary,beneficiary_name,status,sold,updated_at')
       .in('user_id', Array.from(userIds))
-      .not('sold', 'is', null); // must have sold JSON
+      .not('sold', 'is', null);
     if (lErr) {
       console.error('leads error', lErr);
-      leads = [];
     } else {
       leads = lrows || [];
     }
   }
 
-  // Index leads by (user_id, phone) using both leads.phone and sold.phone; keep the most recent updated_at
-  const bestLeadByUserPhone = new Map(); // key `${user_id}:${last10}` -> lead
+  // Index leads by (user_id, last10 phone) using both leads.phone and sold.phone; prefer most recent updated_at
+  const bestLeadByUserPhone = new Map();
   for (const l of leads) {
     const candidates = [l.phone, l?.sold?.phone].filter(Boolean).map(normPhone);
     for (const p of candidates) {
       const key = `${l.user_id}:${p}`;
       const prev = bestLeadByUserPhone.get(key);
-      if (!prev) {
+      if (!prev || new Date(l.updated_at) >= new Date(prev.updated_at || 0)) {
         bestLeadByUserPhone.set(key, l);
-      } else {
-        const prevTS = new Date(prev.updated_at || 0).getTime();
-        const curTS = new Date(l.updated_at || 0).getTime();
-        if (curTS >= prevTS) bestLeadByUserPhone.set(key, l);
       }
     }
   }
 
   let sent = 0;
-  const results = [];
 
-  // 3) Per user processing
   for (const user_id of userIds) {
     const templates = await fetchTemplates(supabase, user_id);
-    if (!templates.sold) {
-      // No sold template for this user; skip all their contacts
-      continue;
-    }
+    if (!templates.sold) continue;
+
     const agent = await fetchAgent(supabase, user_id);
     const baseVars = {
-      agent_name: agent.full_name || '',
-      agent_phone: agent.phone || '',
-      calendly_link: agent.calendly_url || '',
+      agent_name: agent?.full_name || '',
+      agent_phone: agent?.phone || '',
+      calendly_link: agent?.calendly_url || '',
     };
 
     const contactsList = byUser.get(user_id) || [];
     for (const c of contactsList) {
-      const key = `${user_id}:${normPhone(c.phone)}`;
-      const lead = bestLeadByUserPhone.get(key);
-
-      if (!lead) {
-        results.push({ contact_id: c.id, reason: 'no_matching_lead_with_sold_json' });
-        continue;
-      }
+      const lead = bestLeadByUserPhone.get(`${user_id}:${normPhone(c.phone)}`);
+      if (!lead) continue;
 
       const s = lead.sold || {};
-      // Ensure we actually have useful policy info
       if (!s.policyNumber && !s.carrier && !s.monthlyPayment && !s.startDate) {
-        results.push({ contact_id: c.id, lead_id: lead.id, reason: 'sold_json_missing_policy_fields' });
+        // nothing meaningful to send
         continue;
       }
 
       const pmid = `sold_${lead.id}`;
 
-      // Dedupe check on provider_message_id
-      const { data: existing, error: mErr } = await supabase
+      // dedupe
+      const { data: existing } = await supabase
         .from('messages')
         .select('id')
         .eq('user_id', user_id)
         .eq('contact_id', c.id)
         .eq('provider_message_id', pmid)
         .limit(1);
-      if (mErr) {
-        console.warn('message check error', mErr);
-        continue;
-      }
-      if (existing && existing.length) {
-        results.push({ contact_id: c.id, lead_id: lead.id, status: 'skipped', reason: 'dedupe_exists' });
-        continue;
-      }
+      if (existing && existing.length) continue;
 
       try {
         await sendTemplate({
@@ -199,13 +169,11 @@ export const handler = async () => {
           },
         });
         sent++;
-        results.push({ contact_id: c.id, lead_id: lead.id, status: 'sent', pmid });
       } catch (e) {
-        console.warn('send failed', { user_id, contact_id: c.id, lead_id: lead.id, error: e.message });
-        results.push({ contact_id: c.id, lead_id: lead.id, status: 'error', error: e.message });
+        console.warn('sold send failed', { user_id, contact_id: c.id, lead_id: lead.id, error: e.message });
       }
     }
   }
 
-  return { statusCode: 200, body: JSON.stringify({ ok: true, sent, results }) };
+  return { statusCode: 200, body: JSON.stringify({ ok: true, sent }) };
 };
