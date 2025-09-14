@@ -54,17 +54,34 @@ async function sendTemplate({ to, user_id, templateKey, provider_message_id, pla
   return res.json();
 }
 
+// Returns true if "today" is the monthly due date derived from startDate
+function isDueTodayFromStart(startISO, today) {
+  const start = DateTime.fromISO(String(startISO), { zone: TZ });
+  if (!start.isValid) return false;
+  if (today < start.startOf('day')) return false; // not started yet
+
+  const dueDay = start.day; // 1..31
+  const endOfMonth = today.endOf('month').day;
+  const targetDay = Math.min(dueDay, endOfMonth);
+  return today.day === targetDay;
+}
+
 export const handler = async () => {
   const supabase = supa();
   const today = todayCH();
   const ymd = today.toFormat('yyyyLLdd');
 
-  // Subs contacts for join
-  const { data: contacts } = await supabase
+  // Subscribed contacts for join
+  const { data: contacts, error: cErr } = await supabase
     .from('message_contacts')
     .select('id,user_id,full_name,phone,tags,subscribed,meta')
     .eq('subscribed', true);
+  if (cErr) {
+    console.error('contacts error', cErr);
+    return { statusCode: 500, body: JSON.stringify({ ok: false }) };
+  }
 
+  // Index contacts by user + phone
   const byUser = new Map();
   const phoneMapByUser = new Map();
   for (const c of contacts || []) {
@@ -78,13 +95,19 @@ export const handler = async () => {
   }
   const userIds = Array.from(byUser.keys());
 
-  // Leads with pipeline data
+  // Leads that have a non-null sold JSON
   let leads = [];
   if (userIds.length) {
-    const { data: lrows } = await supabase
+    const { data: lrows, error: lErr } = await supabase
       .from('leads')
-      .select('id,user_id,name,phone,state,beneficiary,beneficiary_name,pipeline');
-    leads = lrows || [];
+      .select('id,user_id,name,phone,state,beneficiary,beneficiary_name,sold')
+      .in('user_id', userIds)
+      .not('sold', 'is', null);
+    if (lErr) {
+      console.error('leads error', lErr);
+    } else {
+      leads = lrows || [];
+    }
   }
 
   let sent = 0;
@@ -104,16 +127,12 @@ export const handler = async () => {
     const userLeads = leads.filter((l) => l.user_id === user_id);
 
     for (const l of userLeads) {
-      const pj = l.pipeline || {};
-      const dueDay = pj.payment_due_day;          // 1..28 (number or numeric string)
-      const dueDate = pj.payment_due_date;        // 'YYYY-MM-DD'
+      const s = l.sold || {};
+      const startDate = s.startDate;          // ISO expected per your example
+      const monthlyPayment = s.monthlyPayment; // "$92.02" string per example
 
-      const isDue =
-        (typeof dueDay === 'number' && dueDay === today.day) ||
-        (typeof dueDay === 'string' && Number(dueDay) === today.day) ||
-        (typeof dueDate === 'string' && dueDate === today.toFormat('yyyy-LL-dd'));
-
-      if (!isDue) continue;
+      if (!startDate || !monthlyPayment) continue;
+      if (!isDueTodayFromStart(startDate, today)) continue;
 
       const contact = phoneMap.get(normalizePhone(l.phone));
       if (!contact?.phone) continue;
@@ -130,6 +149,11 @@ export const handler = async () => {
             first_name: firstName(contact.full_name, firstName(l.name || '')),
             state: l.state || contact?.meta?.state || '',
             beneficiary: l.beneficiary_name || l.beneficiary || contact?.meta?.beneficiary || '',
+            monthly_payment: monthlyPayment, // you can reference {{monthly_payment}} in your template if desired
+            carrier: s.carrier || '',
+            policy_number: s.policyNumber || '',
+            premium: s.premium || '',
+            policy_start_date: startDate,
           },
         });
         sent++;
