@@ -25,10 +25,8 @@
        <strong>Phone:</strong> <a href="tel:+19154943286">(915) 494-3286</a><br>
        <strong>Email:</strong> <a href="mailto:JacobPrieto@gmail.com">JacobPrieto@gmail.com</a></p>
 
-    <!-- Netlify form -->
-    <form name="contact" method="POST" data-netlify="true" action="/thank-you.html">
-      <input type="hidden" name="form-name" value="contact" />
-
+    <!-- Simple GET submit to guarantee thank-you redirect -->
+    <form action="/thank-you.html" method="GET">
       <div class="row">
         <div>
           <label for="name">Name</label>
@@ -44,7 +42,7 @@
       <textarea id="message" name="message" rows="5" required></textarea>
 
       <div class="consent">
-        <input id="sms-consent" name="sms_consent" type="checkbox" required />
+        <input id="sms-consent" name="sms_consent" type="checkbox" value="yes" required />
         <label for="sms-consent">
           I consent to receive SMS about my inquiry from Prieto Insurance Solutions LLC.
           <strong>Message frequency varies. Message &amp; data rates may apply.
