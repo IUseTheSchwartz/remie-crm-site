@@ -4,61 +4,98 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Prieto Insurance Solutions LLC</title>
-  <meta name="description" content="Prieto Insurance Solutions LLC — life insurance brokerage in Clarksville, TN. Final Expense, Whole Life, IUL.">
+  <meta name="description" content="Prieto Insurance Solutions LLC — licensed life insurance brokerage in Clarksville, TN. Final Expense, Whole Life, IUL.">
   <style>
     body{font-family:Arial, sans-serif;line-height:1.6;margin:0;background:linear-gradient(135deg,#8b5cf6,#a855f7,#ec4899);color:#fff}
-    .wrap{max-width:900px;margin:auto;padding:2rem;background:rgba(0,0,0,.6);border-radius:12px}
-    h1,h2,h3{color:#fff;margin-top:1.4rem}
+    .wrap{max-width:900px;margin:2rem auto;padding:2rem;background:rgba(0,0,0,.6);border-radius:12px}
+    h1,h2,h3{color:#fff;margin-top:1.25rem}
     a{color:#c084fc}
     ul{margin-left:1.25rem}
-    footer{margin-top:2.5rem;text-align:center;opacity:.85;font-size:.9rem}
+    footer{margin-top:2.5rem;text-align:center;opacity:.9;font-size:.9rem}
     .nav{margin:1rem 0 2rem;display:flex;gap:1rem;flex-wrap:wrap}
     .nav a{background:rgba(255,255,255,.08);padding:.5rem .75rem;border-radius:8px;text-decoration:none}
+    .kv{margin:.75rem 0 1.25rem}
+    .grid{display:grid;grid-template-columns:1fr;gap:1rem}
+    @media(min-width:800px){.grid{grid-template-columns:1fr 1fr}}
+    .card{background:rgba(255,255,255,.06);padding:1rem;border-radius:10px}
   </style>
+
+  <!-- JSON-LD helps reviewers verify a legit business -->
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "InsuranceAgency",
+    "name": "Prieto Insurance Solutions LLC",
+    "address": {
+      "@type": "PostalAddress",
+      "streetAddress": "940 Rossview Rd",
+      "addressLocality": "Clarksville",
+      "addressRegion": "TN",
+      "postalCode": "37043",
+      "addressCountry": "US"
+    },
+    "email": "mailto:JacobPrieto@gmail.com",
+    "telephone": "+1-915-494-3286",
+    "url": "https://remiecrm.com/prieto-insurance.html",
+    "areaServed": "US",
+    "sameAs": []
+  }
+  </script>
 </head>
 <body>
   <div class="wrap">
     <h1>Prieto Insurance Solutions LLC</h1>
-    <p>
-      Licensed life insurance brokerage based in Clarksville, Tennessee. We help families with
-      Final Expense, Whole Life, and IUL coverage. SMS is used only for appointment confirmations,
-      policy information, and service updates for individuals who request contact.
+    <p class="kv">
+      Licensed life insurance brokerage based in Clarksville, Tennessee. We help families with Final Expense,
+      Whole Life, and IUL coverage. SMS is used only for appointment confirmations, requested information,
+      and service updates for individuals who ask us to contact them.
     </p>
 
-    <div class="nav">
+    <nav class="nav" aria-label="Primary">
       <a href="/services.html">Services</a>
       <a href="/contact.html">Contact</a>
       <a href="/privacy.html">Privacy Policy</a>
       <a href="/terms.html">Terms of Service</a>
+    </nav>
+
+    <div class="grid">
+      <section class="card">
+        <h2>Business Information</h2>
+        <ul>
+          <li><strong>Legal Name:</strong> Prieto Insurance Solutions LLC</li>
+          <li><strong>Owner:</strong> Jacob Prieto</li>
+          <li><strong>Address:</strong> 940 Rossview Rd, Clarksville, TN 37043</li>
+          <li><strong>Email:</strong> <a href="mailto:JacobPrieto@gmail.com">JacobPrieto@gmail.com</a></li>
+          <li><strong>Phone:</strong> <a href="tel:+19154943286">(915) 494-3286</a></li>
+        </ul>
+      </section>
+
+      <section class="card">
+        <h2>About Us</h2>
+        <p>
+          Our mission is to provide affordable life insurance solutions to protect families and loved ones.
+          We work with multiple carriers to find the best policy for each client’s unique needs.
+        </p>
+      </section>
     </div>
 
-    <h2>Business Information</h2>
-    <ul>
-      <li><strong>Legal Name:</strong> Prieto Insurance Solutions LLC</li>
-      <li><strong>Owner:</strong> Jacob Prieto</li>
-      <li><strong>Address:</strong> 940 Rossview Rd, Clarksville, TN 37043</li>
-      <li><strong>Email:</strong> JacobPrieto@gmail.com</li>
-      <li><strong>Phone:</strong> (915) 494-3286</li>
-    </ul>
-
-    <h2>About Us</h2>
-    <p>
-      Our mission is to provide affordable life insurance solutions to protect families and loved ones.
-      We work with multiple carriers to find the best policy for each client’s unique needs.
-    </p>
-
-    <h2>SMS Disclosures (CTIA)</h2>
-    <p>
-      By submitting your information through our lead forms or by contacting us, you consent to
-      receive SMS messages related to your insurance inquiries and policies. <strong>Message frequency varies.</strong>
-      <strong>Message and data rates may apply.</strong> Reply <strong>STOP</strong> to opt out at any time, or <strong>HELP</strong> for assistance.
-      See our <a href="/privacy.html">Privacy Policy</a> and <a href="/terms.html">Terms of Service</a>.
-    </p>
+    <section>
+      <h2>SMS Disclosures (CTIA)</h2>
+      <p>
+        By submitting your information through our lead forms or by contacting us, you consent to receive
+        SMS messages related to your insurance inquiries and policies from Prieto Insurance Solutions LLC.
+        <strong>Message frequency varies.</strong> <strong>Message and data rates may apply.</strong>
+        Reply <strong>STOP</strong> to opt out at any time. Reply <strong>HELP</strong> for assistance.
+        See our <a href="/privacy.html">Privacy Policy</a> and <a href="/terms.html">Terms of Service</a>.
+      </p>
+    </section>
 
     <footer>
-      © 2025 Prieto Insurance Solutions LLC. All rights reserved. <br />
-      Message and data rates may apply. Message frequency varies. Reply STOP to cancel, HELP for help. <br/>
-      <a href="/privacy.html">Privacy Policy</a> • <a href="/terms.html">Terms of Service</a> • <a href="/contact.html">Contact</a>
+      © 2025 Prieto Insurance Solutions LLC •
+      <a href="/privacy.html">Privacy Policy</a> •
+      <a href="/terms.html">Terms of Service</a> •
+      <a href="/contact.html">Contact</a><br/>
+      Message and data rates may apply. Message frequency varies. Reply STOP to cancel, HELP for help.
     </footer>
   </div>
 </body>
