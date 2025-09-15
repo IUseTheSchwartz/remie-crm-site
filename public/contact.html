@@ -6,46 +6,60 @@
   <title>Contact — Prieto Insurance Solutions LLC</title>
   <style>
     body{font-family:Arial, sans-serif;line-height:1.6;margin:0;background:linear-gradient(135deg,#8b5cf6,#a855f7,#ec4899);color:#fff}
-    .wrap{max-width:900px;margin:auto;padding:2rem;background:rgba(0,0,0,.6);border-radius:12px}
-    h1,h2{color:#fff}
+    .wrap{max-width:900px;margin:2rem auto;padding:2rem;background:rgba(0,0,0,.6);border-radius:12px}
     label{display:block;margin:.5rem 0 .25rem}
-    input,textarea{width:100%;padding:.6rem;border-radius:8px;border:0;margin-bottom:.75rem}
-    button{padding:.6rem 1rem;border:0;border-radius:8px;background:#a855f7;color:#fff;cursor:pointer}
-    a{color:#c084fc}
-    footer{margin-top:2rem;text-align:center;opacity:.85;font-size:.9rem}
+    input,textarea{width:100%;padding:.8rem;border-radius:8px;border:0;box-sizing:border-box}
+    button{margin-top:1rem;padding:.7rem 1.1rem;border-radius:10px;border:0;background:#5b8cff;color:#fff;font-weight:700;cursor:pointer}
+    a{color:#cdb4ff}
+    .row{display:grid;grid-template-columns:1fr;gap:1rem}
+    @media(min-width:800px){.row{grid-template-columns:1fr 1fr}}
+    .consent{margin-top:1rem;display:flex;gap:.5rem;align-items:flex-start}
+    footer{margin-top:2rem;opacity:.9;font-size:.9rem;text-align:center}
   </style>
 </head>
 <body>
   <div class="wrap">
     <h1>Contact Us</h1>
-    <p>
-      Address: 940 Rossview Rd, Clarksville, TN 37043<br/>
-      Phone: (915) 494-3286<br/>
-      Email: <a href="mailto:JacobPrieto@gmail.com">JacobPrieto@gmail.com</a>
-    </p>
 
-    <!-- Optional Netlify form (works without backend) -->
-    <form name="contact" method="POST" data-netlify="true">
-      <input type="hidden" name="form-name" value="contact" />
-      <label for="name">Name</label>
-      <input id="name" name="name" required />
+    <p><strong>Address:</strong> 940 Rossview Rd, Clarksville, TN 37043<br>
+       <strong>Phone:</strong> <a href="tel:+19154943286">(915) 494-3286</a><br>
+       <strong>Email:</strong> <a href="mailto:JacobPrieto@gmail.com">JacobPrieto@gmail.com</a></p>
 
-      <label for="email">Email</label>
-      <input id="email" name="email" type="email" required />
+    <!-- Netlify form -->
+    <form name="contact" method="POST" data-netlify="true" action="/thank-you.html">
+      <input type="hidden" name="form-name" value="contact">
+
+      <div class="row">
+        <div>
+          <label for="name">Name</label>
+          <input id="name" name="name" required />
+        </div>
+        <div>
+          <label for="email">Email</label>
+          <input id="email" name="email" type="email" required />
+        </div>
+      </div>
 
       <label for="message">Message</label>
-      <textarea id="message" name="message" rows="4" required></textarea>
+      <textarea id="message" name="message" rows="5" required></textarea>
 
-      <label style="display:flex;gap:.5rem;align-items:center">
-        <input type="checkbox" name="sms_consent" required />
-        I consent to receive SMS about my inquiry. Message frequency varies; message & data rates may apply. Reply STOP to cancel, HELP for help.
-      </label>
+      <div class="consent">
+        <input id="sms-consent" name="sms_consent" type="checkbox" required />
+        <label for="sms-consent">
+          I consent to receive SMS about my inquiry from Prieto Insurance Solutions LLC.
+          <strong>Message frequency varies. Message &amp; data rates may apply.
+          Reply STOP to opt out. Reply HELP for assistance.</strong>
+          See our <a href="/privacy.html">Privacy Policy</a> and <a href="/terms.html">Terms of Service</a>.
+        </label>
+      </div>
 
       <button type="submit">Send</button>
     </form>
 
     <footer>
-      © 2025 Prieto Insurance Solutions LLC • <a href="/privacy.html">Privacy Policy</a> • <a href="/terms.html">Terms</a>
+      © 2025 Prieto Insurance Solutions LLC •
+      <a href="/privacy.html">Privacy Policy</a> •
+      <a href="/terms.html">Terms</a>
     </footer>
   </div>
 </body>
