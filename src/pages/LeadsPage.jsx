@@ -72,14 +72,63 @@ const H = {
 
 const norm = (s) => (s || "").toString().trim().toLowerCase();
 
+/**
+ * buildHeaderIndex(headers)
+ *
+ * Improved matching rules:
+ *  - First attempt exact normalized equality.
+ *  - Prefer headers containing 'branch' for military_branch mapping (so "Military Branch" wins over "Military Status").
+ *  - Prevent matching a generic candidate like "military" to a header like "military status" unless header is exactly "military".
+ */
 function buildHeaderIndex(headers) {
   const normalized = headers.map(norm);
-  const find = (candidates) => {
-    for (let i = 0; i < normalized.length; i++) {
-      if (candidates.includes(normalized[i])) return headers[i]; // original header
+
+  // helper to test candidates against a single normalized header string
+  const matchesCandidate = (normalizedHeader, candidate) => {
+    const c = candidate.toLowerCase();
+    // exact match
+    if (normalizedHeader === c) return true;
+    // allow candidate underscores vs spaces
+    if (normalizedHeader === c.replace(/_/g, " ")) return true;
+    // if candidate explicitly references 'branch', prefer it only when header mentions 'branch'
+    if (c.includes("branch") && normalizedHeader.includes("branch")) return true;
+    // special rule: avoid matching generic 'military' to 'military status'
+    if (c === "military") {
+      // only match if header is exactly 'military' or header explicitly mentions 'branch'
+      return normalizedHeader === "military" || normalizedHeader.includes("branch");
     }
+    // otherwise allow candidate contained inside header (e.g., 'service' in 'branch of service')
+    if (normalizedHeader.includes(c) && c.length > 3) return true;
+    return false;
+  };
+
+  const find = (candidates) => {
+    // 1) exact match pass (fast)
+    for (let i = 0; i < normalized.length; i++) {
+      for (const cand of candidates) {
+        if (normalized[i] === cand) return headers[i];
+      }
+    }
+
+    // 2) header-preferring pass (look for 'branch' headers first for military_branch)
+    for (let i = 0; i < normalized.length; i++) {
+      if (normalized[i].includes("branch")) {
+        for (const cand of candidates) {
+          if (matchesCandidate(normalized[i], cand)) return headers[i];
+        }
+      }
+    }
+
+    // 3) fallback pass: looser matching but with protections
+    for (let i = 0; i < normalized.length; i++) {
+      for (const cand of candidates) {
+        if (matchesCandidate(normalized[i], cand)) return headers[i];
+      }
+    }
+
     return null;
   };
+
   return {
     first:  find(H.first),
     last:   find(H.last),
@@ -1326,52 +1375,4 @@ function ManualAddLeadModal({ onClose, onSave }) {
             </Field>
             <Field label="Beneficiary Name">
               <input
-                className="inp"
-                value={form.beneficiary_name}
-                onChange={(e)=>setForm({...form, beneficiary_name:e.target.value})}
-              />
-            </Field>
-            <Field label="Gender">
-              <input
-                className="inp"
-                value={form.gender}
-                onChange={(e)=>setForm({...form, gender:e.target.value})}
-              />
-            </Field>
-            <Field label="Military Branch">
-              <input
-                className="inp"
-                placeholder="Army / Navy / …"
-                value={form.military_branch}
-                onChange={(e)=>setForm({...form, military_branch:e.target.value})}
-              />
-            </Field>
-          </div>
-
-          <div className="mt-3 flex items-center justify-end gap-2">
-            <button type="button" onClick={onClose}
-              className="rounded-xl border border-white/15 px-4 py-2 text-sm hover:bg-white/10">
-              Cancel
-            </button>
-            <button type="submit"
-              className="rounded-xl bg-white px-4 py-2 text-sm font-medium text-black hover:bg-white/90">
-              Save lead
-            </button>
-          </div>
-        </form>
-      </div>
-
-      <style>{`.inp{width:100%; border-radius:0.75rem; border:1px solid rgba(255,255,255,.1); background:#00000066; padding:.5rem .75rem; outline:none}
-        .inp:focus{box-shadow:0 0 0 2px rgba(99,102,241,.4)}`}</style>
-    </div>
-  );
-}
-
-function Field({ label, children }) {
-  return (
-    <label className="text-sm">
-      <div className="mb-1 text-white/70">{label}</div>
-      {children}
-    </label>
-  );
-}
+                className="
