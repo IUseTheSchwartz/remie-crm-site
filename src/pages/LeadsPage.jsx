@@ -66,7 +66,8 @@ const H = {
   beneficiary: ["beneficiary","beneficiary type"],
   beneficiary_name: ["beneficiary name","beneficiary_name","beneficiary full name"],
   gender: ["gender","sex"],
-  military_branch: ["military","military branch","branch","service branch"],
+  // Added underscored and variant aliases so CSV headers like "military_branch" import
+  military_branch: ["military","military branch","branch","service branch","military_branch","branch_of_service"],
 };
 
 const norm = (s) => (s || "").toString().trim().toLowerCase();
@@ -345,6 +346,9 @@ export default function LeadsPage() {
   const [serverMsg, setServerMsg] = useState("");
   const [showConnector, setShowConnector] = useState(false);
   const [showAdd, setShowAdd] = useState(false); // NEW: manual add modal
+
+  // NEW: selection for mass actions
+  const [selectedIds, setSelectedIds] = useState(new Set());
 
   useEffect(() => {
     setLeads(loadLeads());
@@ -674,6 +678,13 @@ export default function LeadsPage() {
     setLeads(nextLeads);
     if (selected?.id === id) setSelected(null);
 
+    // NEW: remove from selectedIds if present
+    setSelectedIds(prev => {
+      const n = new Set(prev);
+      n.delete(id);
+      return n;
+    });
+
     try {
       setServerMsg("Deleting on Supabase…");
       await deleteLeadServer(id);
@@ -691,6 +702,68 @@ export default function LeadsPage() {
     setLeads([]);
     setClients([]);
     setSelected(null);
+    setSelectedIds(new Set()); // clear selection
+  }
+
+  // NEW: toggle selection helpers & bulk delete
+  function toggleSelect(id) {
+    setSelectedIds(prev => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }
+
+  function toggleSelectAll() {
+    // Toggle: if everything visible selected -> clear visible, else select all visible
+    setSelectedIds(prev => {
+      const next = new Set(prev);
+      const visibleIds = visible.map(v => v.id);
+      const allSelected = visibleIds.length > 0 && visibleIds.every(id => next.has(id));
+      if (allSelected) {
+        for (const id of visibleIds) next.delete(id);
+        return next;
+      } else {
+        for (const id of visibleIds) next.add(id);
+        return next;
+      }
+    });
+  }
+
+  async function removeSelected() {
+    if (selectedIds.size === 0) return;
+    if (!confirm(`Delete ${selectedIds.size} selected record(s)? This affects both local and Supabase.`)) return;
+
+    const idsToDelete = Array.from(selectedIds);
+
+    // Optimistic local removal
+    const nextClients = clients.filter(c => !idsToDelete.includes(c.id));
+    const nextLeads   = leads.filter(l  => !idsToDelete.includes(l.id));
+    saveClients(nextClients);
+    saveLeads(nextLeads);
+    setClients(nextClients);
+    setLeads(nextLeads);
+    setSelectedIds(new Set()); // clear selection
+    setSelected(null);
+
+    // Server deletes
+    setServerMsg(`Deleting ${idsToDelete.length} selected...`);
+    let failed = [];
+    for (const id of idsToDelete) {
+      try {
+        await deleteLeadServer(id);
+      } catch (e) {
+        console.error("Bulk delete failed for", id, e);
+        failed.push({ id, error: e });
+      }
+    }
+
+    if (failed.length === 0) {
+      setServerMsg(`🗑️ Deleted ${idsToDelete.length} selected`);
+    } else {
+      setServerMsg(`⚠️ ${failed.length} deletion(s) failed. See console for details.`);
+    }
   }
 
   // NEW: Manual add handler (auto-text included)
@@ -750,7 +823,7 @@ export default function LeadsPage() {
 
   // Sold tab uses SAME columns as Leads (no policy columns visible)
   const baseHeaders = ["Name","Phone","Email","DOB","State","Beneficiary","Beneficiary Name","Gender","Military Branch","Stage"];
-  const colCount = baseHeaders.length + 1; // + Actions
+  const colCount = baseHeaders.length + 2; // + Select checkbox + Actions
 
   return (
     <div className="space-y-6 min-w-0 overflow-x-hidden">
@@ -813,6 +886,16 @@ export default function LeadsPage() {
         >
           Clear all (local)
         </button>
+
+        {/* Bulk delete button */}
+        <button
+          onClick={removeSelected}
+          disabled={selectedIds.size === 0}
+          className={`rounded-xl border ${selectedIds.size ? "border-rose-500/60 bg-rose-500/10" : "border-white/10 bg-white/5"} px-3 py-2 text-sm`}
+          title="Delete selected leads (local + Supabase)"
+        >
+          Delete selected ({selectedIds.size})
+        </button>
       </div>
 
       {/* Server status line (non-blocking) */}
@@ -847,6 +930,14 @@ export default function LeadsPage() {
         <table className="min-w-[1200px] w-full border-collapse text-sm">
           <thead className="bg-white/[0.04] text-white/70">
             <tr>
+              <Th>
+                <input
+                  type="checkbox"
+                  onChange={toggleSelectAll}
+                  checked={visible.length > 0 && visible.every(v => selectedIds.has(v.id))}
+                  aria-label="Select all visible"
+                />
+              </Th>
               {baseHeaders.map(h => <Th key={h}>{h}</Th>)}
               <Th>Actions</Th>
             </tr>
@@ -859,6 +950,14 @@ export default function LeadsPage() {
               const stageClass = STAGE_STYLE[stageId] || "bg-white/10 text-white/80";
               return (
                 <tr key={p.id} className="border-t border-white/10">
+                  <Td>
+                    <input
+                      type="checkbox"
+                      checked={selectedIds.has(p.id)}
+                      onChange={() => toggleSelect(p.id)}
+                      aria-label={`Select ${p.name || p.id}`}
+                    />
+                  </Td>
                   <Td>{p.name || "—"}</Td>
                   <Td>{p.phone || "—"}</Td>
                   <Td>{p.email || "—"}</Td>
