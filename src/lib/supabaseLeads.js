@@ -10,7 +10,31 @@ export async function getUserId() {
 
 /** Normalize helpers */
 const onlyDigits = (s) => String(s || "").replace(/\D+/g, "");
-const normEmail  = (s) => String(s || "").trim().toLowerCase();
+const normEmail = (s) => String(s || "").trim().toLowerCase();
+
+/** Convert to E.164 (assume US default). Returns null if invalid. */
+const toE164 = (raw, { defaultCountry = "US" } = {}) => {
+  const s = String(raw || "").trim();
+  if (!s) return null;
+
+  // already has a leading +? -> keep digits
+  if (s.startsWith("+")) {
+    const d = onlyDigits(s);
+    return d ? `+${d}` : null;
+  }
+
+  const d = onlyDigits(s);
+
+  if (defaultCountry === "US") {
+    if (d.length === 10) return `+1${d}`;
+    if (d.length === 11 && d.startsWith("1")) return `+${d}`;
+  }
+
+  // fallback: treat >=11 digits as intl
+  if (d.length >= 11) return `+${d}`;
+
+  return null;
+};
 
 /** Find the server row id for this user by id, or fallback to email/phone */
 async function findLeadRowIdForUser({ id, email, phone }) {
@@ -18,9 +42,12 @@ async function findLeadRowIdForUser({ id, email, phone }) {
   if (!userId) throw new Error("Not logged in to Supabase");
 
   const clauses = [];
-  if (id)    clauses.push(`id.eq.${id}`);
+  if (id) clauses.push(`id.eq.${id}`);
   if (email) clauses.push(`email.eq.${normEmail(email)}`);
-  if (phone) clauses.push(`phone.eq.${onlyDigits(phone)}`);
+  if (phone) {
+    const phoneE164 = toE164(phone);
+    if (phoneE164) clauses.push(`phone.eq.${phoneE164}`);
+  }
 
   if (!clauses.length) return null;
 
@@ -41,13 +68,18 @@ export async function upsertLeadServer(lead) {
   const userId = await getUserId();
   if (!userId) throw new Error("Not logged in to Supabase");
 
+  const phoneE164 = lead.phone ? toE164(lead.phone) : null;
+  if (!phoneE164 && lead.phone) {
+    throw new Error(`Invalid phone number: ${lead.phone}`);
+  }
+
   const row = {
-    id: lead.id,                                // keep browser UUID if present
+    id: lead.id, // keep browser UUID if present
     user_id: userId,
     status: lead.status === "sold" ? "sold" : "lead",
     name: lead.name || "",
-    phone: lead.phone || "",
-    email: lead.email || "",
+    phone: phoneE164 || "",
+    email: lead.email ? normEmail(lead.email) : "",
     notes: lead.notes || "",
     dob: lead.dob || null,
     state: lead.state || "",
@@ -56,7 +88,7 @@ export async function upsertLeadServer(lead) {
     company: lead.company || "",
     gender: lead.gender || "",
     military_branch: lead.military_branch || "",
-    sold: lead.sold || null,                    // jsonb
+    sold: lead.sold || null, // jsonb
     // include pipeline fields if set
     stage: lead.stage ?? null,
     stage_changed_at: lead.stage_changed_at ?? null,
@@ -79,31 +111,38 @@ export async function upsertManyLeadsServer(leads = []) {
   if (!userId) throw new Error("Not logged in to Supabase");
   if (!leads.length) return 0;
 
-  const rows = leads.map((p) => ({
-    id: p.id,
-    user_id: userId,
-    status: p.status === "sold" ? "sold" : "lead",
-    name: p.name || "",
-    phone: p.phone || "",
-    email: p.email || "",
-    notes: p.notes || "",
-    dob: p.dob || null,
-    state: p.state || "",
-    beneficiary: p.beneficiary || "",
-    beneficiary_name: p.beneficiary_name || "",
-    company: p.company || "",
-    gender: p.gender || "",
-    military_branch: p.military_branch || "",
-    sold: p.sold || null,
-    stage: p.stage ?? null,
-    stage_changed_at: p.stage_changed_at ?? null,
-    next_follow_up_at: p.next_follow_up_at ?? null,
-    last_outcome: p.last_outcome ?? null,
-    call_attempts: p.call_attempts ?? null,
-    priority: p.priority ?? null,
-    pipeline: p.pipeline ?? null,
-    updated_at: new Date().toISOString(),
-  }));
+  const rows = leads.map((p) => {
+    const phoneE164 = p.phone ? toE164(p.phone) : null;
+    if (!phoneE164 && p.phone) {
+      throw new Error(`Invalid phone for ${p.name || "unknown"}: ${p.phone}`);
+    }
+
+    return {
+      id: p.id,
+      user_id: userId,
+      status: p.status === "sold" ? "sold" : "lead",
+      name: p.name || "",
+      phone: phoneE164 || "",
+      email: p.email ? normEmail(p.email) : "",
+      notes: p.notes || "",
+      dob: p.dob || null,
+      state: p.state || "",
+      beneficiary: p.beneficiary || "",
+      beneficiary_name: p.beneficiary_name || "",
+      company: p.company || "",
+      gender: p.gender || "",
+      military_branch: p.military_branch || "",
+      sold: p.sold || null,
+      stage: p.stage ?? null,
+      stage_changed_at: p.stage_changed_at ?? null,
+      next_follow_up_at: p.next_follow_up_at ?? null,
+      last_outcome: p.last_outcome ?? null,
+      call_attempts: p.call_attempts ?? null,
+      priority: p.priority ?? null,
+      pipeline: p.pipeline ?? null,
+      updated_at: new Date().toISOString(),
+    };
+  });
 
   const { error } = await supabase.from("leads").upsert(rows);
   if (error) throw error;
