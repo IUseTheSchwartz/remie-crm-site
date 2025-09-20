@@ -272,6 +272,35 @@ async function upsertSoldContact({ userId, phone, fullName, addBdayHoliday, addP
   }
 }
 
+/* --------- NEW: Contact delete helpers so Leads delete cleans up Contacts --------- */
+function buildPhoneVariants(rawPhone) {
+  const s = String(rawPhone || "").trim();
+  if (!s) return [];
+  const d = s.replace(/\D/g, "");
+  const ten = d.length === 11 && d.startsWith("1") ? d.slice(1) : d.slice(-10);
+  const variants = new Set([s, ten, `1${ten}`, `+1${ten}`]);
+  return Array.from(variants).filter(Boolean);
+}
+
+async function deleteContactsByPhones(userId, phones) {
+  if (!userId) return;
+  const allVariants = new Set();
+  for (const p of phones || []) {
+    for (const v of buildPhoneVariants(p)) allVariants.add(v);
+  }
+  const list = Array.from(allVariants);
+  if (list.length === 0) return;
+
+  const { error } = await supabase
+    .from("message_contacts")
+    .delete()
+    .eq("user_id", userId)
+    .in("phone", list);
+
+  if (error) throw error;
+}
+/* ------------------------------------------------------------------------------ */
+
 /* -------------------- Auto-text helpers (server + fallback) -------------------- */
 
 // Recently inserted lead id for this user (match by normalized email/phone within 10m)
@@ -787,8 +816,15 @@ export default function LeadsPage() {
     }
   }
 
+  /* -------------------- DELETE single (lead + contact) -------------------- */
   async function removeOne(id) {
-    if (!confirm("Delete this record? This affects both local and Supabase.")) return;
+    if (!confirm("Delete this record? This affects both local and Supabase, and will also remove the matching Contact.")) return;
+
+    // Find the record locally to get its phone before we drop it
+    const rec = [...clients, ...leads].find(r => r.id === id);
+    const phone = rec?.phone;
+
+    // Optimistic local removal
     const nextClients = clients.filter(c => c.id !== id);
     const nextLeads   = leads.filter(l => l.id !== id);
     saveClients(nextClients);
@@ -807,10 +843,23 @@ export default function LeadsPage() {
     try {
       setServerMsg("Deleting on Supabase…");
       await deleteLeadServer(id);
-      setServerMsg("🗑️ Deleted in Supabase");
+      setServerMsg("🗑️ Deleted lead in Supabase");
     } catch (e) {
       console.error("Delete server error:", e);
-      setServerMsg(`⚠️ Could not delete on Supabase: ${e.message || e}`);
+      setServerMsg(`⚠️ Could not delete lead on Supabase: ${e.message || e}`);
+    }
+
+    // Delete matching contact by phone variants
+    try {
+      const { data: auth } = await supabase.auth.getUser();
+      const userId = auth?.user?.id;
+      if (userId && phone) {
+        await deleteContactsByPhones(userId, [phone]);
+        setServerMsg("🧹 Deleted matching contact");
+      }
+    } catch (e) {
+      console.error("Contact delete error:", e);
+      setServerMsg(`⚠️ Contact delete failed: ${e.message || e}`);
     }
   }
 
@@ -850,11 +899,18 @@ export default function LeadsPage() {
     });
   }
 
+  /* -------------------- DELETE bulk (leads + contacts) -------------------- */
   async function removeSelected() {
     if (selectedIds.size === 0) return;
-    if (!confirm(`Delete ${selectedIds.size} selected record(s)? This affects both local and Supabase.`)) return;
+    if (!confirm(`Delete ${selectedIds.size} selected record(s)? This affects both local and Supabase, and will also remove matching Contacts.`)) return;
 
     const idsToDelete = Array.from(selectedIds);
+
+    // Collect phones before we drop from local so we can delete contacts
+    const phonesToDelete = [...clients, ...leads]
+      .filter(r => idsToDelete.includes(r.id))
+      .map(r => r.phone)
+      .filter(Boolean);
 
     // Optimistic local removal
     const nextClients = clients.filter(c => !idsToDelete.includes(c.id));
@@ -878,8 +934,20 @@ export default function LeadsPage() {
       }
     }
 
+    // Delete matching contacts in one go
+    try {
+      const { data: auth } = await supabase.auth.getUser();
+      const userId = auth?.user?.id;
+      if (userId && phonesToDelete.length) {
+        await deleteContactsByPhones(userId, phonesToDelete);
+      }
+    } catch (e) {
+      console.error("Bulk contact delete failed:", e);
+      // keep going; lead deletes already applied
+    }
+
     if (failed.length === 0) {
-      setServerMsg(`🗑️ Deleted ${idsToDelete.length} selected`);
+      setServerMsg(`🗑️ Deleted ${idsToDelete.length} selected (and matching contacts)`);
     } else {
       setServerMsg(`⚠️ ${failed.length} deletion(s) failed. See console for details.`);
     }
@@ -1019,7 +1087,7 @@ export default function LeadsPage() {
           onClick={removeSelected}
           disabled={selectedIds.size === 0}
           className={`rounded-xl border ${selectedIds.size ? "border-rose-500/60 bg-rose-500/10" : "border-white/10 bg-white/5"} px-3 py-2 text-sm`}
-          title="Delete selected leads (local + Supabase)"
+          title="Delete selected leads (local + Supabase + Contacts)"
         >
           Delete selected ({selectedIds.size})
         </button>
@@ -1127,7 +1195,7 @@ export default function LeadsPage() {
                       <button
                         onClick={() => removeOne(p.id)}
                         className="rounded-lg border border-rose-500/40 bg-rose-500/10 px-2 py-1 hover:bg-rose-500/20"
-                        title="Delete (local + Supabase)"
+                        title="Delete (local + Supabase + Contact)"
                       >
                         Delete
                       </button>
