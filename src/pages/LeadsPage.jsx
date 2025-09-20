@@ -7,7 +7,7 @@ import {
   normalizePerson, upsert,
 } from "../lib/storage.js";
 
-import { scheduleWelcomeText, sendSoldPolicyText } from "../lib/automation.js";
+import { scheduleWelcomeText } from "../lib/automation.js";
 
 // Supabase helpers
 import {
@@ -709,16 +709,18 @@ export default function LeadsPage() {
     setSelected(null);
     setTab("sold");
 
+    // --- Save to Supabase and capture id
+    let savedId = null;
     try {
       setServerMsg("Syncing SOLD to Supabase…");
-      await upsertLeadServer(updated);
+      savedId = await upsertLeadServer(updated);
       setServerMsg("✅ SOLD synced");
     } catch (e) {
       console.error("SOLD sync error:", e);
       setServerMsg(`⚠️ SOLD sync failed: ${e.message || e}`);
     }
 
-    // Reflect to contacts: replace lead/military with sold (+ bday/holiday + payment_reminder if start date)
+    // --- Reflect to contacts (tags) ---
     try {
       const { data: authData } = await supabase.auth.getUser();
       const userId = authData?.user?.id;
@@ -735,27 +737,31 @@ export default function LeadsPage() {
       console.error("Contact tag sync (sold) failed:", err);
     }
 
-    // ✅ NEW: Send the SOLD policy info text (templateKey: 'sold_policy')
+    // --- Send SOLD policy text via messages-send ---
     try {
-      const { data: authData } = await supabase.auth.getUser();
-      const userId = authData?.user?.id;
-      if (userId) {
-        await sendSoldPolicyText({
-          leadId: updated.id,
-          userId,
-          phone: updated.phone,
-          name: updated.name,
-          sold: {
-            carrier:        updated?.sold?.carrier,
-            faceAmount:     updated?.sold?.faceAmount,
-            policyNumber:   updated?.sold?.policyNumber,
-            monthlyPayment: updated?.sold?.monthlyPayment,
-            startDate:      updated?.sold?.startDate,
-          },
-        });
+      const res = await fetch(`${FN_BASE}/messages-send`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          lead_id: savedId || id,         // use the persisted id
+          templateKey: "sold_policy",     // must exist & be enabled in message_templates
+        }),
+      });
+      const out = await res.json().catch(() => ({}));
+      console.log("[sold_policy] send result:", out);
+
+      if (!res.ok) {
+        setServerMsg(`⚠️ Sold text failed: ${out.error || res.status}`);
+      } else if (out.status?.startsWith("skipped")) {
+        setServerMsg(`ℹ️ Sold text skipped: ${out.status}`);
+      } else if (out.ok || out.message_id) {
+        setServerMsg("📨 Sold policy text sent");
+      } else {
+        setServerMsg("ℹ️ Sold text: unexpected response");
       }
-    } catch (err) {
-      console.error("Sold policy text send failed:", err);
+    } catch (e) {
+      console.error("Sold policy send error:", e);
+      setServerMsg(`⚠️ Sold text error: ${e.message || e}`);
     }
   }
 
