@@ -25,6 +25,9 @@ import { supabase } from "../lib/supabaseClient.js";
 // Google Sheets connector
 import GoogleSheetsConnector from "../components/GoogleSheetsConnector.jsx";
 
+// NEW: E.164 normalizer
+import { toE164 } from "../lib/phone.js";
+
 /* ---------------- Functions base (Netlify) ---------------- */
 const FN_BASE = import.meta.env?.VITE_FUNCTIONS_BASE || "/.netlify/functions";
 
@@ -204,7 +207,7 @@ const normalizePhone = (s) => {
   return d.length === 11 && d.startsWith("1") ? d.slice(1) : d; // drop leading US '1'
 };
 
-/** Find a contact by user+phone using normalized digits */
+/** Find a contact by user+phone using normalized digits (last-10 match) */
 async function findContactByUserAndPhone(userId, rawPhone) {
   const phoneNorm = normalizePhone(rawPhone);
   if (!phoneNorm) return null;
@@ -216,9 +219,13 @@ async function findContactByUserAndPhone(userId, rawPhone) {
   return (data || []).find((c) => normalizePhone(c.phone) === phoneNorm) || null;
 }
 
-/** Ensure EXCLUSIVE status: 'military' OR 'lead' (not both). */
+/** Ensure EXCLUSIVE status: 'military' OR 'lead' (not both). Always store E.164 phone. */
 async function upsertLeadContact({ userId, phone, fullName, militaryBranch }) {
   if (!phone) return;
+
+  const phoneE164 = toE164(phone);
+  if (!phoneE164) throw new Error(`Invalid phone: ${phone}`);
+
   const existing = await findContactByUserAndPhone(userId, phone);
   const wantsMilitary = Boolean((militaryBranch || "").trim());
 
@@ -232,14 +239,18 @@ async function upsertLeadContact({ userId, phone, fullName, militaryBranch }) {
   if (existing) {
     const { error } = await supabase
       .from("message_contacts")
-      .update({ full_name: fullName || existing.full_name || null, tags: nextTags })
+      .update({
+        phone: phoneE164, // normalize on update too
+        full_name: fullName || existing.full_name || null,
+        tags: nextTags
+      })
       .eq("id", existing.id);
     if (error) throw error;
     return existing.id;
   } else {
     const { data, error } = await supabase
       .from("message_contacts")
-      .insert([{ user_id: userId, phone, full_name: fullName || null, tags: nextTags }])
+      .insert([{ user_id: userId, phone: phoneE164, full_name: fullName || null, tags: nextTags }])
       .select("id")
       .single();
     if (error) throw error;
@@ -258,9 +269,12 @@ function buildSoldTags(currentTags, { addBdayHoliday, addPaymentReminder }) {
   return uniqTags(out);
 }
 
-/** Update existing contact or insert a new one with SOLD tags */
+/** Update existing contact or insert a new one with SOLD tags. Store E.164 phone. */
 async function upsertSoldContact({ userId, phone, fullName, addBdayHoliday, addPaymentReminder }) {
   if (!phone) return;
+
+  const phoneE164 = toE164(phone);
+  if (!phoneE164) throw new Error(`Invalid phone: ${phone}`);
 
   const existing = await findContactByUserAndPhone(userId, phone);
 
@@ -268,7 +282,7 @@ async function upsertSoldContact({ userId, phone, fullName, addBdayHoliday, addP
     const nextTags = buildSoldTags(existing.tags, { addBdayHoliday, addPaymentReminder });
     const { error } = await supabase
       .from("message_contacts")
-      .update({ full_name: fullName || existing.full_name || null, tags: nextTags })
+      .update({ phone: phoneE164, full_name: fullName || existing.full_name || null, tags: nextTags })
       .eq("id", existing.id);
     if (error) throw error;
     return existing.id;
@@ -276,7 +290,7 @@ async function upsertSoldContact({ userId, phone, fullName, addBdayHoliday, addP
     const nextTags = buildSoldTags([], { addBdayHoliday, addPaymentReminder });
     const { data, error } = await supabase
       .from("message_contacts")
-      .insert([{ user_id: userId, phone, full_name: fullName || null, tags: nextTags }])
+      .insert([{ user_id: userId, phone: phoneE164, full_name: fullName || null, tags: nextTags }])
       .select("id")
       .single();
     if (error) throw error;
@@ -815,7 +829,7 @@ export default function LeadsPage() {
     }
   }
 
-  // NEW: Manual add handler (auto-text included)
+  // NEW: Manual add handler (adds local dedupe before optimistic insert)
   async function handleManualAdd(personInput) {
     // Normalize just like CSV import
     const person = normalizePerson({
@@ -828,21 +842,32 @@ export default function LeadsPage() {
       return;
     }
 
-    // Optimistic local
-    const newLeads = [person, ...leads];
-    const newClients = [person, ...clients];
-    saveLeads(newLeads);
-    saveClients(newClients);
-    setLeads(newLeads);
-    setClients(newClients);
+    // Local dedupe: email or phone last-10
+    const emailKey = normEmail(person.email);
+    const phoneKey = onlyDigits(person.phone);
+    const isDupLocal = [...clients, ...leads].some((r) => {
+      const e = normEmail(r.email);
+      const p = onlyDigits(r.phone);
+      return (emailKey && e && e === emailKey) || (phoneKey && p && p === phoneKey);
+    });
+
+    // Optimistic local only if not dup
+    if (!isDupLocal) {
+      const newLeads = [person, ...leads];
+      const newClients = [person, ...clients];
+      saveLeads(newLeads);
+      saveClients(newClients);
+      setLeads(newLeads);
+      setClients(newClients);
+    }
     setTab("clients");
     setShowAdd(false);
 
-    // Server upsert
+    // Server upsert (server-side de-dupe via onConflict)
     try {
       setServerMsg("Saving lead to Supabase…");
       await upsertLeadServer(person);
-      setServerMsg("✅ Lead saved");
+      setServerMsg(isDupLocal ? "ℹ️ Lead already existed — merged on server" : "✅ Lead saved");
     } catch (e) {
       console.error("Manual add sync error:", e);
       setServerMsg(`⚠️ Save failed: ${e.message || e}`);
@@ -1202,7 +1227,7 @@ function SoldDrawer({ initial, allClients, onClose, onSave }) {
           <div className="grid gap-3 sm:grid-cols-2">
             <Field label="Name">
               <input value={form.name} onChange={(e)=>setForm({...form, name:e.target.value})}
-                     className="inp" placeholder="Jane Doe" />
+                     className="inp" placeholder="Mutual of Omaha" />
             </Field>
             <Field label="Phone">
               <input value={form.phone} onChange={(e)=>setForm({...form, phone:e.target.value})}
