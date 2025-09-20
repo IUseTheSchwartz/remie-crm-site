@@ -1,5 +1,6 @@
 // File: src/lib/supabaseLeads.js
 import { supabase } from "./supabaseClient";
+import { toE164 } from "./phone";
 
 /** Return current Supabase user id (or null) */
 export async function getUserId() {
@@ -11,30 +12,6 @@ export async function getUserId() {
 /** Normalize helpers */
 const onlyDigits = (s) => String(s || "").replace(/\D+/g, "");
 const normEmail = (s) => String(s || "").trim().toLowerCase();
-
-/** Convert to E.164 (assume US default). Returns null if invalid. */
-const toE164 = (raw, { defaultCountry = "US" } = {}) => {
-  const s = String(raw || "").trim();
-  if (!s) return null;
-
-  // already has a leading +? -> keep digits
-  if (s.startsWith("+")) {
-    const d = onlyDigits(s);
-    return d ? `+${d}` : null;
-  }
-
-  const d = onlyDigits(s);
-
-  if (defaultCountry === "US") {
-    if (d.length === 10) return `+1${d}`;
-    if (d.length === 11 && d.startsWith("1")) return `+${d}`;
-  }
-
-  // fallback: treat >=11 digits as intl
-  if (d.length >= 11) return `+${d}`;
-
-  return null;
-};
 
 /** Find the server row id for this user by id, or fallback to email/phone */
 async function findLeadRowIdForUser({ id, email, phone }) {
