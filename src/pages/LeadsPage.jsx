@@ -7,9 +7,7 @@ import {
   normalizePerson, upsert,
 } from "../lib/storage.js";
 
-import {
-  scheduleWelcomeText,
-} from "../lib/automation.js";
+import { scheduleWelcomeText } from "../lib/automation.js";
 
 // Supabase helpers
 import {
@@ -76,6 +74,8 @@ const norm = (s) => (s || "").toString().trim().toLowerCase();
 
 /**
  * buildHeaderIndex(headers)
+ *
+ * Matching rules prefer exact/branch-aware matches; avoids mapping "military" to "military status".
  */
 function buildHeaderIndex(headers) {
   const normalized = headers.map(norm);
@@ -93,11 +93,13 @@ function buildHeaderIndex(headers) {
   };
 
   const find = (candidates) => {
+    // Exact pass
     for (let i = 0; i < normalized.length; i++) {
       for (const cand of candidates) {
         if (normalized[i] === cand) return headers[i];
       }
     }
+    // Prefer headers containing "branch" for military_branch
     for (let i = 0; i < normalized.length; i++) {
       if (normalized[i].includes("branch")) {
         for (const cand of candidates) {
@@ -105,6 +107,7 @@ function buildHeaderIndex(headers) {
         }
       }
     }
+    // Fallback loose pass
     for (let i = 0; i < normalized.length; i++) {
       for (const cand of candidates) {
         if (matchesCandidate(normalized[i], cand)) return headers[i];
@@ -155,7 +158,7 @@ const buildEmail = (row, map) =>
   pick(row, map.email) || row.email || row.Email || "";
 const buildNotes = (row, map) => pick(row, map.notes) || "";
 
-// NEW field builders
+// NEW field builders (string passthrough)
 const buildDob = (row, map) => pick(row, map.dob);
 const buildState = (row, map) => pick(row, map.state).toUpperCase();
 const buildBeneficiary = (row, map) => pick(row, map.beneficiary);
@@ -184,7 +187,7 @@ const normalizeTag = (s) => String(s ?? "").trim().toLowerCase().replace(/\s+/g,
 const uniqTags = (arr) => Array.from(new Set((arr || []).map(normalizeTag))).filter(Boolean);
 const normalizePhone = (s) => {
   const d = String(s || "").replace(/\D/g, "");
-  return d.length === 11 && d.startsWith("1") ? d.slice(1) : d;
+  return d.length === 11 && d.startsWith("1") ? d.slice(1) : d; // drop leading US '1'
 };
 
 /** Find a contact by user+phone using normalized digits */
@@ -208,6 +211,7 @@ async function upsertLeadContact({ userId, phone, fullName, militaryBranch }) {
   const existing = await findContactByUserAndPhone(userId, phone);
   const wantsMilitary = Boolean((militaryBranch || "").trim());
 
+  // Remove old status tags, then add exactly one
   const baseTags = (existing?.tags || []).filter(
     (t) => !["lead", "military"].includes(normalizeTag(t))
   );
@@ -275,7 +279,19 @@ async function upsertSoldContact({ userId, phone, fullName, addBdayHoliday, addP
 
 // Recently inserted lead id for this user (match by normalized email/phone within 10m)
 async function findRecentlyInsertedLeadId({ userId, person }) {
-  if (!userId || !person) return null;
+  if (!person) return null;
+
+  // Resolve userId if not provided
+  if (!userId) {
+    try {
+      const u = await supabase.auth.getUser();
+      userId = u?.data?.user?.id || null;
+    } catch {}
+  }
+  if (!userId) {
+    console.warn("[auto-text] no userId; cannot lookup lead");
+    return null;
+  }
 
   const orParts = [];
   const S = (x) => (x == null ? "" : String(x).trim());
@@ -300,10 +316,26 @@ async function findRecentlyInsertedLeadId({ userId, person }) {
   return data[0].id;
 }
 
-// Try server function first; if it fails, render template client-side and call messages-send
+// Preferred server function; fallback to client-side template + messages-send
 async function triggerAutoTextForLeadId({ leadId, userId, person }) {
-  if (!leadId || !userId) return;
+  // Resolve missing IDs so we never silently bail
+  try {
+    if (!userId) {
+      const u = await supabase.auth.getUser();
+      userId = u?.data?.user?.id || null;
+    }
+  } catch {}
+  if (!leadId) {
+    leadId = await findRecentlyInsertedLeadId({ userId, person });
+  }
+  if (!leadId || !userId) {
+    console.warn("[auto-text] skipped; missing ids", { leadId, userId });
+    return;
+  }
 
+  console.log("[auto-text] calling lead-new-auto", { leadId });
+
+  // 1) Preferred: server function
   try {
     const res = await fetch(`${FN_BASE}/lead-new-auto`, {
       method: "POST",
@@ -311,29 +343,32 @@ async function triggerAutoTextForLeadId({ leadId, userId, person }) {
       body: JSON.stringify({ lead_id: leadId, requesterId: userId }),
     });
     if (res.ok) return;
-    console.warn("lead-new-auto non-OK:", res.status);
+    console.warn("lead-new-auto non-OK:", res.status, await res.text().catch(() => ""));
   } catch (e) {
     console.warn("lead-new-auto unreachable:", e?.message || e);
   }
 
+  console.log("[auto-text] server failed; trying client fallback");
+
+  // 2) Fallback: use template in DB → messages-send
   try {
     const { data: mt, error } = await supabase
       .from("message_templates")
       .select("*")
       .eq("user_id", userId)
       .maybeSingle();
-    if (error || !mt) return;
+    if (error || !mt) { console.warn("[auto-text] no templates row"); return; }
 
     const enabled =
       typeof mt.enabled === "boolean" ? mt.enabled : (mt.enabled?.new_lead ?? true);
-    if (!enabled) return;
+    if (!enabled) { console.warn("[auto-text] template disabled"); return; }
 
     const S = (x) => (x == null ? "" : String(x).trim());
     const hasBranch = !!S(person?.military_branch);
     const tpl = hasBranch
       ? (mt.templates?.new_lead_military || mt.new_lead_military || mt.templates?.new_lead || mt.new_lead || "")
       : (mt.templates?.new_lead || mt.new_lead || "");
-    if (!S(tpl)) return;
+    if (!S(tpl)) { console.warn("[auto-text] empty template"); return; }
 
     const ctx = {
       name: person?.name || "",
@@ -341,23 +376,23 @@ async function triggerAutoTextForLeadId({ leadId, userId, person }) {
       beneficiary: person?.beneficiary || person?.beneficiary_name || "",
     };
     const body = String(tpl).replace(/\{\{\s*([a-zA-Z0-9_]+)\s*\}\}/g, (_, k) => S(ctx[k])).trim();
-    if (!body || !S(person?.phone)) return;
+    if (!body) { console.warn("[auto-text] empty rendered body"); return; }
 
-    const { data: session } = await supabase.auth.getSession();
-    const token = session?.session?.access_token;
+    // IMPORTANT: send to normalized E.164 so your provider accepts it
+    const to = toE164(S(person?.phone));
+    if (!to) { console.warn("[auto-text] invalid phone; cannot send"); return; }
 
+    const { data: { session } } = await supabase.auth.getSession();
+    const token = session?.access_token;
+
+    console.log("[auto-text] calling messages-send fallback");
     const res2 = await fetch(`${FN_BASE}/messages-send`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
         ...(token ? { Authorization: `Bearer ${token}` } : {}),
       },
-      body: JSON.stringify({
-        to: person.phone,
-        body,
-        requesterId: userId,
-        lead_id: leadId,
-      }),
+      body: JSON.stringify({ to, body, requesterId: userId, lead_id: leadId }),
     });
 
     if (!res2.ok) {
@@ -370,17 +405,18 @@ async function triggerAutoTextForLeadId({ leadId, userId, person }) {
 }
 
 export default function LeadsPage() {
-  const [tab, setTab] = useState("clients");
+  const [tab, setTab] = useState("clients"); // 'clients' | 'sold'
   const [leads, setLeads] = useState([]);
   const [clients, setClients] = useState([]);
-  const [selected, setSelected] = useState(null);
-  const [viewSelected, setViewSelected] = useState(null);
+  const [selected, setSelected] = useState(null);         // Mark-as-SOLD drawer
+  const [viewSelected, setViewSelected] = useState(null); // read-only policy drawer
   const [filter, setFilter] = useState("");
 
   const [serverMsg, setServerMsg] = useState("");
   const [showConnector, setShowConnector] = useState(false);
-  const [showAdd, setShowAdd] = useState(false);
+  const [showAdd, setShowAdd] = useState(false); // manual add modal
 
+  // selection for mass actions
   const [selectedIds, setSelectedIds] = useState(new Set());
 
   useEffect(() => {
@@ -510,6 +546,7 @@ export default function LeadsPage() {
         const headers = Object.keys(rows[0] || {});
         const map = buildHeaderIndex(headers);
 
+        // Existing identifiers
         const existingEmails = new Set(
           [...clients, ...leads].map((r) => normEmail(r.email)).filter(Boolean)
         );
@@ -517,9 +554,11 @@ export default function LeadsPage() {
           [...clients, ...leads].map((r) => onlyDigits(r.phone)).filter(Boolean)
         );
 
+        // Track duplicates within the same CSV
         const seenEmails = new Set();
         const seenPhones = new Set();
 
+        // Normalize and filter
         const uniqueToAdd = [];
         for (const r of rows) {
           const name  = r.name || r.Name || buildName(r, map);
@@ -527,6 +566,7 @@ export default function LeadsPage() {
           const email = buildEmail(r, map);
           const notes = buildNotes(r, map);
 
+          // NEW fields
           const dob  = buildDob(r, map);
           const state = buildState(r, map);
           const beneficiary = buildBeneficiary(r, map);
@@ -560,6 +600,7 @@ export default function LeadsPage() {
           return;
         }
 
+        // Optimistic local update first
         const newLeads = [...uniqueToAdd, ...leads];
         const newClients = [...uniqueToAdd, ...clients];
         saveLeads(newLeads);
@@ -568,6 +609,7 @@ export default function LeadsPage() {
         setClients(newClients);
         setTab("clients");
 
+        // Try server batch upsert
         try {
           setServerMsg(`Syncing ${uniqueToAdd.length} new lead(s) to Supabase…`);
           const count = await upsertManyLeadsServer(uniqueToAdd);
@@ -577,6 +619,7 @@ export default function LeadsPage() {
           setServerMsg(`⚠️ CSV sync failed: ${e.message || e}`);
         }
 
+        // Reflect to contacts for each + trigger auto text
         try {
           const { data: authData } = await supabase.auth.getUser();
           const userId = authData?.user?.id;
@@ -589,7 +632,7 @@ export default function LeadsPage() {
                 militaryBranch: person.military_branch,
               });
 
-              // Fallback path still supported, but now normalized
+              // Normalized fallback lookup (kept for CSV path)
               const leadId = await findRecentlyInsertedLeadId({ userId, person });
               if (leadId) {
                 await triggerAutoTextForLeadId({ leadId, userId, person });
@@ -628,7 +671,7 @@ export default function LeadsPage() {
       sold: {
         carrier: soldPayload.carrier || "",
         faceAmount: soldPayload.faceAmount || "",
-        premium: soldPayload.premium || "",
+        premium: soldPayload.premium || "",           // AP stored here
         monthlyPayment: soldPayload.monthlyPayment || "",
         policyNumber: soldPayload.policyNumber || "",
         startDate: soldPayload.startDate || "",
@@ -639,11 +682,14 @@ export default function LeadsPage() {
       name: soldPayload.name || base.name || "",
       phone: soldPayload.phone || base.phone || "",
       email: soldPayload.email || base.email || "",
+
+      // Keep only bday/holiday toggle
       automationPrefs: {
         bdayHolidayTexts: !!soldPayload.enableBdayHolidayTexts,
       },
     };
 
+    // Optimistic local write
     const nextClients = upsert(clients, updated);
     const nextLeads   = upsert(leads, updated);
     saveClients(nextClients);
@@ -672,6 +718,7 @@ export default function LeadsPage() {
       setServerMsg(`⚠️ SOLD sync failed: ${e.message || e}`);
     }
 
+    // Reflect to contacts: replace lead/military with sold (+ bday/holiday + payment_reminder if start date)
     try {
       const { data: authData } = await supabase.auth.getUser();
       const userId = authData?.user?.id;
@@ -699,6 +746,7 @@ export default function LeadsPage() {
     setLeads(nextLeads);
     if (selected?.id === id) setSelected(null);
 
+    // remove from selectedIds if present
     setSelectedIds(prev => {
       const n = new Set(prev);
       n.delete(id);
@@ -722,9 +770,10 @@ export default function LeadsPage() {
     setLeads([]);
     setClients([]);
     setSelected(null);
-    setSelectedIds(new Set());
+    setSelectedIds(new Set()); // clear selection
   }
 
+  // selection helpers & bulk delete
   function toggleSelect(id) {
     setSelectedIds(prev => {
       const next = new Set(prev);
@@ -735,6 +784,7 @@ export default function LeadsPage() {
   }
 
   function toggleSelectAll() {
+    // Toggle: if everything visible selected -> clear visible, else select all visible
     setSelectedIds(prev => {
       const next = new Set(prev);
       const visibleIds = visible.map(v => v.id);
@@ -755,15 +805,17 @@ export default function LeadsPage() {
 
     const idsToDelete = Array.from(selectedIds);
 
+    // Optimistic local removal
     const nextClients = clients.filter(c => !idsToDelete.includes(c.id));
     const nextLeads   = leads.filter(l  => !idsToDelete.includes(l.id));
     saveClients(nextClients);
     saveLeads(nextLeads);
     setClients(nextClients);
     setLeads(nextLeads);
-    setSelectedIds(new Set());
+    setSelectedIds(new Set()); // clear selection
     setSelected(null);
 
+    // Server deletes
     setServerMsg(`Deleting ${idsToDelete.length} selected...`);
     let failed = [];
     for (const id of idsToDelete) {
@@ -782,8 +834,9 @@ export default function LeadsPage() {
     }
   }
 
-  // Manual add: **uses saved id** to trigger auto-text (no lookup race)
+  // Manual add: uses saved id to trigger auto-text (no lookup race)
   async function handleManualAdd(personInput) {
+    // Normalize just like CSV import
     const person = normalizePerson({
       ...personInput,
       stage: "no_pickup",
@@ -794,7 +847,7 @@ export default function LeadsPage() {
       return;
     }
 
-    // Local dedupe
+    // Optimistic local (avoid duplicating locally if same phone/email already present)
     const emailKey = normEmail(person.email);
     const phoneKey = onlyDigits(person.phone);
     const isDupLocal = [...clients, ...leads].some((r) => {
@@ -814,7 +867,7 @@ export default function LeadsPage() {
     setTab("clients");
     setShowAdd(false);
 
-    // Server write → capture id
+    // Server upsert → capture id
     let savedId = null;
     try {
       setServerMsg("Saving lead to Supabase…");
@@ -825,7 +878,7 @@ export default function LeadsPage() {
       setServerMsg(`⚠️ Save failed: ${e.message || e}`);
     }
 
-    // Reflect to contacts + trigger auto-text using **savedId**
+    // Reflect to contacts + trigger auto-text using savedId
     try {
       const { data: authData } = await supabase.auth.getUser();
       const userId = authData?.user?.id;
@@ -837,21 +890,16 @@ export default function LeadsPage() {
           militaryBranch: person.military_branch,
         });
 
-        if (savedId) {
-          await triggerAutoTextForLeadId({ leadId: savedId, userId, person });
-        } else {
-          // fallback if no id came back (rare)
-          const leadId = await findRecentlyInsertedLeadId({ userId, person });
-          if (leadId) await triggerAutoTextForLeadId({ leadId, userId, person });
-        }
+        await triggerAutoTextForLeadId({ leadId: savedId, userId, person });
       }
     } catch (err) {
       console.error("Contact tag sync / auto-text (manual add) failed:", err);
     }
   }
 
+  // Sold tab uses SAME columns as Leads (no policy columns visible)
   const baseHeaders = ["Name","Phone","Email","DOB","State","Beneficiary","Beneficiary Name","Gender","Military Branch","Stage"];
-  const colCount = baseHeaders.length + 2;
+  const colCount = baseHeaders.length + 2; // + Select checkbox + Actions
 
   return (
     <div className="space-y-6 min-w-0 overflow-x-hidden">
@@ -882,6 +930,7 @@ export default function LeadsPage() {
           {showConnector ? "Close setup" : "Setup auto import leads"}
         </button>
 
+        {/* Manual add lead */}
         <button
           onClick={() => setShowAdd(true)}
           className="rounded-xl border border-emerald-500/40 bg-emerald-500/10 px-3 py-2 text-sm"
@@ -914,6 +963,7 @@ export default function LeadsPage() {
           Clear all (local)
         </button>
 
+        {/* Bulk delete button */}
         <button
           onClick={removeSelected}
           disabled={selectedIds.size === 0}
@@ -924,18 +974,24 @@ export default function LeadsPage() {
         </button>
       </div>
 
+      {/* Server status line (non-blocking) */}
       {serverMsg && (
         <div className="rounded-xl border border-white/10 bg-white/[0.04] px-3 py-2 text-sm text-white/80">
           {serverMsg}
         </div>
       )}
 
+      {/* Collapsible connector panel */}
       {showConnector && (
-        <div id="auto-import-panel" className="my-4 rounded-2xl border border-white/15 bg-white/[0.03] p-4">
+        <div
+          id="auto-import-panel"
+          className="my-4 rounded-2xl border border-white/15 bg-white/[0.03] p-4"
+        >
           <GoogleSheetsConnector />
         </div>
       )}
 
+      {/* Search */}
       <div className="flex items-center gap-3">
         <input
           className="w-full rounded-xl border border-white/10 bg-black/40 px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-indigo-500/40"
@@ -945,6 +1001,7 @@ export default function LeadsPage() {
         />
       </div>
 
+      {/* Table */}
       <div className="overflow-x-auto rounded-2xl border border-white/10">
         <table className="min-w-[1200px] w-full border-collapse text-sm">
           <thead className="bg-white/[0.04] text-white/70">
@@ -1039,6 +1096,7 @@ export default function LeadsPage() {
         </table>
       </div>
 
+      {/* Drawer for SOLD (create/edit sold) */}
       {selected && (
         <SoldDrawer
           initial={selected}
@@ -1048,6 +1106,7 @@ export default function LeadsPage() {
         />
       )}
 
+      {/* Read-only policy viewer for SOLD rows */}
       {viewSelected && (
         <PolicyViewer
           person={viewSelected}
@@ -1055,6 +1114,7 @@ export default function LeadsPage() {
         />
       )}
 
+      {/* Manual Add Lead modal */}
       {showAdd && (
         <ManualAddLeadModal
           onClose={() => setShowAdd(false)}
@@ -1068,6 +1128,7 @@ export default function LeadsPage() {
 function Th({ children }) { return <th className="px-3 py-2 text-left font-medium">{children}</th>; }
 function Td({ children }) { return <td className="px-3 py-2">{children}</td>; }
 
+/* ------------------------------ Policy Viewer ------------------------------ */
 function PolicyViewer({ person, onClose }) {
   const s = person?.sold || {};
   return (
@@ -1102,6 +1163,7 @@ function PolicyViewer({ person, onClose }) {
   );
 }
 
+/* ------------------------------ Sold Drawer ------------------------------- */
 function SoldDrawer({ initial, allClients, onClose, onSave }) {
   const [form, setForm] = useState({
     id: initial?.id || (self && self.crypto && self.crypto.randomUUID ? self.crypto.randomUUID() : Math.random().toString(36).slice(2)),
@@ -1110,10 +1172,11 @@ function SoldDrawer({ initial, allClients, onClose, onSave }) {
     email: initial?.email || "",
     carrier: initial?.sold?.carrier || "",
     faceAmount: initial?.sold?.faceAmount || "",
-    premium: initial?.sold?.premium || "",
+    premium: initial?.sold?.premium || "",           // AP stored here
     monthlyPayment: initial?.sold?.monthlyPayment || "",
     policyNumber: initial?.sold?.policyNumber || "",
     startDate: initial?.sold?.startDate || "",
+    // Automations
     sendWelcomeText: false,
     enableBdayHolidayTexts: true,
   });
@@ -1143,6 +1206,7 @@ function SoldDrawer({ initial, allClients, onClose, onSave }) {
           <button onClick={onClose} className="rounded-lg px-2 py-1 text-sm hover:bg-white/10">Close</button>
         </div>
 
+        {/* Quick pick existing lead */}
         <div className="mb-3">
           <label className="text-xs text-white/70">Select existing lead (optional)</label>
           <select
@@ -1160,6 +1224,7 @@ function SoldDrawer({ initial, allClients, onClose, onSave }) {
         </div>
 
         <form onSubmit={submit} className="grid gap-3">
+          {/* Contact */}
           <div className="grid gap-3 sm:grid-cols-2">
             <Field label="Name">
               <input value={form.name} onChange={(e)=>setForm({...form, name:e.target.value})}
@@ -1175,6 +1240,7 @@ function SoldDrawer({ initial, allClients, onClose, onSave }) {
                    className="inp" placeholder="jane@example.com" />
           </Field>
 
+          {/* Policy core */}
           <div className="grid gap-3 sm:grid-cols-2">
             <Field label="Carrier sold">
               <input value={form.carrier} onChange={(e)=>setForm({...form, carrier:e.target.value})}
@@ -1202,6 +1268,7 @@ function SoldDrawer({ initial, allClients, onClose, onSave }) {
             </Field>
           </div>
 
+          {/* Options */}
           <div className="rounded-2xl border border-white/15 bg-white/[0.03] p-3">
             <div className="mb-2 text-sm font-semibold text-white/90">Post-sale options</div>
             <div className="grid gap-2">
@@ -1241,6 +1308,7 @@ function SoldDrawer({ initial, allClients, onClose, onSave }) {
   );
 }
 
+/* --------------------------- Manual Add Lead Modal --------------------------- */
 function ManualAddLeadModal({ onClose, onSave }) {
   const [form, setForm] = useState({
     name: "",
@@ -1262,7 +1330,7 @@ function ManualAddLeadModal({ onClose, onSave }) {
 
   return (
     <div className="fixed inset-0 z-50 grid bg-black/60 p-3">
-      <div className="relative m-auto w/full max-w-xl rounded-2xl border border-white/15 bg-neutral-950 p-4">
+      <div className="relative m-auto w-full max-w-xl rounded-2xl border border-white/15 bg-neutral-950 p-4">
         <div className="mb-2 flex items-center justify-between">
           <div className="text-base font-semibold">Add lead</div>
           <button onClick={onClose} className="rounded-lg px-2 py-1 text-sm hover:bg-white/10">Close</button>
@@ -1271,57 +1339,98 @@ function ManualAddLeadModal({ onClose, onSave }) {
         <form onSubmit={submit} className="grid gap-3">
           <div className="grid gap-3 sm:grid-cols-2">
             <Field label="Name">
-              <input className="inp" placeholder="Jane Doe" value={form.name}
-                     onChange={(e)=>setForm({...form, name:e.target.value})}/>
+              <input
+                className="inp"
+                placeholder="Jane Doe"
+                value={form.name}
+                onChange={(e)=>setForm({...form, name:e.target.value})}
+              />
             </Field>
             <Field label="Phone">
-              <input className="inp" placeholder="(555) 123-4567" value={form.phone}
-                     onChange={(e)=>setForm({...form, phone:e.target.value})}/>
+              <input
+                className="inp"
+                placeholder="(555) 123-4567"
+                value={form.phone}
+                onChange={(e)=>setForm({...form, phone:e.target.value})}
+              />
             </Field>
           </div>
 
           <Field label="Email">
-            <input className="inp" placeholder="jane@example.com" value={form.email}
-                   onChange={(e)=>setForm({...form, email:e.target.value})}/>
+            <input
+              className="inp"
+              placeholder="jane@example.com"
+              value={form.email}
+              onChange={(e)=>setForm({...form, email:e.target.value})}
+            />
           </Field>
 
           <Field label="Notes">
-            <input className="inp" placeholder="Any context about the lead" value={form.notes}
-                   onChange={(e)=>setForm({...form, notes:e.target.value})}/>
+            <input
+              className="inp"
+              placeholder="Any context about the lead"
+              value={form.notes}
+              onChange={(e)=>setForm({...form, notes:e.target.value})}
+            />
           </Field>
 
           <div className="grid gap-3 sm:grid-cols-2">
             <Field label="DOB">
-              <input className="inp" placeholder="MM-DD-YYYY" value={form.dob}
-                     onChange={(e)=>setForm({...form, dob:e.target.value})}/>
+              <input
+                className="inp"
+                placeholder="MM-DD-YYYY"
+                value={form.dob}
+                onChange={(e)=>setForm({...form, dob:e.target.value})}
+              />
             </Field>
             <Field label="State">
-              <input className="inp" placeholder="TN" value={form.state}
-                     onChange={(e)=>setForm({...form, state:e.target.value.toUpperCase()})}/>
+              <input
+                className="inp"
+                placeholder="TN"
+                value={form.state}
+                onChange={(e)=>setForm({...form, state:e.target.value.toUpperCase()})}
+              />
             </Field>
             <Field label="Beneficiary">
-              <input className="inp" value={form.beneficiary}
-                     onChange={(e)=>setForm({...form, beneficiary:e.target.value})}/>
+              <input
+                className="inp"
+                value={form.beneficiary}
+                onChange={(e)=>setForm({...form, beneficiary:e.target.value})}
+              />
             </Field>
             <Field label="Beneficiary Name">
-              <input className="inp" value={form.beneficiary_name}
-                     onChange={(e)=>setForm({...form, beneficiary_name:e.target.value})}/>
+              <input
+                className="inp"
+                value={form.beneficiary_name}
+                onChange={(e)=>setForm({...form, beneficiary_name:e.target.value})}
+              />
             </Field>
             <Field label="Gender">
-              <input className="inp" value={form.gender}
-                     onChange={(e)=>setForm({...form, gender:e.target.value})}/>
+              <input
+                className="inp"
+                value={form.gender}
+                onChange={(e)=>setForm({...form, gender:e.target.value})}
+              />
             </Field>
             <Field label="Military Branch">
-              <input className="inp" placeholder="Army / Navy / …" value={form.military_branch}
-                     onChange={(e)=>setForm({...form, military_branch:e.target.value})}/>
+              <input
+                className="inp"
+                placeholder="Army / Navy / …"
+                value={form.military_branch}
+                onChange={(e)=>setForm({...form, military_branch:e.target.value})}
+              />
             </Field>
           </div>
 
           <div className="mt-3 flex items-center justify-end gap-2">
             <button type="button" onClick={onClose}
-              className="rounded-xl border border-white/15 px-4 py-2 text-sm hover:bg-white/10">Cancel</button>
+              className="rounded-xl border border-white/15 px-4 py-2 text-sm hover:bg-white/10">
+              Cancel
+            </button>
             <button type="submit"
-              className="rounded-xl bg-white px-4 py-2 text-sm font-medium text-black hover:bg-white/90">Save lead</button>
+              className="rounded-xl bg-white px-4 py-2 text-sm font-medium text-black hover:bg-white/90">
+              Save lead
+            </button>
           </div>
         </form>
       </div>
