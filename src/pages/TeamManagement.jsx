@@ -32,10 +32,14 @@ export default function TeamManagement() {
   const [additionalSeats, setAdditionalSeats] = useState(2);
 
   const isOwner = useMemo(() => me && team && team.owner_id === me, [me, team]);
-  const ownerGetsBonus = isOwner && myEmail.toLowerCase() === BONUS_EMAIL.toLowerCase();
+  const ownerGetsBonus =
+    isOwner && myEmail.toLowerCase() === BONUS_EMAIL.toLowerCase();
 
   // Effective numbers for display (bonus is free / not billed)
-  const effectivePurchased = Math.max(seatsPurchased + (ownerGetsBonus ? BONUS_SEATS : 0), 0);
+  const effectivePurchased = Math.max(
+    seatsPurchased + (ownerGetsBonus ? BONUS_SEATS : 0),
+    0
+  );
   const effectiveAvailable = Math.max(effectivePurchased - seatsUsed, 0);
 
   useEffect(() => {
@@ -122,7 +126,10 @@ export default function TeamManagement() {
   async function saveName() {
     try {
       if (!isOwner) return;
-      const { error } = await supabase.from("teams").update({ name }).eq("id", teamId);
+      const { error } = await supabase
+        .from("teams")
+        .update({ name })
+        .eq("id", teamId);
       if (error) throw error;
       setTeam((t) => ({ ...t, name }));
     } catch (e) {
@@ -142,6 +149,16 @@ export default function TeamManagement() {
     }
   }
 
+  // Debug: show subscriptions for this team's Stripe customer (inline, no console)
+  async function debugSubs() {
+    try {
+      const res = await callFn("debug-customer-subs", { team_id: teamId });
+      alert(JSON.stringify(res, null, 2));
+    } catch (e) {
+      alert(e.message || "Debug failed");
+    }
+  }
+
   // Buy seats = increase paid seats by N
   async function buySeats() {
     try {
@@ -151,7 +168,10 @@ export default function TeamManagement() {
         return;
       }
       const targetPaid = Math.max(seatsUsed, (seatsPurchased || 0) + add);
-      const res = await callFn("update-seats", { team_id: teamId, seats: targetPaid });
+      const res = await callFn("update-seats", {
+        team_id: teamId,
+        seats: targetPaid,
+      });
       if (res?.seatCounts) {
         setSeatsPurchased(res.seatCounts.seats_purchased || 0);
         setSeatsUsed(res.seatCounts.seats_used || 0);
@@ -175,7 +195,10 @@ export default function TeamManagement() {
           <Shield className="w-5 h-5" /> Owner-only
         </div>
         <p className="text-gray-600 mt-2">You’re not the owner of this team.</p>
-        <Link to={`/app/team/${teamId}/dashboard`} className="underline mt-3 inline-block">
+        <Link
+          to={`/app/team/${teamId}/dashboard`}
+          className="underline mt-3 inline-block"
+        >
           Go to Team Dashboard
         </Link>
       </div>
@@ -200,27 +223,39 @@ export default function TeamManagement() {
           <input
             value={name}
             onChange={(e) => setName(e.target.value)}
-            className="border rounded-lg px-3 py-2 w-full max-w-md"
+            className="border rounded-lg px-3 py-2 w/full max-w-md"
           />
         </div>
         <div>
-          <button onClick={saveName} className="px-4 py-2 rounded-xl border hover:bg-gray-50">
+          <button
+            onClick={saveName}
+            className="px-4 py-2 rounded-xl border hover:bg-gray-50"
+          >
             Save
           </button>
         </div>
       </section>
 
-      {/* Seats: only input + Buy + Fix */}
+      {/* Seats: input + Buy + Fix + Debug */}
       <section className="border rounded-2xl p-4 space-y-3">
         <div className="flex items-center justify-between">
           <div className="text-sm text-gray-600">Seats</div>
-          <button
-            onClick={fixStripeSubscription}
-            className="text-xs px-3 py-1.5 rounded-xl border hover:bg-gray-50"
-            title="Repair the saved Stripe subscription id if it doesn't match this team's customer"
-          >
-            Fix Stripe Subscription
-          </button>
+          <div className="flex items-center gap-2">
+            <button
+              onClick={fixStripeSubscription}
+              className="text-xs px-3 py-1.5 rounded-xl border hover:bg-gray-50"
+              title="Repair the saved Stripe subscription id if it doesn't match this team's customer"
+            >
+              Fix Stripe Subscription
+            </button>
+            <button
+              onClick={debugSubs}
+              className="text-xs px-3 py-1.5 rounded-xl border hover:bg-gray-50"
+              title="Show the Stripe subscriptions for this team's customer"
+            >
+              Debug Subs
+            </button>
+          </div>
         </div>
 
         <div className="text-lg font-semibold flex items-center gap-2">
@@ -232,10 +267,13 @@ export default function TeamManagement() {
               </span>
             )}
           </span>
-          <span>• {seatsUsed} used • {Math.max(effectivePurchased - seatsUsed, 0)} available</span>
+          <span>
+            • {seatsUsed} used • {Math.max(effectivePurchased - seatsUsed, 0)} available
+          </span>
         </div>
         <div className="text-xs text-gray-500">
-          Billing: ${SEAT_PRICE}/seat/month (owner not billed as a seat). Free bonus seats aren’t billed.
+          Billing: ${SEAT_PRICE}/seat/month (owner not billed as a seat). Free
+          bonus seats aren’t billed.
         </div>
 
         <div className="flex items-center gap-3">
@@ -243,7 +281,9 @@ export default function TeamManagement() {
             type="number"
             min={1}
             value={additionalSeats}
-            onChange={(e) => setAdditionalSeats(parseInt(e.target.value || "0", 10))}
+            onChange={(e) =>
+              setAdditionalSeats(parseInt(e.target.value || "0", 10))
+            }
             className="w-28 px-3 py-2 rounded-xl border"
             title="How many new paid seats to add"
           />
@@ -275,7 +315,7 @@ export default function TeamManagement() {
             <input
               readOnly
               value={inviteUrl}
-              className="border rounded-lg px-3 py-2 w-full"
+              className="border rounded-lg px-3 py-2 w/full"
             />
             <button
               onClick={async () => {
@@ -304,12 +344,12 @@ export default function TeamManagement() {
         <ul className="divide-y">
           {members.map((m) => {
             const label =
-              m?.profile?.full_name ||
-              m?.email ||
-              m?.profile?.email ||
-              "(pending)";
+              m?.profile?.full_name || m?.email || m?.profile?.email || "(pending)";
             return (
-              <li key={m.user_id || label} className="py-2 flex justify-between items-center">
+              <li
+                key={m.user_id || label}
+                className="py-2 flex justify-between items-center"
+              >
                 <span className="text-sm">{label}</span>
                 <button
                   onClick={() => removeMember(m.user_id)}
