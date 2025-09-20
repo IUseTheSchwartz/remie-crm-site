@@ -25,16 +25,16 @@ export async function handler(event) {
       return { statusCode: 400, body: "Invalid team_id or seats" };
     }
 
-    // Confirm requester is the owner
+    // Confirm requester is owner
     const { data: team, error: tErr } = await supa
       .from("teams")
-      .select("id, owner_id, stripe_subscription_id, seats_purchased")
+      .select("id, owner_id, stripe_customer_id, stripe_subscription_id, seats_purchased")
       .eq("id", team_id)
       .single();
     if (tErr || !team) return { statusCode: 404, body: "Team not found" };
     if (team.owner_id !== userId) return { statusCode: 403, body: "Not team owner" };
 
-    // Don’t allow setting below seats already used
+    // Don’t allow below seats already used
     const { data: counts } = await supa
       .from("team_seat_counts")
       .select("seats_used")
@@ -42,29 +42,24 @@ export async function handler(event) {
       .single();
     const used = counts?.seats_used || 0;
     if (seats < used) {
-      return {
-        statusCode: 400,
-        body: `Seats cannot be set below current usage (${used}).`,
-      };
+      return { statusCode: 400, body: `Seats cannot be set below current usage (${used}).` };
     }
 
-    // Must have a Stripe subscription on the team
+    // Must have a Stripe subscription
     const subId = team.stripe_subscription_id;
     if (!subId) {
       return {
         statusCode: 400,
-        body:
-          "Missing Stripe subscription for this team. The owner must start a subscription first.",
+        body: "Missing Stripe subscription for this team. The owner must start a subscription first.",
       };
     }
 
-    // Must have the seat price env var
+    // Must have seat price
     const seatPriceId = process.env.STRIPE_PRICE_SEAT_50;
     if (!seatPriceId) {
       return {
         statusCode: 500,
-        body:
-          "Server misconfiguration: STRIPE_PRICE_SEAT_50 is not set in environment.",
+        body: "Server misconfiguration: STRIPE_PRICE_SEAT_50 is not set in environment.",
       };
     }
 
@@ -81,13 +76,13 @@ export async function handler(event) {
 
     try {
       if (!seatItem) {
-        // If missing, add the seat item
+        // Add seat item
         await stripe.subscriptions.update(subId, {
           items: [{ price: seatPriceId, quantity: seats }],
           proration_behavior: "always_invoice",
         });
       } else {
-        // If present, update quantity
+        // Update seat item quantity
         await stripe.subscriptionItems.update(seatItem.id, {
           quantity: seats,
           proration_behavior: "always_invoice",
@@ -117,8 +112,6 @@ export async function handler(event) {
     return { statusCode: 200, body: JSON.stringify({ ok: true, seatCounts: after }) };
   } catch (e) {
     console.error("update-seats error:", e);
-    // Try to surface the actual message if present
-    const msg = e?.message || "Server error";
-    return { statusCode: 500, body: msg };
+    return { statusCode: 500, body: e?.message || "Server error" };
   }
 }
