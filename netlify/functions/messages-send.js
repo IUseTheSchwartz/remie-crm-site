@@ -1,6 +1,7 @@
 // File: netlify/functions/messages-send.js
 // Outbound SMS send (Telnyx-only).
-// - Inserts into public.messages with status='sent' once Telnyx accepts the message
+// - Blocks sends if wallet < 1¢
+// - Inserts into public.messages with status='sent' once Telnyx accepts
 // - Lets a DB trigger (wallet_debit_on_message) debit 1¢ per row
 // - Dedupe via provider_message_id
 // - Returns a helpful 'trace' array
@@ -124,11 +125,12 @@ exports.handler = async (evt) => {
     if (!templateKey || (!user_id && !lead_id && !contact_id) || (!toRaw && !lead_id && !contact_id)) {
       return json({
         error: "missing_fields",
-        need: ["templateKey", "and one of: (user_id + to) or (contact_id) or (lead_id)"],
+        need: ["templateKey", andOneOf("(user_id + to)", "(contact_id)", "(lead_id)")],
         got: { user_id: !!user_id, templateKey: !!templateKey, to: !!toRaw, contact_id: !!contact_id, lead_id: !!lead_id },
         trace
       }, 400);
     }
+    function andOneOf(...arr){ return "and one of: " + arr.join(" or "); }
 
     if (!contact && toRaw && user_id) contact = await lookupContactByPhone(db, user_id, toRaw);
 
@@ -194,6 +196,22 @@ exports.handler = async (evt) => {
       return json({ ok: true, deduped: true, provider_message_id, trace }, 200);
     }
 
+    // ===== Wallet pre-check (block if < 1¢) =====
+    const { data: w, error: werr } = await db
+      .from("user_wallets")
+      .select("balance_cents")
+      .eq("user_id", user_id)
+      .maybeSingle();
+
+    if (werr) return json({ error: "wallet_lookup_failed", detail: werr.message, trace }, 500);
+    const balance = w?.balance_cents ?? 0;
+    trace.push({ step: "wallet.checked", balance_cents: balance });
+
+    if (balance < 1) {
+      return json({ status: "skipped_insufficient_funds", balance_cents: balance, trace }, 200);
+    }
+    // ============================================
+
     // Telnyx send
     const reqPayload = {
       from: TELNYX_FROM_NUMBER,
@@ -231,7 +249,7 @@ exports.handler = async (evt) => {
       from_number: TELNYX_FROM_NUMBER,
       to_number: to,
       body: text,
-      status: "sent",               // was 'queued' — we mark as sent once provider accepts
+      status: "sent",               // mark as sent once provider accepts
       provider_sid: provider_id,
       provider_message_id,
       price_cents: 1,               // DB trigger will subtract this from wallet
