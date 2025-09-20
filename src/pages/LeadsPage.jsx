@@ -28,27 +28,6 @@ import { toE164 } from "../lib/phone.js";
 /* ---------------- Functions base (Netlify) ---------------- */
 const FN_BASE = import.meta.env?.VITE_FUNCTIONS_BASE || "/.netlify/functions";
 
-/* ---------------- Inline tiny logger + console panel ---------------- */
-const dbg = (() => {
-  const MAX = 500;
-  let rows = [];
-  const listeners = new Set();
-  function push(type, ...args) {
-    const item = { ts: new Date().toISOString(), type, args };
-    rows.push(item);
-    if (rows.length > MAX) rows.shift();
-    listeners.forEach((fn) => fn([...rows]));
-    const c = type === "error" ? console.error : type === "warn" ? console.warn : console.log;
-    c("[leads]", ...args);
-  }
-  return {
-    on(fn) { listeners.add(fn); fn([...rows]); return () => listeners.delete(fn); },
-    log:  (...a) => push("log",  ...a),
-    warn: (...a) => push("warn", ...a),
-    error:(...a) => push("error",...a),
-  };
-})();
-
 /* ---------------- Stage labels/styles (match PipelinePage) ------------------ */
 const STAGE_STYLE = {
   no_pickup:     "bg-white/10 text-white/80",
@@ -310,7 +289,7 @@ async function findRecentlyInsertedLeadId({ userId, person }) {
     } catch {}
   }
   if (!userId) {
-    dbg.warn("[auto-text] no userId; cannot lookup lead");
+    console.warn("[auto-text] no userId; cannot lookup lead");
     return null;
   }
 
@@ -337,9 +316,8 @@ async function findRecentlyInsertedLeadId({ userId, person }) {
   return data[0].id;
 }
 
-// Preferred server function; fallback to client-side template + messages-send
+// Preferred server function; fallback to messages-send (template-driven)
 async function triggerAutoTextForLeadId({ leadId, userId, person }) {
-  // Resolve missing IDs so we never silently bail
   try {
     if (!userId) {
       const u = await supabase.auth.getUser();
@@ -350,81 +328,66 @@ async function triggerAutoTextForLeadId({ leadId, userId, person }) {
     leadId = await findRecentlyInsertedLeadId({ userId, person });
   }
   if (!leadId || !userId) {
-    dbg.warn("[auto-text] skipped; missing ids", { leadId, userId });
+    console.warn("[auto-text] skipped; missing ids", { leadId, userId });
     return;
   }
 
-  dbg.log("[auto-text] calling lead-new-auto", { leadId, FN_BASE });
+  console.log("[auto-text] calling lead-new-auto", { leadId });
 
-  // 1) Preferred: server function
+  // 1) Preferred: server function (if you have it deployed)
   try {
     const res = await fetch(`${FN_BASE}/lead-new-auto`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ lead_id: leadId, requesterId: userId }),
     });
-    dbg.log("[auto-text] lead-new-auto ->", res.status);
-    if (res.ok) return;
-    dbg.warn("lead-new-auto non-OK:", res.status, await res.text().catch(() => ""));
+    if (res.ok) return; // done
+    console.warn("lead-new-auto non-OK:", res.status, await res.text().catch(() => ""));
   } catch (e) {
-    dbg.warn("lead-new-auto unreachable:", e?.message || e);
+    console.warn("lead-new-auto unreachable:", e?.message || e);
   }
 
-  dbg.log("[auto-text] server failed; trying client fallback");
+  console.log("[auto-text] server failed; trying client fallback");
 
-  // 2) Fallback: use template in DB → messages-send
+  // 2) Fallback: call messages-send with templateKey and placeholders
   try {
-    const { data: mt, error } = await supabase
-      .from("message_templates")
-      .select("*")
-      .eq("user_id", userId)
-      .maybeSingle();
-    if (error || !mt) { dbg.warn("[auto-text] no templates row"); return; }
-
-    const enabled =
-      typeof mt.enabled === "boolean" ? mt.enabled : (mt.enabled?.new_lead ?? true);
-    if (!enabled) { dbg.warn("[auto-text] template disabled"); return; }
-
     const S = (x) => (x == null ? "" : String(x).trim());
     const hasBranch = !!S(person?.military_branch);
-    const tpl = hasBranch
-      ? (mt.templates?.new_lead_military || mt.new_lead_military || mt.templates?.new_lead || mt.new_lead || "")
-      : (mt.templates?.new_lead || mt.new_lead || "");
-    if (!S(tpl)) { dbg.warn("[auto-text] empty template"); return; }
+    const templateKey = hasBranch ? "new_lead_military" : "new_lead";
 
-    const ctx = {
-      name: person?.name || "",
+    const placeholders = {
+      first_name: (person?.name || "").split(/\s+/)[0] || "",
       state: person?.state || "",
       beneficiary: person?.beneficiary || person?.beneficiary_name || "",
+      military_branch: person?.military_branch || "",
     };
-    const body = String(tpl).replace(/\{\{\s*([a-zA-Z0-9_]+)\s*\}\}/g, (_, k) => S(ctx[k])).trim();
-    if (!body) { dbg.warn("[auto-text] empty rendered body"); return; }
 
-    // IMPORTANT: send to normalized E.164 so your provider accepts it
     const to = toE164(S(person?.phone));
-    if (!to) { dbg.warn("[auto-text] invalid phone; cannot send", person?.phone); return; }
+    if (!to) { console.warn("[auto-text] invalid phone; cannot send"); return; }
 
     const { data: { session } } = await supabase.auth.getSession();
     const token = session?.access_token;
 
-    dbg.log("[auto-text] calling messages-send fallback");
+    console.log("[auto-text] calling messages-send fallback");
     const res2 = await fetch(`${FN_BASE}/messages-send`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
         ...(token ? { Authorization: `Bearer ${token}` } : {}),
       },
-      body: JSON.stringify({ to, body, requesterId: userId, lead_id: leadId }),
+      body: JSON.stringify({
+        lead_id: leadId,          // lets the function hydrate user_id + vars
+        user_id: userId,          // safety net
+        to,
+        templateKey,
+        placeholders,
+      }),
     });
 
-    if (!res2.ok) {
-      const dbgBody = await res2.text().catch(() => "");
-      dbg.warn("messages-send fallback failed:", res2.status, dbgBody);
-    } else {
-      dbg.log("[auto-text] messages-send -> OK");
-    }
+    const dbg = await res2.json().catch(() => ({}));
+    console.log("[auto-text] messages-send fallback resp:", res2.status, dbg);
   } catch (e) {
-    dbg.error("client-side fallback errored:", e?.message || e);
+    console.warn("client-side fallback errored:", e?.message || e);
   }
 }
 
@@ -444,7 +407,6 @@ export default function LeadsPage() {
   const [selectedIds, setSelectedIds] = useState(new Set());
 
   useEffect(() => {
-    dbg.log("[mount] LeadsPage; FN_BASE =", FN_BASE);
     setLeads(loadLeads());
     setClients(loadClients());
   }, []);
@@ -481,7 +443,6 @@ export default function LeadsPage() {
           .map(r => preserveStage(existingAll, r));
 
         if (incoming.length) {
-          dbg.log("[server pull] merged rows:", incoming.length);
           const newLeads = [...incoming, ...leads];
           const newClients = [...incoming, ...clients];
           saveLeads(newLeads);
@@ -490,7 +451,7 @@ export default function LeadsPage() {
           setClients(newClients);
         }
       } catch (e) {
-        dbg.error("Initial server pull failed:", e?.message || e);
+        console.error("Initial server pull failed:", e);
       }
     })();
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -511,13 +472,12 @@ export default function LeadsPage() {
             "postgres_changes",
             { event: "INSERT", schema: "public", table: "leads", filter: `user_id=eq.${userId}` },
             (payload) => {
-              dbg.log("[realtime] new lead", payload?.new?.id);
               const row = preserveStage([...leads, ...clients], payload.new);
 
               const idDup = [...leads, ...clients].some(x => x.id === row.id);
               const eDup = row.email && [...leads, ...clients].some(x => normEmail(x.email) === normEmail(row.email));
               const pDup = row.phone && [...leads, ...clients].some(x => onlyDigits(x.phone) === onlyDigits(row.phone));
-              if (idDup || eDup || pDup) { dbg.log("[realtime] dedup skipped"); return; }
+              if (idDup || eDup || pDup) return;
 
               const newLeads = [row, ...leads];
               const newClients = [row, ...clients];
@@ -530,7 +490,7 @@ export default function LeadsPage() {
           )
           .subscribe();
       } catch (e) {
-        dbg.error("Realtime subscribe failed:", e?.message || e);
+        console.error("Realtime subscribe failed:", e);
       }
     })();
 
@@ -560,14 +520,12 @@ export default function LeadsPage() {
 
   // CSV import with duplicate skipping (email OR phone)
   async function handleImportCsv(file) {
-    dbg.log("[csv] parse start", file?.name, file?.size);
     Papa.parse(file, {
       header: true,
       skipEmptyLines: true,
       transformHeader: (h) => h.trim(),
       complete: async (res) => {
         const rows = res.data || [];
-        dbg.log("[csv] rows", rows.length);
         if (!rows.length) {
           alert("CSV has no rows.");
           return;
@@ -642,10 +600,9 @@ export default function LeadsPage() {
         try {
           setServerMsg(`Syncing ${uniqueToAdd.length} new lead(s) to Supabase…`);
           const count = await upsertManyLeadsServer(uniqueToAdd);
-          dbg.log("[csv] server upserted", count);
           setServerMsg(`✅ CSV synced (${count} new) — duplicates skipped`);
         } catch (e) {
-          dbg.error("CSV sync error:", e);
+          console.error("CSV sync error:", e);
           setServerMsg(`⚠️ CSV sync failed: ${e.message || e}`);
         }
 
@@ -670,7 +627,7 @@ export default function LeadsPage() {
             }
           }
         } catch (err) {
-          dbg.error("Contact tag sync / auto-text (CSV) failed:", err);
+          console.error("Contact tag sync / auto-text (CSV) failed:", err);
         }
       },
       error: (err) => alert("CSV parse error: " + err.message),
@@ -744,7 +701,7 @@ export default function LeadsPage() {
       await upsertLeadServer(updated);
       setServerMsg("✅ SOLD synced");
     } catch (e) {
-      dbg.error("SOLD sync error:", e);
+      console.error("SOLD sync error:", e);
       setServerMsg(`⚠️ SOLD sync failed: ${e.message || e}`);
     }
 
@@ -762,7 +719,7 @@ export default function LeadsPage() {
         });
       }
     } catch (err) {
-      dbg.error("Contact tag sync (sold) failed:", err);
+      console.error("Contact tag sync (sold) failed:", err);
     }
   }
 
@@ -788,7 +745,7 @@ export default function LeadsPage() {
       await deleteLeadServer(id);
       setServerMsg("🗑️ Deleted in Supabase");
     } catch (e) {
-      dbg.error("Delete server error:", e);
+      console.error("Delete server error:", e);
       setServerMsg(`⚠️ Could not delete on Supabase: ${e.message || e}`);
     }
   }
@@ -852,7 +809,7 @@ export default function LeadsPage() {
       try {
         await deleteLeadServer(id);
       } catch (e) {
-        dbg.error("Bulk delete failed for", id, e);
+        console.error("Bulk delete failed for", id, e);
         failed.push({ id, error: e });
       }
     }
@@ -902,10 +859,9 @@ export default function LeadsPage() {
     try {
       setServerMsg("Saving lead to Supabase…");
       savedId = await upsertLeadServer(person);
-      dbg.log("[manual add] upsertLeadServer -> id", savedId);
       setServerMsg(isDupLocal ? "ℹ️ Lead already existed — merged on server" : "✅ Lead saved");
     } catch (e) {
-      dbg.error("Manual add sync error:", e);
+      console.error("Manual add sync error:", e);
       setServerMsg(`⚠️ Save failed: ${e.message || e}`);
     }
 
@@ -924,7 +880,7 @@ export default function LeadsPage() {
         await triggerAutoTextForLeadId({ leadId: savedId, userId, person });
       }
     } catch (err) {
-      dbg.error("Contact tag sync / auto-text (manual add) failed:", err);
+      console.error("Contact tag sync / auto-text (manual add) failed:", err);
     }
   }
 
@@ -1152,9 +1108,6 @@ export default function LeadsPage() {
           onSave={handleManualAdd}
         />
       )}
-
-      {/* Floating debug panel */}
-      <DebugPanel />
     </div>
   );
 }
@@ -1481,63 +1434,5 @@ function Field({ label, children }) {
       <div className="mb-1 text-white/70">{label}</div>
       {children}
     </label>
-  );
-}
-
-/* ------------------------------ Inline Debug Panel ------------------------------ */
-function DebugPanel() {
-  const [open, setOpen] = useState(false);
-  const [rows, setRows] = useState([]);
-
-  useEffect(() => {
-    const off = dbg.on(setRows);
-    const onKey = (e) => {
-      if ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key.toLowerCase() === "d") {
-        setOpen((s) => !s);
-      }
-    };
-    window.addEventListener("keydown", onKey);
-    return () => { off(); window.removeEventListener("keydown", onKey); };
-  }, []);
-
-  if (!open) {
-    return (
-      <button
-        onClick={() => setOpen(true)}
-        className="fixed bottom-4 right-4 z-50 rounded-lg border border-white/20 bg-black/60 px-3 py-2 text-xs"
-      >
-        Open Debug
-      </button>
-    );
-  }
-
-  return (
-    <div className="fixed bottom-4 right-4 z-50 w-[min(92vw,640px)] overflow-hidden rounded-2xl border border-white/20 bg-black/80 backdrop-blur">
-      <div className="flex items-center justify-between px-3 py-2 text-xs">
-        <div className="font-semibold">Debug Console (Ctrl/Cmd+Shift+D)</div>
-        <div className="flex items-center gap-2">
-          <button
-            onClick={() => {
-              const text = rows.map(r => `[${r.ts}] ${r.type.toUpperCase()} ${r.args.map(a => typeof a === "string" ? a : JSON.stringify(a)).join(" ")}`).join("\n");
-              navigator.clipboard.writeText(text).catch(()=>{});
-            }}
-            className="rounded border border-white/20 px-2 py-1"
-          >
-            Copy
-          </button>
-          <button onClick={() => setOpen(false)} className="rounded border border-white/20 px-2 py-1">Close</button>
-        </div>
-      </div>
-      <div className="max-h-[50vh] overflow-auto px-3 pb-3 text-[11px] leading-relaxed">
-        {rows.length === 0 && <div className="opacity-60">No logs yet. Try adding a lead.</div>}
-        {rows.map((r, i) => (
-          <div key={i} className={`mb-1 ${r.type === "error" ? "text-rose-300" : r.type === "warn" ? "text-amber-300" : "text-white/90"}`}>
-            <span className="opacity-60">[{new Date(r.ts).toLocaleTimeString()}]</span>{" "}
-            <span className="opacity-80">{r.type.toUpperCase()}</span>{" "}
-            <code className="opacity-90">{r.args.map(a => typeof a === "string" ? a : JSON.stringify(a)).join(" ")}</code>
-          </div>
-        ))}
-      </div>
-    </div>
   );
 }
