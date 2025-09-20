@@ -9,54 +9,16 @@ export async function getUserId() {
   return data?.user?.id || null;
 }
 
-/** Normalize helpers */
 const normEmail = (s) => String(s || "").trim().toLowerCase();
 
-/** Find the server row id for this user by id, or fallback to email/phone */
-async function findLeadRowIdForUser({ id, email, phone }) {
-  const userId = await getUserId();
-  if (!userId) throw new Error("Not logged in to Supabase");
-
-  const clauses = [];
-  if (id) clauses.push(`id.eq.${id}`);
-  if (email) clauses.push(`email.eq.${normEmail(email)}`);
-  if (phone) {
-    const phoneE164 = toE164(phone);
-    if (phoneE164) clauses.push(`phone.eq.${phoneE164}`);
-  }
-  if (!clauses.length) return null;
-
-  const { data, error } = await supabase
-    .from("leads")
-    .select("id, created_at")
-    .eq("user_id", userId)
-    .or(clauses.join(","))
-    .order("created_at", { ascending: false })
-    .limit(1);
-
-  if (error) throw error;
-  return data?.[0]?.id || null;
-}
-
-/** Choose conflict target based on what we have (must match DB unique index) */
-function conflictTargetFor(row) {
-  if (row.phone) return "user_id,phone";
-  if (row.email) return "user_id,email";
-  return undefined; // fall back to PK behavior
-}
-
-/** Upsert ONE lead (used for CSV/new items) */
-export async function upsertLeadServer(lead) {
-  const userId = await getUserId();
-  if (!userId) throw new Error("Not logged in to Supabase");
-
+/** Build a normalized row from incoming lead-like object */
+function buildNormalizedRow(lead, userId) {
   const phoneE164 = lead.phone ? toE164(lead.phone) : null;
   if (!phoneE164 && lead.phone) {
     throw new Error(`Invalid phone number: ${lead.phone}`);
   }
-
-  const row = {
-    id: lead.id, // keep browser UUID if present
+  return {
+    // NOTE: do not set id here; we'll decide target id based on lookup/merge
     user_id: userId,
     status: lead.status === "sold" ? "sold" : "lead",
     name: lead.name || "",
@@ -71,7 +33,7 @@ export async function upsertLeadServer(lead) {
     gender: lead.gender || "",
     military_branch: lead.military_branch || "",
     sold: lead.sold || null, // jsonb
-    // include pipeline fields if set
+    // pipeline fields
     stage: lead.stage ?? null,
     stage_changed_at: lead.stage_changed_at ?? null,
     next_follow_up_at: lead.next_follow_up_at ?? null,
@@ -81,94 +43,143 @@ export async function upsertLeadServer(lead) {
     pipeline: lead.pipeline ?? null,
     updated_at: new Date().toISOString(),
   };
-
-  const onConflict = conflictTargetFor(row);
-  const { error } = await supabase
-    .from("leads")
-    .upsert(row, onConflict ? { onConflict } : undefined); // <-- correct v2 usage
-
-  if (error) throw error;
-  return row.id;
 }
 
-/** Upsert MANY (CSV import) */
+/** Merge helper: prefer non-empty new values, otherwise keep existing */
+function mergeRows(base, patch) {
+  const out = { ...base };
+  for (const k of Object.keys(patch)) {
+    const nv = patch[k];
+    if (nv === undefined) continue;
+    if (nv === null) continue; // don't overwrite with nulls during merge
+    if (typeof nv === "string" && nv.trim() === "") continue;
+    out[k] = nv;
+  }
+  // always refresh updated_at
+  out.updated_at = new Date().toISOString();
+  return out;
+}
+
+/** Find candidates by phone/email for this user (handles nulls safely) */
+async function findLeadCandidates({ userId, phoneE164, email }) {
+  const ors = [];
+  if (phoneE164) ors.push(`phone.eq.${encodeURIComponent(phoneE164)}`);
+  if (email) ors.push(`email.eq.${encodeURIComponent(email)}`);
+  if (!ors.length) return [];
+
+  const { data, error } = await supabase
+    .from("leads")
+    .select("*")
+    .eq("user_id", userId)
+    .or(ors.join(","))
+    .order("created_at", { ascending: false });
+
+  if (error) throw error;
+  return data || [];
+}
+
+/** Smart merge write: insert | update | merge-then-delete-extras */
+async function smartWriteLead(normalizedRow, { preferId } = {}) {
+  const userId = normalizedRow.user_id;
+  const phoneE164 = normalizedRow.phone || null;
+  const email = normalizedRow.email || null;
+
+  const candidates = await findLeadCandidates({ userId, phoneE164, email });
+
+  if (candidates.length === 0) {
+    // INSERT new
+    const { data, error } = await supabase
+      .from("leads")
+      .insert([normalizedRow])
+      .select("id")
+      .single();
+    if (error) throw error;
+    return data.id;
+  }
+
+  // Choose a target row to keep
+  let target = candidates[0];
+  if (preferId) {
+    const chosen = candidates.find((c) => c.id === preferId);
+    if (chosen) target = chosen;
+  }
+
+  // Merge fields into target
+  const merged = mergeRows(target, normalizedRow);
+
+  // UPDATE target
+  const { data: upd, error: uErr } = await supabase
+    .from("leads")
+    .update(merged)
+    .eq("user_id", userId)
+    .eq("id", target.id)
+    .select("id")
+    .single();
+  if (uErr) throw uErr;
+
+  // If there are extras (split-brain), delete them now
+  const extras = candidates.filter((c) => c.id !== target.id);
+  if (extras.length) {
+    const extraIds = extras.map((x) => x.id);
+    const { error: dErr } = await supabase
+      .from("leads")
+      .delete()
+      .in("id", extraIds)
+      .eq("user_id", userId);
+    if (dErr) {
+      // Not fatal to the caller; log and continue
+      console.warn("[leads] cleanup extras failed:", dErr);
+    }
+  }
+
+  return upd.id;
+}
+
+/** Public API: Upsert ONE lead with conflict-proof merging */
+export async function upsertLeadServer(lead) {
+  const userId = await getUserId();
+  if (!userId) throw new Error("Not logged in to Supabase");
+  const row = buildNormalizedRow(lead, userId);
+
+  try {
+    return await smartWriteLead(row, { preferId: lead.id });
+  } catch (e) {
+    // As a fallback, try once more without preferId (in case preferId pointed to a deleted row)
+    console.warn("[leads] smartWrite primary failed, retrying:", e?.message || e);
+    return await smartWriteLead(row);
+  }
+}
+
+/** Public API: Upsert MANY (CSV import) with conflict-proof merging */
 export async function upsertManyLeadsServer(leads = []) {
   const userId = await getUserId();
   if (!userId) throw new Error("Not logged in to Supabase");
   if (!leads.length) return 0;
 
-  const rows = leads.map((p) => {
-    const phoneE164 = p.phone ? toE164(p.phone) : null;
-    if (!phoneE164 && p.phone) {
-      throw new Error(`Invalid phone for ${p.name || "unknown"}: ${p.phone}`);
+  let wrote = 0;
+  for (const p of leads) {
+    const row = buildNormalizedRow(p, userId);
+    try {
+      await smartWriteLead(row, { preferId: p.id });
+      wrote++;
+    } catch (e) {
+      console.error("[leads] batch write failed for", p?.name || p?.email || p?.phone, e);
+      // continue with next row
     }
-
-    return {
-      id: p.id ?? undefined,
-      user_id: userId,
-      status: p.status === "sold" ? "sold" : "lead",
-      name: p.name || "",
-      phone: phoneE164 || null,
-      email: p.email ? normEmail(p.email) : null,
-      notes: p.notes || "",
-      dob: p.dob || null,
-      state: p.state || "",
-      beneficiary: p.beneficiary || "",
-      beneficiary_name: p.beneficiary_name || "",
-      company: p.company || "",
-      gender: p.gender || "",
-      military_branch: p.military_branch || "",
-      sold: p.sold || null,
-      stage: p.stage ?? null,
-      stage_changed_at: p.stage_changed_at ?? null,
-      next_follow_up_at: p.next_follow_up_at ?? null,
-      last_outcome: p.last_outcome ?? null,
-      call_attempts: p.call_attempts ?? null,
-      priority: p.priority ?? null,
-      pipeline: p.pipeline ?? null,
-      updated_at: new Date().toISOString(),
-    };
-  });
-
-  // Split by conflict key to get proper onConflict behavior in batches
-  const withPhone = rows.filter((r) => r.phone);
-  const withEmailOnly = rows.filter((r) => !r.phone && r.email);
-  const noKey = rows.filter((r) => !r.phone && !r.email);
-
-  if (withPhone.length) {
-    const { error } = await supabase
-      .from("leads")
-      .upsert(withPhone, { onConflict: "user_id,phone" });
-    if (error) throw error;
   }
-
-  if (withEmailOnly.length) {
-    const { error } = await supabase
-      .from("leads")
-      .upsert(withEmailOnly, { onConflict: "user_id,email" });
-    if (error) throw error;
-  }
-
-  if (noKey.length) {
-    // Fallback: no conflict key → will create new rows (could be dupes).
-    const { error } = await supabase.from("leads").upsert(noKey);
-    if (error) throw error;
-  }
-
-  return rows.length;
+  return wrote;
 }
 
-/** Update ONLY pipeline fields; first resolve the correct server row id */
+/** Update ONLY pipeline fields; resolve correct server row id via our lookup */
 export async function updatePipelineServer(lead) {
   const userId = await getUserId();
   if (!userId) throw new Error("Not logged in to Supabase");
 
-  const targetId = await findLeadRowIdForUser({
-    id: lead.id,
-    email: lead.email,
-    phone: lead.phone,
-  });
-  if (!targetId) throw new Error("No matching server lead found for user");
+  const phoneE164 = lead.phone ? toE164(lead.phone) : null;
+  const email = lead.email ? normEmail(lead.email) : null;
+  const candidates = await findLeadCandidates({ userId, phoneE164, email });
+  const target = candidates[0];
+  if (!target) throw new Error("No matching server lead found for user");
 
   const patch = {
     stage: lead.stage ?? null,
@@ -181,14 +192,14 @@ export async function updatePipelineServer(lead) {
     updated_at: new Date().toISOString(),
   };
 
-  const { error } = await supabase
+  const { data, error } = await supabase
     .from("leads")
     .update(patch)
     .eq("user_id", userId)
-    .eq("id", targetId);
-
+    .eq("id", target.id)
+    .select("id")
   if (error) throw error;
-  return targetId;
+  return data?.[0]?.id || target.id;
 }
 
 /** Delete ONE lead (mirror a UI delete) */
