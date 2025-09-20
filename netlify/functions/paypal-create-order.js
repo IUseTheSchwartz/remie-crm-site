@@ -1,19 +1,38 @@
 // netlify/functions/paypal-create-order.js
-import fetch from "node-fetch";
 
-export default async function handler(req, res) {
-  if (req.method !== "POST") return res.status(405).json({ error: "Method not allowed" });
+function json(statusCode, body) {
+  return {
+    statusCode,
+    headers: {
+      "Content-Type": "application/json",
+      "Access-Control-Allow-Origin": "*",
+      "Access-Control-Allow-Methods": "POST, OPTIONS",
+    },
+    body: JSON.stringify(body),
+  };
+}
+
+function paypalHost(envRaw) {
+  const env = String(envRaw || "").toLowerCase();
+  if (env === "sandbox") return "https://api.sandbox.paypal.com";
+  // anything else is LIVE
+  return "https://api-m.paypal.com";
+}
+
+export const handler = async (event) => {
+  if (event.httpMethod === "OPTIONS") return json(200, { ok: true });
+  if (event.httpMethod !== "POST") return json(405, { error: "Method not allowed" });
 
   try {
-    const { amount_cents, user_id } = req.body || {};
-    if (!amount_cents || !user_id) return res.status(400).json({ error: "Missing amount_cents or user_id" });
+    const { amount_cents, user_id } = JSON.parse(event.body || "{}");
+    if (!amount_cents || !user_id) return json(400, { error: "Missing amount_cents or user_id" });
 
-    const PAYPAL_ENV = (process.env.PAYPAL_ENV || "sandbox").toLowerCase(); // "sandbox" or "api-m"
-    const host = PAYPAL_ENV === "sandbox" ? "https://api.sandbox.paypal.com" : "https://api-m.paypal.com";
+    const host = paypalHost(process.env.PAYPAL_ENV);
     const clientId = process.env.PAYPAL_CLIENT_ID;
     const clientSecret = process.env.PAYPAL_CLIENT_SECRET;
+    if (!clientId || !clientSecret) return json(500, { error: "PayPal credentials not set" });
 
-    // OAuth token
+    // 1) OAuth
     const tokenRes = await fetch(`${host}/v1/oauth2/token`, {
       method: "POST",
       headers: {
@@ -23,9 +42,11 @@ export default async function handler(req, res) {
       body: "grant_type=client_credentials",
     });
     const token = await tokenRes.json();
-    if (!token.access_token) throw new Error("Failed to get PayPal token");
+    if (!tokenRes.ok) {
+      return json(tokenRes.status, { error: "PayPal OAuth failed", details: token });
+    }
 
-    // Create order
+    // 2) Create order
     const orderRes = await fetch(`${host}/v2/checkout/orders`, {
       method: "POST",
       headers: {
@@ -36,7 +57,7 @@ export default async function handler(req, res) {
         intent: "CAPTURE",
         purchase_units: [
           {
-            reference_id: user_id, // we use this to know which user to credit
+            reference_id: user_id, // we'll use this in the webhook to credit the right user
             amount: {
               currency_code: "USD",
               value: (amount_cents / 100).toFixed(2),
@@ -47,10 +68,13 @@ export default async function handler(req, res) {
     });
 
     const order = await orderRes.json();
-    if (!order?.id) return res.status(500).json({ error: "Failed to create PayPal order" });
-    return res.status(200).json(order);
+    if (!orderRes.ok) {
+      return json(orderRes.status, { error: "PayPal create order failed", details: order });
+    }
+
+    return json(200, order);
   } catch (err) {
     console.error("paypal-create-order error", err);
-    return res.status(500).json({ error: "Failed to create order" });
+    return json(500, { error: "Failed to create order", details: String(err?.message || err) });
   }
-}
+};
