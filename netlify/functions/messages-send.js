@@ -1,27 +1,21 @@
 // File: netlify/functions/messages-send.js
-// Outbound SMS send (Telnyx-only).
-// - Blocks sends if wallet < 1¢
-// - Inserts into public.messages with status='sent' once Telnyx accepts
-// - Lets a DB trigger (wallet_debit_on_message) debit 1¢ per row
-// - Dedupe via provider_message_id
-// - Returns a helpful 'trace' array
+// Single source of truth for outbound sends (Telnyx-only).
+// Accepts: (lead_id) OR (contact_id) OR (user_id + to), plus templateKey OR raw body, and optional provider_message_id.
+// Enforces: template enabled per user (when using templateKey), subscribed=true, wallet >= 1¢, dedupe by provider_message_id.
+// Logs: full row into public.messages (direction='outgoing'), marks status 'sent' on provider OK, then RPC debit 1¢.
+// Always returns a detailed `trace`.
 
 const { getServiceClient } = require("./_supabase");
 
 const SUPABASE_URL = process.env.SUPABASE_URL;
-const SUPABASE_SERVICE_ROLE =
-  process.env.SUPABASE_SERVICE_ROLE || process.env.SUPABASE_SERVICE_ROLE_KEY;
+const SUPABASE_SERVICE_ROLE = process.env.SUPABASE_SERVICE_ROLE || process.env.SUPABASE_SERVICE_ROLE_KEY;
 
 const TELNYX_API_KEY = process.env.TELNYX_API_KEY;
 const TELNYX_MESSAGING_PROFILE_ID = process.env.TELNYX_MESSAGING_PROFILE_ID;
 const TELNYX_FROM_NUMBER = process.env.TELNYX_FROM_NUMBER;
 
 function json(obj, statusCode = 200) {
-  return {
-    statusCode,
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(obj),
-  };
+  return { statusCode, headers: { "Content-Type": "application/json" }, body: JSON.stringify(obj) };
 }
 
 function normalizeUS(phone) {
@@ -74,33 +68,45 @@ async function lookupContactByPhone(db, user_id, toRaw) {
 
 exports.handler = async (evt) => {
   const trace = [];
-
   try {
-    // Env check
-    if (!SUPABASE_URL || !SUPABASE_SERVICE_ROLE)
+    // --- Env sanity ---
+    if (!SUPABASE_URL || !SUPABASE_SERVICE_ROLE) {
       return json({ error: "server_misconfigured", missing: "SUPABASE_URL/SUPABASE_SERVICE_ROLE", trace }, 500);
-    if (!TELNYX_API_KEY || !TELNYX_FROM_NUMBER)
+    }
+    if (!TELNYX_API_KEY || !TELNYX_FROM_NUMBER) {
       return json({ error: "server_misconfigured", missing: "TELNYX_API_KEY/TELNYX_FROM_NUMBER", trace }, 500);
+    }
 
-    // Parse
-    let body;
-    try { body = JSON.parse(evt.body || "{}"); }
+    // --- Parse body ---
+    let bodyJson;
+    try { bodyJson = JSON.parse(evt.body || "{}"); }
     catch { return json({ error: "invalid_json", trace }, 400); }
 
-    let { user_id, to: toRaw, templateKey, provider_message_id, contact_id, lead_id } = body;
-    const placeholdersIn = body.placeholders || {};
+    // Accept both user_id and requesterId
+    let {
+      user_id,
+      requesterId,
+      to: toRaw,
+      templateKey,
+      provider_message_id,
+      contact_id,
+      lead_id,
+      placeholders: placeholdersIn = {},
+      body: rawBody, // optional: direct text send
+    } = bodyJson;
+    user_id = user_id || requesterId || null;
+
     const db = getServiceClient();
+    trace.push({ step: "input", user_id: !!user_id, to: !!toRaw, templateKey, contact_id, lead_id, hasRawBody: !!rawBody });
 
-    trace.push({ step: "input", user_id: !!user_id, to: !!toRaw, templateKey, contact_id, lead_id });
-
-    // Hydrate lead/contact if provided
+    // --- Hydrate lead/contact if provided ---
     let lead = null;
     let contact = null;
 
     if (lead_id) {
       const { data: l, error: lerr } = await db
         .from("leads")
-        .select("id,user_id,name,phone,state,beneficiary,beneficiary_name,status,sold,military_branch")
+        .select("id,user_id,name,phone,state,beneficiary,beneficiary_name,military_branch,status,sold")
         .eq("id", lead_id)
         .maybeSingle();
       if (lerr) return json({ error: "lead_lookup_failed", detail: lerr.message, trace }, 500);
@@ -121,105 +127,139 @@ exports.handler = async (evt) => {
       trace.push({ step: "contact.hydrated", contact_id: contact.id, toMasked: mask(toRaw) });
     }
 
-    // Requirements
-    if (!templateKey || (!user_id && !lead_id && !contact_id) || (!toRaw && !lead_id && !contact_id)) {
+    // Minimal requirements
+    if ((!user_id && !lead_id && !contact_id) || (!toRaw && !lead_id && !contact_id)) {
       return json({
         error: "missing_fields",
-        need: ["templateKey", andOneOf("(user_id + to)", "(contact_id)", "(lead_id)")],
-        got: { user_id: !!user_id, templateKey: !!templateKey, to: !!toRaw, contact_id: !!contact_id, lead_id: !!lead_id },
+        need: ["and one of: (user_id + to) or (contact_id) or (lead_id)"],
+        got: { user_id: !!user_id, to: !!toRaw, contact_id: !!contact_id, lead_id: !!lead_id },
         trace
       }, 400);
     }
-    function andOneOf(...arr){ return "and one of: " + arr.join(" or "); }
 
+    // If still no contact and we have user_id + to, try to find by phone
     if (!contact && toRaw && user_id) contact = await lookupContactByPhone(db, user_id, toRaw);
 
-    // Normalize phone
+    // Resolve final "to"
     const to = normalizeUS(toRaw);
     if (!to) return json({ error: "invalid_phone", toRaw, trace }, 400);
 
-    // Respect unsubscribe if we found a contact row
+    // Subscribed enforcement (only if we have a contact row)
     if (contact && contact.subscribed === false) {
       trace.push({ step: "gate.subscribed=false", contact_id: contact.id });
       return json({ status: "skipped_unsubscribed", contact_id: contact.id, trace }, 200);
     }
 
-    // Templates + enabled
-    const { templates, enabled } = await fetchTemplatesRow(db, user_id);
-    const templateEnabled = enabled?.[templateKey] === true;
-    const templateRaw = templates?.[templateKey];
+    // Wallet pre-check (block if < 1¢)
+    const { data: w, error: werr } = await db
+      .from("user_wallets")
+      .select("balance_cents")
+      .eq("user_id", user_id)
+      .maybeSingle();
+    if (werr) return json({ error: "wallet_lookup_failed", detail: werr.message, trace }, 500);
+    const balance = w?.balance_cents ?? 0;
+    trace.push({ step: "wallet.checked", balance_cents: balance });
+    if (balance < 1) {
+      // Hard stop: do NOT send to provider
+      return json({ status: "skipped_insufficient_funds", balance_cents: balance, trace }, 200);
+    }
 
-    trace.push({ step: "templates.loaded", templateKey, enabled: !!templateEnabled, hasTemplate: !!templateRaw });
-
-    if (!templateEnabled) return json({ status: "skipped_disabled", templateKey, trace }, 200);
-    if (!templateRaw)   return json({ error: "template_not_found", templateKey, trace }, 404);
-
-    // Agent + placeholders
+    // Agent + placeholder hydration
     const agent = await fetchAgent(db, user_id);
     const leadSold = lead?.sold || {};
     const first_name =
       placeholdersIn.first_name ||
       (contact?.full_name || lead?.name || "").split(/\s+/)[0] || "";
 
+    // Fill vars with snake_case + camelCase fallbacks for SOLD data
     const vars = {
       first_name,
       state: placeholdersIn.state || lead?.state || contact?.meta?.state || "",
-      beneficiary: placeholdersIn.beneficiary || lead?.beneficiary_name || lead?.beneficiary || contact?.meta?.beneficiary || "",
+      beneficiary:
+        placeholdersIn.beneficiary ||
+        lead?.beneficiary_name ||
+        lead?.beneficiary ||
+        contact?.meta?.beneficiary ||
+        "",
       agent_name: placeholdersIn.agent_name || agent?.full_name || "",
       agent_phone: placeholdersIn.agent_phone || agent?.phone || "",
       calendly_link: placeholdersIn.calendly_link || agent?.calendly_url || "",
+
+      // SOLD fields (snake + camel fallbacks)
       carrier: placeholdersIn.carrier || leadSold.carrier || "",
-      policy_number: placeholdersIn.policy_number || leadSold.policy_number || "",
-      premium: placeholdersIn.premium || leadSold.premium || "",
-      monthly_payment: placeholdersIn.monthly_payment || leadSold.monthly_payment || "",
-      policy_start_date: placeholdersIn.policy_start_date || leadSold.policy_start_date || "",
-      face_amount: placeholdersIn.face_amount || leadSold.face_amount || "",
-      military_branch: placeholdersIn.military_branch || lead?.military_branch || contact?.meta?.military_branch || "",
+      policy_number:
+        placeholdersIn.policy_number || leadSold.policy_number || leadSold.policyNumber || "",
+      premium:
+        placeholdersIn.premium || leadSold.premium || "",
+      monthly_payment:
+        placeholdersIn.monthly_payment || leadSold.monthly_payment || leadSold.monthlyPayment || "",
+      policy_start_date:
+        placeholdersIn.policy_start_date || leadSold.policy_start_date || leadSold.startDate || "",
+      face_amount:
+        placeholdersIn.face_amount || leadSold.face_amount || leadSold.faceAmount || "",
+
+      military_branch:
+        placeholdersIn.military_branch || lead?.military_branch || contact?.meta?.military_branch || "",
     };
 
-    const text = renderTemplate(templateRaw, vars).trim();
-    if (!text) return json({ error: "rendered_empty_body", templateKey, vars, trace }, 400);
+    // Load templates (only needed if templateKey present)
+    let text = null;
+    if (templateKey) {
+      const { templates, enabled } = await fetchTemplatesRow(db, user_id);
+      const templateEnabled = enabled?.[templateKey] === true;
+      const templateRaw = templates?.[templateKey];
 
-    // Dedupe key
-    if (!provider_message_id) {
-      provider_message_id = `auto_${templateKey}_${lead_id || contact_id || norm10(to)}`;
+      trace.push({ step: "templates.loaded", templateKey, enabled: !!templateEnabled, hasTemplate: !!templateRaw });
+
+      if (!templateEnabled) {
+        return json({ status: "skipped_disabled", templateKey, trace }, 200);
+      }
+      if (!templateRaw) {
+        return json({ error: "template_not_found", templateKey, trace }, 404);
+      }
+
+      text = renderTemplate(templateRaw, vars).trim();
+      if (!text) return json({ error: "rendered_empty_body", templateKey, vars, trace }, 400);
+    } else if (typeof rawBody === "string" && rawBody.trim()) {
+      // Raw body path (used by client fallback/tests)
+      text = String(rawBody).trim();
+      trace.push({ step: "raw_body.mode", length: text.length });
+    } else {
+      return json({ error: "missing_template_or_body", need: ["templateKey OR body"], trace }, 400);
     }
 
-    // Dedupe check
+    // Generate/confirm dedupe key
+    if (!provider_message_id) {
+      const baseKey = templateKey ? templateKey : "raw";
+      provider_message_id = `auto_${baseKey}_${lead_id || contact_id || norm10(to)}`;
+    }
+
+    // Dedupe (optional DB uniqueness recommended)
     const { data: dupeRows, error: dupErr } = await db
       .from("messages")
       .select("id")
       .eq("user_id", user_id)
       .eq("provider_message_id", provider_message_id)
       .limit(1);
-    if (!dupErr && dupeRows?.length) {
+    if (dupErr) {
+      trace.push({ step: "dedupe.lookup.error", detail: dupErr.message });
+    } else if (dupeRows?.length) {
       return json({ ok: true, deduped: true, provider_message_id, trace }, 200);
     }
 
-    // ===== Wallet pre-check (block if < 1¢) =====
-    const { data: w, error: werr } = await db
-      .from("user_wallets")
-      .select("balance_cents")
-      .eq("user_id", user_id)
-      .maybeSingle();
-
-    if (werr) return json({ error: "wallet_lookup_failed", detail: werr.message, trace }, 500);
-    const balance = w?.balance_cents ?? 0;
-    trace.push({ step: "wallet.checked", balance_cents: balance });
-
-    if (balance < 1) {
-      return json({ status: "skipped_insufficient_funds", balance_cents: balance, trace }, 200);
-    }
-    // ============================================
-
-    // Telnyx send
+    // Provider send (Telnyx)
     const reqPayload = {
       from: TELNYX_FROM_NUMBER,
       to,
       text,
       ...(TELNYX_MESSAGING_PROFILE_ID ? { messaging_profile_id: TELNYX_MESSAGING_PROFILE_ID } : {}),
     };
-    trace.push({ step: "telnyx.request", toMasked: mask(to), from: TELNYX_FROM_NUMBER, withProfile: !!TELNYX_MESSAGING_PROFILE_ID });
+    trace.push({
+      step: "telnyx.request",
+      toMasked: mask(to),
+      from: TELNYX_FROM_NUMBER,
+      withProfile: !!TELNYX_MESSAGING_PROFILE_ID
+    });
 
     let provider_id = null;
     try {
@@ -239,7 +279,7 @@ exports.handler = async (evt) => {
       return json({ error: "provider_network_error", detail: e?.message, trace }, 502);
     }
 
-    // Insert message row (status = 'sent' right away; debit via DB trigger)
+    // Insert full message row (so it shows in Messages UI) — mark as 'sent' immediately
     const insertRow = {
       user_id,
       contact_id: contact?.id || null,
@@ -249,21 +289,21 @@ exports.handler = async (evt) => {
       from_number: TELNYX_FROM_NUMBER,
       to_number: to,
       body: text,
-      status: "sent",               // mark as sent once provider accepts
+      status: "sent", // set to 'sent' on provider OK
       provider_sid: provider_id,
       provider_message_id,
-      price_cents: 1,               // DB trigger will subtract this from wallet
+      price_cents: 1,
     };
-
-    const { data: ins, error: insErr } = await db
-      .from("messages")
-      .insert([insertRow])
-      .select("id")
-      .maybeSingle();
-
+    const { data: ins, error: insErr } = await db.from("messages").insert([insertRow]).select("id").maybeSingle();
     if (insErr) return json({ error: "db_insert_failed", detail: insErr.message, trace }, 500);
 
-    trace.push({ step: "wallet.debit.via_trigger" });
+    // Debit wallet 1¢ (non-blocking but we record in trace)
+    try {
+      await db.rpc("user_wallets_debit", { p_user_id: user_id, p_amount: 1 });
+      trace.push({ step: "wallet.debit.ok" });
+    } catch (e) {
+      trace.push({ step: "wallet.debit.error", error: e.message });
+    }
 
     return json({
       ok: true,
