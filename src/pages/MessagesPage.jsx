@@ -1,8 +1,7 @@
-// File: src/pages/MessagesPage.jsx
 import { useEffect, useMemo, useRef, useState } from "react";
 import { supabase } from "../lib/supabaseClient.js";
 import { useAuth } from "../auth.jsx";
-import { Send, CreditCard, Plus, Loader2, Trash2, Edit3 } from "lucide-react";
+import { Send, CreditCard, Plus, Loader2, Trash2, Edit3, X } from "lucide-react";
 
 /* ---------------- Phone helpers (US/CA default) ---------------- */
 
@@ -41,6 +40,24 @@ function classNames(...xs) {
   return xs.filter(Boolean).join(" ");
 }
 
+/* ---------------- PayPal SDK loader ---------------- */
+
+const PAYPAL_CLIENT_ID = import.meta.env.VITE_PAYPAL_CLIENT_ID;
+
+async function loadPayPalSdk() {
+  if (window.paypal) return;
+  await new Promise((resolve, reject) => {
+    const s = document.createElement("script");
+    s.src = `https://www.paypal.com/sdk/js?client-id=${encodeURIComponent(
+      PAYPAL_CLIENT_ID || ""
+    )}&currency=USD&intent=capture`;
+    s.async = true;
+    s.onload = resolve;
+    s.onerror = () => reject(new Error("Failed to load PayPal SDK"));
+    document.head.appendChild(s);
+  });
+}
+
 /* ---------------- Main page ---------------- */
 
 export default function MessagesPage() {
@@ -66,6 +83,12 @@ export default function MessagesPage() {
   const [text, setText] = useState("");
   const [sending, setSending] = useState(false);
   const scrollerRef = useRef(null);
+
+  // PayPal modal
+  const [paypalOpen, setPaypalOpen] = useState(false);
+  const [paypalAmountCents, setPaypalAmountCents] = useState(0);
+  const [paypalLoading, setPaypalLoading] = useState(false);
+  const paypalContainerRef = useRef(null);
 
   /* ---------- Fetchers ---------- */
 
@@ -284,7 +307,7 @@ export default function MessagesPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeNumber]);
 
-  /* ---------- Actions ---------- */
+  /* ---------- Send ---------- */
 
   async function handleSend() {
     if (!text.trim() || !activeNumber) return;
@@ -334,24 +357,62 @@ export default function MessagesPage() {
       setActiveNumber(toE164);
     } catch (e) {
       console.error(e);
-      alert("Failed to send message.\n" + (e?.message || ""));
+      alert("Failed to send message.\n" + (e?.message || "")); 
     } finally {
       setSending(false);
     }
   }
 
-  async function startTopUp(amountCents) {
+  /* ---------- PayPal Top-up ---------- */
+
+  async function openPayPal(amountCents) {
+    if (!user?.id) return alert("Please sign in first.");
     try {
-      const res = await fetch("/.netlify/functions/create-checkout", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ amount_cents: amountCents, user_id: user.id }),
-      });
-      const { url } = await res.json();
-      if (url) window.location.href = url;
+      setPaypalAmountCents(amountCents);
+      setPaypalOpen(true);
+      setPaypalLoading(true);
+
+      await loadPayPalSdk();
+
+      // Clear previous render if reopening
+      if (paypalContainerRef.current) {
+        paypalContainerRef.current.innerHTML = "";
+      }
+
+      window.paypal
+        .Buttons({
+          style: { layout: "vertical", shape: "rect", label: "paypal" },
+          createOrder: async () => {
+            const res = await fetch("/.netlify/functions/paypal-create-order", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ amount_cents: amountCents, user_id: user.id }),
+            });
+            const data = await res.json();
+            if (!data?.id) throw new Error("Failed to create PayPal order");
+            return data.id;
+          },
+          onApprove: async () => {
+            // Capture handled by PayPal; webhook credits wallet.
+            setPaypalOpen(false);
+            // Soft refresh wallet after a brief delay in case webhook already landed
+            setTimeout(fetchWallet, 2500);
+            alert("Payment approved. Your wallet will update shortly.");
+          },
+          onCancel: () => setPaypalOpen(false),
+          onError: (err) => {
+            console.error(err);
+            setPaypalOpen(false);
+            alert("PayPal error. Please try again.");
+          },
+        })
+        .render(paypalContainerRef.current);
     } catch (e) {
       console.error(e);
-      alert("Could not start checkout.");
+      setPaypalOpen(false);
+      alert(e.message || "Could not start PayPal checkout.");
+    } finally {
+      setPaypalLoading(false);
     }
   }
 
@@ -379,14 +440,14 @@ export default function MessagesPage() {
           </div>
           <div className="flex gap-2">
             <button
-              onClick={() => startTopUp(2000)}
+              onClick={() => openPayPal(2000)}
               className="inline-flex items-center gap-1 rounded-lg border border-white/15 bg-white/5 px-2.5 py-1.5 text-xs hover:bg-white/10"
               title="Add $20"
             >
               <CreditCard className="h-4 w-4" /> +$20
             </button>
             <button
-              onClick={() => startTopUp(5000)}
+              onClick={() => openPayPal(5000)}
               className="inline-flex items-center gap-1 rounded-lg border border-white/15 bg-white/5 px-2.5 py-1.5 text-xs hover:bg-white/10"
               title="Add $50"
             >
@@ -504,7 +565,7 @@ export default function MessagesPage() {
               <button
                 onClick={() => removeConversation(activeNumber)}
                 className="inline-flex items-center gap-1 rounded-md border border-rose-400/30 bg-rose-500/10 px-2 py-1 text-xs text-rose-200 hover:bg-rose-500/20"
-                title="Remove conversation"
+                title="Remove"
               >
                 <Trash2 className="h-3.5 w-3.5" /> Remove
               </button>
@@ -593,6 +654,39 @@ export default function MessagesPage() {
           )}
         </div>
       </section>
+
+      {/* PayPal Modal */}
+      {paypalOpen && (
+        <div className="fixed inset-0 z-50 grid place-items-center bg-black/60 p-4">
+          <div className="w-full max-w-md rounded-2xl border border-white/10 bg-[#0b0b12] p-4 shadow-2xl">
+            <div className="mb-3 flex items-center justify-between">
+              <h3 className="text-sm font-semibold">
+                Add funds — ${ (paypalAmountCents/100).toFixed(2) }
+              </h3>
+              <button
+                onClick={() => setPaypalOpen(false)}
+                className="rounded-md border border-white/15 bg-white/5 p-1 hover:bg-white/10"
+                title="Close"
+              >
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+
+            <div className="py-2">
+              {paypalLoading && (
+                <div className="mb-2 inline-flex items-center gap-2 text-xs text-white/70">
+                  <Loader2 className="h-3 w-3 animate-spin" /> Loading PayPal…
+                </div>
+              )}
+              <div ref={paypalContainerRef} />
+            </div>
+
+            <p className="mt-2 text-[11px] text-white/50">
+              After approval, your wallet updates automatically within a few seconds.
+            </p>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
