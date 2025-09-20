@@ -356,7 +356,6 @@ async function sendSoldAutoText({ leadId, person }) {
       return;
     }
 
-    // Try a few common keys so you don't have to rename in DB
     const tryKeys = ["sold", "sold_welcome", "policy_info", "sold_policy", "policy"];
 
     for (const templateKey of tryKeys) {
@@ -376,13 +375,8 @@ async function sendSoldAutoText({ leadId, person }) {
       const out = await res.json().catch(() => ({}));
       console.log("[sold-auto] result", templateKey, res.status, out);
 
-      // success or deduped → stop
       if (res.ok && (out?.ok || out?.deduped)) return;
-
-      // if disabled or not found, try next key
       if (out?.status === "skipped_disabled" || out?.error === "template_not_found") continue;
-
-      // any other error → stop trying to avoid noise
       break;
     }
   } catch (e) {
@@ -390,7 +384,7 @@ async function sendSoldAutoText({ leadId, person }) {
   }
 }
 
-// Preferred server function; fallback to client-side template + messages-send for NEW LEAD
+/** UPDATED: Preferred server function; careful fallback to pick military vs normal */
 async function triggerAutoTextForLeadId({ leadId, userId, person }) {
   // Resolve missing IDs so we never silently bail
   try {
@@ -409,22 +403,34 @@ async function triggerAutoTextForLeadId({ leadId, userId, person }) {
 
   console.log("[auto-text] calling lead-new-auto", { leadId });
 
-  // 1) Preferred: server function
+  // 1) Preferred: server function — only stop if it *actually* sent
   try {
+    const { data: { session } } = await supabase.auth.getSession();
+    const token = session?.access_token;
+
     const res = await fetch(`${FN_BASE}/lead-new-auto`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: {
+        "Content-Type": "application/json",
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      },
       body: JSON.stringify({ lead_id: leadId, requesterId: userId }),
     });
-    if (res.ok) return;
-    console.warn("lead-new-auto non-OK:", res.status, await res.text().catch(() => ""));
+
+    let out = null;
+    try { out = await res.json(); } catch {}
+
+    if (res.ok && (out?.ok || out?.sent || out?.deduped)) {
+      console.log("[auto-text] server handled send", out);
+      return;
+    }
+
+    console.warn("[auto-text] server did not send; falling back", { status: res.status, out });
   } catch (e) {
-    console.warn("lead-new-auto unreachable:", e?.message || e);
+    console.warn("[auto-text] server call failed; using client fallback:", e?.message || e);
   }
 
-  console.log("[auto-text] server failed; trying client fallback");
-
-  // 2) Fallback: use template in DB → messages-send (new_lead / new_lead_military)
+  // 2) Client fallback (chooses military vs normal correctly)
   try {
     const { data: mt, error } = await supabase
       .from("message_templates")
@@ -455,7 +461,6 @@ async function triggerAutoTextForLeadId({ leadId, userId, person }) {
 
     const templateKey = isMilitary ? "new_lead_military" : "new_lead";
 
-    // Enabled flag support (boolean or map)
     const enabled =
       typeof mt.enabled === "boolean"
         ? mt.enabled
