@@ -35,7 +35,8 @@ async function userHasPersonalSub({ supa, stripe, userId }) {
 
   if (Array.isArray(byUser) && byUser.length) {
     const s = norm(byUser[0].status);
-    if (ACTIVE_SET.has(s)) return { ok: true, via: "db:user_id", customerId: byUser[0].stripe_customer_id || null };
+    if (ACTIVE_SET.has(s))
+      return { ok: true, via: "db:user_id", customerId: byUser[0].stripe_customer_id || null };
   }
 
   // 2) DB: via mapping table
@@ -61,8 +62,7 @@ async function userHasPersonalSub({ supa, stripe, userId }) {
     }
   }
 
-  // 3) Stripe fallback: confirm directly with Stripe (bullet-proof)
-  //    Get customer id (prefer mapping; otherwise resolve from email)
+  // 3) Stripe fallback
   let customerId = mappedCustomer;
   if (!customerId) {
     try {
@@ -73,17 +73,19 @@ async function userHasPersonalSub({ supa, stripe, userId }) {
         const list = await stripe.customers.list({ email, limit: 1 });
         if (list?.data?.length) {
           customerId = list.data[0].id;
-          // Save mapping for next time
+          // Save mapping
           await supa
             .from("user_stripe_customers")
             .upsert({ user_id: userId, stripe_customer_id: customerId });
         }
       }
-    } catch { /* ignore */ }
+    } catch {
+      /* ignore */
+    }
   }
 
   if (!customerId) {
-    // last-ditch: create a customer so team creation can still make the seats sub later
+    // create a customer so team creation can proceed
     const created = await stripe.customers.create({ metadata: { user_id: userId } });
     customerId = created.id;
     await supa
@@ -91,7 +93,6 @@ async function userHasPersonalSub({ supa, stripe, userId }) {
       .upsert({ user_id: userId, stripe_customer_id: customerId });
   }
 
-  // Ask Stripe if this customer has any active/trialing subscription
   const subs = await stripe.subscriptions.list({
     customer: customerId,
     status: "all",
@@ -126,7 +127,7 @@ export async function handler(event) {
     } catch {}
     if (!name) return { statusCode: 400, body: "Missing team name" };
 
-    // ✅ Allow only personal subscribers (seats can’t create teams)
+    // ✅ Only personal subscribers may create a team
     const check = await userHasPersonalSub({ supa, stripe, userId });
     if (!check.ok) {
       return {
@@ -176,15 +177,21 @@ export async function handler(event) {
       return { statusCode: 500, body: "Failed to create team record" };
     }
 
-    // Owner membership
+    // 👇 FIX: upsert the owner membership (idempotent, avoids unique-violation)
     try {
       const { error } = await supa
         .from("user_teams")
-        .insert({ user_id: userId, team_id: team.id, role: "owner", status: "active" });
+        .upsert(
+          { user_id: userId, team_id: team.id, role: "owner", status: "active" },
+          { onConflict: "user_id,team_id" }
+        );
       if (error) throw error;
     } catch (e) {
-      console.error("[create-team] Supabase insert user_teams failed:", e?.message || e);
-      return { statusCode: 500, body: "Failed to join team as owner" };
+      console.error("[create-team] Supabase upsert user_teams failed:", e?.message || e);
+      return {
+        statusCode: 500,
+        body: `Failed to join team as owner: ${e?.message || "unknown error"}`,
+      };
     }
 
     const clientSecret =
