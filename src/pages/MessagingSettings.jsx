@@ -7,7 +7,7 @@ import { CreditCard, Check, Loader2, MessageSquare, Info, RotateCcw, Lock, X } f
 const TEMPLATE_DEFS = [
   { key: "new_lead", label: "New Lead (instant)" },
   { key: "new_lead_military", label: "New Lead (military)" },
-  { key: "appointment", label: "Appointment Reminder" },      // 🔒 locked (coming soon)
+  { key: "appointment", label: "Appointment Reminder" }, // 🔒 locked (coming soon)
   { key: "sold", label: "Sold - Policy Info" },
   { key: "payment_reminder", label: "Payment Reminder" },
   { key: "birthday_text", label: "Birthday Text" },
@@ -120,14 +120,21 @@ const DEFAULT_TEST_DATA = {
   today: "",
 };
 
-const PAYPAL_CLIENT_ID = import.meta.env.VITE_PAYPAL_CLIENT_ID;
+/* ---------- PayPal SDK loader ---------- */
+const PAYPAL_CLIENT_ID = import.meta.env.VITE_PAYPAL_CLIENT_ID || "";
 
 /** Load PayPal SDK once */
 async function loadPayPalSdk() {
   if (window.paypal) return;
+  if (!PAYPAL_CLIENT_ID) {
+    throw new Error("Missing VITE_PAYPAL_CLIENT_ID env var");
+  }
   await new Promise((resolve, reject) => {
     const s = document.createElement("script");
-    s.src = `https://www.paypal.com/sdk/js?client-id=${encodeURIComponent(PAYPAL_CLIENT_ID)}&currency=USD&intent=capture`;
+    // include buttons component explicitly
+    s.src = `https://www.paypal.com/sdk/js?client-id=${encodeURIComponent(
+      PAYPAL_CLIENT_ID
+    )}&currency=USD&intent=capture&components=buttons`;
     s.async = true;
     s.onload = resolve;
     s.onerror = () => reject(new Error("Failed to load PayPal SDK"));
@@ -411,10 +418,17 @@ export default function MessagingSettings() {
           if (!data?.id) throw new Error("Failed to create PayPal order");
           return data.id;
         },
-        onApprove: async () => {
-          // Capture handled by PayPal widget; webhook will credit wallet.
-          setPaypalOpen(false);
-          alert("Payment approved. Funds will appear in your wallet shortly.");
+        onApprove: async (_data, actions) => {
+          try {
+            // Capture the payment; webhook will credit wallet on capture completed
+            await actions.order.capture();
+            setPaypalOpen(false);
+            alert("Payment captured. Funds will appear in your wallet shortly.");
+          } catch (err) {
+            console.error(err);
+            setPaypalOpen(false);
+            alert("Capture failed. Please check PayPal or try again.");
+          }
         },
         onCancel: () => {
           setPaypalOpen(false);
@@ -804,7 +818,7 @@ export default function MessagingSettings() {
             </div>
             <div ref={paypalContainerRef} className="py-2" />
             <p className="mt-2 text-[11px] text-white/50">
-              After approval, your wallet updates automatically within a few seconds.
+              After capture, your wallet updates automatically within a few seconds.
             </p>
           </div>
         </div>
