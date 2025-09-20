@@ -9,7 +9,6 @@ import {
 
 import {
   scheduleWelcomeText,
-  // schedulePolicyKickoffEmail  // removed (unused)
 } from "../lib/automation.js";
 
 // Supabase helpers
@@ -25,7 +24,7 @@ import { supabase } from "../lib/supabaseClient.js";
 // Google Sheets connector
 import GoogleSheetsConnector from "../components/GoogleSheetsConnector.jsx";
 
-// NEW: E.164 normalizer
+// Phone normalizer (E.164)
 import { toE164 } from "../lib/phone.js";
 
 /* ---------------- Functions base (Netlify) ---------------- */
@@ -77,43 +76,28 @@ const norm = (s) => (s || "").toString().trim().toLowerCase();
 
 /**
  * buildHeaderIndex(headers)
- *
- * Improved matching rules:
- *  - First attempt exact normalized equality.
- *  - Prefer headers containing 'branch' for military_branch mapping (so "Military Branch" wins over "Military Status").
- *  - Prevent matching a generic candidate like "military" to a header like "military status" unless header is exactly "military".
  */
 function buildHeaderIndex(headers) {
   const normalized = headers.map(norm);
 
-  // helper to test candidates against a single normalized header string
   const matchesCandidate = (normalizedHeader, candidate) => {
     const c = candidate.toLowerCase();
-    // exact match
     if (normalizedHeader === c) return true;
-    // allow candidate underscores vs spaces
     if (normalizedHeader === c.replace(/_/g, " ")) return true;
-    // if candidate explicitly references 'branch', prefer it only when header mentions 'branch'
     if (c.includes("branch") && normalizedHeader.includes("branch")) return true;
-    // special rule: avoid matching generic 'military' to 'military status'
     if (c === "military") {
-      // only match if header is exactly 'military' or header explicitly mentions 'branch'
       return normalizedHeader === "military" || normalizedHeader.includes("branch");
     }
-    // otherwise allow candidate contained inside header (e.g., 'service' in 'branch of service')
     if (normalizedHeader.includes(c) && c.length > 3) return true;
     return false;
   };
 
   const find = (candidates) => {
-    // 1) exact match pass (fast)
     for (let i = 0; i < normalized.length; i++) {
       for (const cand of candidates) {
         if (normalized[i] === cand) return headers[i];
       }
     }
-
-    // 2) header-preferring pass (look for 'branch' headers first for military_branch)
     for (let i = 0; i < normalized.length; i++) {
       if (normalized[i].includes("branch")) {
         for (const cand of candidates) {
@@ -121,14 +105,11 @@ function buildHeaderIndex(headers) {
         }
       }
     }
-
-    // 3) fallback pass: looser matching but with protections
     for (let i = 0; i < normalized.length; i++) {
       for (const cand of candidates) {
         if (matchesCandidate(normalized[i], cand)) return headers[i];
       }
     }
-
     return null;
   };
 
@@ -140,7 +121,6 @@ function buildHeaderIndex(headers) {
     phone:  find(H.phone),
     notes:  find(H.notes),
     company:find(H.company),
-    // NEW
     dob:    find(H.dob),
     state:  find(H.state),
     beneficiary: find(H.beneficiary),
@@ -175,7 +155,7 @@ const buildEmail = (row, map) =>
   pick(row, map.email) || row.email || row.Email || "";
 const buildNotes = (row, map) => pick(row, map.notes) || "";
 
-// NEW field builders (string passthrough)
+// NEW field builders
 const buildDob = (row, map) => pick(row, map.dob);
 const buildState = (row, map) => pick(row, map.state).toUpperCase();
 const buildBeneficiary = (row, map) => pick(row, map.beneficiary);
@@ -204,10 +184,10 @@ const normalizeTag = (s) => String(s ?? "").trim().toLowerCase().replace(/\s+/g,
 const uniqTags = (arr) => Array.from(new Set((arr || []).map(normalizeTag))).filter(Boolean);
 const normalizePhone = (s) => {
   const d = String(s || "").replace(/\D/g, "");
-  return d.length === 11 && d.startsWith("1") ? d.slice(1) : d; // drop leading US '1'
+  return d.length === 11 && d.startsWith("1") ? d.slice(1) : d;
 };
 
-/** Find a contact by user+phone using normalized digits (last-10 match) */
+/** Find a contact by user+phone using normalized digits */
 async function findContactByUserAndPhone(userId, rawPhone) {
   const phoneNorm = normalizePhone(rawPhone);
   if (!phoneNorm) return null;
@@ -222,14 +202,12 @@ async function findContactByUserAndPhone(userId, rawPhone) {
 /** Ensure EXCLUSIVE status: 'military' OR 'lead' (not both). Always store E.164 phone. */
 async function upsertLeadContact({ userId, phone, fullName, militaryBranch }) {
   if (!phone) return;
-
   const phoneE164 = toE164(phone);
   if (!phoneE164) throw new Error(`Invalid phone: ${phone}`);
 
   const existing = await findContactByUserAndPhone(userId, phone);
   const wantsMilitary = Boolean((militaryBranch || "").trim());
 
-  // Remove old status tags, then add exactly one
   const baseTags = (existing?.tags || []).filter(
     (t) => !["lead", "military"].includes(normalizeTag(t))
   );
@@ -239,11 +217,7 @@ async function upsertLeadContact({ userId, phone, fullName, militaryBranch }) {
   if (existing) {
     const { error } = await supabase
       .from("message_contacts")
-      .update({
-        phone: phoneE164, // normalize on update too
-        full_name: fullName || existing.full_name || null,
-        tags: nextTags
-      })
+      .update({ phone: phoneE164, full_name: fullName || existing.full_name || null, tags: nextTags })
       .eq("id", existing.id);
     if (error) throw error;
     return existing.id;
@@ -272,7 +246,6 @@ function buildSoldTags(currentTags, { addBdayHoliday, addPaymentReminder }) {
 /** Update existing contact or insert a new one with SOLD tags. Store E.164 phone. */
 async function upsertSoldContact({ userId, phone, fullName, addBdayHoliday, addPaymentReminder }) {
   if (!phone) return;
-
   const phoneE164 = toE164(phone);
   if (!phoneE164) throw new Error(`Invalid phone: ${phone}`);
 
@@ -300,14 +273,16 @@ async function upsertSoldContact({ userId, phone, fullName, addBdayHoliday, addP
 
 /* -------------------- Auto-text helpers (server + fallback) -------------------- */
 
-// Find the recently inserted lead row for this user (match by email/phone within 10m)
+// Recently inserted lead id for this user (match by normalized email/phone within 10m)
 async function findRecentlyInsertedLeadId({ userId, person }) {
   if (!userId || !person) return null;
 
   const orParts = [];
   const S = (x) => (x == null ? "" : String(x).trim());
-  if (S(person.email)) orParts.push(`email.eq.${encodeURIComponent(S(person.email))}`);
-  if (S(person.phone)) orParts.push(`phone.eq.${encodeURIComponent(S(person.phone))}`);
+  const email = S(person.email).toLowerCase();
+  const phoneE164 = toE164(S(person.phone));
+  if (email) orParts.push(`email.eq.${encodeURIComponent(email)}`);
+  if (phoneE164) orParts.push(`phone.eq.${encodeURIComponent(phoneE164)}`);
   if (orParts.length === 0) return null;
 
   const cutoffISO = new Date(Date.now() - 10 * 60 * 1000).toISOString();
@@ -329,22 +304,19 @@ async function findRecentlyInsertedLeadId({ userId, person }) {
 async function triggerAutoTextForLeadId({ leadId, userId, person }) {
   if (!leadId || !userId) return;
 
-  // 1) Preferred: call server function
   try {
     const res = await fetch(`${FN_BASE}/lead-new-auto`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ lead_id: leadId, requesterId: userId }),
     });
-    if (res.ok) return; // done
+    if (res.ok) return;
     console.warn("lead-new-auto non-OK:", res.status);
   } catch (e) {
     console.warn("lead-new-auto unreachable:", e?.message || e);
   }
 
-  // 2) Fallback: render template client-side and call messages-send directly
   try {
-    // fetch templates for this user
     const { data: mt, error } = await supabase
       .from("message_templates")
       .select("*")
@@ -371,7 +343,6 @@ async function triggerAutoTextForLeadId({ leadId, userId, person }) {
     const body = String(tpl).replace(/\{\{\s*([a-zA-Z0-9_]+)\s*\}\}/g, (_, k) => S(ctx[k])).trim();
     if (!body || !S(person?.phone)) return;
 
-    // same auth path your MessagesPage uses
     const { data: session } = await supabase.auth.getSession();
     const token = session?.session?.access_token;
 
@@ -399,18 +370,17 @@ async function triggerAutoTextForLeadId({ leadId, userId, person }) {
 }
 
 export default function LeadsPage() {
-  const [tab, setTab] = useState("clients"); // 'clients' | 'sold'
+  const [tab, setTab] = useState("clients");
   const [leads, setLeads] = useState([]);
   const [clients, setClients] = useState([]);
-  const [selected, setSelected] = useState(null);         // Mark-as-SOLD drawer
-  const [viewSelected, setViewSelected] = useState(null); // read-only policy drawer
+  const [selected, setSelected] = useState(null);
+  const [viewSelected, setViewSelected] = useState(null);
   const [filter, setFilter] = useState("");
 
   const [serverMsg, setServerMsg] = useState("");
   const [showConnector, setShowConnector] = useState(false);
-  const [showAdd, setShowAdd] = useState(false); // NEW: manual add modal
+  const [showAdd, setShowAdd] = useState(false);
 
-  // NEW: selection for mass actions
   const [selectedIds, setSelectedIds] = useState(new Set());
 
   useEffect(() => {
@@ -540,7 +510,6 @@ export default function LeadsPage() {
         const headers = Object.keys(rows[0] || {});
         const map = buildHeaderIndex(headers);
 
-        // Existing identifiers
         const existingEmails = new Set(
           [...clients, ...leads].map((r) => normEmail(r.email)).filter(Boolean)
         );
@@ -548,11 +517,9 @@ export default function LeadsPage() {
           [...clients, ...leads].map((r) => onlyDigits(r.phone)).filter(Boolean)
         );
 
-        // Track duplicates within the same CSV
         const seenEmails = new Set();
         const seenPhones = new Set();
 
-        // Normalize and filter
         const uniqueToAdd = [];
         for (const r of rows) {
           const name  = r.name || r.Name || buildName(r, map);
@@ -560,7 +527,6 @@ export default function LeadsPage() {
           const email = buildEmail(r, map);
           const notes = buildNotes(r, map);
 
-          // NEW fields
           const dob  = buildDob(r, map);
           const state = buildState(r, map);
           const beneficiary = buildBeneficiary(r, map);
@@ -594,7 +560,6 @@ export default function LeadsPage() {
           return;
         }
 
-        // Optimistic local update first
         const newLeads = [...uniqueToAdd, ...leads];
         const newClients = [...uniqueToAdd, ...clients];
         saveLeads(newLeads);
@@ -603,7 +568,6 @@ export default function LeadsPage() {
         setClients(newClients);
         setTab("clients");
 
-        // Try server batch upsert
         try {
           setServerMsg(`Syncing ${uniqueToAdd.length} new lead(s) to Supabase…`);
           const count = await upsertManyLeadsServer(uniqueToAdd);
@@ -613,7 +577,6 @@ export default function LeadsPage() {
           setServerMsg(`⚠️ CSV sync failed: ${e.message || e}`);
         }
 
-        // Reflect to contacts for each + trigger auto text
         try {
           const { data: authData } = await supabase.auth.getUser();
           const userId = authData?.user?.id;
@@ -626,7 +589,7 @@ export default function LeadsPage() {
                 militaryBranch: person.military_branch,
               });
 
-              // find the server row and trigger auto text (server func → fallback)
+              // Fallback path still supported, but now normalized
               const leadId = await findRecentlyInsertedLeadId({ userId, person });
               if (leadId) {
                 await triggerAutoTextForLeadId({ leadId, userId, person });
@@ -665,7 +628,7 @@ export default function LeadsPage() {
       sold: {
         carrier: soldPayload.carrier || "",
         faceAmount: soldPayload.faceAmount || "",
-        premium: soldPayload.premium || "",           // AP stored here
+        premium: soldPayload.premium || "",
         monthlyPayment: soldPayload.monthlyPayment || "",
         policyNumber: soldPayload.policyNumber || "",
         startDate: soldPayload.startDate || "",
@@ -676,14 +639,11 @@ export default function LeadsPage() {
       name: soldPayload.name || base.name || "",
       phone: soldPayload.phone || base.phone || "",
       email: soldPayload.email || base.email || "",
-
-      // Keep only bday/holiday toggle; "Message Policy Info" removed
       automationPrefs: {
         bdayHolidayTexts: !!soldPayload.enableBdayHolidayTexts,
       },
     };
 
-    // Optimistic local write
     const nextClients = upsert(clients, updated);
     const nextLeads   = upsert(leads, updated);
     saveClients(nextClients);
@@ -712,7 +672,6 @@ export default function LeadsPage() {
       setServerMsg(`⚠️ SOLD sync failed: ${e.message || e}`);
     }
 
-    // 🔁 Reflect to contacts: replace lead/military with sold (+ bday/holiday + payment_reminder if start date)
     try {
       const { data: authData } = await supabase.auth.getUser();
       const userId = authData?.user?.id;
@@ -722,12 +681,11 @@ export default function LeadsPage() {
           phone: updated.phone,
           fullName: updated.name,
           addBdayHoliday: !!soldPayload.enableBdayHolidayTexts,
-          addPaymentReminder: Boolean((soldPayload.startDate || "").trim()), // robust truthy check
+          addPaymentReminder: Boolean((soldPayload.startDate || "").trim()),
         });
       }
     } catch (err) {
       console.error("Contact tag sync (sold) failed:", err);
-      // Non-fatal; lead is sold. Optionally toast.
     }
   }
 
@@ -741,7 +699,6 @@ export default function LeadsPage() {
     setLeads(nextLeads);
     if (selected?.id === id) setSelected(null);
 
-    // NEW: remove from selectedIds if present
     setSelectedIds(prev => {
       const n = new Set(prev);
       n.delete(id);
@@ -765,10 +722,9 @@ export default function LeadsPage() {
     setLeads([]);
     setClients([]);
     setSelected(null);
-    setSelectedIds(new Set()); // clear selection
+    setSelectedIds(new Set());
   }
 
-  // NEW: toggle selection helpers & bulk delete
   function toggleSelect(id) {
     setSelectedIds(prev => {
       const next = new Set(prev);
@@ -779,7 +735,6 @@ export default function LeadsPage() {
   }
 
   function toggleSelectAll() {
-    // Toggle: if everything visible selected -> clear visible, else select all visible
     setSelectedIds(prev => {
       const next = new Set(prev);
       const visibleIds = visible.map(v => v.id);
@@ -800,17 +755,15 @@ export default function LeadsPage() {
 
     const idsToDelete = Array.from(selectedIds);
 
-    // Optimistic local removal
     const nextClients = clients.filter(c => !idsToDelete.includes(c.id));
     const nextLeads   = leads.filter(l  => !idsToDelete.includes(l.id));
     saveClients(nextClients);
     saveLeads(nextLeads);
     setClients(nextClients);
     setLeads(nextLeads);
-    setSelectedIds(new Set()); // clear selection
+    setSelectedIds(new Set());
     setSelected(null);
 
-    // Server deletes
     setServerMsg(`Deleting ${idsToDelete.length} selected...`);
     let failed = [];
     for (const id of idsToDelete) {
@@ -829,9 +782,8 @@ export default function LeadsPage() {
     }
   }
 
-  // NEW: Manual add handler (adds local dedupe before optimistic insert)
+  // Manual add: **uses saved id** to trigger auto-text (no lookup race)
   async function handleManualAdd(personInput) {
-    // Normalize just like CSV import
     const person = normalizePerson({
       ...personInput,
       stage: "no_pickup",
@@ -842,7 +794,7 @@ export default function LeadsPage() {
       return;
     }
 
-    // Local dedupe: email or phone last-10
+    // Local dedupe
     const emailKey = normEmail(person.email);
     const phoneKey = onlyDigits(person.phone);
     const isDupLocal = [...clients, ...leads].some((r) => {
@@ -851,7 +803,6 @@ export default function LeadsPage() {
       return (emailKey && e && e === emailKey) || (phoneKey && p && p === phoneKey);
     });
 
-    // Optimistic local only if not dup
     if (!isDupLocal) {
       const newLeads = [person, ...leads];
       const newClients = [person, ...clients];
@@ -863,17 +814,18 @@ export default function LeadsPage() {
     setTab("clients");
     setShowAdd(false);
 
-    // Server upsert (server-side de-dupe via onConflict)
+    // Server write → capture id
+    let savedId = null;
     try {
       setServerMsg("Saving lead to Supabase…");
-      await upsertLeadServer(person);
+      savedId = await upsertLeadServer(person);
       setServerMsg(isDupLocal ? "ℹ️ Lead already existed — merged on server" : "✅ Lead saved");
     } catch (e) {
       console.error("Manual add sync error:", e);
       setServerMsg(`⚠️ Save failed: ${e.message || e}`);
     }
 
-    // Reflect to contacts + trigger auto-text (server func → fallback)
+    // Reflect to contacts + trigger auto-text using **savedId**
     try {
       const { data: authData } = await supabase.auth.getUser();
       const userId = authData?.user?.id;
@@ -885,9 +837,12 @@ export default function LeadsPage() {
           militaryBranch: person.military_branch,
         });
 
-        const leadId = await findRecentlyInsertedLeadId({ userId, person });
-        if (leadId) {
-          await triggerAutoTextForLeadId({ leadId, userId, person });
+        if (savedId) {
+          await triggerAutoTextForLeadId({ leadId: savedId, userId, person });
+        } else {
+          // fallback if no id came back (rare)
+          const leadId = await findRecentlyInsertedLeadId({ userId, person });
+          if (leadId) await triggerAutoTextForLeadId({ leadId, userId, person });
         }
       }
     } catch (err) {
@@ -895,9 +850,8 @@ export default function LeadsPage() {
     }
   }
 
-  // Sold tab uses SAME columns as Leads (no policy columns visible)
   const baseHeaders = ["Name","Phone","Email","DOB","State","Beneficiary","Beneficiary Name","Gender","Military Branch","Stage"];
-  const colCount = baseHeaders.length + 2; // + Select checkbox + Actions
+  const colCount = baseHeaders.length + 2;
 
   return (
     <div className="space-y-6 min-w-0 overflow-x-hidden">
@@ -928,7 +882,6 @@ export default function LeadsPage() {
           {showConnector ? "Close setup" : "Setup auto import leads"}
         </button>
 
-        {/* NEW: Manually add lead */}
         <button
           onClick={() => setShowAdd(true)}
           className="rounded-xl border border-emerald-500/40 bg-emerald-500/10 px-3 py-2 text-sm"
@@ -961,7 +914,6 @@ export default function LeadsPage() {
           Clear all (local)
         </button>
 
-        {/* Bulk delete button */}
         <button
           onClick={removeSelected}
           disabled={selectedIds.size === 0}
@@ -972,24 +924,18 @@ export default function LeadsPage() {
         </button>
       </div>
 
-      {/* Server status line (non-blocking) */}
       {serverMsg && (
         <div className="rounded-xl border border-white/10 bg-white/[0.04] px-3 py-2 text-sm text-white/80">
           {serverMsg}
         </div>
       )}
 
-      {/* Collapsible connector panel */}
       {showConnector && (
-        <div
-          id="auto-import-panel"
-          className="my-4 rounded-2xl border border-white/15 bg-white/[0.03] p-4"
-        >
+        <div id="auto-import-panel" className="my-4 rounded-2xl border border-white/15 bg-white/[0.03] p-4">
           <GoogleSheetsConnector />
         </div>
       )}
 
-      {/* Search */}
       <div className="flex items-center gap-3">
         <input
           className="w-full rounded-xl border border-white/10 bg-black/40 px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-indigo-500/40"
@@ -999,7 +945,6 @@ export default function LeadsPage() {
         />
       </div>
 
-      {/* Table */}
       <div className="overflow-x-auto rounded-2xl border border-white/10">
         <table className="min-w-[1200px] w-full border-collapse text-sm">
           <thead className="bg-white/[0.04] text-white/70">
@@ -1094,7 +1039,6 @@ export default function LeadsPage() {
         </table>
       </div>
 
-      {/* Drawer for SOLD (create/edit sold) */}
       {selected && (
         <SoldDrawer
           initial={selected}
@@ -1104,7 +1048,6 @@ export default function LeadsPage() {
         />
       )}
 
-      {/* Read-only policy viewer for SOLD rows */}
       {viewSelected && (
         <PolicyViewer
           person={viewSelected}
@@ -1112,7 +1055,6 @@ export default function LeadsPage() {
         />
       )}
 
-      {/* NEW: Manual Add Lead modal */}
       {showAdd && (
         <ManualAddLeadModal
           onClose={() => setShowAdd(false)}
@@ -1126,7 +1068,6 @@ export default function LeadsPage() {
 function Th({ children }) { return <th className="px-3 py-2 text-left font-medium">{children}</th>; }
 function Td({ children }) { return <td className="px-3 py-2">{children}</td>; }
 
-/* ------------------------------ Policy Viewer ------------------------------ */
 function PolicyViewer({ person, onClose }) {
   const s = person?.sold || {};
   return (
@@ -1161,7 +1102,6 @@ function PolicyViewer({ person, onClose }) {
   );
 }
 
-/* ------------------------------ Sold Drawer ------------------------------- */
 function SoldDrawer({ initial, allClients, onClose, onSave }) {
   const [form, setForm] = useState({
     id: initial?.id || (self && self.crypto && self.crypto.randomUUID ? self.crypto.randomUUID() : Math.random().toString(36).slice(2)),
@@ -1170,13 +1110,11 @@ function SoldDrawer({ initial, allClients, onClose, onSave }) {
     email: initial?.email || "",
     carrier: initial?.sold?.carrier || "",
     faceAmount: initial?.sold?.faceAmount || "",
-    premium: initial?.sold?.premium || "",           // AP stored here
+    premium: initial?.sold?.premium || "",
     monthlyPayment: initial?.sold?.monthlyPayment || "",
     policyNumber: initial?.sold?.policyNumber || "",
     startDate: initial?.sold?.startDate || "",
-    // Automations
     sendWelcomeText: false,
-    // sendPolicyEmailOrMail: true,            // removed from UI/logic
     enableBdayHolidayTexts: true,
   });
 
@@ -1205,7 +1143,6 @@ function SoldDrawer({ initial, allClients, onClose, onSave }) {
           <button onClick={onClose} className="rounded-lg px-2 py-1 text-sm hover:bg-white/10">Close</button>
         </div>
 
-        {/* Quick pick existing lead */}
         <div className="mb-3">
           <label className="text-xs text-white/70">Select existing lead (optional)</label>
           <select
@@ -1223,11 +1160,10 @@ function SoldDrawer({ initial, allClients, onClose, onSave }) {
         </div>
 
         <form onSubmit={submit} className="grid gap-3">
-          {/* Contact */}
           <div className="grid gap-3 sm:grid-cols-2">
             <Field label="Name">
               <input value={form.name} onChange={(e)=>setForm({...form, name:e.target.value})}
-                     className="inp" placeholder="Mutual of Omaha" />
+                     className="inp" placeholder="Jane Doe" />
             </Field>
             <Field label="Phone">
               <input value={form.phone} onChange={(e)=>setForm({...form, phone:e.target.value})}
@@ -1239,7 +1175,6 @@ function SoldDrawer({ initial, allClients, onClose, onSave }) {
                    className="inp" placeholder="jane@example.com" />
           </Field>
 
-          {/* Policy core */}
           <div className="grid gap-3 sm:grid-cols-2">
             <Field label="Carrier sold">
               <input value={form.carrier} onChange={(e)=>setForm({...form, carrier:e.target.value})}
@@ -1267,11 +1202,9 @@ function SoldDrawer({ initial, allClients, onClose, onSave }) {
             </Field>
           </div>
 
-          {/* Options */}
           <div className="rounded-2xl border border-white/15 bg-white/[0.03] p-3">
             <div className="mb-2 text-sm font-semibold text-white/90">Post-sale options</div>
             <div className="grid gap-2">
-              {/* Message Policy Info block removed */}
               <label className="flex items-start gap-3 rounded-xl border border-white/10 bg-black/30 p-3 hover:bg-white/[0.06]">
                 <input
                   type="checkbox"
@@ -1308,7 +1241,6 @@ function SoldDrawer({ initial, allClients, onClose, onSave }) {
   );
 }
 
-/* --------------------------- Manual Add Lead Modal --------------------------- */
 function ManualAddLeadModal({ onClose, onSave }) {
   const [form, setForm] = useState({
     name: "",
@@ -1330,7 +1262,7 @@ function ManualAddLeadModal({ onClose, onSave }) {
 
   return (
     <div className="fixed inset-0 z-50 grid bg-black/60 p-3">
-      <div className="relative m-auto w-full max-w-xl rounded-2xl border border-white/15 bg-neutral-950 p-4">
+      <div className="relative m-auto w/full max-w-xl rounded-2xl border border-white/15 bg-neutral-950 p-4">
         <div className="mb-2 flex items-center justify-between">
           <div className="text-base font-semibold">Add lead</div>
           <button onClick={onClose} className="rounded-lg px-2 py-1 text-sm hover:bg-white/10">Close</button>
@@ -1339,98 +1271,57 @@ function ManualAddLeadModal({ onClose, onSave }) {
         <form onSubmit={submit} className="grid gap-3">
           <div className="grid gap-3 sm:grid-cols-2">
             <Field label="Name">
-              <input
-                className="inp"
-                placeholder="Jane Doe"
-                value={form.name}
-                onChange={(e)=>setForm({...form, name:e.target.value})}
-              />
+              <input className="inp" placeholder="Jane Doe" value={form.name}
+                     onChange={(e)=>setForm({...form, name:e.target.value})}/>
             </Field>
             <Field label="Phone">
-              <input
-                className="inp"
-                placeholder="(555) 123-4567"
-                value={form.phone}
-                onChange={(e)=>setForm({...form, phone:e.target.value})}
-              />
+              <input className="inp" placeholder="(555) 123-4567" value={form.phone}
+                     onChange={(e)=>setForm({...form, phone:e.target.value})}/>
             </Field>
           </div>
 
           <Field label="Email">
-            <input
-              className="inp"
-              placeholder="jane@example.com"
-              value={form.email}
-              onChange={(e)=>setForm({...form, email:e.target.value})}
-            />
+            <input className="inp" placeholder="jane@example.com" value={form.email}
+                   onChange={(e)=>setForm({...form, email:e.target.value})}/>
           </Field>
 
           <Field label="Notes">
-            <input
-              className="inp"
-              placeholder="Any context about the lead"
-              value={form.notes}
-              onChange={(e)=>setForm({...form, notes:e.target.value})}
-            />
+            <input className="inp" placeholder="Any context about the lead" value={form.notes}
+                   onChange={(e)=>setForm({...form, notes:e.target.value})}/>
           </Field>
 
           <div className="grid gap-3 sm:grid-cols-2">
             <Field label="DOB">
-              <input
-                className="inp"
-                placeholder="MM-DD-YYYY"
-                value={form.dob}
-                onChange={(e)=>setForm({...form, dob:e.target.value})}
-              />
+              <input className="inp" placeholder="MM-DD-YYYY" value={form.dob}
+                     onChange={(e)=>setForm({...form, dob:e.target.value})}/>
             </Field>
             <Field label="State">
-              <input
-                className="inp"
-                placeholder="TN"
-                value={form.state}
-                onChange={(e)=>setForm({...form, state:e.target.value.toUpperCase()})}
-              />
+              <input className="inp" placeholder="TN" value={form.state}
+                     onChange={(e)=>setForm({...form, state:e.target.value.toUpperCase()})}/>
             </Field>
             <Field label="Beneficiary">
-              <input
-                className="inp"
-                value={form.beneficiary}
-                onChange={(e)=>setForm({...form, beneficiary:e.target.value})}
-              />
+              <input className="inp" value={form.beneficiary}
+                     onChange={(e)=>setForm({...form, beneficiary:e.target.value})}/>
             </Field>
             <Field label="Beneficiary Name">
-              <input
-                className="inp"
-                value={form.beneficiary_name}
-                onChange={(e)=>setForm({...form, beneficiary_name:e.target.value})}
-              />
+              <input className="inp" value={form.beneficiary_name}
+                     onChange={(e)=>setForm({...form, beneficiary_name:e.target.value})}/>
             </Field>
             <Field label="Gender">
-              <input
-                className="inp"
-                value={form.gender}
-                onChange={(e)=>setForm({...form, gender:e.target.value})}
-              />
+              <input className="inp" value={form.gender}
+                     onChange={(e)=>setForm({...form, gender:e.target.value})}/>
             </Field>
             <Field label="Military Branch">
-              <input
-                className="inp"
-                placeholder="Army / Navy / …"
-                value={form.military_branch}
-                onChange={(e)=>setForm({...form, military_branch:e.target.value})}
-              />
+              <input className="inp" placeholder="Army / Navy / …" value={form.military_branch}
+                     onChange={(e)=>setForm({...form, military_branch:e.target.value})}/>
             </Field>
           </div>
 
           <div className="mt-3 flex items-center justify-end gap-2">
             <button type="button" onClick={onClose}
-              className="rounded-xl border border-white/15 px-4 py-2 text-sm hover:bg-white/10">
-              Cancel
-            </button>
+              className="rounded-xl border border-white/15 px-4 py-2 text-sm hover:bg-white/10">Cancel</button>
             <button type="submit"
-              className="rounded-xl bg-white px-4 py-2 text-sm font-medium text-black hover:bg-white/90">
-              Save lead
-            </button>
+              className="rounded-xl bg-white px-4 py-2 text-sm font-medium text-black hover:bg-white/90">Save lead</button>
           </div>
         </form>
       </div>
