@@ -130,6 +130,18 @@ export default function TeamManagement() {
     }
   }
 
+  // One-click repair for wrong saved subscription/customer mapping
+  async function fixStripeSubscription() {
+    try {
+      const res = await callFn("fix-team-subscription", { team_id: teamId });
+      const msg = res?.message || "Fixed.";
+      alert(`Fix result: ${msg}`);
+      await refreshSeatCounts();
+    } catch (e) {
+      alert(e.message || "Fix failed");
+    }
+  }
+
   // Buy seats = increase paid seats by N
   async function buySeats() {
     try {
@@ -198,9 +210,19 @@ export default function TeamManagement() {
         </div>
       </section>
 
-      {/* Seats: only input + Buy */}
+      {/* Seats: only input + Buy + Fix */}
       <section className="border rounded-2xl p-4 space-y-3">
-        <div className="text-sm text-gray-600">Seats</div>
+        <div className="flex items-center justify-between">
+          <div className="text-sm text-gray-600">Seats</div>
+          <button
+            onClick={fixStripeSubscription}
+            className="text-xs px-3 py-1.5 rounded-xl border hover:bg-gray-50"
+            title="Repair the saved Stripe subscription id if it doesn't match this team's customer"
+          >
+            Fix Stripe Subscription
+          </button>
+        </div>
+
         <div className="text-lg font-semibold flex items-center gap-2">
           <span>
             {effectivePurchased} purchased
