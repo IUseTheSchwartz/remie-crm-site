@@ -83,10 +83,10 @@ export async function upsertLeadServer(lead) {
   };
 
   const onConflict = conflictTargetFor(row);
-  const q = supabase.from("leads").upsert(row);
-  if (onConflict) q.onConflict(onConflict);
+  const { error } = await supabase
+    .from("leads")
+    .upsert(row, onConflict ? { onConflict } : undefined); // <-- correct v2 usage
 
-  const { error } = await q;
   if (error) throw error;
   return row.id;
 }
