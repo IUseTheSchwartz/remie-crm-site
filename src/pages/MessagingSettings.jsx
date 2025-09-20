@@ -1,18 +1,20 @@
 // File: src/pages/MessagingSettings.jsx
 import { useEffect, useRef, useState } from "react";
 import { supabase } from "../lib/supabaseClient";
-import { CreditCard, Check, Loader2, MessageSquare, Info, RotateCcw } from "lucide-react";
+import { CreditCard, Check, Loader2, MessageSquare, Info, RotateCcw, Lock } from "lucide-react";
 
 /* ---------------- Template Catalog ---------------- */
 const TEMPLATE_DEFS = [
   { key: "new_lead", label: "New Lead (instant)" },
   { key: "new_lead_military", label: "New Lead (military)" }, // 🆕
-  { key: "appointment", label: "Appointment Reminder" },      // ⛔ coming soon
+  { key: "appointment", label: "Appointment Reminder" },      // 🔒 locked (coming soon)
   { key: "sold", label: "Sold - Policy Info" },
   { key: "payment_reminder", label: "Payment Reminder" },
   { key: "birthday_text", label: "Birthday Text" },
   { key: "holiday_text", label: "Holiday Text" },
 ];
+
+const APPOINTMENT_KEY = "appointment";
 
 /* Default enabled map: ALL OFF by default */
 const DEFAULT_ENABLED = Object.fromEntries(TEMPLATE_DEFS.map((t) => [t.key, false]));
@@ -56,33 +58,22 @@ const DEFAULTS = {
 
 /* Small toggle (now supports disabled) */
 function Toggle({ checked, onChange, label, disabled = false }) {
+  const base = "inline-flex items-center rounded-full border px-2 py-1 text-[11px] select-none";
+  const state = checked ? "bg-emerald-500/15 text-emerald-300 border-white/15" : "bg-white/5 text-white/70 border-white/15";
+  const disabledCls = disabled ? "opacity-60 cursor-not-allowed" : "hover:bg-white/10";
   return (
     <button
       type="button"
       role="switch"
       aria-checked={checked}
       aria-disabled={disabled}
-      onClick={() => { if (!disabled) onChange(!checked); }}
-      className={[
-        "inline-flex items-center rounded-full border px-2 py-1 text-[11px] select-none",
-        disabled ? "cursor-not-allowed opacity-50 border-white/10 bg-white/5 text-white/50"
-                 : "border-white/15 " + (checked ? "bg-emerald-500/15 text-emerald-300" : "bg-white/5 text-white/70 hover:bg-white/10"),
-      ].join(" ")}
+      disabled={disabled}
+      onClick={() => !disabled && onChange(!checked)}
+      className={[base, state, disabledCls].join(" ")}
       title={label}
     >
-      <span
-        className={[
-          "mr-2 inline-block h-3.5 w-6 rounded-full transition",
-          checked ? "bg-emerald-400/30" : "bg-white/15",
-          disabled ? "opacity-60" : "",
-        ].join(" ")}
-      >
-        <span
-          className={[
-            "block h-3 w-3 rounded-full bg-white shadow transition-transform",
-            checked ? "translate-x-3" : "translate-x-0",
-          ].join(" ")}
-        />
+      <span className={["mr-2 inline-block h-3.5 w-6 rounded-full transition", checked ? "bg-emerald-400/30" : "bg-white/15"].join(" ")}>
+        <span className={["block h-3 w-3 rounded-full bg-white shadow transition-transform", checked ? "translate-x-3" : "translate-x-0"].join(" ")} />
       </span>
       {checked ? "Enabled" : "Disabled"}
     </button>
@@ -233,18 +224,20 @@ export default function MessagingSettings() {
         initialEnabled = { ...DEFAULT_ENABLED, ...maybeEnabledFromTemplates };
       }
 
-      // ⛔ Force appointment OFF no matter what (coming soon)
-      initialEnabled.appointment = false;
+      // 🔒 Force appointment off (locked)
+      initialEnabled[APPOINTMENT_KEY] = false;
 
       setEnabledMap(initialEnabled);
 
       // If nothing existed, try to persist a proper record (best effort)
       if (!maybeEnabledFromCol && !maybeEnabledFromTemplates) {
+        // Try writing to 'enabled' column first
         try {
           await supabase
             .from("message_templates")
             .upsert({ user_id: uid, enabled: initialEnabled });
         } catch {
+          // Fallback: embed into templates.__enabled
           try {
             const merged = { ...DEFAULTS, __enabled: initialEnabled };
             await supabase
@@ -300,7 +293,7 @@ export default function MessagingSettings() {
       try {
         supabase.removeChannel?.(ch);
       } catch {}
-      let t;
+      // clear timers
       if (saveTimer.current) clearTimeout(saveTimer.current);
       if (enabledTimer.current) clearTimeout(enabledTimer.current);
     };
@@ -353,14 +346,15 @@ export default function MessagingSettings() {
     if (!userId) return;
     setEnabledSaveState("saving");
 
-    // ⛔ Always force appointment OFF on save
-    const sanitized = { ...nextMap, appointment: false };
+    // 🔒 Never allow appointment to be enabled
+    const fixed = { ...nextMap, [APPOINTMENT_KEY]: false };
+    setEnabledMap(fixed);
 
     // Try preferred: save top-level 'enabled' JSON column
     try {
       const { error } = await supabase
         .from("message_templates")
-        .upsert({ user_id: userId, enabled: sanitized });
+        .upsert({ user_id: userId, enabled: fixed });
       if (error) throw error;
       setEnabledSaveState("saved");
       setTimeout(() => setEnabledSaveState("idle"), 1200);
@@ -370,7 +364,7 @@ export default function MessagingSettings() {
     }
     // Fallback: embed into templates.__enabled
     try {
-      const nextTemplates = { ...templates, __enabled: sanitized };
+      const nextTemplates = { ...templates, __enabled: fixed };
       setTemplates(nextTemplates);
       const { error } = await supabase
         .from("message_templates")
@@ -385,8 +379,17 @@ export default function MessagingSettings() {
   }
 
   function setEnabled(key, val) {
-    // ⛔ Block enabling Appointment (coming soon)
-    if (key === "appointment") return;
+    // UI guard (shouldn’t fire because toggle is disabled, but belt & suspenders)
+    if (key === APPOINTMENT_KEY) {
+      // force false and persist
+      const next = { ...enabledMap, [key]: false };
+      setEnabledMap(next);
+      setEnabledSaveState("saving");
+      if (enabledTimer.current) clearTimeout(enabledTimer.current);
+      enabledTimer.current = setTimeout(() => persistEnabled(next), 500);
+      return;
+    }
+
     const next = { ...enabledMap, [key]: !!val };
     setEnabledMap(next);
     setEnabledSaveState("saving");
@@ -481,7 +484,7 @@ export default function MessagingSettings() {
         <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
           <div>
             <div className="text-sm text-white/60">Text balance</div>
-            <div className="text-xl font-semibold">${(balanceCents / 100).toFixed(2)}</div>
+            <div className="text-xl font-semibold">${balanceDollars}</div>
             <div className="mt-1 text-xs text-white/50">Texts are billed per segment.</div>
           </div>
 
@@ -529,7 +532,7 @@ export default function MessagingSettings() {
           <div className="min-w-0">
             <h3 className="text-sm font-semibold">Message Templates</h3>
             <p className="text-xs text-white/60 truncate">
-              Customize what’s sent for each event. Variables like <code className="px-1 rounded bg-white/10">{'{{first_name}}'}</code> are replaced automatically.
+              Customize what’s sent for each event. Variables like <code className="px-1 rounded bg-white/10">{{"{first_name}"}}</code> are replaced automatically.
             </p>
           </div>
 
@@ -589,29 +592,23 @@ export default function MessagingSettings() {
         <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
           {TEMPLATE_DEFS.map(({ key, label }) => {
             const isDirty = (templates[key] ?? "") !== (DEFAULTS[key] ?? "");
-            const isAppointment = key === "appointment";
-            const enabled = isAppointment ? false : !!enabledMap[key];
+            const enabled = !!enabledMap[key];
+            const isAppointment = key === APPOINTMENT_KEY;
 
             return (
               <div key={key} className="rounded-xl border border-white/10 bg-white/[0.02] p-3">
                 <div className="mb-1 flex items-center gap-2">
                   <div className="text-xs text-white/70">{label}</div>
 
-                  {/* Enable/Disable toggle */}
+                  {/* ⛔ lock: appointment toggle is disabled until scheduler ships */}
                   <div className="ml-2">
                     <Toggle
                       checked={enabled}
                       onChange={(v) => setEnabled(key, v)}
-                      disabled={isAppointment}                         {/* ⛔ lock */}
+                      disabled={isAppointment}
                       label={enabled ? "Disable this template" : "Enable this template"}
                     />
                   </div>
-
-                  {isAppointment && (
-                    <span className="ml-2 rounded-full border border-white/10 bg-white/5 px-2 py-0.5 text-[10px] text-white/70">
-                      Coming soon
-                    </span>
-                  )}
 
                   <button
                     type="button"
@@ -623,7 +620,6 @@ export default function MessagingSettings() {
                     <RotateCcw className="h-3.5 w-3.5" /> Reset
                   </button>
 
-                  {/* Test button */}
                   <button
                     type="button"
                     onClick={() => {
@@ -636,6 +632,13 @@ export default function MessagingSettings() {
                     Test
                   </button>
                 </div>
+
+                {isAppointment && (
+                  <div className="mb-2 inline-flex items-center gap-2 rounded-lg border border-amber-400/30 bg-amber-400/10 px-2 py-1 text-[11px] text-amber-200">
+                    <Lock className="h-3.5 w-3.5" />
+                    Appointment reminders are <b className="ml-1">coming soon</b>. This toggle is locked for now.
+                  </div>
+                )}
 
                 <textarea
                   value={templates[key] ?? ""}
@@ -652,12 +655,6 @@ export default function MessagingSettings() {
                 {!enabled && !isAppointment && (
                   <div className="mt-2 text-[11px] text-amber-300/90">
                     Disabled — this template will not send until you enable it.
-                  </div>
-                )}
-
-                {isAppointment && (
-                  <div className="mt-2 text-[11px] text-white/60">
-                    Appointment reminders are <b>coming soon</b>. You can edit the message now, but the toggle is locked off until we finish the scheduler.
                   </div>
                 )}
               </div>
@@ -706,7 +703,7 @@ export default function MessagingSettings() {
               <VarRow token="today" desc="Today’s date" />
               <VarRow token="state" desc="Lead’s state (from form)" />
               <VarRow token="beneficiary" desc="Lead’s listed beneficiary" />
-              <VarRow token="military_branch" desc="Military branch (if provided)" />
+              <VarRow token="military_branch" desc="Military branch (if provided)" /> {/* 🆕 */}
               <VarRow token="calendly_link" desc="Your Calendly booking link" />
             </div>
 
@@ -719,7 +716,7 @@ export default function MessagingSettings() {
           </aside>
         )}
 
-        {/* Test Preview Panel */}
+        {/* NEW: Test Preview Panel */}
         {testOpen && (
           <aside
             className="fixed bottom-0 left-0 right-0 z-50 mx-auto w-full max-w-5xl rounded-t-2xl border border-white/10 bg-[#0b0b12] p-4 shadow-2xl"
@@ -753,7 +750,7 @@ export default function MessagingSettings() {
                       <div className="mb-1">
                         {k}
                         {["agent_name","agent_email","agent_phone","calendly_link"].includes(k) && (
-                          <span className="ml-1 rounded bg-white/10 px-1 py-[1px] text-[10px] text-white/60">from profile</span>
+                          <span className="ml-1 rounded bg-white/10 px-1 py-[1px] text[10px] text-white/60">from profile</span>
                         )}
                       </div>
                       <input
