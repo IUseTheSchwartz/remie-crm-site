@@ -28,7 +28,7 @@ export default function TeamManagement() {
   const [seatsUsed, setSeatsUsed] = useState(0);
   const [seatsAvailable, setSeatsAvailable] = useState(0);
 
-  // simple “add seats” box (defaults to 2 like your example)
+  // simple “add seats” box (defaults to 2)
   const [additionalSeats, setAdditionalSeats] = useState(2);
 
   const isOwner = useMemo(() => me && team && team.owner_id === me, [me, team]);
@@ -64,7 +64,6 @@ export default function TeamManagement() {
       setLoading(false);
     })();
 
-    // When coming back to the page, refresh counts
     const onFocus = () => refreshSeatCounts();
     window.addEventListener("focus", onFocus);
     return () => window.removeEventListener("focus", onFocus);
@@ -131,11 +130,7 @@ export default function TeamManagement() {
     }
   }
 
-  /**
-   * Buy seats = increase paid seats by N (additionalSeats)
-   * Uses your existing Netlify function `update-seats` which updates the Stripe
-   * subscription item with `STRIPE_PRICE_SEAT_50` (already set in your env).
-   */
+  // Buy seats = increase paid seats by N
   async function buySeats() {
     try {
       const add = Math.max(parseInt(additionalSeats || "0", 10), 0);
@@ -143,9 +138,7 @@ export default function TeamManagement() {
         alert("Enter how many seats to buy.");
         return;
       }
-      // never go below seats used; increase by `add`
       const targetPaid = Math.max(seatsUsed, (seatsPurchased || 0) + add);
-
       const res = await callFn("update-seats", { team_id: teamId, seats: targetPaid });
       if (res?.seatCounts) {
         setSeatsPurchased(res.seatCounts.seats_purchased || 0);
@@ -281,15 +274,13 @@ export default function TeamManagement() {
         )}
       </section>
 
-      {/* Members list */}
+      {/* Members list (never blank rows) */}
       <section className="border rounded-2xl p-4 space-y-3">
         <div className="flex items-center justify-between">
           <div className="font-medium">Members</div>
         </div>
-
         <ul className="divide-y">
           {members.map((m) => {
-            // Fallback so rows never appear blank
             const label =
               m?.profile?.full_name ||
               m?.email ||
@@ -307,7 +298,6 @@ export default function TeamManagement() {
               </li>
             );
           })}
-
           {members.length === 0 && (
             <li className="py-6 text-gray-500">No members yet.</li>
           )}
