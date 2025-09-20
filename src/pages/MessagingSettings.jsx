@@ -192,7 +192,7 @@ export default function MessagingSettings() {
       // templates + enabled flags
       const { data: tmpl } = await supabase
         .from("message_templates")
-        .select("templates, enabled") // 'enabled' may or may not exist in your schema
+        .select("templates, enabled")
         .eq("user_id", uid)
         .maybeSingle();
 
@@ -210,7 +210,7 @@ export default function MessagingSettings() {
         setTemplates({ ...DEFAULTS });
       }
 
-      // Enabled flags: prefer row.enabled; else templates.__enabled; else defaults
+      // Enabled flags
       let initialEnabled = { ...DEFAULT_ENABLED };
       const maybeEnabledFromCol = tmpl?.enabled && typeof tmpl.enabled === "object" ? tmpl.enabled : null;
       const maybeEnabledFromTemplates =
@@ -229,15 +229,13 @@ export default function MessagingSettings() {
 
       setEnabledMap(initialEnabled);
 
-      // If nothing existed, try to persist a proper record (best effort)
+      // Persist scaffold if needed
       if (!maybeEnabledFromCol && !maybeEnabledFromTemplates) {
-        // Try writing to 'enabled' column first
         try {
           await supabase
             .from("message_templates")
             .upsert({ user_id: uid, enabled: initialEnabled });
         } catch {
-          // Fallback: embed into templates.__enabled
           try {
             const merged = { ...DEFAULTS, __enabled: initialEnabled };
             await supabase
@@ -247,7 +245,7 @@ export default function MessagingSettings() {
         }
       }
 
-      // ➜ Load agent profile for test data (NEW)
+      // ➜ Load agent profile for test data
       const { data: profile } = await supabase
         .from("agent_profiles")
         .select("full_name, email, phone, calendly_url")
@@ -264,7 +262,7 @@ export default function MessagingSettings() {
       };
       setAgentVars(nextAgentVars);
 
-      // Prime test data with agent values if they’re empty
+      // Prime test data with agent values if empty
       setTestData((d) => ({
         ...d,
         agent_name: d.agent_name || nextAgentVars.agent_name,
@@ -293,13 +291,12 @@ export default function MessagingSettings() {
       try {
         supabase.removeChannel?.(ch);
       } catch {}
-      // clear timers
       if (saveTimer.current) clearTimeout(saveTimer.current);
       if (enabledTimer.current) clearTimeout(enabledTimer.current);
     };
   }, [userId]);
 
-  /* -------- Autosave templates (unchanged) -------- */
+  /* -------- Autosave templates -------- */
   async function saveTemplates(next) {
     if (!userId) return;
     setSaveState("saving");
@@ -324,13 +321,11 @@ export default function MessagingSettings() {
     saveTimer.current = setTimeout(() => saveTemplates(next), 800);
   }
 
-  // Reset a single template to its default and autosave
   function resetTemplate(key) {
     const def = DEFAULTS[key] ?? "";
     updateTemplate(key, def);
   }
 
-  // Reset ALL templates to defaults and autosave (with confirm)
   function resetAllTemplates() {
     const confirmed = window.confirm(
       "Reset all templates to the default messages? This will overwrite your custom text."
@@ -341,7 +336,7 @@ export default function MessagingSettings() {
     saveTemplates(next);
   }
 
-  /* -------- Save enabled flags (new) -------- */
+  /* -------- Save enabled flags -------- */
   async function persistEnabled(nextMap) {
     if (!userId) return;
     setEnabledSaveState("saving");
@@ -350,7 +345,6 @@ export default function MessagingSettings() {
     const fixed = { ...nextMap, [APPOINTMENT_KEY]: false };
     setEnabledMap(fixed);
 
-    // Try preferred: save top-level 'enabled' JSON column
     try {
       const { error } = await supabase
         .from("message_templates")
@@ -362,7 +356,6 @@ export default function MessagingSettings() {
     } catch (e) {
       console.warn("No 'enabled' column available, embedding into templates.__enabled", e?.message);
     }
-    // Fallback: embed into templates.__enabled
     try {
       const nextTemplates = { ...templates, __enabled: fixed };
       setTemplates(nextTemplates);
@@ -379,9 +372,7 @@ export default function MessagingSettings() {
   }
 
   function setEnabled(key, val) {
-    // UI guard (shouldn’t fire because toggle is disabled, but belt & suspenders)
     if (key === APPOINTMENT_KEY) {
-      // force false and persist
       const next = { ...enabledMap, [key]: false };
       setEnabledMap(next);
       setEnabledSaveState("saving");
@@ -457,12 +448,10 @@ export default function MessagingSettings() {
     );
   }
 
-  // compute whether everything already matches defaults
   const allDefault = Object.keys(DEFAULTS).every(
     (k) => (templates[k] ?? "") === (DEFAULTS[k] ?? "")
   );
 
-  // --- Derived preview content
   const activePreviewKey = testKey;
   const activePreviewTemplate = activePreviewKey ? templates[activePreviewKey] ?? "" : "";
   const activePreviewFilled = activePreviewKey
@@ -532,13 +521,12 @@ export default function MessagingSettings() {
           <div className="min-w-0">
             <h3 className="text-sm font-semibold">Message Templates</h3>
             <p className="text-xs text-white/60 truncate">
-              Customize what’s sent for each event. Variables like <code className="px-1 rounded bg-white/10">{{"{first_name}"}}</code> are replaced automatically.
+              Customize what’s sent for each event. Variables like <code className="px-1 rounded bg-white/10">{'{{first_name}}'}</code> are replaced automatically.
             </p>
           </div>
 
           {/* RIGHT-SIDE ACTIONS */}
           <div className="ml-auto flex items-center gap-2">
-            {/* Save status for enabled flags */}
             {enabledSaveState === "saving" && (
               <span className="inline-flex items-center gap-1 text-xs text-white/70">
                 <Loader2 className="h-3 w-3 animate-spin" /> Updating toggles…
@@ -750,7 +738,7 @@ export default function MessagingSettings() {
                       <div className="mb-1">
                         {k}
                         {["agent_name","agent_email","agent_phone","calendly_link"].includes(k) && (
-                          <span className="ml-1 rounded bg-white/10 px-1 py-[1px] text[10px] text-white/60">from profile</span>
+                          <span className="ml-1 rounded bg-white/10 px-1 py-[1px] text-[10px] text-white/60">from profile</span>
                         )}
                       </div>
                       <input
@@ -769,7 +757,6 @@ export default function MessagingSettings() {
                     className="rounded-md border border-white/15 bg-white/5 px-2 py-1 text-[11px] hover:bg-white/10"
                     onClick={() => setTestData((d) => ({
                       ...DEFAULT_TEST_DATA,
-                      // keep latest agent profile values
                       agent_name: agentVars.agent_name || DEFAULT_TEST_DATA.agent_name,
                       agent_email: agentVars.agent_email || DEFAULT_TEST_DATA.agent_email,
                       agent_phone: agentVars.agent_phone || DEFAULT_TEST_DATA.agent_phone,
