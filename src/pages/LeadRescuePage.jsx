@@ -7,7 +7,6 @@ import {
 
 // ---- Helpers ----
 const TZ_DEFAULT = "America/Chicago";
-
 function classNames(...xs) { return xs.filter(Boolean).join(" "); }
 
 function formatPhoneLocalMask(p) {
@@ -28,7 +27,7 @@ function VarBadge({ token }) {
   );
 }
 
-// Same quick token filler used in MessagingSettings preview
+// Same quick token filler used in MessagingSettings preview (kept for future)
 function fillTemplate(text, data) {
   if (!text) return "";
   const map = {
@@ -118,9 +117,7 @@ export default function LeadRescuePage() {
         .eq("user_id", uid)
         .order("day_number", { ascending: true });
 
-      setTemplates(
-        (trows || []).filter((t) => (t.day_number || 0) >= 2)
-      );
+      setTemplates((trows || []).filter((t) => (t.day_number || 0) >= 2));
 
       setLoading(false);
     })();
@@ -207,7 +204,6 @@ export default function LeadRescuePage() {
     if (!userId) return;
     setSavingTpl("saving");
     try {
-      // blank body = store empty string (treated as skip)
       const { error } = await supabase
         .from("lead_rescue_templates")
         .upsert(
@@ -229,9 +225,11 @@ export default function LeadRescuePage() {
     saveTplTimer.current = setTimeout(() => persistTemplate(day, body), 600);
   }
 
+  // ✅ FIX: first added day is Day 2, then Day 3, etc.
   function nextDayNumber() {
-    const max = Math.max(2, ...templates.map((t) => t.day_number));
-    return max + 1;
+    if (!templates || templates.length === 0) return 2; // first one is Day 2
+    const max = Math.max(...templates.map((t) => t.day_number || 0));
+    return Math.max(2, max) + 1;
   }
 
   async function addDay() {
@@ -272,7 +270,6 @@ export default function LeadRescuePage() {
     refreshTrackers();
   }
   async function advanceOneDay(contactId) {
-    // Just bumps the counter (the cron will send at the next window)
     const { data: cur } = await supabase
       .from("lead_rescue_trackers")
       .select("current_day")
@@ -395,7 +392,7 @@ export default function LeadRescuePage() {
               min={0}
               max={23}
               value={sendHourLocal}
-              onChange={(e) => setSendHourLocal(Number(e.target.value))}
+              onChange={(e) => setSendHourLocal(e.target.value)}
               className="w-full rounded-lg border border-white/15 bg-white/5 px-3 py-2 text-sm outline-none focus:ring-1 focus:ring-indigo-400/40"
               placeholder="9"
             />
@@ -407,7 +404,7 @@ export default function LeadRescuePage() {
               type="number"
               min={2}
               value={maxDays}
-              onChange={(e) => setMaxDays(Number(e.target.value))}
+              onChange={(e) => setMaxDays(e.target.value)}
               className="w-full rounded-lg border border-white/15 bg-white/5 px-3 py-2 text-sm outline-none focus:ring-1 focus:ring-indigo-400/40"
               placeholder="5"
             />
