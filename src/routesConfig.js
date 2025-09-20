@@ -39,6 +39,9 @@ import BootcampPage from "./pages/BootcampPage.jsx";
 // ---- Message Lab (PRIVATE) ----
 import MessageTestPage from "./pages/MessageTestPage.jsx"; // <— NEW
 
+// ---- Lead Rescue (NEW) ----
+import LeadRescuePage from "./pages/LeadRescuePage.jsx"; // <— NEW
+
 // Sidebar sections:
 // "top" → Top-Level (Most Used Daily)
 // "productivity" → Productivity & Communication
@@ -57,11 +60,12 @@ export const routes = [
   { key: "calendar", path: "/app/calendar", label: "Calendar", component: CalendarPage,              showInSidebar: true, section: "top" },
 
   // Productivity & Communication
-  { key: "contacts",     path: "/app/contacts",           label: "Contacts",            component: ContactsPage,     showInSidebar: true, section: "productivity" }, // NEW
-  { key: "msgSettings",  path: "/app/messaging-settings", label: "Messaging Settings",  component: MessagingSettings, showInSidebar: true, section: "productivity" },
-  { key: "mailing",      path: "/app/mailing",            label: "Mailing",             component: MailingPage,      showInSidebar: true, section: "productivity" },
-  { key: "rebuttal",     path: "/app/rebuttal",           label: "AI Rebuttal Helper",  component: RebuttalChat,     showInSidebar: true, section: "productivity" },
-  { key: "call-recorder",path: "/app/call-recorder",      label: "Call Recorder",       component: CallRecorder,     showInSidebar: true, section: "productivity" },
+  { key: "contacts",      path: "/app/contacts",           label: "Contacts",           component: ContactsPage,     showInSidebar: true, section: "productivity" }, // NEW
+  { key: "lead-rescue",   path: "/app/lead-rescue",        label: "Lead Rescue",        component: LeadRescuePage,   showInSidebar: true, section: "productivity" }, // NEW
+  { key: "msgSettings",   path: "/app/messaging-settings", label: "Messaging Settings", component: MessagingSettings, showInSidebar: true, section: "productivity" },
+  { key: "mailing",       path: "/app/mailing",            label: "Mailing",            component: MailingPage,      showInSidebar: true, section: "productivity" },
+  { key: "rebuttal",      path: "/app/rebuttal",           label: "AI Rebuttal Helper", component: RebuttalChat,     showInSidebar: true, section: "productivity" },
+  { key: "call-recorder", path: "/app/call-recorder",      label: "Call Recorder",      component: CallRecorder,     showInSidebar: true, section: "productivity" },
 
   // Insights & Tools
   { key: "reports", path: "/app/reports", label: "Reports",     component: ReportsPage, showInSidebar: true, section: "insights_tools" },
