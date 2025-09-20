@@ -10,7 +10,6 @@ export async function getUserId() {
 }
 
 /** Normalize helpers */
-const onlyDigits = (s) => String(s || "").replace(/\D+/g, "");
 const normEmail = (s) => String(s || "").trim().toLowerCase();
 
 /** Find the server row id for this user by id, or fallback to email/phone */
@@ -25,7 +24,6 @@ async function findLeadRowIdForUser({ id, email, phone }) {
     const phoneE164 = toE164(phone);
     if (phoneE164) clauses.push(`phone.eq.${phoneE164}`);
   }
-
   if (!clauses.length) return null;
 
   const { data, error } = await supabase
@@ -38,6 +36,13 @@ async function findLeadRowIdForUser({ id, email, phone }) {
 
   if (error) throw error;
   return data?.[0]?.id || null;
+}
+
+/** Choose conflict target based on what we have (must match DB unique index) */
+function conflictTargetFor(row) {
+  if (row.phone) return "user_id,phone";
+  if (row.email) return "user_id,email";
+  return undefined; // fall back to PK behavior
 }
 
 /** Upsert ONE lead (used for CSV/new items) */
@@ -55,8 +60,8 @@ export async function upsertLeadServer(lead) {
     user_id: userId,
     status: lead.status === "sold" ? "sold" : "lead",
     name: lead.name || "",
-    phone: phoneE164 || "",
-    email: lead.email ? normEmail(lead.email) : "",
+    phone: phoneE164 || null,
+    email: lead.email ? normEmail(lead.email) : null,
     notes: lead.notes || "",
     dob: lead.dob || null,
     state: lead.state || "",
@@ -77,7 +82,11 @@ export async function upsertLeadServer(lead) {
     updated_at: new Date().toISOString(),
   };
 
-  const { error } = await supabase.from("leads").upsert(row);
+  const onConflict = conflictTargetFor(row);
+  const q = supabase.from("leads").upsert(row);
+  if (onConflict) q.onConflict(onConflict);
+
+  const { error } = await q;
   if (error) throw error;
   return row.id;
 }
@@ -95,12 +104,12 @@ export async function upsertManyLeadsServer(leads = []) {
     }
 
     return {
-      id: p.id,
+      id: p.id ?? undefined,
       user_id: userId,
       status: p.status === "sold" ? "sold" : "lead",
       name: p.name || "",
-      phone: phoneE164 || "",
-      email: p.email ? normEmail(p.email) : "",
+      phone: phoneE164 || null,
+      email: p.email ? normEmail(p.email) : null,
       notes: p.notes || "",
       dob: p.dob || null,
       state: p.state || "",
@@ -121,8 +130,31 @@ export async function upsertManyLeadsServer(leads = []) {
     };
   });
 
-  const { error } = await supabase.from("leads").upsert(rows);
-  if (error) throw error;
+  // Split by conflict key to get proper onConflict behavior in batches
+  const withPhone = rows.filter((r) => r.phone);
+  const withEmailOnly = rows.filter((r) => !r.phone && r.email);
+  const noKey = rows.filter((r) => !r.phone && !r.email);
+
+  if (withPhone.length) {
+    const { error } = await supabase
+      .from("leads")
+      .upsert(withPhone, { onConflict: "user_id,phone" });
+    if (error) throw error;
+  }
+
+  if (withEmailOnly.length) {
+    const { error } = await supabase
+      .from("leads")
+      .upsert(withEmailOnly, { onConflict: "user_id,email" });
+    if (error) throw error;
+  }
+
+  if (noKey.length) {
+    // Fallback: no conflict key → will create new rows (could be dupes).
+    const { error } = await supabase.from("leads").upsert(noKey);
+    if (error) throw error;
+  }
+
   return rows.length;
 }
 
