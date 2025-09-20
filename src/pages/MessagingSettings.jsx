@@ -1,12 +1,11 @@
-// File: src/pages/MessagingSettings.jsx
 import { useEffect, useRef, useState } from "react";
 import { supabase } from "../lib/supabaseClient";
-import { CreditCard, Check, Loader2, MessageSquare, Info, RotateCcw, Lock } from "lucide-react";
+import { CreditCard, Check, Loader2, MessageSquare, Info, RotateCcw, Lock, X } from "lucide-react";
 
 /* ---------------- Template Catalog ---------------- */
 const TEMPLATE_DEFS = [
   { key: "new_lead", label: "New Lead (instant)" },
-  { key: "new_lead_military", label: "New Lead (military)" }, // 🆕
+  { key: "new_lead_military", label: "New Lead (military)" },
   { key: "appointment", label: "Appointment Reminder" },      // 🔒 locked (coming soon)
   { key: "sold", label: "Sold - Policy Info" },
   { key: "payment_reminder", label: "Payment Reminder" },
@@ -25,7 +24,6 @@ const DEFAULTS = {
     "Hi {{first_name}}, this is {{agent_name}}, a licensed life insurance broker in {{state}}. I just received the form you sent in to my office where you listed {{beneficiary}} as the beneficiary. If I’m unable to reach you or there’s a better time to get back to you, feel free to book an appointment with me here: {{calendly_link}} " +
     "You can text me anytime at {{agent_phone}} (this business text line doesn’t accept calls).",
 
-  // 🆕 Firm, professional tone for veterans / military
   new_lead_military:
     "Hello {{first_name}}, this is {{agent_name}}, a licensed life insurance broker. I see you noted {{beneficiary}} as your beneficiary and your background with the {{military_branch}}. " +
     "I handle coverage for service members and veterans directly. Let’s connect today to review your options and make sure everything is squared away. " +
@@ -106,10 +104,10 @@ function fillTemplate(text, data) {
 const DEFAULT_TEST_DATA = {
   first_name: "Jacob",
   last_name: "Prieto",
-  agent_name: "",        // will be auto-filled from agent_profiles if available
+  agent_name: "",
   company: "Prieto Insurance Solutions LLC",
-  agent_phone: "",       // auto-filled
-  agent_email: "",       // auto-filled
+  agent_phone: "",
+  agent_email: "",
   appt_time: "Tue 3:30 PM",
   carrier: "Americo",
   policy_number: "A1B2C3D4",
@@ -117,9 +115,24 @@ const DEFAULT_TEST_DATA = {
   state: "TN",
   beneficiary: "Maria Prieto",
   military_branch: "US Army",
-  calendly_link: "",     // auto-filled
-  today: "", // auto-fills if left blank
+  calendly_link: "",
+  today: "",
 };
+
+const PAYPAL_CLIENT_ID = import.meta.env.VITE_PAYPAL_CLIENT_ID;
+
+/** Load PayPal SDK once */
+async function loadPayPalSdk() {
+  if (window.paypal) return;
+  await new Promise((resolve, reject) => {
+    const s = document.createElement("script");
+    s.src = `https://www.paypal.com/sdk/js?client-id=${encodeURIComponent(PAYPAL_CLIENT_ID)}&currency=USD&intent=capture`;
+    s.async = true;
+    s.onload = resolve;
+    s.onerror = () => reject(new Error("Failed to load PayPal SDK"));
+    document.head.appendChild(s);
+  });
+}
 
 export default function MessagingSettings() {
   const [loading, setLoading] = useState(true);
@@ -150,18 +163,23 @@ export default function MessagingSettings() {
   // Drawer state
   const [cheatOpen, setCheatOpen] = useState(false);
 
-  // --- Test preview state (NEW) ---
+  // --- Test preview state ---
   const [testOpen, setTestOpen] = useState(false);
-  const [testKey, setTestKey] = useState(null); // which template we're previewing
+  const [testKey, setTestKey] = useState(null);
   const [testData, setTestData] = useState({ ...DEFAULT_TEST_DATA });
 
-  // --- Agent vars from agent_profiles (NEW) ---
+  // --- Agent vars from agent_profiles ---
   const [agentVars, setAgentVars] = useState({
     agent_name: "",
     agent_email: "",
     agent_phone: "",
     calendly_link: "",
   });
+
+  // --- PayPal modal state ---
+  const [paypalOpen, setPaypalOpen] = useState(false);
+  const [paypalAmountCents, setPaypalAmountCents] = useState(0);
+  const paypalContainerRef = useRef(null);
 
   const balanceDollars = (balanceCents / 100).toFixed(2);
 
@@ -198,19 +216,15 @@ export default function MessagingSettings() {
 
       if (!mounted) return;
 
-      // Templates text
       if (tmpl?.templates && typeof tmpl.templates === "object") {
         setTemplates((prev) => ({ ...DEFAULTS, ...tmpl.templates, __enabled: undefined }));
       } else {
         try {
-          await supabase
-            .from("message_templates")
-            .upsert({ user_id: uid, templates: DEFAULTS });
+          await supabase.from("message_templates").upsert({ user_id: uid, templates: DEFAULTS });
         } catch {}
         setTemplates({ ...DEFAULTS });
       }
 
-      // Enabled flags
       let initialEnabled = { ...DEFAULT_ENABLED };
       const maybeEnabledFromCol = tmpl?.enabled && typeof tmpl.enabled === "object" ? tmpl.enabled : null;
       const maybeEnabledFromTemplates =
@@ -224,28 +238,21 @@ export default function MessagingSettings() {
         initialEnabled = { ...DEFAULT_ENABLED, ...maybeEnabledFromTemplates };
       }
 
-      // 🔒 Force appointment off (locked)
       initialEnabled[APPOINTMENT_KEY] = false;
-
       setEnabledMap(initialEnabled);
 
-      // Persist scaffold if needed
       if (!maybeEnabledFromCol && !maybeEnabledFromTemplates) {
         try {
-          await supabase
-            .from("message_templates")
-            .upsert({ user_id: uid, enabled: initialEnabled });
+          await supabase.from("message_templates").upsert({ user_id: uid, enabled: initialEnabled });
         } catch {
           try {
             const merged = { ...DEFAULTS, __enabled: initialEnabled };
-            await supabase
-              .from("message_templates")
-              .upsert({ user_id: uid, templates: merged });
+            await supabase.from("message_templates").upsert({ user_id: uid, templates: merged });
           } catch {}
         }
       }
 
-      // ➜ Load agent profile for test data
+      // agent profile
       const { data: profile } = await supabase
         .from("agent_profiles")
         .select("full_name, email, phone, calendly_url")
@@ -262,7 +269,6 @@ export default function MessagingSettings() {
       };
       setAgentVars(nextAgentVars);
 
-      // Prime test data with agent values if empty
       setTestData((d) => ({
         ...d,
         agent_name: d.agent_name || nextAgentVars.agent_name,
@@ -301,9 +307,7 @@ export default function MessagingSettings() {
     if (!userId) return;
     setSaveState("saving");
     try {
-      const { error } = await supabase
-        .from("message_templates")
-        .upsert({ user_id: userId, templates: next });
+      const { error } = await supabase.from("message_templates").upsert({ user_id: userId, templates: next });
       if (error) throw error;
       setSaveState("saved");
       setTimeout(() => setSaveState("idle"), 1200);
@@ -327,9 +331,7 @@ export default function MessagingSettings() {
   }
 
   function resetAllTemplates() {
-    const confirmed = window.confirm(
-      "Reset all templates to the default messages? This will overwrite your custom text."
-    );
+    const confirmed = window.confirm("Reset all templates to the default messages? This will overwrite your custom text.");
     if (!confirmed) return;
     const next = { ...DEFAULTS };
     setTemplates(next);
@@ -340,15 +342,10 @@ export default function MessagingSettings() {
   async function persistEnabled(nextMap) {
     if (!userId) return;
     setEnabledSaveState("saving");
-
-    // 🔒 Never allow appointment to be enabled
     const fixed = { ...nextMap, [APPOINTMENT_KEY]: false };
     setEnabledMap(fixed);
-
     try {
-      const { error } = await supabase
-        .from("message_templates")
-        .upsert({ user_id: userId, enabled: fixed });
+      const { error } = await supabase.from("message_templates").upsert({ user_id: userId, enabled: fixed });
       if (error) throw error;
       setEnabledSaveState("saved");
       setTimeout(() => setEnabledSaveState("idle"), 1200);
@@ -359,9 +356,7 @@ export default function MessagingSettings() {
     try {
       const nextTemplates = { ...templates, __enabled: fixed };
       setTemplates(nextTemplates);
-      const { error } = await supabase
-        .from("message_templates")
-        .upsert({ user_id: userId, templates: nextTemplates });
+      const { error } = await supabase.from("message_templates").upsert({ user_id: userId, templates: nextTemplates });
       if (error) throw error;
       setEnabledSaveState("saved");
       setTimeout(() => setEnabledSaveState("idle"), 1200);
@@ -380,7 +375,6 @@ export default function MessagingSettings() {
       enabledTimer.current = setTimeout(() => persistEnabled(next), 500);
       return;
     }
-
     const next = { ...enabledMap, [key]: !!val };
     setEnabledMap(next);
     setEnabledSaveState("saving");
@@ -388,36 +382,52 @@ export default function MessagingSettings() {
     enabledTimer.current = setTimeout(() => persistEnabled(next), 500);
   }
 
-  /* -------- Stripe top-up -------- */
-  async function addFunds(amountCents) {
+  /* -------- PayPal top-up (replaces Stripe) -------- */
+  async function openPayPal(amountCents) {
+    if (!userId) return alert("Please sign in first.");
     setCustomMsg("");
     setTopping(true);
-    try {
-      const res = await fetch("/.netlify/functions/create-checkout-session", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          amount_cents: amountCents,
-          reason: "wallet_topup",
-          user_id: userId,
-        }),
-      });
+    setPaypalAmountCents(amountCents);
+    setPaypalOpen(true);
 
-      if (!res.ok) {
-        let msg = "Could not start checkout.";
-        try {
-          const j = await res.json();
-          if (j?.error) msg = j.error;
-        } catch {}
-        throw new Error(msg);
+    try {
+      await loadPayPalSdk();
+
+      // Clear old buttons if re-opened
+      if (paypalContainerRef.current) {
+        paypalContainerRef.current.innerHTML = "";
       }
 
-      const { url } = await res.json();
-      if (!url) throw new Error("No checkout URL returned");
-      window.location.href = url;
+      window.paypal.Buttons({
+        style: { layout: "vertical", shape: "rect", label: "paypal" },
+        createOrder: async () => {
+          const res = await fetch("/.netlify/functions/paypal-create-order", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ amount_cents: amountCents, user_id: userId }),
+          });
+          const data = await res.json();
+          if (!data?.id) throw new Error("Failed to create PayPal order");
+          return data.id;
+        },
+        onApprove: async () => {
+          // Capture handled by PayPal widget; webhook will credit wallet.
+          setPaypalOpen(false);
+          alert("Payment approved. Funds will appear in your wallet shortly.");
+        },
+        onCancel: () => {
+          setPaypalOpen(false);
+        },
+        onError: (err) => {
+          console.error(err);
+          setPaypalOpen(false);
+          alert("PayPal error. Please try again.");
+        },
+      }).render(paypalContainerRef.current);
     } catch (e) {
       console.error(e);
-      alert(e.message || "Could not start checkout.");
+      setPaypalOpen(false);
+      alert(e.message || "Could not load PayPal.");
     } finally {
       setTopping(false);
     }
@@ -435,7 +445,7 @@ export default function MessagingSettings() {
       setCustomMsg("Amount must be between $1 and $500.");
       return;
     }
-    addFunds(cents);
+    openPayPal(cents);
   }
 
   if (loading) {
@@ -448,24 +458,17 @@ export default function MessagingSettings() {
     );
   }
 
-  const allDefault = Object.keys(DEFAULTS).every(
-    (k) => (templates[k] ?? "") === (DEFAULTS[k] ?? "")
-  );
-
+  const allDefault = Object.keys(DEFAULTS).every((k) => (templates[k] ?? "") === (DEFAULTS[k] ?? ""));
   const activePreviewKey = testKey;
   const activePreviewTemplate = activePreviewKey ? templates[activePreviewKey] ?? "" : "";
-  const activePreviewFilled = activePreviewKey
-    ? fillTemplate(activePreviewTemplate, { ...agentVars, ...testData })
-    : "";
+  const activePreviewFilled = activePreviewKey ? fillTemplate(activePreviewTemplate, { ...agentVars, ...testData }) : "";
 
   return (
     <div className="space-y-6">
       {/* Header */}
       <header className="rounded-2xl border border-white/10 bg-white/[0.03] p-4">
         <h1 className="text-lg font-semibold">Messaging Settings</h1>
-        <p className="mt-1 text-sm text-white/70">
-          Manage your text balance and message templates.
-        </p>
+        <p className="mt-1 text-sm text-white/70">Manage your text balance and message templates.</p>
       </header>
 
       {/* Wallet block */}
@@ -479,10 +482,10 @@ export default function MessagingSettings() {
 
           <div className="flex flex-col gap-2 md:items-end">
             <div className="flex flex-wrap gap-2">
-              <button type="button" onClick={() => addFunds(500)} disabled={topping} className="inline-flex items-center gap-1 rounded-lg border border-white/15 bg-white/5 px-3 py-2 text-sm hover:bg-white/10 disabled:opacity-50"><CreditCard className="h-4 w-4" /> +$5</button>
-              <button type="button" onClick={() => addFunds(1000)} disabled={topping} className="inline-flex items-center gap-1 rounded-lg border border-white/15 bg-white/5 px-3 py-2 text-sm hover:bg-white/10 disabled:opacity-50"><CreditCard className="h-4 w-4" /> +$10</button>
-              <button type="button" onClick={() => addFunds(2000)} disabled={topping} className="inline-flex items-center gap-1 rounded-lg border border-white/15 bg-white/5 px-3 py-2 text-sm hover:bg-white/10 disabled:opacity-50"><CreditCard className="h-4 w-4" /> +$20</button>
-              <button type="button" onClick={() => addFunds(5000)} disabled={topping} className="inline-flex items-center gap-1 rounded-lg border border-white/15 bg-white/5 px-3 py-2 text-sm hover:bg-white/10 disabled:opacity-50"><CreditCard className="h-4 w-4" /> +$50</button>
+              <button type="button" onClick={() => openPayPal(500)} disabled={topping} className="inline-flex items-center gap-1 rounded-lg border border-white/15 bg-white/5 px-3 py-2 text-sm hover:bg-white/10 disabled:opacity-50"><CreditCard className="h-4 w-4" /> +$5</button>
+              <button type="button" onClick={() => openPayPal(1000)} disabled={topping} className="inline-flex items-center gap-1 rounded-lg border border-white/15 bg-white/5 px-3 py-2 text-sm hover:bg-white/10 disabled:opacity-50"><CreditCard className="h-4 w-4" /> +$10</button>
+              <button type="button" onClick={() => openPayPal(2000)} disabled={topping} className="inline-flex items-center gap-1 rounded-lg border border-white/15 bg-white/5 px-3 py-2 text-sm hover:bg-white/10 disabled:opacity-50"><CreditCard className="h-4 w-4" /> +$20</button>
+              <button type="button" onClick={() => openPayPal(5000)} disabled={topping} className="inline-flex items-center gap-1 rounded-lg border border-white/15 bg-white/5 px-3 py-2 text-sm hover:bg-white/10 disabled:opacity-50"><CreditCard className="h-4 w-4" /> +$50</button>
             </div>
 
             <div className="flex items-center gap-2">
@@ -521,7 +524,7 @@ export default function MessagingSettings() {
           <div className="min-w-0">
             <h3 className="text-sm font-semibold">Message Templates</h3>
             <p className="text-xs text-white/60 truncate">
-              Customize what’s sent for each event. Variables like <code className="px-1 rounded bg-white/10">{'{{first_name}}'}</code> are replaced automatically.
+              Customize what’s sent for each event. Variables like <code className="px-1 rounded bg-white/10">{{"{first_name}"}}</code> are replaced automatically.
             </p>
           </div>
 
@@ -588,7 +591,6 @@ export default function MessagingSettings() {
                 <div className="mb-1 flex items-center gap-2">
                   <div className="text-xs text-white/70">{label}</div>
 
-                  {/* ⛔ lock: appointment toggle is disabled until scheduler ships */}
                   <div className="ml-2">
                     <Toggle
                       checked={enabled}
@@ -663,13 +665,6 @@ export default function MessagingSettings() {
                 <Info className="h-5 w-5" />
                 <h2 className="text-sm font-semibold">Template Variables</h2>
               </div>
-              <button
-                type="button"
-                onClick={() => setCheatOpen(false)}
-                className="rounded-lg border border-white/15 bg-white/5 px-2 py-1 text-xs hover:bg-white/10"
-              >
-                Close
-              </button>
             </div>
 
             <p className="mb-3 text-xs text-white/70">
@@ -691,15 +686,8 @@ export default function MessagingSettings() {
               <VarRow token="today" desc="Today’s date" />
               <VarRow token="state" desc="Lead’s state (from form)" />
               <VarRow token="beneficiary" desc="Lead’s listed beneficiary" />
-              <VarRow token="military_branch" desc="Military branch (if provided)" /> {/* 🆕 */}
+              <VarRow token="military_branch" desc="Military branch (if provided)" />
               <VarRow token="calendly_link" desc="Your Calendly booking link" />
-            </div>
-
-            <div className="mt-4 rounded-xl border border-white/10 bg-white/[0.02] p-3">
-              <div className="mb-1 text-xs font-semibold">Example</div>
-              <pre className="whitespace-pre-wrap rounded-lg border border-white/10 bg-black/30 p-3 text-[11px] leading-5">
-{'"Hello {{first_name}}, this is {{agent_name}}. I see your {{military_branch}} background. Let’s connect to square away your coverage. (Text: {{agent_phone}} — no calls)"'}
-              </pre>
             </div>
           </aside>
         )}
@@ -798,6 +786,28 @@ export default function MessagingSettings() {
           <li>Include any disclosures your brand requires.</li>
         </ul>
       </section>
+
+      {/* PayPal Modal */}
+      {paypalOpen && (
+        <div className="fixed inset-0 z-50 grid place-items-center bg-black/60 p-4">
+          <div className="w-full max-w-md rounded-2xl border border-white/10 bg-[#0b0b12] p-4 shadow-2xl">
+            <div className="mb-3 flex items-center justify-between">
+              <h3 className="text-sm font-semibold">Add funds — ${ (paypalAmountCents/100).toFixed(2) }</h3>
+              <button
+                onClick={() => setPaypalOpen(false)}
+                className="rounded-md border border-white/15 bg-white/5 p-1 hover:bg-white/10"
+                title="Close"
+              >
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+            <div ref={paypalContainerRef} className="py-2" />
+            <p className="mt-2 text-[11px] text-white/50">
+              After approval, your wallet updates automatically within a few seconds.
+            </p>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -813,7 +823,6 @@ function VarRow({ token, desc }) {
 }
 
 /* --- Helper for your sender --- */
-/** Decide which new-lead template key to use based on lead data. */
 export function pickNewLeadTemplateKey(lead) {
   const branch = (lead?.military_branch || "").trim();
   return branch ? "new_lead_military" : "new_lead";
