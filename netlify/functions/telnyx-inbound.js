@@ -1,70 +1,108 @@
-// netlify/functions/telnyx-inbound.js
-// Minimal inbound SMS webhook for Telnyx. Logs everything for now.
-// (We can uncomment the DB insert once you confirm column names.)
+// Minimal inbound handler: insert incoming SMS into public.messages
 
 const { getServiceClient } = require("./_supabase");
 
-const ok = (b) => ({
-  statusCode: 200,
-  headers: { "Content-Type": "application/json" },
-  body: JSON.stringify(b || { ok: true }),
-});
+function ok(body) {
+  return { statusCode: 200, headers: { "Content-Type": "application/json" }, body: JSON.stringify(body || { ok: true }) };
+}
+
+const norm10 = (s) => String(s || "").replace(/\D/g, "").slice(-10);
+function toE164(p) {
+  const d = String(p || "").replace(/\D/g, "");
+  if (!d) return null;
+  if (d.startsWith("1") && d.length === 11) return `+${d}`;
+  if (d.length === 10) return `+1${d}`;
+  if (String(p).startsWith("+")) return String(p);
+  return null;
+}
+
+async function resolveUserId(db, telnyxToE164) {
+  // A) Most recent outgoing message that used this Telnyx number as "from"
+  let { data } = await db
+    .from("messages")
+    .select("user_id")
+    .eq("from_number", telnyxToE164)
+    .order("created_at", { ascending: false })
+    .limit(1);
+  if (data && data[0]?.user_id) return data[0].user_id;
+
+  // B) Agent profile with matching phone
+  let ap = await db
+    .from("agent_profiles")
+    .select("user_id")
+    .eq("phone", telnyxToE164)
+    .maybeSingle();
+  if (ap?.data?.user_id) return ap.data.user_id;
+
+  // C) Fallback env (set this in Netlify if needed)
+  return process.env.INBOUND_FALLBACK_USER_ID || process.env.DEFAULT_USER_ID || null;
+}
+
+async function findOrCreateContact(db, user_id, fromE164) {
+  const last10 = norm10(fromE164);
+  const { data, error } = await db
+    .from("message_contacts")
+    .select("id, phone")
+    .eq("user_id", user_id);
+  if (error) throw error;
+  const found = (data || []).find((c) => norm10(c.phone) === last10);
+  if (found) return found.id;
+
+  const ins = await db
+    .from("message_contacts")
+    .insert([{ user_id, phone: fromE164, subscribed: true }])
+    .select("id")
+    .maybeSingle();
+  if (ins.error) throw ins.error;
+  return ins.data.id;
+}
 
 exports.handler = async (event) => {
-  if (event.httpMethod !== "POST") return ok({ ok: true, note: "POST only" });
+  const db = getServiceClient();
 
-  let body;
-  try { body = JSON.parse(event.body || "{}"); } catch { body = {}; }
+  let body = {};
+  try { body = JSON.parse(event.body || "{}"); } catch {}
 
-  const data = body?.data || body;
-  const payload = data?.payload || {};
-  const eventType = data?.event_type || data?.type || "unknown";
-  const messageId = payload?.id || data?.id || null;
-  const from = payload?.from?.phone_number || payload?.from || null;
-  const to = Array.isArray(payload?.to) && payload.to[0]?.phone_number
-    ? payload.to[0].phone_number
-    : payload?.to || null;
-  const text = payload?.text || payload?.body || "";
+  const data = body.data || body;
+  const payload = data.payload || data;
 
-  console.log("[telnyx-inbound] type:", eventType);
-  console.log("[telnyx-inbound] id:", messageId);
-  console.log("[telnyx-inbound] from:", from, "to:", to);
-  console.log("[telnyx-inbound] text:", text);
+  const providerSid = payload?.id || data?.id || null;
+  const from = toE164(payload?.from?.phone_number || payload?.from || "");
+  const to = toE164((Array.isArray(payload?.to) && payload.to[0]?.phone_number) || payload?.to || "");
+  const text = String(payload?.text || payload?.body || "").trim();
 
-  // --- OPTIONAL: save to DB (uncomment after we confirm your column names) ---
-  /*
-  try {
-    const supabase = getServiceClient();
+  if (!providerSid || !from || !to) return ok({ ok: true, note: "missing_fields" });
 
-    // Try to link to an existing contact by phone (adjust to your normalization)
-    const { data: contacts } = await supabase
-      .from("message_contacts")
-      .select("id,user_id,phone")
-      .eq("phone", from)               // if you store E.164; change if needed
-      .limit(1);
+  // Dedupe on provider+sid
+  const { data: dupe } = await db
+    .from("messages")
+    .select("id")
+    .eq("provider", "telnyx")
+    .eq("provider_sid", providerSid)
+    .limit(1);
+  if (dupe && dupe.length) return ok({ ok: true, deduped: true });
 
-    const contact = contacts?.[0] || null;
+  const user_id = await resolveUserId(db, to);
+  if (!user_id) return ok({ ok: false, error: "no_user_for_number", to });
 
-    const row = {
-      provider: "telnyx",
-      provider_sid: messageId,
-      direction: "inbound",
-      from_phone: from,
-      to_phone: to,
-      body: text,
-      status: "received",
-      user_id: contact?.user_id || null,
-      contact_id: contact?.id || null,
-      created_at: new Date().toISOString(),
-    };
+  let contact_id = null;
+  try { contact_id = await findOrCreateContact(db, user_id, from); } catch {}
 
-    const { error } = await supabase.from("messages").insert(row);
-    if (error) console.error("[telnyx-inbound] DB insert error:", error.message);
-  } catch (e) {
-    console.error("[telnyx-inbound] DB block error:", e?.message || e);
-  }
-  */
-  // --------------------------------------------------------------------------
+  const row = {
+    user_id,
+    contact_id,
+    direction: "incoming",
+    provider: "telnyx",
+    from_number: from,
+    to_number: to,
+    body: text,
+    status: "received",
+    provider_sid: providerSid,
+    price_cents: 0,
+  };
+
+  const { error } = await db.from("messages").insert([row]);
+  if (error) return ok({ ok: false, error: error.message });
 
   return ok({ ok: true });
 };
