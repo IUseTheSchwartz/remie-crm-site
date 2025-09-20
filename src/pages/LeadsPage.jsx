@@ -308,12 +308,12 @@ async function findRecentlyInsertedLeadId({ userId, person }) {
   if (!person) return null;
 
   // Resolve userId if not provided
-  if (!userId) {
-    try {
+  try {
+    if (!userId) {
       const u = await supabase.auth.getUser();
       userId = u?.data?.user?.id || null;
-    } catch {}
-  }
+    }
+  } catch {}
   if (!userId) {
     console.warn("[auto-text] no userId; cannot lookup lead");
     return null;
@@ -433,16 +433,39 @@ async function triggerAutoTextForLeadId({ leadId, userId, person }) {
       .maybeSingle();
     if (error || !mt) { console.warn("[auto-text] no templates row"); return; }
 
-    const enabled =
-      typeof mt.enabled === "boolean" ? mt.enabled : (mt.enabled?.new_lead ?? true);
-    if (!enabled) { console.warn("[auto-text] template disabled"); return; }
-
     const S = (x) => (x == null ? "" : String(x).trim());
-    const hasBranch = !!S(person?.military_branch);
-    const tpl = hasBranch
-      ? (mt.templates?.new_lead_military || mt.new_lead_military || mt.templates?.new_lead || mt.new_lead || "")
+
+    // Prefer military if lead has branch OR contact has "military" tag
+    let isMilitary = !!S(person?.military_branch);
+    if (!isMilitary) {
+      try {
+        const phoneE164 = toE164(S(person?.phone));
+        if (phoneE164) {
+          const { data: contact } = await supabase
+            .from("message_contacts")
+            .select("tags")
+            .eq("user_id", userId)
+            .eq("phone", phoneE164)
+            .maybeSingle();
+          const tags = (contact?.tags || []).map(t => String(t).trim().toLowerCase());
+          if (tags.includes("military")) isMilitary = true;
+        }
+      } catch (_) {}
+    }
+
+    const templateKey = isMilitary ? "new_lead_military" : "new_lead";
+
+    // Enabled flag support (boolean or map)
+    const enabled =
+      typeof mt.enabled === "boolean"
+        ? mt.enabled
+        : (mt.enabled?.[templateKey] ?? true);
+    if (!enabled) { console.warn("[auto-text] template disabled:", templateKey); return; }
+
+    const tpl = isMilitary
+      ? (mt.templates?.new_lead_military || mt.new_lead_military || "")
       : (mt.templates?.new_lead || mt.new_lead || "");
-    if (!S(tpl)) { console.warn("[auto-text] empty template"); return; }
+    if (!S(tpl)) { console.warn("[auto-text] empty template:", templateKey); return; }
 
     const ctx = {
       name: person?.name || "",
@@ -458,14 +481,14 @@ async function triggerAutoTextForLeadId({ leadId, userId, person }) {
     const { data: { session } } = await supabase.auth.getSession();
     const token = session?.access_token;
 
-    console.log("[auto-text] calling messages-send fallback");
+    console.log("[auto-text] calling messages-send fallback with", templateKey);
     const res2 = await fetch(`${FN_BASE}/messages-send`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
         ...(token ? { Authorization: `Bearer ${token}` } : {}),
       },
-      body: JSON.stringify({ to, body, requesterId: userId, lead_id: leadId, templateKey: "new_lead" }),
+      body: JSON.stringify({ to, body, requesterId: userId, lead_id: leadId, templateKey }),
     });
 
     if (!res2.ok) {
