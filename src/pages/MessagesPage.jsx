@@ -84,38 +84,11 @@ export default function MessagesPage() {
   const [sending, setSending] = useState(false);
   const scrollerRef = useRef(null);
 
-  {/* PayPal Modal */}
-{paypalOpen && (
-  <div
-    className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-black/60 p-4"
-    // allow momentum scroll on iOS
-    style={{ WebkitOverflowScrolling: "touch" }}
-  >
-    <div
-      className="my-8 w-full max-w-md rounded-2xl border border-white/10 bg-[#0b0b12] p-4 shadow-2xl max-h-[90vh] overflow-y-auto"
-    >
-      <div className="mb-3 flex items-center justify-between">
-        <h3 className="text-sm font-semibold">
-          Add funds — ${ (paypalAmountCents / 100).toFixed(2) }
-        </h3>
-        <button
-          onClick={() => setPaypalOpen(false)}
-          className="rounded-md border border-white/15 bg-white/5 p-1 hover:bg-white/10"
-          title="Close"
-        >
-          <X className="h-4 w-4" />
-        </button>
-      </div>
-
-      <div ref={paypalContainerRef} className="py-2" />
-
-      <p className="mt-2 text-[11px] text-white/50">
-        After approval, your wallet updates automatically within a few seconds.
-      </p>
-    </div>
-  </div>
-)}
-
+  // PayPal modal
+  const [paypalOpen, setPaypalOpen] = useState(false);
+  const [paypalAmountCents, setPaypalAmountCents] = useState(0);
+  const [paypalLoading, setPaypalLoading] = useState(false);
+  const paypalContainerRef = useRef(null);
 
   /* ---------- Fetchers ---------- */
 
