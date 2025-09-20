@@ -1,5 +1,6 @@
 // File: netlify/functions/telnyx-inbound.js
 // Inserts incoming SMS and handles STOP/START style opt-out/opt-in.
+// Also marks Lead Rescue as responded (stops the sequence).
 
 const { getServiceClient } = require("./_supabase");
 
@@ -7,7 +8,7 @@ function ok(body) {
   return {
     statusCode: 200,
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(body || { ok: true })
+    body: JSON.stringify(body || { ok: true }),
   };
 }
 
@@ -66,8 +67,8 @@ async function findOrCreateContact(db, user_id, fromE164) {
 function parseKeyword(textIn) {
   const raw = String(textIn || "").trim();
   const normalized = raw.toUpperCase().replace(/[^A-Z]/g, ""); // letters only
-  const STOP_SET   = new Set(["STOP","STOPALL","UNSUBSCRIBE","CANCEL","END","QUIT"]);
-  const START_SET  = new Set(["START","YES","UNSTOP"]);
+  const STOP_SET = new Set(["STOP", "STOPALL", "UNSUBSCRIBE", "CANCEL", "END", "QUIT"]);
+  const START_SET = new Set(["START", "YES", "UNSTOP"]);
 
   // Optional: treat "NO" as STOP (toggle via env)
   const treatNo = String(process.env.INBOUND_TREAT_NO_AS_STOP || "true").toLowerCase() === "true";
@@ -75,8 +76,24 @@ function parseKeyword(textIn) {
 
   if (STOP_SET.has(normalized)) return "STOP";
   if (START_SET.has(normalized)) return "START";
-  // (You could add HELP here if you want to auto-reply with instructions.)
   return null;
+}
+
+// STRICT: mark Lead Rescue as responded + paused
+async function stopLeadRescueOnReply(db, user_id, contact_id) {
+  const now = new Date().toISOString();
+  const { error } = await db
+    .from("lead_rescue_trackers")
+    .update({
+      responded: true,
+      paused: true,
+      stop_reason: "responded",
+      last_reply_at: now,
+      responded_at: now,
+    })
+    .eq("user_id", user_id)
+    .eq("contact_id", contact_id);
+  if (error) throw error;
 }
 
 exports.handler = async (event) => {
@@ -110,7 +127,7 @@ exports.handler = async (event) => {
   if (!user_id) return ok({ ok: false, error: "no_user_for_number", to });
 
   // Ensure a contact exists
-  let contact = await findOrCreateContact(db, user_id, from);
+  const contact = await findOrCreateContact(db, user_id, from);
 
   // Insert the inbound message row
   const row = {
@@ -128,24 +145,19 @@ exports.handler = async (event) => {
   const ins = await db.from("messages").insert([row]);
   if (ins.error) return ok({ ok: false, error: ins.error.message });
 
-  // Handle STOP / START style keywords
+  // NEW: any inbound reply stops Lead Rescue
+  await stopLeadRescueOnReply(db, user_id, contact.id);
+
+  // STOP/START keywords
   const action = parseKeyword(text);
 
   if (action === "STOP") {
-    await db
-      .from("message_contacts")
-      .update({ subscribed: false })
-      .eq("id", contact.id);
-
+    await db.from("message_contacts").update({ subscribed: false }).eq("id", contact.id);
     return ok({ ok: true, action: "unsubscribed" });
   }
 
   if (action === "START") {
-    await db
-      .from("message_contacts")
-      .update({ subscribed: true })
-      .eq("id", contact.id);
-
+    await db.from("message_contacts").update({ subscribed: true }).eq("id", contact.id);
     return ok({ ok: true, action: "resubscribed" });
   }
 
