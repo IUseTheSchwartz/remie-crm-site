@@ -1,9 +1,14 @@
-// Minimal inbound handler: insert incoming SMS into public.messages
+// File: netlify/functions/telnyx-inbound.js
+// Inserts incoming SMS and handles STOP/START style opt-out/opt-in.
 
 const { getServiceClient } = require("./_supabase");
 
 function ok(body) {
-  return { statusCode: 200, headers: { "Content-Type": "application/json" }, body: JSON.stringify(body || { ok: true }) };
+  return {
+    statusCode: 200,
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body || { ok: true })
+  };
 }
 
 const norm10 = (s) => String(s || "").replace(/\D/g, "").slice(-10);
@@ -18,23 +23,23 @@ function toE164(p) {
 
 async function resolveUserId(db, telnyxToE164) {
   // A) Most recent outgoing message that used this Telnyx number as "from"
-  let { data } = await db
+  const { data: m } = await db
     .from("messages")
     .select("user_id")
     .eq("from_number", telnyxToE164)
     .order("created_at", { ascending: false })
     .limit(1);
-  if (data && data[0]?.user_id) return data[0].user_id;
+  if (m && m[0]?.user_id) return m[0].user_id;
 
   // B) Agent profile with matching phone
-  let ap = await db
+  const ap = await db
     .from("agent_profiles")
     .select("user_id")
     .eq("phone", telnyxToE164)
     .maybeSingle();
   if (ap?.data?.user_id) return ap.data.user_id;
 
-  // C) Fallback env (set this in Netlify if needed)
+  // C) Fallback env (optional)
   return process.env.INBOUND_FALLBACK_USER_ID || process.env.DEFAULT_USER_ID || null;
 }
 
@@ -42,19 +47,36 @@ async function findOrCreateContact(db, user_id, fromE164) {
   const last10 = norm10(fromE164);
   const { data, error } = await db
     .from("message_contacts")
-    .select("id, phone")
+    .select("id, phone, subscribed")
     .eq("user_id", user_id);
   if (error) throw error;
+
   const found = (data || []).find((c) => norm10(c.phone) === last10);
-  if (found) return found.id;
+  if (found) return found;
 
   const ins = await db
     .from("message_contacts")
     .insert([{ user_id, phone: fromE164, subscribed: true }])
-    .select("id")
+    .select("id, phone, subscribed")
     .maybeSingle();
   if (ins.error) throw ins.error;
-  return ins.data.id;
+  return ins.data;
+}
+
+function parseKeyword(textIn) {
+  const raw = String(textIn || "").trim();
+  const normalized = raw.toUpperCase().replace(/[^A-Z]/g, ""); // letters only
+  const STOP_SET   = new Set(["STOP","STOPALL","UNSUBSCRIBE","CANCEL","END","QUIT"]);
+  const START_SET  = new Set(["START","YES","UNSTOP"]);
+
+  // Optional: treat "NO" as STOP (toggle via env)
+  const treatNo = String(process.env.INBOUND_TREAT_NO_AS_STOP || "true").toLowerCase() === "true";
+  if (treatNo && normalized === "NO") return "STOP";
+
+  if (STOP_SET.has(normalized)) return "STOP";
+  if (START_SET.has(normalized)) return "START";
+  // (You could add HELP here if you want to auto-reply with instructions.)
+  return null;
 }
 
 exports.handler = async (event) => {
@@ -68,10 +90,12 @@ exports.handler = async (event) => {
 
   const providerSid = payload?.id || data?.id || null;
   const from = toE164(payload?.from?.phone_number || payload?.from || "");
-  const to = toE164((Array.isArray(payload?.to) && payload.to[0]?.phone_number) || payload?.to || "");
+  const to   = toE164((Array.isArray(payload?.to) && payload.to[0]?.phone_number) || payload?.to || "");
   const text = String(payload?.text || payload?.body || "").trim();
 
-  if (!providerSid || !from || !to) return ok({ ok: true, note: "missing_fields" });
+  if (!providerSid || !from || !to) {
+    return ok({ ok: true, note: "missing_fields" });
+  }
 
   // Dedupe on provider+sid
   const { data: dupe } = await db
@@ -85,12 +109,13 @@ exports.handler = async (event) => {
   const user_id = await resolveUserId(db, to);
   if (!user_id) return ok({ ok: false, error: "no_user_for_number", to });
 
-  let contact_id = null;
-  try { contact_id = await findOrCreateContact(db, user_id, from); } catch {}
+  // Ensure a contact exists
+  let contact = await findOrCreateContact(db, user_id, from);
 
+  // Insert the inbound message row
   const row = {
     user_id,
-    contact_id,
+    contact_id: contact?.id || null,
     direction: "incoming",
     provider: "telnyx",
     from_number: from,
@@ -100,9 +125,29 @@ exports.handler = async (event) => {
     provider_sid: providerSid,
     price_cents: 0,
   };
+  const ins = await db.from("messages").insert([row]);
+  if (ins.error) return ok({ ok: false, error: ins.error.message });
 
-  const { error } = await db.from("messages").insert([row]);
-  if (error) return ok({ ok: false, error: error.message });
+  // Handle STOP / START style keywords
+  const action = parseKeyword(text);
+
+  if (action === "STOP") {
+    await db
+      .from("message_contacts")
+      .update({ subscribed: false })
+      .eq("id", contact.id);
+
+    return ok({ ok: true, action: "unsubscribed" });
+  }
+
+  if (action === "START") {
+    await db
+      .from("message_contacts")
+      .update({ subscribed: true })
+      .eq("id", contact.id);
+
+    return ok({ ok: true, action: "resubscribed" });
+  }
 
   return ok({ ok: true });
 };
