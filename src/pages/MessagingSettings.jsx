@@ -7,7 +7,7 @@ import { CreditCard, Check, Loader2, MessageSquare, Info, RotateCcw } from "luci
 const TEMPLATE_DEFS = [
   { key: "new_lead", label: "New Lead (instant)" },
   { key: "new_lead_military", label: "New Lead (military)" }, // 🆕
-  { key: "appointment", label: "Appointment Reminder" },
+  { key: "appointment", label: "Appointment Reminder" },      // ⛔ coming soon
   { key: "sold", label: "Sold - Policy Info" },
   { key: "payment_reminder", label: "Payment Reminder" },
   { key: "birthday_text", label: "Birthday Text" },
@@ -54,17 +54,19 @@ const DEFAULTS = {
     "Text me anytime at {{agent_phone}} (this business text line doesn’t accept calls).",
 };
 
-/* Small toggle */
-function Toggle({ checked, onChange, label }) {
+/* Small toggle (now supports disabled) */
+function Toggle({ checked, onChange, label, disabled = false }) {
   return (
     <button
       type="button"
       role="switch"
       aria-checked={checked}
-      onClick={() => onChange(!checked)}
+      aria-disabled={disabled}
+      onClick={() => { if (!disabled) onChange(!checked); }}
       className={[
-        "inline-flex items-center rounded-full border border-white/15 px-2 py-1 text-[11px] select-none",
-        checked ? "bg-emerald-500/15 text-emerald-300" : "bg-white/5 text-white/70 hover:bg-white/10",
+        "inline-flex items-center rounded-full border px-2 py-1 text-[11px] select-none",
+        disabled ? "cursor-not-allowed opacity-50 border-white/10 bg-white/5 text-white/50"
+                 : "border-white/15 " + (checked ? "bg-emerald-500/15 text-emerald-300" : "bg-white/5 text-white/70 hover:bg-white/10"),
       ].join(" ")}
       title={label}
     >
@@ -72,6 +74,7 @@ function Toggle({ checked, onChange, label }) {
         className={[
           "mr-2 inline-block h-3.5 w-6 rounded-full transition",
           checked ? "bg-emerald-400/30" : "bg-white/15",
+          disabled ? "opacity-60" : "",
         ].join(" ")}
       >
         <span
@@ -229,17 +232,19 @@ export default function MessagingSettings() {
       } else if (maybeEnabledFromTemplates) {
         initialEnabled = { ...DEFAULT_ENABLED, ...maybeEnabledFromTemplates };
       }
+
+      // ⛔ Force appointment OFF no matter what (coming soon)
+      initialEnabled.appointment = false;
+
       setEnabledMap(initialEnabled);
 
       // If nothing existed, try to persist a proper record (best effort)
       if (!maybeEnabledFromCol && !maybeEnabledFromTemplates) {
-        // Try writing to 'enabled' column first
         try {
           await supabase
             .from("message_templates")
             .upsert({ user_id: uid, enabled: initialEnabled });
         } catch {
-          // Fallback: embed into templates.__enabled
           try {
             const merged = { ...DEFAULTS, __enabled: initialEnabled };
             await supabase
@@ -295,7 +300,7 @@ export default function MessagingSettings() {
       try {
         supabase.removeChannel?.(ch);
       } catch {}
-      mounted = false;
+      let t;
       if (saveTimer.current) clearTimeout(saveTimer.current);
       if (enabledTimer.current) clearTimeout(enabledTimer.current);
     };
@@ -347,11 +352,15 @@ export default function MessagingSettings() {
   async function persistEnabled(nextMap) {
     if (!userId) return;
     setEnabledSaveState("saving");
+
+    // ⛔ Always force appointment OFF on save
+    const sanitized = { ...nextMap, appointment: false };
+
     // Try preferred: save top-level 'enabled' JSON column
     try {
       const { error } = await supabase
         .from("message_templates")
-        .upsert({ user_id: userId, enabled: nextMap });
+        .upsert({ user_id: userId, enabled: sanitized });
       if (error) throw error;
       setEnabledSaveState("saved");
       setTimeout(() => setEnabledSaveState("idle"), 1200);
@@ -361,7 +370,7 @@ export default function MessagingSettings() {
     }
     // Fallback: embed into templates.__enabled
     try {
-      const nextTemplates = { ...templates, __enabled: nextMap };
+      const nextTemplates = { ...templates, __enabled: sanitized };
       setTemplates(nextTemplates);
       const { error } = await supabase
         .from("message_templates")
@@ -376,6 +385,8 @@ export default function MessagingSettings() {
   }
 
   function setEnabled(key, val) {
+    // ⛔ Block enabling Appointment (coming soon)
+    if (key === "appointment") return;
     const next = { ...enabledMap, [key]: !!val };
     setEnabledMap(next);
     setEnabledSaveState("saving");
@@ -461,7 +472,7 @@ export default function MessagingSettings() {
       <header className="rounded-2xl border border-white/10 bg-white/[0.03] p-4">
         <h1 className="text-lg font-semibold">Messaging Settings</h1>
         <p className="mt-1 text-sm text-white/70">
-          Manage your text balance and message templates. (Twilio connection can be finished later.)
+          Manage your text balance and message templates.
         </p>
       </header>
 
@@ -470,11 +481,11 @@ export default function MessagingSettings() {
         <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
           <div>
             <div className="text-sm text-white/60">Text balance</div>
-            <div className="text-xl font-semibold">${balanceDollars}</div>
+            <div className="text-xl font-semibold">${(balanceCents / 100).toFixed(2)}</div>
             <div className="mt-1 text-xs text-white/50">Texts are billed per segment.</div>
           </div>
 
-        <div className="flex flex-col gap-2 md:items-end">
+          <div className="flex flex-col gap-2 md:items-end">
             <div className="flex flex-wrap gap-2">
               <button type="button" onClick={() => addFunds(500)} disabled={topping} className="inline-flex items-center gap-1 rounded-lg border border-white/15 bg-white/5 px-3 py-2 text-sm hover:bg-white/10 disabled:opacity-50"><CreditCard className="h-4 w-4" /> +$5</button>
               <button type="button" onClick={() => addFunds(1000)} disabled={topping} className="inline-flex items-center gap-1 rounded-lg border border-white/15 bg-white/5 px-3 py-2 text-sm hover:bg-white/10 disabled:opacity-50"><CreditCard className="h-4 w-4" /> +$10</button>
@@ -578,21 +589,29 @@ export default function MessagingSettings() {
         <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
           {TEMPLATE_DEFS.map(({ key, label }) => {
             const isDirty = (templates[key] ?? "") !== (DEFAULTS[key] ?? "");
-            const enabled = !!enabledMap[key];
+            const isAppointment = key === "appointment";
+            const enabled = isAppointment ? false : !!enabledMap[key];
 
             return (
               <div key={key} className="rounded-xl border border-white/10 bg-white/[0.02] p-3">
                 <div className="mb-1 flex items-center gap-2">
                   <div className="text-xs text-white/70">{label}</div>
 
-                  {/* NEW: Enable/Disable toggle (default OFF) */}
+                  {/* Enable/Disable toggle */}
                   <div className="ml-2">
                     <Toggle
                       checked={enabled}
                       onChange={(v) => setEnabled(key, v)}
+                      disabled={isAppointment}                         {/* ⛔ lock */}
                       label={enabled ? "Disable this template" : "Enable this template"}
                     />
                   </div>
+
+                  {isAppointment && (
+                    <span className="ml-2 rounded-full border border-white/10 bg-white/5 px-2 py-0.5 text-[10px] text-white/70">
+                      Coming soon
+                    </span>
+                  )}
 
                   <button
                     type="button"
@@ -604,7 +623,7 @@ export default function MessagingSettings() {
                     <RotateCcw className="h-3.5 w-3.5" /> Reset
                   </button>
 
-                  {/* NEW: Test button */}
+                  {/* Test button */}
                   <button
                     type="button"
                     onClick={() => {
@@ -630,9 +649,15 @@ export default function MessagingSettings() {
                   placeholder={DEFAULTS[key]}
                 />
 
-                {!enabled && (
+                {!enabled && !isAppointment && (
                   <div className="mt-2 text-[11px] text-amber-300/90">
                     Disabled — this template will not send until you enable it.
+                  </div>
+                )}
+
+                {isAppointment && (
+                  <div className="mt-2 text-[11px] text-white/60">
+                    Appointment reminders are <b>coming soon</b>. You can edit the message now, but the toggle is locked off until we finish the scheduler.
                   </div>
                 )}
               </div>
@@ -681,7 +706,7 @@ export default function MessagingSettings() {
               <VarRow token="today" desc="Today’s date" />
               <VarRow token="state" desc="Lead’s state (from form)" />
               <VarRow token="beneficiary" desc="Lead’s listed beneficiary" />
-              <VarRow token="military_branch" desc="Military branch (if provided)" /> {/* 🆕 */}
+              <VarRow token="military_branch" desc="Military branch (if provided)" />
               <VarRow token="calendly_link" desc="Your Calendly booking link" />
             </div>
 
@@ -694,7 +719,7 @@ export default function MessagingSettings() {
           </aside>
         )}
 
-        {/* NEW: Test Preview Panel */}
+        {/* Test Preview Panel */}
         {testOpen && (
           <aside
             className="fixed bottom-0 left-0 right-0 z-50 mx-auto w-full max-w-5xl rounded-t-2xl border border-white/10 bg-[#0b0b12] p-4 shadow-2xl"
