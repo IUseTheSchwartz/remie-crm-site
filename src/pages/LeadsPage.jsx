@@ -7,8 +7,6 @@ import {
   normalizePerson, upsert,
 } from "../lib/storage.js";
 
-import { scheduleWelcomeText } from "../lib/automation.js";
-
 // Supabase helpers
 import {
   upsertLeadServer,
@@ -66,7 +64,7 @@ const H = {
   beneficiary: ["beneficiary","beneficiary type"],
   beneficiary_name: ["beneficiary name","beneficiary_name","beneficiary full name"],
   gender: ["gender","sex"],
-  // Added underscored and variant aliases so CSV headers like "military_branch" import
+  // underscored + variants so CSV headers like "military_branch" import
   military_branch: ["military","military branch","branch","service branch","military_branch","branch_of_service"],
 };
 
@@ -74,7 +72,6 @@ const norm = (s) => (s || "").toString().trim().toLowerCase();
 
 /**
  * buildHeaderIndex(headers)
- *
  * Matching rules prefer exact/branch-aware matches; avoids mapping "military" to "military status".
  */
 function buildHeaderIndex(headers) {
@@ -316,7 +313,55 @@ async function findRecentlyInsertedLeadId({ userId, person }) {
   return data[0].id;
 }
 
-// Preferred server function; fallback to client-side template + messages-send
+// Try multiple template keys for SOLD (includes your "sold" key)
+async function sendSoldAutoText({ leadId, person }) {
+  try {
+    const [{ data: authUser }, { data: sess }] = await Promise.all([
+      supabase.auth.getUser(),
+      supabase.auth.getSession(),
+    ]);
+    const userId = authUser?.user?.id;
+    const token = sess?.session?.access_token;
+    if (!userId || !leadId) {
+      console.warn("[sold-auto] missing ids", { userId, leadId });
+      return;
+    }
+
+    // Try a few common keys so you don't have to rename in DB
+    const tryKeys = ["sold", "sold_welcome", "policy_info", "sold_policy", "policy"];
+
+    for (const templateKey of tryKeys) {
+      console.log("[sold-auto] trying template", templateKey);
+      const res = await fetch(`${FN_BASE}/messages-send`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
+        body: JSON.stringify({
+          requesterId: userId,
+          lead_id: leadId,
+          templateKey,
+        }),
+      });
+      const out = await res.json().catch(() => ({}));
+      console.log("[sold-auto] result", templateKey, res.status, out);
+
+      // success or deduped → stop
+      if (res.ok && (out?.ok || out?.deduped)) return;
+
+      // if disabled or not found, try next key
+      if (out?.status === "skipped_disabled" || out?.error === "template_not_found") continue;
+
+      // any other error → stop trying to avoid noise
+      break;
+    }
+  } catch (e) {
+    console.warn("[sold-auto] error", e?.message || e);
+  }
+}
+
+// Preferred server function; fallback to client-side template + messages-send for NEW LEAD
 async function triggerAutoTextForLeadId({ leadId, userId, person }) {
   // Resolve missing IDs so we never silently bail
   try {
@@ -350,7 +395,7 @@ async function triggerAutoTextForLeadId({ leadId, userId, person }) {
 
   console.log("[auto-text] server failed; trying client fallback");
 
-  // 2) Fallback: use template in DB → messages-send
+  // 2) Fallback: use template in DB → messages-send (new_lead / new_lead_military)
   try {
     const { data: mt, error } = await supabase
       .from("message_templates")
@@ -378,7 +423,6 @@ async function triggerAutoTextForLeadId({ leadId, userId, person }) {
     const body = String(tpl).replace(/\{\{\s*([a-zA-Z0-9_]+)\s*\}\}/g, (_, k) => S(ctx[k])).trim();
     if (!body) { console.warn("[auto-text] empty rendered body"); return; }
 
-    // IMPORTANT: send to normalized E.164 so your provider accepts it
     const to = toE164(S(person?.phone));
     if (!to) { console.warn("[auto-text] invalid phone; cannot send"); return; }
 
@@ -392,7 +436,7 @@ async function triggerAutoTextForLeadId({ leadId, userId, person }) {
         "Content-Type": "application/json",
         ...(token ? { Authorization: `Bearer ${token}` } : {}),
       },
-      body: JSON.stringify({ to, body, requesterId: userId, lead_id: leadId }),
+      body: JSON.stringify({ to, body, requesterId: userId, lead_id: leadId, templateKey: "new_lead" }),
     });
 
     if (!res2.ok) {
@@ -697,15 +741,6 @@ export default function LeadsPage() {
     setClients(nextClients);
     setLeads(nextLeads);
 
-    if (soldPayload.sendWelcomeText) {
-      scheduleWelcomeText({
-        name: updated.name,
-        phone: updated.phone,
-        carrier: updated.sold?.carrier,
-        startDate: updated.sold?.startDate,
-      });
-    }
-
     setSelected(null);
     setTab("sold");
 
@@ -737,27 +772,14 @@ export default function LeadsPage() {
       console.error("Contact tag sync (sold) failed:", err);
     }
 
-    // --- Send SOLD policy text via messages-send ---
+    // --- Auto-send SOLD text (tries multiple template keys incl. "sold") ---
     try {
-      const res = await fetch(`${FN_BASE}/messages-send`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          lead_id: savedId || id,         // use the persisted id
-          templateKey: "sold_policy",     // must exist & be enabled in message_templates
-        }),
-      });
-      const out = await res.json().catch(() => ({}));
-      console.log("[sold_policy] send result:", out);
-
-      if (!res.ok) {
-        setServerMsg(`⚠️ Sold text failed: ${out.error || res.status}`);
-      } else if (out.status?.startsWith("skipped")) {
-        setServerMsg(`ℹ️ Sold text skipped: ${out.status}`);
-      } else if (out.ok || out.message_id) {
-        setServerMsg("📨 Sold policy text sent");
+      if (savedId) {
+        console.log("[sold-auto] initiating send for lead", savedId);
+        await sendSoldAutoText({ leadId: savedId, person: updated });
+        setServerMsg("📨 Sold policy text queued");
       } else {
-        setServerMsg("ℹ️ Sold text: unexpected response");
+        console.warn("[sold-auto] no saved lead id; skipping");
       }
     } catch (e) {
       console.error("Sold policy send error:", e);
@@ -1170,7 +1192,7 @@ function PolicyViewer({ person, onClose }) {
           <Field label="Phone"><div className="ro">{s.phone || person?.phone || "—"}</div></Field>
           <Field label="Email"><div className="ro break-all">{s.email || person?.email || "—"}</div></Field>
 
-          <Field label="Carrier"><div className="ro">{s.carrier || "—"}</div></Field>
+        <Field label="Carrier"><div className="ro">{s.carrier || "—"}</div></Field>
           <Field label="Face Amount"><div className="ro">{s.faceAmount || "—"}</div></Field>
           <Field label="AP (Annual premium)"><div className="ro">{s.premium || "—"}</div></Field>
           <Field label="Monthly Payment"><div className="ro">{s.monthlyPayment || "—"}</div></Field>
@@ -1205,8 +1227,7 @@ function SoldDrawer({ initial, allClients, onClose, onSave }) {
     monthlyPayment: initial?.sold?.monthlyPayment || "",
     policyNumber: initial?.sold?.policyNumber || "",
     startDate: initial?.sold?.startDate || "",
-    // Automations
-    sendWelcomeText: false,
+    // (no more local "sendWelcomeText" flag)
     enableBdayHolidayTexts: true,
   });
 
