@@ -26,20 +26,21 @@ export async function handler(event) {
     // Load team and confirm owner
     const { data: team, error: tErr } = await supa
       .from("teams")
-      .select("id, owner_id, stripe_customer_id, stripe_subscription_id, seats_purchased")
+      .select("id, owner_id, stripe_customer_id, stripe_subscription_id")
       .eq("id", team_id)
       .single();
     if (tErr || !team) return { statusCode: 404, body: "Team not found" };
     if (team.owner_id !== userId) return { statusCode: 403, body: "Not team owner" };
 
-    const { stripe_customer_id: customerId, stripe_subscription_id: savedSubId } = team;
+    const customerId = team.stripe_customer_id;
     if (!customerId) {
       return {
         statusCode: 400,
-        body: "Team is missing stripe_customer_id. Start a subscription checkout first.",
+        body: "Team is missing stripe_customer_id. Start a checkout first.",
       };
     }
 
+    // List all subs for this customer (same Stripe env as your key)
     const subs = await stripe.subscriptions.list({
       customer: customerId,
       status: "all",
@@ -50,10 +51,11 @@ export async function handler(event) {
     if (!subs?.data?.length) {
       return {
         statusCode: 400,
-        body: `Customer ${customerId} has no subscriptions in this Stripe environment.`,
+        body: `Customer ${customerId} has no subscriptions in this environment.`,
       };
     }
 
+    // Prefer a sub that includes your seat price; else pick an active; else latest
     const seatPrice = process.env.STRIPE_PRICE_SEAT_50;
     let candidate =
       (seatPrice &&
@@ -73,7 +75,8 @@ export async function handler(event) {
 
     const newSubId = candidate.id;
 
-    if (savedSubId === newSubId) {
+    // If already correct, return info
+    if (team.stripe_subscription_id === newSubId) {
       return {
         statusCode: 200,
         body: JSON.stringify({
@@ -81,11 +84,12 @@ export async function handler(event) {
           message: "Stripe subscription already correct.",
           team_id,
           stripe_customer_id: customerId,
-          stripe_subscription_id: savedSubId,
+          stripe_subscription_id: newSubId,
         }),
       };
     }
 
+    // Persist the corrected subscription id
     const { error: uErr } = await supa
       .from("teams")
       .update({ stripe_subscription_id: newSubId })
@@ -99,7 +103,6 @@ export async function handler(event) {
         message: "Updated team.stripe_subscription_id",
         team_id,
         stripe_customer_id: customerId,
-        old_subscription_id: savedSubId || null,
         new_subscription_id: newSubId,
         subscription_status: candidate.status,
         items: (candidate.items?.data || []).map((it) => ({
