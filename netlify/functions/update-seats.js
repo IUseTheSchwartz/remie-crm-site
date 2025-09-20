@@ -8,14 +8,67 @@ function makeSupaAdmin() {
   return createClient(process.env.SUPABASE_URL, key);
 }
 
+async function resolveTeamAndAssertOwner(supa, userId, team_id) {
+  const { data: team, error: tErr } = await supa
+    .from("teams")
+    .select("id, owner_id, stripe_customer_id, stripe_subscription_id, seats_purchased")
+    .eq("id", team_id)
+    .single();
+
+  if (tErr || !team) {
+    return { error: { code: 404, msg: "Team not found" } };
+  }
+  if (team.owner_id !== userId) {
+    return { error: { code: 403, msg: "Not team owner" } };
+  }
+  if (!team.stripe_customer_id) {
+    return {
+      error: {
+        code: 400,
+        msg: "Team is missing stripe_customer_id. Start a checkout first.",
+      },
+    };
+  }
+  return { team };
+}
+
+// Find the best subscription for this customer
+async function findBestSubscriptionForCustomer(stripe, customerId, seatPriceId) {
+  const subs = await stripe.subscriptions.list({
+    customer: customerId,
+    status: "all",
+    expand: ["data.items.data.price"],
+    limit: 100,
+  });
+
+  if (!subs?.data?.length) return null;
+
+  // Prefer sub that already has the seat price
+  if (seatPriceId) {
+    const withSeat = subs.data.find((s) =>
+      (s.items?.data || []).some((it) => it.price?.id === seatPriceId)
+    );
+    if (withSeat) return withSeat;
+  }
+
+  // Else prefer active-ish
+  const actives = subs.data
+    .filter((s) => ["active", "trialing", "past_due"].includes(s.status))
+    .sort((a, b) => (b.created || 0) - (a.created || 0));
+  if (actives[0]) return actives[0];
+
+  // Else latest
+  return subs.data.sort((a, b) => (b.created || 0) - (a.created || 0))[0];
+}
+
 export async function handler(event) {
   try {
     if (event.httpMethod !== "POST") {
       return { statusCode: 405, body: "Method not allowed" };
     }
 
-    const stripe = new Stripe(process.env.STRIPE_SECRET_KEY);
     const supa = makeSupaAdmin();
+    const stripe = new Stripe(process.env.STRIPE_SECRET_KEY);
 
     const userId = event.headers["x-user-id"];
     if (!userId) return { statusCode: 401, body: "Not authenticated" };
@@ -25,14 +78,9 @@ export async function handler(event) {
       return { statusCode: 400, body: "Invalid team_id or seats" };
     }
 
-    // Confirm requester is owner
-    const { data: team, error: tErr } = await supa
-      .from("teams")
-      .select("id, owner_id, stripe_customer_id, stripe_subscription_id, seats_purchased")
-      .eq("id", team_id)
-      .single();
-    if (tErr || !team) return { statusCode: 404, body: "Team not found" };
-    if (team.owner_id !== userId) return { statusCode: 403, body: "Not team owner" };
+    // Owner + team
+    const { team, error: teamErr } = await resolveTeamAndAssertOwner(supa, userId, team_id);
+    if (teamErr) return { statusCode: teamErr.code, body: teamErr.msg };
 
     // Don’t allow below seats already used
     const { data: counts } = await supa
@@ -40,69 +88,100 @@ export async function handler(event) {
       .select("seats_used")
       .eq("team_id", team_id)
       .single();
-    const used = counts?.seats_used || 0;
+    const used = counts?.seats_used ?? 0;
     if (seats < used) {
       return { statusCode: 400, body: `Seats cannot be set below current usage (${used}).` };
     }
 
-    // Must have a Stripe subscription
-    const subId = team.stripe_subscription_id;
-    if (!subId) {
-      return {
-        statusCode: 400,
-        body: "Missing Stripe subscription for this team. The owner must start a subscription first.",
-      };
-    }
-
-    // Must have seat price
     const seatPriceId = process.env.STRIPE_PRICE_SEAT_50;
     if (!seatPriceId) {
       return {
         statusCode: 500,
-        body: "Server misconfiguration: STRIPE_PRICE_SEAT_50 is not set in environment.",
+        body: "Server misconfiguration: STRIPE_PRICE_SEAT_50 is not set.",
       };
     }
 
-    // Retrieve subscription and seat item
-    let sub;
-    try {
-      sub = await stripe.subscriptions.retrieve(subId, { expand: ["items.data.price"] });
-    } catch (e) {
-      console.error("[update-seats] retrieve subscription failed:", e);
-      return { statusCode: 400, body: `Stripe error: ${e.message || "retrieve failed"}` };
+    // Step 1: ensure we have a valid subscription that belongs to this customer
+    let subId = team.stripe_subscription_id;
+    let subscription = null;
+
+    const tryLoadSubscription = async (id) => {
+      if (!id) return null;
+      try {
+        const sub = await stripe.subscriptions.retrieve(id, {
+          expand: ["items.data.price"],
+        });
+        // sanity check: sub.customer === team's customer
+        if (String(sub.customer) !== String(team.stripe_customer_id)) {
+          return null;
+        }
+        return sub;
+      } catch {
+        return null;
+      }
+    };
+
+    subscription = await tryLoadSubscription(subId);
+    if (!subscription) {
+      // Auto-resolve the correct subscription for this customer
+      const best = await findBestSubscriptionForCustomer(
+        stripe,
+        team.stripe_customer_id,
+        seatPriceId
+      );
+      if (!best) {
+        return {
+          statusCode: 400,
+          body: `Customer ${team.stripe_customer_id} has no subscriptions in this Stripe environment.`,
+        };
+      }
+      subscription = best;
+      subId = best.id;
+
+      // Persist correction if different
+      if (team.stripe_subscription_id !== subId) {
+        const { error: uErr } = await supa
+          .from("teams")
+          .update({ stripe_subscription_id: subId })
+          .eq("id", team_id);
+        if (uErr) {
+          // Not fatal for the purchase, just report
+          console.warn("[update-seats] Could not persist corrected subscription id:", uErr.message);
+        }
+      }
     }
 
-    const seatItem = (sub.items?.data || []).find((it) => it?.price?.id === seatPriceId);
+    // Step 2: find or add the seat price item on that subscription
+    const seatItem = (subscription.items?.data || []).find(
+      (it) => it?.price?.id === seatPriceId
+    );
 
     try {
       if (!seatItem) {
-        // Add seat item
         await stripe.subscriptions.update(subId, {
           items: [{ price: seatPriceId, quantity: seats }],
           proration_behavior: "always_invoice",
         });
       } else {
-        // Update seat item quantity
         await stripe.subscriptionItems.update(seatItem.id, {
           quantity: seats,
           proration_behavior: "always_invoice",
         });
       }
     } catch (e) {
-      console.error("[update-seats] update seat item failed:", e);
+      console.error("[update-seats] seat item update failed:", e);
       return { statusCode: 400, body: `Stripe error: ${e.message || "update failed"}` };
     }
 
-    // Persist seats_purchased
-    const { error: uErr } = await supa
+    // Step 3: persist seats_purchased and return fresh counts
+    const { error: dbErr } = await supa
       .from("teams")
       .update({ seats_purchased: seats })
       .eq("id", team_id);
-    if (uErr) {
-      console.warn("[update-seats] DB update warning:", uErr.message);
+    if (dbErr) {
+      console.warn("[update-seats] DB update warning:", dbErr.message);
     }
 
-    // Return current counts
     const { data: after } = await supa
       .from("team_seat_counts")
       .select("*")
