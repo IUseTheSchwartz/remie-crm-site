@@ -1,78 +1,38 @@
-// Handles PayPal webhooks; credits wallet on PAYMENT.CAPTURE.COMPLETED
-// Env: SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, PAYPAL_ENV (optional for sandbox/live)
-const { createClient } = require("@supabase/supabase-js");
+// File: netlify/functions/paypal-webhook.js
+import { createClient } from "@supabase/supabase-js";
 
 const supabase = createClient(
   process.env.SUPABASE_URL,
-  process.env.SUPABASE_SERVICE_ROLE_KEY
+  process.env.SUPABASE_SERVICE_ROLE
 );
 
-// Optional: very small idempotency helper using a table (see SQL below).
-async function markProcessed(captureId) {
-  const { error } = await supabase
-    .from("wallet_topups")
-    .insert({ provider: "paypal", provider_id: captureId })
-    .select()
-    .single();
-  // If unique constraint blocks duplicate, error.code will be '23505'
-  if (error && error.code !== "23505") throw error;
-  return !error || error.code !== "23505"; // true if newly inserted
-}
-
-exports.handler = async (event) => {
-  if (event.httpMethod !== "POST") {
-    return { statusCode: 405, body: "Method Not Allowed" };
+export default async function handler(req, res) {
+  if (req.method !== "POST") {
+    return res.status(405).json({ error: "Method not allowed" });
   }
-
-  // NOTE: For a production-hardened setup, verify the webhook signature
-  // via PayPal's verify API. This example keeps it simple to get you live.
 
   try {
-    const payload = JSON.parse(event.body || "{}");
-    const type = payload?.event_type;
+    const event = req.body;
 
-    if (type !== "PAYMENT.CAPTURE.COMPLETED") {
-      return { statusCode: 200, body: "Ignored" };
+    if (event.event_type === "CHECKOUT.ORDER.APPROVED") {
+      const resource = event.resource || {};
+      const purchase = resource.purchase_units?.[0];
+      const refUser = purchase?.reference_id;
+      const amount = parseFloat(purchase?.amount?.value || "0");
+
+      if (refUser && amount > 0) {
+        const cents = Math.round(amount * 100);
+        await supabase.rpc("increment_wallet_balance", {
+          uid: refUser,
+          delta: cents,
+        });
+        console.log(`Credited ${cents} to ${refUser}`);
+      }
     }
 
-    const capture = payload?.resource;
-    const captureId = capture?.id;
-    const amountStr = capture?.amount?.value;
-    const currency = capture?.amount?.currency_code;
-    const refField =
-      capture?.custom_id ||
-      capture?.supplementary_data?.related_ids?.order_id ||
-      capture?.invoice_id ||
-      "";
-
-    if (currency !== "USD" || !amountStr || !captureId) {
-      return { statusCode: 200, body: "Missing or unsupported fields" };
-    }
-
-    const cents = Math.round(parseFloat(amountStr) * 100);
-    const userId = (refField.startsWith("wallet:") ? refField.split(":")[1] : null) || null;
-
-    if (!userId) {
-      // Nothing to credit without a user
-      return { statusCode: 200, body: "No user ref" };
-    }
-
-    // Idempotency: ensure we only credit once per capture
-    const isNew = await markProcessed(captureId);
-    if (!isNew) {
-      return { statusCode: 200, body: "Already processed" };
-    }
-
-    // Credit wallet via your RPC (see SQL below)
-    const { error: rpcErr } = await supabase.rpc("increment_wallet_balance", {
-      p_user_id: userId,
-      p_delta_cents: cents,
-    });
-    if (rpcErr) throw rpcErr;
-
-    return { statusCode: 200, body: "Wallet credited" };
-  } catch (e) {
-    console.error(e);
-    return { statusCode: 500, body: e.message || "Webhook error" };
+    return res.status(200).json({ ok: true });
+  } catch (err) {
+    console.error("paypal-webhook error", err);
+    return res.status(500).json({ error: "Webhook failed" });
   }
-};
+}
