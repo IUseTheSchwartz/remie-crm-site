@@ -28,7 +28,6 @@ import {
 
 /* --- Gradient stroke helper (indigo → purple → fuchsia) --- */
 function GradientStrokeIcon({ Icon, id, className = "" }) {
-  // We render a <defs> with a unique id and reference it via stroke="url(#id)"
   return (
     <Icon className={className} stroke={`url(#${id})`}>
       <defs>
@@ -58,10 +57,11 @@ const ICONS = {
   "View My Agent Site": Globe2,
   "Edit Agent Site": Pencil,
   "My Teams": Users,
-  Contacts: Users,             // ✅ Contacts now has an icon
+  Contacts: Users,
+  "Lead Rescue": LifeBuoy,     // ✅ Added: gradient LifeBuoy for Lead Rescue
   Settings: SettingsIcon,
   Support: LifeBuoy,
-  Bootcamp: Shield,            // ← Bootcamp uses Shield with gradient
+  Bootcamp: Shield,
 };
 
 function ItemLink({ r, onNavigate }) {
