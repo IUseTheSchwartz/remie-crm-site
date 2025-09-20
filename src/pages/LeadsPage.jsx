@@ -356,6 +356,7 @@ async function sendSoldAutoText({ leadId, person }) {
       return;
     }
 
+    // Try a few common keys so you don't have to rename in DB
     const tryKeys = ["sold", "sold_welcome", "policy_info", "sold_policy", "policy"];
 
     for (const templateKey of tryKeys) {
@@ -375,8 +376,13 @@ async function sendSoldAutoText({ leadId, person }) {
       const out = await res.json().catch(() => ({}));
       console.log("[sold-auto] result", templateKey, res.status, out);
 
+      // success or deduped → stop
       if (res.ok && (out?.ok || out?.deduped)) return;
+
+      // if disabled or not found, try next key
       if (out?.status === "skipped_disabled" || out?.error === "template_not_found") continue;
+
+      // any other error → stop trying to avoid noise
       break;
     }
   } catch (e) {
@@ -384,9 +390,9 @@ async function sendSoldAutoText({ leadId, person }) {
   }
 }
 
-/** UPDATED: Preferred server function; careful fallback to pick military vs normal */
+/* --------- ROBUST military-first new lead auto-text (server + fallback) --------- */
 async function triggerAutoTextForLeadId({ leadId, userId, person }) {
-  // Resolve missing IDs so we never silently bail
+  // Resolve IDs
   try {
     if (!userId) {
       const u = await supabase.auth.getUser();
@@ -401,109 +407,191 @@ async function triggerAutoTextForLeadId({ leadId, userId, person }) {
     return;
   }
 
-  console.log("[auto-text] calling lead-new-auto", { leadId });
+  const S = (x) => (x == null ? "" : String(x).trim());
+  const to = toE164(S(person?.phone));
+  if (!to) { console.warn("[auto-text] invalid phone; cannot send"); return; }
 
-  // 1) Preferred: server function — only stop if it *actually* sent
-  try {
-    const { data: { session } } = await supabase.auth.getSession();
-    const token = session?.access_token;
-
-    const res = await fetch(`${FN_BASE}/lead-new-auto`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        ...(token ? { Authorization: `Bearer ${token}` } : {}),
-      },
-      body: JSON.stringify({ lead_id: leadId, requesterId: userId }),
-    });
-
-    let out = null;
-    try { out = await res.json(); } catch {}
-
-    if (res.ok && (out?.ok || out?.sent || out?.deduped)) {
-      console.log("[auto-text] server handled send", out);
-      return;
-    }
-
-    console.warn("[auto-text] server did not send; falling back", { status: res.status, out });
-  } catch (e) {
-    console.warn("[auto-text] server call failed; using client fallback:", e?.message || e);
+  // Decide military vs normal
+  let isMilitary = !!S(person?.military_branch);
+  if (!isMilitary) {
+    try {
+      const { data: contact } = await supabase
+        .from("message_contacts")
+        .select("tags")
+        .eq("user_id", userId)
+        .eq("phone", to)
+        .maybeSingle();
+      const tags = (contact?.tags || []).map(t => String(t).trim().toLowerCase());
+      if (tags.includes("military")) isMilitary = true;
+    } catch {}
   }
 
-  // 2) Client fallback (chooses military vs normal correctly)
-  try {
-    const { data: mt, error } = await supabase
+  const militaryKeys = ["new_lead_military","military","lead_military","new_military"];
+  const normalKeys   = ["new_lead","lead","new_lead_default"];
+
+  // Helper to call server messages-send with a templateKey (even if we don't have a body)
+  async function tryServerSend(templateKey) {
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+      const token = session?.access_token;
+      const res = await fetch(`${FN_BASE}/messages-send`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
+        body: JSON.stringify({ requesterId: userId, lead_id: leadId, templateKey }),
+      });
+      const out = await res.json().catch(() => ({}));
+      if (res.ok && (out?.ok || out?.sent || out?.deduped)) {
+        console.log("[auto-text] server sent using", templateKey, out);
+        return true;
+      }
+      console.warn("[auto-text] server-send did not send", templateKey, res.status, out);
+      return false;
+    } catch (e) {
+      console.warn("[auto-text] server-send error", e?.message || e);
+      return false;
+    }
+  }
+
+  // Helper to read templates row and find a body under many possible places
+  async function fetchBodyFromKeys(keys) {
+    const { data: mt } = await supabase
       .from("message_templates")
       .select("*")
       .eq("user_id", userId)
       .maybeSingle();
-    if (error || !mt) { console.warn("[auto-text] no templates row"); return; }
+    if (!mt) return null;
 
-    const S = (x) => (x == null ? "" : String(x).trim());
-
-    // Prefer military if lead has branch OR contact has "military" tag
-    let isMilitary = !!S(person?.military_branch);
-    if (!isMilitary) {
-      try {
-        const phoneE164 = toE164(S(person?.phone));
-        if (phoneE164) {
-          const { data: contact } = await supabase
-            .from("message_contacts")
-            .select("tags")
-            .eq("user_id", userId)
-            .eq("phone", phoneE164)
-            .maybeSingle();
-          const tags = (contact?.tags || []).map(t => String(t).trim().toLowerCase());
-          if (tags.includes("military")) isMilitary = true;
-        }
-      } catch (_) {}
-    }
-
-    const templateKey = isMilitary ? "new_lead_military" : "new_lead";
-
-    const enabled =
-      typeof mt.enabled === "boolean"
-        ? mt.enabled
-        : (mt.enabled?.[templateKey] ?? true);
-    if (!enabled) { console.warn("[auto-text] template disabled:", templateKey); return; }
-
-    const tpl = isMilitary
-      ? (mt.templates?.new_lead_military || mt.new_lead_military || "")
-      : (mt.templates?.new_lead || mt.new_lead || "");
-    if (!S(tpl)) { console.warn("[auto-text] empty template:", templateKey); return; }
-
-    const ctx = {
-      name: person?.name || "",
-      state: person?.state || "",
-      beneficiary: person?.beneficiary || person?.beneficiary_name || "",
+    const enabledFor = (key) => {
+      if (typeof mt.enabled === "boolean") return mt.enabled;
+      if (mt.enabled && typeof mt.enabled === "object" && key in mt.enabled) {
+        return !!mt.enabled[key];
+      }
+      // default allow
+      return true;
     };
-    const body = String(tpl).replace(/\{\{\s*([a-zA-Z0-9_]+)\s*\}\}/g, (_, k) => S(ctx[k])).trim();
-    if (!body) { console.warn("[auto-text] empty rendered body"); return; }
 
-    const to = toE164(S(person?.phone));
-    if (!to) { console.warn("[auto-text] invalid phone; cannot send"); return; }
-
-    const { data: { session } } = await supabase.auth.getSession();
-    const token = session?.access_token;
-
-    console.log("[auto-text] calling messages-send fallback with", templateKey);
-    const res2 = await fetch(`${FN_BASE}/messages-send`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        ...(token ? { Authorization: `Bearer ${token}` } : {}),
-      },
-      body: JSON.stringify({ to, body, requesterId: userId, lead_id: leadId, templateKey }),
-    });
-
-    if (!res2.ok) {
-      const dbg = await res2.json().catch(() => ({}));
-      console.warn("messages-send fallback failed:", res2.status, dbg);
+    for (const key of keys) {
+      if (!enabledFor(key)) continue;
+      const fromJson = mt.templates?.[key];
+      const fromTop  = mt[key];
+      const body = S(fromJson || fromTop);
+      if (body) return { key, body };
     }
-  } catch (e) {
-    console.warn("client-side fallback errored:", e?.message || e);
+    return null;
   }
+
+  // 1) If military, aggressively try military flows first
+  if (isMilitary) {
+    // (a) try server with military keys (lets backend render if configured there)
+    for (const k of militaryKeys) {
+      if (await tryServerSend(k)) return;
+    }
+    // (b) client fallback: fetch a military body and send
+    const mb = await fetchBodyFromKeys(militaryKeys);
+    if (mb?.body) {
+      try {
+        const { data: { session } } = await supabase.auth.getSession();
+        const token = session?.access_token;
+        const res = await fetch(`${FN_BASE}/messages-send`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            ...(token ? { Authorization: `Bearer ${token}` } : {}),
+          },
+          body: JSON.stringify({
+            requesterId: userId,
+            lead_id: leadId,
+            to,
+            body: mb.body,
+            templateKey: mb.key,
+          }),
+        });
+        const out = await res.json().catch(() => ({}));
+        if (res.ok && (out?.ok || out?.sent || out?.deduped)) {
+          console.log("[auto-text] client sent military via body", mb.key);
+          return;
+        }
+        console.warn("[auto-text] client body send failed", res.status, out);
+      } catch (e) {
+        console.warn("[auto-text] client body send error", e?.message || e);
+      }
+    }
+    // (c) last resort: still ask server to send using generic normal keys
+    for (const k of normalKeys) {
+      if (await tryServerSend(k)) return;
+    }
+    // (d) client fallback to normal body if exists
+    const nb = await fetchBodyFromKeys(normalKeys);
+    if (nb?.body) {
+      try {
+        const { data: { session } } = await supabase.auth.getSession();
+        const token = session?.access_token;
+        const res = await fetch(`${FN_BASE}/messages-send`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            ...(token ? { Authorization: `Bearer ${token}` } : {}),
+          },
+          body: JSON.stringify({
+            requesterId: userId,
+            lead_id: leadId,
+            to,
+            body: nb.body,
+            templateKey: nb.key,
+          }),
+        });
+        const out = await res.json().catch(() => ({}));
+        if (res.ok && (out?.ok || out?.sent || out?.deduped)) {
+          console.log("[auto-text] client sent normal fallback body", nb.key);
+          return;
+        }
+      } catch (e) {
+        console.warn("[auto-text] client normal fallback error", e?.message || e);
+      }
+    }
+    console.warn("[auto-text] no template sent (military flow exhausted)");
+    return;
+  }
+
+  // 2) Non-military: normal flow
+  for (const k of normalKeys) {
+    if (await tryServerSend(k)) return;
+  }
+  const nb = await fetchBodyFromKeys(normalKeys);
+  if (nb?.body) {
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+      const token = session?.access_token;
+      const res = await fetch(`${FN_BASE}/messages-send`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
+        body: JSON.stringify({
+          requesterId: userId,
+          lead_id: leadId,
+          to,
+          body: nb.body,
+          templateKey: nb.key,
+        }),
+      });
+      const out = await res.json().catch(() => ({}));
+      if (res.ok && (out?.ok || out?.sent || out?.deduped)) {
+        console.log("[auto-text] client sent normal body", nb.key);
+        return;
+      }
+    } catch (e) {
+      console.warn("[auto-text] client normal send error", e?.message || e);
+    }
+  }
+  console.warn("[auto-text] no template sent (normal flow exhausted)");
 }
+
+/* ------------------------------------------------------------------------------ */
 
 export default function LeadsPage() {
   const [tab, setTab] = useState("clients"); // 'clients' | 'sold'
