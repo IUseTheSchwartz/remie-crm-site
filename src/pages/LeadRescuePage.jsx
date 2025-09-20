@@ -4,7 +4,6 @@ import { supabase } from "../lib/supabaseClient";
 import {
   Loader2, Check, RotateCcw, Pause, Play, SkipForward, Trash2, Plus, Info
 } from "lucide-react";
-import { toE164 } from "../lib/phone";
 
 // ---- Helpers ----
 const TZ_DEFAULT = "America/Chicago";
@@ -211,7 +210,10 @@ export default function LeadRescuePage() {
       // blank body = store empty string (treated as skip)
       const { error } = await supabase
         .from("lead_rescue_templates")
-        .upsert({ user_id: userId, day_number: day, body: body || "" }, { onConflict: "user_id,day_number" });
+        .upsert(
+          { user_id: userId, day_number: day, body: body || "" },
+          { onConflict: "user_id,day_number" }
+        );
       if (error) throw error;
       setSavingTpl("saved");
       setTimeout(() => setSavingTpl("idle"), 800);
@@ -230,7 +232,7 @@ export default function LeadRescuePage() {
   function nextDayNumber() {
     const max = Math.max(2, ...templates.map((t) => t.day_number));
     return max + 1;
-    }
+  }
 
   async function addDay() {
     const d = nextDayNumber();
@@ -393,7 +395,7 @@ export default function LeadRescuePage() {
               min={0}
               max={23}
               value={sendHourLocal}
-              onChange={(e) => setSendHourLocal(e.target.value)}
+              onChange={(e) => setSendHourLocal(Number(e.target.value))}
               className="w-full rounded-lg border border-white/15 bg-white/5 px-3 py-2 text-sm outline-none focus:ring-1 focus:ring-indigo-400/40"
               placeholder="9"
             />
@@ -405,7 +407,7 @@ export default function LeadRescuePage() {
               type="number"
               min={2}
               value={maxDays}
-              onChange={(e) => setMaxDays(e.target.value)}
+              onChange={(e) => setMaxDays(Number(e.target.value))}
               className="w-full rounded-lg border border-white/15 bg-white/5 px-3 py-2 text-sm outline-none focus:ring-1 focus:ring-indigo-400/40"
               placeholder="5"
             />
