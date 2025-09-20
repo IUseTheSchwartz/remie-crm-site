@@ -7,7 +7,7 @@ import {
   normalizePerson, upsert,
 } from "../lib/storage.js";
 
-import { scheduleWelcomeText } from "../lib/automation.js";
+import { scheduleWelcomeText, sendSoldPolicyText } from "../lib/automation.js";
 
 // Supabase helpers
 import {
@@ -316,8 +316,9 @@ async function findRecentlyInsertedLeadId({ userId, person }) {
   return data[0].id;
 }
 
-// Preferred server function; fallback to messages-send (template-driven)
+// Preferred server function; fallback to client-side template + messages-send
 async function triggerAutoTextForLeadId({ leadId, userId, person }) {
+  // Resolve missing IDs so we never silently bail
   try {
     if (!userId) {
       const u = await supabase.auth.getUser();
@@ -334,14 +335,14 @@ async function triggerAutoTextForLeadId({ leadId, userId, person }) {
 
   console.log("[auto-text] calling lead-new-auto", { leadId });
 
-  // 1) Preferred: server function (if you have it deployed)
+  // 1) Preferred: server function
   try {
     const res = await fetch(`${FN_BASE}/lead-new-auto`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ lead_id: leadId, requesterId: userId }),
     });
-    if (res.ok) return; // done
+    if (res.ok) return;
     console.warn("lead-new-auto non-OK:", res.status, await res.text().catch(() => ""));
   } catch (e) {
     console.warn("lead-new-auto unreachable:", e?.message || e);
@@ -349,19 +350,35 @@ async function triggerAutoTextForLeadId({ leadId, userId, person }) {
 
   console.log("[auto-text] server failed; trying client fallback");
 
-  // 2) Fallback: call messages-send with templateKey and placeholders
+  // 2) Fallback: use template in DB → messages-send
   try {
+    const { data: mt, error } = await supabase
+      .from("message_templates")
+      .select("*")
+      .eq("user_id", userId)
+      .maybeSingle();
+    if (error || !mt) { console.warn("[auto-text] no templates row"); return; }
+
+    const enabled =
+      typeof mt.enabled === "boolean" ? mt.enabled : (mt.enabled?.new_lead ?? true);
+    if (!enabled) { console.warn("[auto-text] template disabled"); return; }
+
     const S = (x) => (x == null ? "" : String(x).trim());
     const hasBranch = !!S(person?.military_branch);
-    const templateKey = hasBranch ? "new_lead_military" : "new_lead";
+    const tpl = hasBranch
+      ? (mt.templates?.new_lead_military || mt.new_lead_military || mt.templates?.new_lead || mt.new_lead || "")
+      : (mt.templates?.new_lead || mt.new_lead || "");
+    if (!S(tpl)) { console.warn("[auto-text] empty template"); return; }
 
-    const placeholders = {
-      first_name: (person?.name || "").split(/\s+/)[0] || "",
+    const ctx = {
+      name: person?.name || "",
       state: person?.state || "",
       beneficiary: person?.beneficiary || person?.beneficiary_name || "",
-      military_branch: person?.military_branch || "",
     };
+    const body = String(tpl).replace(/\{\{\s*([a-zA-Z0-9_]+)\s*\}\}/g, (_, k) => S(ctx[k])).trim();
+    if (!body) { console.warn("[auto-text] empty rendered body"); return; }
 
+    // IMPORTANT: send to normalized E.164 so your provider accepts it
     const to = toE164(S(person?.phone));
     if (!to) { console.warn("[auto-text] invalid phone; cannot send"); return; }
 
@@ -375,17 +392,13 @@ async function triggerAutoTextForLeadId({ leadId, userId, person }) {
         "Content-Type": "application/json",
         ...(token ? { Authorization: `Bearer ${token}` } : {}),
       },
-      body: JSON.stringify({
-        lead_id: leadId,          // lets the function hydrate user_id + vars
-        user_id: userId,          // safety net
-        to,
-        templateKey,
-        placeholders,
-      }),
+      body: JSON.stringify({ to, body, requesterId: userId, lead_id: leadId }),
     });
 
-    const dbg = await res2.json().catch(() => ({}));
-    console.log("[auto-text] messages-send fallback resp:", res2.status, dbg);
+    if (!res2.ok) {
+      const dbg = await res2.json().catch(() => ({}));
+      console.warn("messages-send fallback failed:", res2.status, dbg);
+    }
   } catch (e) {
     console.warn("client-side fallback errored:", e?.message || e);
   }
@@ -720,6 +733,29 @@ export default function LeadsPage() {
       }
     } catch (err) {
       console.error("Contact tag sync (sold) failed:", err);
+    }
+
+    // ✅ NEW: Send the SOLD policy info text (templateKey: 'sold_policy')
+    try {
+      const { data: authData } = await supabase.auth.getUser();
+      const userId = authData?.user?.id;
+      if (userId) {
+        await sendSoldPolicyText({
+          leadId: updated.id,
+          userId,
+          phone: updated.phone,
+          name: updated.name,
+          sold: {
+            carrier:        updated?.sold?.carrier,
+            faceAmount:     updated?.sold?.faceAmount,
+            policyNumber:   updated?.sold?.policyNumber,
+            monthlyPayment: updated?.sold?.monthlyPayment,
+            startDate:      updated?.sold?.startDate,
+          },
+        });
+      }
+    } catch (err) {
+      console.error("Sold policy text send failed:", err);
     }
   }
 
