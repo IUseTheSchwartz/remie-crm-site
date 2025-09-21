@@ -1,12 +1,17 @@
 // File: netlify/functions/lead-new-auto.js
-// Auto-send "new lead" text. Ensures a message_contacts row exists first.
-// Picks military vs normal by BOTH lead.military_branch and the contact's tags.
+// Ensures a contact exists (so it shows in Contacts) before sending the initial template.
+// Uses calendar-friendly tag selection (military if branch present, else lead).
 
 const { getServiceClient } = require("./_supabase");
 
 function json(obj, statusCode = 200) {
-  return { statusCode, headers: { "Content-Type": "application/json" }, body: JSON.stringify(obj) };
+  return {
+    statusCode,
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(obj),
+  };
 }
+
 const S = (x) => (x == null ? "" : String(x).trim());
 const norm10 = (p) => String(p || "").replace(/\D/g, "").slice(-10);
 const toE164 = (p) => {
@@ -23,112 +28,70 @@ exports.handler = async (event) => {
   try {
     const db = getServiceClient();
 
+    // ---- Parse body ----
     let body;
-    try { body = JSON.parse(event.body || "{}"); }
-    catch { return json({ error: "invalid_json", trace }, 400); }
-
+    try {
+      body = JSON.parse(event.body || "{}");
+    } catch {
+      return json({ error: "invalid_json", trace }, 400);
+    }
     const { lead_id } = body || {};
     if (!lead_id) return json({ error: "missing_lead_id", trace }, 400);
 
-    // 1) Load the lead (include military_branch!)
+    // ---- Load lead ----
     const { data: lead, error: lerr } = await db
       .from("leads")
-      .select("id,user_id,name,phone,state,beneficiary,beneficiary_name,military_branch")
+      .select(
+        "id,user_id,name,phone,state,beneficiary,beneficiary_name,military_branch"
+      )
       .eq("id", lead_id)
       .maybeSingle();
+
     if (lerr) return json({ error: "lead_lookup_failed", detail: lerr.message, trace }, 500);
     if (!lead) return json({ error: "lead_not_found", lead_id, trace }, 404);
     trace.push({ step: "lead.loaded", lead_id: lead.id, user_id: lead.user_id });
 
-    const to = toE164(lead.phone || "");
-    if (!to) return json({ error: "invalid_or_missing_lead_phone", trace }, 400);
+    const e164 = toE164(lead.phone || "");
+    if (!e164) return json({ error: "invalid_or_missing_lead_phone", trace }, 400);
 
-    // 2) Ensure a contact exists (so Contacts page shows it)
-    //    We upsert by (user_id, phone). Keep status tag exclusive: 'military' if branch present, else 'lead'.
+    // ---- Upsert contact (bullet-proof) ----
+    // Status tag is exclusive: 'military' if branch present, else 'lead'
     const statusTag = S(lead.military_branch) ? "military" : "lead";
+
     try {
-      // Try to find existing by normalized phone for user
-      const { data: contacts, error: cerr } = await db
+      const insertPayload = {
+        user_id: lead.user_id,
+        phone: e164,                 // store E164
+        full_name: lead.name || null,
+        subscribed: true,            // ✅ satisfy NOT NULL schemas
+        archived: false,             // ✅ include if your schema has NOT NULL archived
+        tags: [statusTag],           // keep status exclusive; other tags can be merged later
+        meta: { lead_id: lead.id },  // handy cross-link
+      };
+
+      // Upsert by (user_id, phone). Adjust onConflict if your unique index is different.
+      const { error: upErr } = await db
         .from("message_contacts")
-        .select("id,phone,subscribed,tags")
-        .eq("user_id", lead.user_id);
-      if (cerr) trace.push({ warn: "contact_list_failed", detail: cerr.message });
+        .upsert(insertPayload, { onConflict: "user_id,phone" });
+      if (upErr) throw upErr;
 
-      const existing =
-        (contacts || []).find((c) => norm10(c.phone) === norm10(lead.phone)) || null;
-
-      if (existing?.id) {
-        // Merge tags but keep status exclusive
-        const current = Array.isArray(existing.tags) ? existing.tags : [];
-        const withoutStatus = current.filter((t) => !["lead", "military"].includes(String(t).toLowerCase()));
-        const nextTags = [...new Set([...withoutStatus, statusTag])];
-
-        const { error: uErr } = await db
-          .from("message_contacts")
-          .update({
-            full_name: lead.name || null,
-            tags: nextTags,
-            meta: { lead_id: lead.id },
-          })
-          .eq("id", existing.id);
-        if (uErr) throw uErr;
-        trace.push({ step: "contact.upsert.update", contact_id: existing.id });
-      } else {
-        const { error: iErr } = await db
-          .from("message_contacts")
-          .upsert(
-            {
-              user_id: lead.user_id,
-              phone: to, // store E164
-              full_name: lead.name || null,
-              subscribed: true, // ✅ critical to satisfy NOT NULL schemas
-              tags: [statusTag],
-              meta: { lead_id: lead.id },
-            },
-            { onConflict: "user_id,phone" }
-          );
-        if (iErr) throw iErr;
-        trace.push({ step: "contact.upsert.insert" });
-      }
+      trace.push({ step: "contact.upsert.ok", phone: e164, tag: statusTag });
     } catch (e) {
       trace.push({ warn: "contact.upsert.failed", detail: String(e?.message || e) });
     }
 
-    // 3) Re-check contact (optional) to decide on template by tag
-    let contact = null;
-    try {
-      const { data: contacts2, error: cerr2 } = await db
-        .from("message_contacts")
-        .select("id,phone,subscribed,tags")
-        .eq("user_id", lead.user_id);
-      if (cerr2) trace.push({ warn: "contact_list2_failed", detail: cerr2.message });
-      contact = (contacts2 || []).find((c) => norm10(c.phone) === norm10(lead.phone)) || null;
-    } catch (e) {
-      trace.push({ warn: "contact_lookup2_exception", detail: String(e?.message || e) });
-    }
-
-    if (contact && contact.subscribed === false) {
-      return json({ error: "contact_unsubscribed", contact_id: contact.id, trace }, 400);
-    }
-    if (contact) trace.push({ step: "contact.matched", contact_id: contact.id, tags: contact.tags || [] });
-    else trace.push({ step: "contact.not_found_proceeding" });
-
-    // 4) Decide template: military if (lead.military_branch present) OR (contact has 'military' tag)
-    const tagsNorm = (contact?.tags || []).map((t) => String(t || "").trim().toLowerCase());
-    const hasMilitaryTag = tagsNorm.includes("military");
-    const hasMilitaryField = !!S(lead.military_branch);
-    const isMilitary = hasMilitaryField || hasMilitaryTag;
-    const templateKey = isMilitary ? "new_lead_military" : "new_lead";
+    // ---- Template selection (lead vs military) ----
+    const templateKey = S(lead.military_branch) ? "new_lead_military" : "new_lead";
     const provider_message_id = `auto_${templateKey}_${lead.id}`;
-    trace.push({ step: "template.choose", templateKey, hasMilitaryField, hasMilitaryTag });
 
-    // 5) Build base URL to call messages-send
+    // ---- Build base URL and call messages-send ----
     const proto = event.headers["x-forwarded-proto"] || "https";
-    const host = event.headers.host || (process.env.URL || process.env.SITE_URL || "").replace(/^https?:\/\//, "");
+    const host =
+      event.headers.host ||
+      (process.env.URL || process.env.SITE_URL || "").replace(/^https?:\/\//, "");
     const base = process.env.SITE_URL || (proto && host ? `${proto}://${host}` : null);
     if (!base) return json({ error: "no_base_url", trace }, 500);
 
-    // 6) Call messages-send. It will resolve the body from message_templates.
     const res = await fetch(`${base}/.netlify/functions/messages-send`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -136,23 +99,26 @@ exports.handler = async (event) => {
         lead_id,
         templateKey,
         provider_message_id,
-        // (requesterId optional; messages-send can infer from lead_id)
       }),
     });
 
     const text = await res.text();
-    let inner = null; try { inner = JSON.parse(text); } catch {}
+    let inner = null;
+    try {
+      inner = JSON.parse(text);
+    } catch {}
     trace.push({ step: "messages-send.invoked", status: res.status });
 
-    return json({
-      ok: !!inner?.ok,
-      lead_id,
-      contact_id: contact?.id || null,
-      send_status: res.status,
-      send: inner,   // includes messages-send trace
-      trace,
-    }, res.ok ? 200 : 207);
-
+    return json(
+      {
+        ok: !!inner?.ok,
+        lead_id,
+        send_status: res.status,
+        send: inner,
+        trace,
+      },
+      res.ok ? 200 : 207
+    );
   } catch (e) {
     return json({ error: "unhandled", detail: String(e?.message || e), trace }, 500);
   }
