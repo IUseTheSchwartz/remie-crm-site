@@ -1,6 +1,6 @@
 // File: netlify/functions/lead-new-auto.js
-// Ensures a contact exists (so it shows in Contacts) before sending the initial template.
-// Uses calendar-friendly tag selection (military if branch present, else lead).
+// Ensures a contact row exists (so it shows in Contacts) before sending the initial template.
+// Matches existing contact by same user + same digits of phone (schema-safe; no onConflict required).
 
 const { getServiceClient } = require("./_supabase");
 
@@ -13,13 +13,14 @@ function json(obj, statusCode = 200) {
 }
 
 const S = (x) => (x == null ? "" : String(x).trim());
-const norm10 = (p) => String(p || "").replace(/\D/g, "").slice(-10);
+const onlyDigits = (s) => String(s || "").replace(/\D/g, "");
+const norm10 = (p) => onlyDigits(p).slice(-10);
 const toE164 = (p) => {
-  const d = String(p || "").replace(/\D/g, "");
+  const d = onlyDigits(p);
   if (!d) return null;
   if (d.startsWith("1") && d.length === 11) return `+${d}`;
   if (d.length === 10) return `+1${d}`;
-  if (String(p).startsWith("+")) return String(p);
+  if (String(p || "").startsWith("+")) return String(p);
   return null;
 };
 
@@ -54,26 +55,51 @@ exports.handler = async (event) => {
     const e164 = toE164(lead.phone || "");
     if (!e164) return json({ error: "invalid_or_missing_lead_phone", trace }, 400);
 
-    // ---- Upsert contact (bullet-proof) ----
+    // ---- Upsert contact (schema-safe; no onConflict) ----
     // Status tag is exclusive: 'military' if branch present, else 'lead'
     const statusTag = S(lead.military_branch) ? "military" : "lead";
 
     try {
-      const insertPayload = {
+      const phoneDigits = onlyDigits(e164);
+
+      // Load user's contacts and match by digits (uses your idx_message_contacts_phone_digits pattern)
+      const { data: existingRows, error: selErr } = await db
+        .from("message_contacts")
+        .select("id, phone, tags")
+        .eq("user_id", lead.user_id)
+        .order("created_at", { ascending: false });
+      if (selErr) throw selErr;
+
+      const existing =
+        (existingRows || []).find((r) => onlyDigits(r.phone) === phoneDigits) || null;
+
+      const base = {
         user_id: lead.user_id,
-        phone: e164,                 // store E164
+        phone: e164,                 // store E.164
         full_name: lead.name || null,
-        subscribed: true,            // ✅ satisfy NOT NULL schemas
-        archived: false,             // ✅ include if your schema has NOT NULL archived
-        tags: [statusTag],           // keep status exclusive; other tags can be merged later
-        meta: { lead_id: lead.id },  // handy cross-link
+        subscribed: true,            // satisfy NOT NULL
+        meta: { lead_id: lead.id },  // cross-link
       };
 
-      // Upsert by (user_id, phone). Adjust onConflict if your unique index is different.
-      const { error: upErr } = await db
-        .from("message_contacts")
-        .upsert(insertPayload, { onConflict: "user_id,phone" });
-      if (upErr) throw upErr;
+      if (existing?.id) {
+        // keep status tag exclusive
+        const cur = Array.isArray(existing.tags) ? existing.tags : [];
+        const withoutStatus = cur.filter(
+          (t) => !["lead", "military"].includes(String(t).toLowerCase())
+        );
+        const nextTags = [...new Set([...withoutStatus, statusTag])];
+
+        const { error: uErr } = await db
+          .from("message_contacts")
+          .update({ ...base, tags: nextTags })
+          .eq("id", existing.id);
+        if (uErr) throw uErr;
+      } else {
+        const { error: iErr } = await db
+          .from("message_contacts")
+          .insert([{ ...base, tags: [statusTag] }]);
+        if (iErr) throw iErr;
+      }
 
       trace.push({ step: "contact.upsert.ok", phone: e164, tag: statusTag });
     } catch (e) {
