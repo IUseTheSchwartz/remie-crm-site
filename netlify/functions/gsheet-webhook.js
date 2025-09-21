@@ -97,9 +97,9 @@ function normalizePhone(s) {
 }
 
 /**
- * ✅ FIXED: Status tags are now **exclusive**.
- * If military_branch is present → ["military"]; else → ["lead"].
- * (We also preserve any non-status tags.)
+ * ✅ Status tags are exclusive:
+ * military_branch present → ["military"] ; else → ["lead"]
+ * We also preserve non-status tags.
  */
 async function computeNextContactTags({ supabase, user_id, phone, full_name, military_branch }) {
   const phoneNorm = normalizePhone(phone);
@@ -125,13 +125,16 @@ async function computeNextContactTags({ supabase, user_id, phone, full_name, mil
 }
 
 /**
- * Upsert contact and MERGE meta so we can store `beneficiary` + `lead_id` safely.
+ * Upsert contact and MERGE meta.
+ * ✅ Robust against NOT NULL schemas: we set subscribed: true on insert.
+ * ✅ tags always sent as a clean string[] to avoid type mismatches.
  */
 async function upsertContactByUserPhone(
   supabase,
   { user_id, phone, full_name, tags, meta = {} }
 ) {
   const phoneNorm = normalizePhone(phone);
+  const cleanTags = Array.isArray(tags) ? tags.filter(Boolean).map(String) : [];
 
   const { data: candidates, error } = await supabase
     .from("message_contacts")
@@ -148,7 +151,7 @@ async function upsertContactByUserPhone(
       .from("message_contacts")
       .update({
         full_name: full_name || existing.full_name || null,
-        tags,
+        tags: cleanTags,          // ✅ ensure array of strings
         meta: mergedMeta,
       })
       .eq("id", existing.id);
@@ -162,7 +165,8 @@ async function upsertContactByUserPhone(
           user_id,
           phone,
           full_name: full_name || null,
-          tags,
+          subscribed: true,       // ✅ critical for NOT NULL schemas
+          tags: cleanTags,        // ✅ consistent type
           meta,
         },
       ])
