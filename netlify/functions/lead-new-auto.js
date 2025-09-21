@@ -1,6 +1,6 @@
 // File: netlify/functions/lead-new-auto.js
-// Auto-send "new lead" text. Picks military vs normal by BOTH lead.military_branch
-// and the contact's tags (normalized). Still sends if contact row isn't found yet.
+// Auto-send "new lead" text. Ensures a message_contacts row exists first.
+// Picks military vs normal by BOTH lead.military_branch and the contact's tags.
 
 const { getServiceClient } = require("./_supabase");
 
@@ -43,17 +43,68 @@ exports.handler = async (event) => {
     const to = toE164(lead.phone || "");
     if (!to) return json({ error: "invalid_or_missing_lead_phone", trace }, 400);
 
-    // 2) Try to find the contact (but don't hard-fail if missing)
-    let contact = null;
+    // 2) Ensure a contact exists (so Contacts page shows it)
+    //    We upsert by (user_id, phone). Keep status tag exclusive: 'military' if branch present, else 'lead'.
+    const statusTag = S(lead.military_branch) ? "military" : "lead";
     try {
+      // Try to find existing by normalized phone for user
       const { data: contacts, error: cerr } = await db
         .from("message_contacts")
         .select("id,phone,subscribed,tags")
         .eq("user_id", lead.user_id);
       if (cerr) trace.push({ warn: "contact_list_failed", detail: cerr.message });
-      contact = (contacts || []).find((c) => norm10(c.phone) === norm10(lead.phone)) || null;
+
+      const existing =
+        (contacts || []).find((c) => norm10(c.phone) === norm10(lead.phone)) || null;
+
+      if (existing?.id) {
+        // Merge tags but keep status exclusive
+        const current = Array.isArray(existing.tags) ? existing.tags : [];
+        const withoutStatus = current.filter((t) => !["lead", "military"].includes(String(t).toLowerCase()));
+        const nextTags = [...new Set([...withoutStatus, statusTag])];
+
+        const { error: uErr } = await db
+          .from("message_contacts")
+          .update({
+            full_name: lead.name || null,
+            tags: nextTags,
+            meta: { lead_id: lead.id },
+          })
+          .eq("id", existing.id);
+        if (uErr) throw uErr;
+        trace.push({ step: "contact.upsert.update", contact_id: existing.id });
+      } else {
+        const { error: iErr } = await db
+          .from("message_contacts")
+          .upsert(
+            {
+              user_id: lead.user_id,
+              phone: to, // store E164
+              full_name: lead.name || null,
+              subscribed: true, // ✅ critical to satisfy NOT NULL schemas
+              tags: [statusTag],
+              meta: { lead_id: lead.id },
+            },
+            { onConflict: "user_id,phone" }
+          );
+        if (iErr) throw iErr;
+        trace.push({ step: "contact.upsert.insert" });
+      }
     } catch (e) {
-      trace.push({ warn: "contact_lookup_exception", detail: String(e?.message || e) });
+      trace.push({ warn: "contact.upsert.failed", detail: String(e?.message || e) });
+    }
+
+    // 3) Re-check contact (optional) to decide on template by tag
+    let contact = null;
+    try {
+      const { data: contacts2, error: cerr2 } = await db
+        .from("message_contacts")
+        .select("id,phone,subscribed,tags")
+        .eq("user_id", lead.user_id);
+      if (cerr2) trace.push({ warn: "contact_list2_failed", detail: cerr2.message });
+      contact = (contacts2 || []).find((c) => norm10(c.phone) === norm10(lead.phone)) || null;
+    } catch (e) {
+      trace.push({ warn: "contact_lookup2_exception", detail: String(e?.message || e) });
     }
 
     if (contact && contact.subscribed === false) {
@@ -62,7 +113,7 @@ exports.handler = async (event) => {
     if (contact) trace.push({ step: "contact.matched", contact_id: contact.id, tags: contact.tags || [] });
     else trace.push({ step: "contact.not_found_proceeding" });
 
-    // 3) Decide template: military if (lead.military_branch present) OR (contact has 'military' tag)
+    // 4) Decide template: military if (lead.military_branch present) OR (contact has 'military' tag)
     const tagsNorm = (contact?.tags || []).map((t) => String(t || "").trim().toLowerCase());
     const hasMilitaryTag = tagsNorm.includes("military");
     const hasMilitaryField = !!S(lead.military_branch);
@@ -71,13 +122,13 @@ exports.handler = async (event) => {
     const provider_message_id = `auto_${templateKey}_${lead.id}`;
     trace.push({ step: "template.choose", templateKey, hasMilitaryField, hasMilitaryTag });
 
-    // 4) Build base URL to call messages-send
+    // 5) Build base URL to call messages-send
     const proto = event.headers["x-forwarded-proto"] || "https";
     const host = event.headers.host || (process.env.URL || process.env.SITE_URL || "").replace(/^https?:\/\//, "");
     const base = process.env.SITE_URL || (proto && host ? `${proto}://${host}` : null);
     if (!base) return json({ error: "no_base_url", trace }, 500);
 
-    // 5) Call messages-send. It will resolve the body from message_templates.
+    // 6) Call messages-send. It will resolve the body from message_templates.
     const res = await fetch(`${base}/.netlify/functions/messages-send`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
