@@ -50,8 +50,7 @@ export default function LeadRescuePage() {
   const [enabled, setEnabled] = useState(false);
   const [sendTz, setSendTz] = useState(TZ_DEFAULT);
   const [sendHourLocal, setSendHourLocal] = useState(9);
-  const [maxDays, setMaxDays] = useState(5);
-  const [repeatAfterDays, setRepeatAfterDays] = useState(null);
+  const [loopEnabled, setLoopEnabled] = useState(true); // NEW
   const [savingSettings, setSavingSettings] = useState("idle");
 
   // Templates (Day 2+)
@@ -90,12 +89,7 @@ export default function LeadRescuePage() {
         setEnabled(!!s.enabled);
         setSendTz(s.send_tz || TZ_DEFAULT);
         setSendHourLocal(Number.isFinite(s.send_hour_local) ? s.send_hour_local : 9);
-        setMaxDays(Number.isFinite(s.max_days) ? s.max_days : 5);
-        setRepeatAfterDays(
-          s.repeat_after_days === null || s.repeat_after_days === undefined
-            ? null
-            : s.repeat_after_days
-        );
+        setLoopEnabled(s.loop_enabled !== undefined ? !!s.loop_enabled : true); // NEW
       } else {
         // create default row once
         try {
@@ -104,8 +98,7 @@ export default function LeadRescuePage() {
             enabled: false,
             send_tz: TZ_DEFAULT,
             send_hour_local: 9,
-            max_days: 5,
-            repeat_after_days: null,
+            loop_enabled: true, // NEW
           });
         } catch {}
       }
@@ -171,11 +164,7 @@ export default function LeadRescuePage() {
         enabled: !!enabled,
         send_tz: sendTz || TZ_DEFAULT,
         send_hour_local: Number(sendHourLocal) || 9,
-        max_days: Math.max(2, Number(maxDays) || 5),
-        repeat_after_days:
-          repeatAfterDays === "" || repeatAfterDays === null
-            ? null
-            : Math.max(0, Number(repeatAfterDays)),
+        loop_enabled: !!loopEnabled, // NEW
       };
       const { error } = await supabase
         .from("lead_rescue_settings")
@@ -225,7 +214,7 @@ export default function LeadRescuePage() {
     saveTplTimer.current = setTimeout(() => persistTemplate(day, body), 600);
   }
 
-  // ✅ FIX: first added day is Day 2, then Day 3, etc.
+  // ✅ first added day is Day 2, then Day 3, etc.
   function nextDayNumber() {
     if (!templates || templates.length === 0) return 2; // first one is Day 2
     const max = Math.max(...templates.map((t) => t.day_number || 0));
@@ -324,7 +313,7 @@ export default function LeadRescuePage() {
       <header className="rounded-2xl border border-white/10 bg-white/[0.03] p-4">
         <h1 className="text-lg font-semibold">Lead Rescue</h1>
         <p className="mt-1 text-sm text-white/70">
-          Daily follow-ups for contacts in your lead/military funnel. Messages only go out if the contact still exists and hasn’t replied.
+          Daily follow-ups for contacts in your lead/military funnel. First send is the next calendar day at your Send Hour. If Loop is on, it continues every day using your last non-empty template until the contact replies.
         </p>
       </header>
 
@@ -360,7 +349,8 @@ export default function LeadRescuePage() {
           </div>
         )}
 
-        <div className="grid gap-3 md:grid-cols-4">
+        <div className="grid gap-3 md:grid-cols-5">
+          {/* Enabled */}
           <label className="text-sm">
             <div className="mb-1 text-white/70">Enabled</div>
             <button
@@ -375,6 +365,22 @@ export default function LeadRescuePage() {
             </button>
           </label>
 
+          {/* Loop (NEW) */}
+          <label className="text-sm">
+            <div className="mb-1 text-white/70">Loop (daily after last day)</div>
+            <button
+              type="button"
+              onClick={() => setLoopEnabled((v) => !v)}
+              className={classNames(
+                "inline-flex items-center rounded-full border px-3 py-1 text-xs",
+                loopEnabled ? "bg-indigo-500/20 text-indigo-200 border-white/15" : "bg-white/5 text-white/70 border-white/15"
+              )}
+            >
+              {loopEnabled ? "On" : "Off"}
+            </button>
+          </label>
+
+          {/* Time Zone */}
           <label className="text-sm">
             <div className="mb-1 text-white/70">Time Zone</div>
             <input
@@ -385,6 +391,7 @@ export default function LeadRescuePage() {
             />
           </label>
 
+          {/* Send Hour */}
           <label className="text-sm">
             <div className="mb-1 text-white/70">Send hour (local)</div>
             <input
@@ -398,47 +405,22 @@ export default function LeadRescuePage() {
             />
           </label>
 
-          <label className="text-sm">
-            <div className="mb-1 text-white/70">Max days</div>
-            <input
-              type="number"
-              min={2}
-              value={maxDays}
-              onChange={(e) => setMaxDays(e.target.value)}
-              className="w-full rounded-lg border border-white/15 bg-white/5 px-3 py-2 text-sm outline-none focus:ring-1 focus:ring-indigo-400/40"
-              placeholder="5"
-            />
-          </label>
-
-          <label className="text-sm md:col-span-2">
-            <div className="mb-1 text-white/70">Repeat after days (optional; 0 = loop; blank = no repeat)</div>
-            <input
-              type="number"
-              min={0}
-              value={repeatAfterDays === null ? "" : repeatAfterDays}
-              onChange={(e) =>
-                setRepeatAfterDays(e.target.value === "" ? null : Number(e.target.value))
-              }
-              className="w-full rounded-lg border border-white/15 bg-white/5 px-3 py-2 text-sm outline-none focus:ring-1 focus:ring-indigo-400/40"
-              placeholder=""
-            />
-          </label>
-        </div>
-
-        <div className="mt-3">
-          <button
-            onClick={saveSettings}
-            className="inline-flex items-center gap-2 rounded-xl border border-white/15 bg-white px-4 py-2 text-sm font-medium text-black hover:bg-white/90"
-          >
-            {savingSettings === "saving" ? <Loader2 className="h-4 w-4 animate-spin" /> : <Check className="h-4 w-4" />}
-            Save settings
-          </button>
-          {savingSettings === "saved" && (
-            <span className="ml-2 text-xs text-emerald-300">Saved</span>
-          )}
-          {savingSettings === "error" && (
-            <span className="ml-2 text-xs text-rose-300">Save failed</span>
-          )}
+          {/* Save */}
+          <div className="flex items-end">
+            <button
+              onClick={saveSettings}
+              className="inline-flex items-center gap-2 rounded-xl border border-white/15 bg-white px-4 py-2 text-sm font-medium text-black hover:bg-white/90"
+            >
+              {savingSettings === "saving" ? <Loader2 className="h-4 w-4 animate-spin" /> : <Check className="h-4 w-4" />}
+              Save settings
+            </button>
+            {savingSettings === "saved" && (
+              <span className="ml-2 text-xs text-emerald-300 self-center">Saved</span>
+            )}
+            {savingSettings === "error" && (
+              <span className="ml-2 text-xs text-rose-300 self-center">Save failed</span>
+            )}
+          </div>
         </div>
       </section>
 
@@ -468,6 +450,10 @@ export default function LeadRescuePage() {
             </button>
           </div>
         </div>
+
+        <p className="mb-3 text-xs text-white/60">
+          Day 1 is your initial message. Day 2+ send at your Send Hour. If <b>Loop</b> is ON, days beyond your highest defined day will reuse the <b>last non-empty template</b> daily until the contact replies.
+        </p>
 
         {templates.length === 0 && (
           <div className="rounded-xl border border-white/10 bg-black/30 p-3 text-sm text-white/70">
