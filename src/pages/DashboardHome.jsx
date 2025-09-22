@@ -5,10 +5,13 @@ import { dashboardSnapshot, refreshDashboardSnapshot } from "../lib/stats.js";
 import { supabase } from "../lib/supabaseClient.js";
 import { useAuth } from "../auth.jsx";
 
-function Card({ title, children }) {
+function Card({ title, right, children }) {
   return (
     <div className="rounded-2xl border border-white/10 bg-white/[0.03] p-4 ring-1 ring-white/5">
-      <div className="mb-2 text-sm font-semibold">{title}</div>
+      <div className="mb-2 flex items-center justify-between">
+        <div className="text-sm font-semibold">{title}</div>
+        {right ? <div className="text-xs text-white/70">{right}</div> : null}
+      </div>
       <div className="text-sm text-white/80">{children}</div>
     </div>
   );
@@ -16,6 +19,26 @@ function Card({ title, children }) {
 
 export default function DashboardHome() {
   const { user } = useAuth();
+
+  // --- Welcome video settings ---
+  // Put your YouTube video ID here (the part after v= or after /embed/)
+  // Example: https://www.youtube.com/watch?v=dQw4w9WgXcQ -> "dQw4w9WgXcQ"
+  const YT_VIDEO_ID = "YOUR_VIDEO_ID_HERE";
+
+  const [showVideo, setShowVideo] = useState(() => {
+    try {
+      return localStorage.getItem("remiecrm_welcome_video_dismissed") !== "1";
+    } catch {
+      return true;
+    }
+  });
+
+  function dismissVideo() {
+    try {
+      localStorage.setItem("remiecrm_welcome_video_dismissed", "1");
+    } catch {}
+    setShowVideo(false);
+  }
 
   // read cached snapshot immediately to avoid layout shift
   const [snap, setSnap] = useState(dashboardSnapshot());
@@ -77,7 +100,8 @@ export default function DashboardHome() {
 
     // Focus/visibility (helps pick up local-only edits)
     const onFocus = () => isMounted && doRefresh("focus");
-    const onVis = () => document.visibilityState === "visible" && isMounted && doRefresh("visible");
+    const onVis = () =>
+      document.visibilityState === "visible" && isMounted && doRefresh("visible");
     window.addEventListener("focus", onFocus);
     document.addEventListener("visibilitychange", onVis);
 
@@ -120,6 +144,49 @@ export default function DashboardHome() {
           {loading ? "Refreshing…" : "Refresh"}
         </button>
       </div>
+
+      {/* Getting Started / Welcome Video */}
+      {showVideo && YT_VIDEO_ID && (
+        <Card
+          title="Getting Started"
+          right={
+            <button
+              onClick={dismissVideo}
+              className="rounded-lg px-2 py-1 border border-white/10 bg-white/5 hover:bg-white/10"
+              title="Hide this video"
+            >
+              Dismiss
+            </button>
+          }
+        >
+          <div className="mb-3 text-white/70">
+            Watch this quick walkthrough to set up your account, connect messaging, and book your first appointments.
+          </div>
+          {/* Responsive 16:9 wrapper */}
+          <div className="relative w-full overflow-hidden rounded-2xl border border-white/10 bg-black pt-[56.25%]">
+            <iframe
+              className="absolute inset-0 h-full w-full"
+              src={`https://www.youtube.com/embed/${YT_VIDEO_ID}?rel=0&modestbranding=1`}
+              title="Getting Started with RemieCRM"
+              frameBorder="0"
+              allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share"
+              allowFullScreen
+            />
+          </div>
+          <div className="mt-2 text-xs text-white/60">
+            Prefer YouTube?{" "}
+            <a
+              href={`https://www.youtube.com/watch?v=${YT_VIDEO_ID}`}
+              target="_blank"
+              rel="noreferrer"
+              className="underline hover:text-white"
+            >
+              Open the video in a new tab
+            </a>
+            .
+          </div>
+        </Card>
+      )}
 
       <div className="grid gap-4 md:grid-cols-4">
         {kpi.map((x) => (
