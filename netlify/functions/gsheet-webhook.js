@@ -95,6 +95,13 @@ function normalizePhone(s) {
   const d = String(s || "").replace(/\D/g, "");
   return d.length === 11 && d.startsWith("1") ? d.slice(1) : d;
 }
+function toE164(s) {
+  const d = String(s || "").replace(/\D/g, "");
+  if (!d) return null;
+  if (d.length === 11 && d.startsWith("1")) return `+${d}`;
+  if (d.length === 10) return `+1${d}`;
+  return s && s.startsWith("+") ? s : null;
+}
 
 /**
  * ✅ Status tags are exclusive:
@@ -177,41 +184,101 @@ async function upsertContactByUserPhone(
   }
 }
 
-// --- templates → send helper (centralized via messages-send) ---
+// --- templates → send helper (NOW: direct Telnyx send; no internal HTTP hop) ---
 function renderTemplate(tpl, ctx) {
   return String(tpl || "").replace(/\{\{\s*([a-zA-Z0-9_]+)\s*\}\}/g, (_, k) => S(ctx[k]));
 }
 
 async function trySendNewLeadText({ userId, leadId, lead }) {
-  // We do NOT render the body here anymore.
-  // We defer to lead-new-auto → messages-send so the send is templated, logged, debited, and traced consistently.
-
+  // 1) Sanity: phone
   if (!S(lead.phone)) return { sent: false, reason: "missing_phone" };
+  const to = toE164(lead.phone);
+  if (!to) return { sent: false, reason: "invalid_phone", detail: lead.phone };
 
-  const base = process.env.SITE_URL || process.env.URL;
-  if (!base) return { sent: false, reason: "no_site_url" };
-
-  try {
-    const res = await fetch(`${base}/.netlify/functions/lead-new-auto`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ lead_id: leadId }),
-    });
-    const out = await res.json().catch(() => ({}));
-
-    if (!res.ok || out?.error || !out?.send?.ok) {
-      return { sent: false, reason: "send_failed", detail: out };
-    }
+  // 2) Telnyx env present?
+  const TELNYX_API_KEY = process.env.TELNYX_API_KEY;
+  const TELNYX_MESSAGING_PROFILE_ID = process.env.TELNYX_MESSAGING_PROFILE_ID;
+  const FROM_NUMBER = process.env.TELNYX_FROM_NUMBER;
+  if (!TELNYX_API_KEY || !TELNYX_MESSAGING_PROFILE_ID || !FROM_NUMBER) {
     return {
-      sent: true,
-      telnyx_id: out?.send?.provider_sid || out?.send?.provider_message_id || null,
-      trace: out?.send?.trace || out?.trace || null,
+      sent: false,
+      reason: "telnyx_env_missing",
+      missing: {
+        TELNYX_API_KEY: !!TELNYX_API_KEY,
+        TELNYX_MESSAGING_PROFILE_ID: !!TELNYX_MESSAGING_PROFILE_ID,
+        TELNYX_FROM_NUMBER: !!FROM_NUMBER,
+      },
     };
-  } catch (e) {
-    return { sent: false, reason: "lead_new_auto_unreachable", detail: e?.message };
   }
-}
 
+  // 3) Load template + agent profile
+  const { data: trow, error: terr } = await supabase
+    .from("message_templates")
+    .select("templates")
+    .eq("user_id", userId)
+    .single();
+  if (terr) return { sent: false, reason: "template_load_error", detail: terr.message };
+
+  const template_key = "new_lead"; // initial ping = new lead
+  const tpl = trow?.templates?.[template_key];
+  if (!tpl) return { sent: false, reason: "template_not_found", template_key };
+
+  const { data: agent, error: aerr } = await supabase
+    .from("agent_profiles")
+    .select("full_name, phone, calendly_url")
+    .eq("user_id", userId)
+    .single();
+  if (aerr) return { sent: false, reason: "agent_profile_missing", detail: aerr.message };
+
+  const vars = {
+    first_name: S(lead.name).split(" ")[0] || "",
+    agent_name: agent?.full_name || "",
+    agent_phone: agent?.phone || "",
+    calendly_link: agent?.calendly_url || "",
+    state: S(lead.state),
+    beneficiary: S(lead.beneficiary) || S(lead.beneficiary_name),
+  };
+  const text = renderTemplate(tpl, vars);
+
+  // 4) Send via Telnyx
+  const clientRef = `c=${leadId || "n/a"}|tpl=${template_key}|ts=${Date.now()}`;
+
+  const resp = await fetch("https://api.telnyx.com/v2/messages", {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${TELNYX_API_KEY}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      from: FROM_NUMBER,
+      to,
+      text,
+      messaging_profile_id: TELNYX_MESSAGING_PROFILE_ID,
+      client_ref: clientRef,
+    }),
+  });
+
+  const json = await resp.json().catch(() => ({}));
+  if (!resp.ok) {
+    return { sent: false, reason: "telnyx_error", telnyx: json };
+  }
+
+  const providerId = json?.data?.id || null;
+
+  // 5) Log to messages table
+  await supabase.from("messages").insert({
+    contact_id: null, // optional: leave null if you link later; or look up contact_id here if needed
+    lead_id: leadId || null,
+    direction: "outbound",
+    body: text,
+    provider: "telnyx",
+    provider_message_id: providerId,
+    client_ref: clientRef,
+    template_key,
+  });
+
+  return { sent: true, provider_message_id: providerId, client_ref: clientRef };
+}
 
 // --- main handler ---
 exports.handler = async (event) => {
@@ -334,7 +401,7 @@ exports.handler = async (event) => {
           console.error("contact tag/meta sync (dedup) failed:", err);
         }
 
-        // try send (centralized via messages-send)
+        // try send (direct Telnyx)
         try {
           await trySendNewLeadText({
             userId: wh.user_id,
@@ -352,6 +419,11 @@ exports.handler = async (event) => {
           console.error("send (dedup) failed:", e);
         }
 
+        await supabase
+          .from("user_inbound_webhooks")
+          .update({ last_used_at: new Date().toISOString() })
+          .eq("id", webhookId);
+
         return {
           statusCode: 200,
           body: JSON.stringify({ ok: true, id: dupId, deduped: true }),
@@ -367,7 +439,7 @@ exports.handler = async (event) => {
 
     const insertedId = data?.[0]?.id || null;
 
-    // 🔔 Send welcome/new-lead message via centralized sender so it lands in public.messages
+    // 🔔 Send welcome/new-lead message (direct Telnyx)
     try {
       await trySendNewLeadText({
         userId: wh.user_id,
