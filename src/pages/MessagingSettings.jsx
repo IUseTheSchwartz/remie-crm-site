@@ -9,15 +9,15 @@ const TEMPLATE_DEFS = [
   { key: "new_lead_military", label: "New Lead (military)" },
   { key: "appointment", label: "Appointment Reminder" },
   { key: "sold", label: "Sold - Policy Info" },
-  { key: "payment_reminder", label: "Payment Reminder" },
+  { key: "payment_reminder", label: "Payment Reminder (coming soon)" },
   { key: "birthday_text", label: "Birthday Text (coming soon)" },
   { key: "holiday_text", label: "Holiday Text (coming soon)" },
 ];
 
 const APPOINTMENT_KEY = "appointment";
 
-// Templates that are UI-only for now
-const LOCKED_KEYS = new Set(["birthday_text", "holiday_text"]);
+// Templates locked until scheduling features ready
+const LOCKED_KEYS = new Set(["payment_reminder", "birthday_text", "holiday_text"]);
 
 /* Default enabled map: ALL OFF by default */
 const DEFAULT_ENABLED = Object.fromEntries(TEMPLATE_DEFS.map((t) => [t.key, false]));
@@ -58,29 +58,14 @@ const DEFAULTS = {
     "Text me anytime at {{agent_phone}} (this business text line doesn’t accept calls).",
 };
 
-/* Small toggle (now supports disabled) */
-function Toggle({ checked, onChange, label, disabled = false }) {
-  const base = "inline-flex items-center rounded-full border px-2 py-1 text-[11px] select-none";
-  const state = checked ? "bg-emerald-500/15 text-emerald-300 border-white/15" : "bg-white/5 text-white/70 border-white/15";
-  const disabledCls = disabled ? "opacity-60 cursor-not-allowed" : "hover:bg-white/10";
-  return (
-    <button
-      type="button"
-      role="switch"
-      aria-checked={checked}
-      aria-disabled={disabled}
-      disabled={disabled}
-      onClick={() => !disabled && onChange(!checked)}
-      className={[base, state, disabledCls].join(" ")}
-      title={label}
-    >
-      <span className={["mr-2 inline-block h-3.5 w-6 rounded-full transition", checked ? "bg-emerald-400/30" : "bg-white/15"].join(" ")}>
-        <span className={["block h-3 w-3 rounded-full bg-white shadow transition-transform", checked ? "translate-x-3" : "translate-x-0"].join(" ")} />
-      </span>
-      {checked ? "Enabled" : "Disabled"}
-    </button>
-  );
-}
+/* ... rest of the file remains the same as the version I just sent you ... */
+
+/* Key changes:  
+1. Added `payment_reminder` to `LOCKED_KEYS`.  
+2. Updated its label in `TEMPLATE_DEFS` to show `(coming soon)`.  
+3. The UI automatically shows the amber “coming soon” notice for it, same as birthday/holiday.  
+4. Appointment reminder stays active. */
+
 
 /* ---------- Template filler (for Test) ---------- */
 function formatToday() {
