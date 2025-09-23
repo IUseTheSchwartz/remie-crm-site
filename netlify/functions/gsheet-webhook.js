@@ -21,41 +21,27 @@ function S(v) {
   if (v instanceof Date) return v.toISOString();
   try { return String(v).trim(); } catch { return ""; }
 }
-
-// Return undefined if blank (so we omit the column entirely)
-function U(v) {
-  const s = S(v);
-  return s === "" ? undefined : s;
-}
+function U(v) { const s = S(v); return s === "" ? undefined : s; }
 
 // 🔁 Normalize any date-like input to MM/DD/YYYY (string). Return undefined if invalid.
 function toMDY(v) {
   if (v == null) return undefined;
-
   if (v instanceof Date && !Number.isNaN(v.getTime())) {
     const mm = String(v.getMonth() + 1).padStart(2, "0");
     const dd = String(v.getDate()).padStart(2, "0");
     const yy = v.getFullYear();
     return `${mm}/${dd}/${yy}`;
   }
-
-  const s = String(v).trim();
-  if (!s) return undefined;
-
-  const iso = s.match(/^(\d{4})-(\d{2})-(\d{2})$/);
-  if (iso) { const [, y, m, d] = iso; return `${m}/${d}/${y}`; }
-
+  const s = String(v).trim(); if (!s) return undefined;
+  const iso = s.match(/^(\d{4})-(\d{2})-(\d{2})$/); if (iso) { const [, y, m, d] = iso; return `${m}/${d}/${y}`; }
   const us = s.match(/^(\d{1,2})[\/\-.](\d{1,2})[\/\-.](\d{2,4})$/);
   if (us) {
-    let mm = parseInt(us[1], 10);
-    let dd = parseInt(us[2], 10);
-    let yy = us[3];
+    let mm = parseInt(us[1], 10); let dd = parseInt(us[2], 10); let yy = us[3];
     if (yy.length === 2) yy = (yy >= "50" ? "19" : "20") + yy;
     if (mm >= 1 && mm <= 12 && dd >= 1 && dd <= 31) {
       return `${String(mm).padStart(2, "0")}/${String(dd).padStart(2, "0")}/${yy}`;
     }
   }
-
   const d = new Date(s);
   if (!Number.isNaN(d.getTime())) {
     const mm = String(d.getMonth() + 1).padStart(2, "0");
@@ -74,22 +60,11 @@ function getRawBody(event) {
   return raw;
 }
 
-// --- contact tag + helpers ---
-function normalizeTag(s) {
-  return String(s ?? "").trim().toLowerCase().replace(/\s+/g, "_");
-}
+// --- contact helpers ---
+function normalizeTag(s) { return String(s ?? "").trim().toLowerCase().replace(/\s+/g, "_"); }
 function uniqTags(arr) { return Array.from(new Set((arr || []).map(normalizeTag))).filter(Boolean); }
-function normalizePhone(s) {
-  const d = String(s || "").replace(/\D/g, "");
-  return d.length === 11 && d.startsWith("1") ? d.slice(1) : d;
-}
-function toE164(s) {
-  const d = String(s || "").replace(/\D/g, "");
-  if (!d) return null;
-  if (d.length === 11 && d.startsWith("1")) return `+${d}`;
-  if (d.length === 10) return `+1${d}`;
-  return s && s.startsWith("+") ? s : null;
-}
+function normalizePhone(s) { const d = String(s || "").replace(/\D/g, ""); return d.length === 11 && d.startsWith("1") ? d.slice(1) : d; }
+function toE164(s) { const d = String(s || "").replace(/\D/g, ""); if (!d) return null; if (d.length===11 && d.startsWith("1")) return `+${d}`; if (d.length===10) return `+1${d}`; return s && s.startsWith("+") ? s : null; }
 
 async function computeNextContactTags({ supabase, user_id, phone, full_name, military_branch }) {
   const phoneNorm = normalizePhone(phone);
@@ -98,28 +73,23 @@ async function computeNextContactTags({ supabase, user_id, phone, full_name, mil
     .select("id, phone, tags")
     .eq("user_id", user_id);
   if (error) throw error;
-
   const existing = (candidates || []).find((c) => normalizePhone(c.phone) === phoneNorm);
   const current = Array.isArray(existing?.tags) ? existing.tags : [];
   const withoutStatus = current.filter((t) => !["lead", "military"].includes(normalizeTag(t)));
   const status = (S(military_branch) ? "military" : "lead");
   const next = uniqTags([...withoutStatus, status]);
-
   return { contactId: existing?.id ?? null, tags: next };
 }
 
 async function upsertContactByUserPhone(supabase, { user_id, phone, full_name, tags, meta = {} }) {
   const phoneNorm = normalizePhone(phone);
   const cleanTags = Array.isArray(tags) ? tags.filter(Boolean).map(String) : [];
-
   const { data: candidates, error } = await supabase
     .from("message_contacts")
     .select("id, phone, full_name, tags, meta")
     .eq("user_id", user_id);
   if (error) throw error;
-
   const existing = (candidates || []).find((c) => normalizePhone(c.phone) === phoneNorm);
-
   if (existing?.id) {
     const mergedMeta = { ...(existing.meta || {}), ...(meta || {}) };
     const { error: uErr } = await supabase
@@ -139,29 +109,62 @@ async function upsertContactByUserPhone(supabase, { user_id, phone, full_name, t
   }
 }
 
-// --- templates → send helper (wallet-gated; schema-aligned logging) ---
 function renderTemplate(tpl, ctx) {
   return String(tpl || "").replace(/\{\{\s*([a-zA-Z0-9_]+)\s*\}\}/g, (_, k) => S(ctx[k]));
 }
 
+// 💳 Robust balance lookup: supports env overrides + common fallbacks
+async function getBalanceCents(userId) {
+  // 1) Env override (recommended if your schema is custom)
+  const T = process.env.WALLET_TABLE;
+  const C = process.env.WALLET_COLUMN || "balance_cents";
+  if (T) {
+    try {
+      const { data } = await supabase.from(T).select(C).eq("user_id", userId).single();
+      const v = data?.[C];
+      const n = v == null ? 0 : Number(v);
+      if (!Number.isNaN(n)) return Math.floor(n);
+    } catch {}
+  }
+  // 2) Common patterns
+  const candidates = [
+    { table: "wallets", column: "balance_cents" },
+    { table: "wallets", column: "balance" },
+    { table: "user_wallets", column: "balance_cents" },
+    { table: "user_wallets", column: "balance" },
+    { table: "accounts", column: "balance_cents" },
+    { table: "accounts", column: "balance" },
+  ];
+  for (const { table, column } of candidates) {
+    try {
+      const { data } = await supabase.from(table).select(column).eq("user_id", userId).single();
+      const v = data?.[column];
+      if (v !== undefined) {
+        const n = Number(v);
+        if (!Number.isNaN(n)) return Math.floor(n);
+      }
+    } catch {}
+  }
+  return 0; // default if nothing found
+}
+
 /**
  * Gate by wallet two ways:
- * 1) **Pre-check** wallet balance in code (cheap + avoids negative).
- * 2) **Insert first** so your AFTER INSERT debit trigger runs (for funded users).
- *    If insert fails, we do NOT send. If send succeeds, we mark 'sent'.
+ * 1) Pre-check wallet balance in code (prevents negative).
+ * 2) Insert first (for funded users) so AFTER INSERT debit trigger runs; then send; then mark 'sent'.
  */
 async function trySendNewLeadText({ userId, leadId, contactId, lead }) {
   // 1) Phone
-  if (!S(lead.phone)) return { sent: false, reason: "missing_phone" };
+  if (!S(lead.phone)) return { ok: false, reason: "missing_phone" };
   const to = toE164(lead.phone);
-  if (!to) return { sent: false, reason: "invalid_phone", detail: lead.phone };
+  if (!to) return { ok: false, reason: "invalid_phone", detail: lead.phone };
 
   // 2) Telnyx env
   const TELNYX_API_KEY = process.env.TELNYX_API_KEY;
   const TELNYX_MESSAGING_PROFILE_ID = process.env.TELNYX_MESSAGING_PROFILE_ID;
   const FROM_NUMBER = process.env.TELNYX_FROM_NUMBER;
   if (!TELNYX_API_KEY || !TELNYX_MESSAGING_PROFILE_ID || !FROM_NUMBER) {
-    return { sent: false, reason: "telnyx_env_missing" };
+    return { ok: false, reason: "telnyx_env_missing" };
   }
 
   // 3) Template + agent profile
@@ -170,35 +173,28 @@ async function trySendNewLeadText({ userId, leadId, contactId, lead }) {
     .select("templates")
     .eq("user_id", userId)
     .single();
-  if (terr) return { sent: false, reason: "template_load_error", detail: terr.message };
+  if (terr) return { ok: false, reason: "template_load_error", detail: terr.message };
 
   const template_key = "new_lead";
   const tpl = trow?.templates?.[template_key];
-  if (!tpl) return { sent: false, reason: "template_not_found", template_key };
+  if (!tpl) return { ok: false, reason: "template_not_found", template_key };
 
   const { data: agent, error: aerr } = await supabase
     .from("agent_profiles")
     .select("full_name, phone, calendly_url")
     .eq("user_id", userId)
     .single();
-  if (aerr) return { sent: false, reason: "agent_profile_missing", detail: aerr.message };
+  if (aerr) return { ok: false, reason: "agent_profile_missing", detail: aerr.message };
 
   // 3.5) 💳 Pre-check wallet (soft guard; prevents negative)
   const COST_CENTS = 1;
-  let balance = 0;
-  try {
-    const { data: w } = await supabase
-      .from("wallets")
-      .select("balance_cents")
-      .eq("user_id", userId)
-      .single();
-    balance = w?.balance_cents ?? 0;
-  } catch {}
+  const balance = await getBalanceCents(userId);
+  console.log("wallet_precheck", { userId, balance_cents: balance, needed: COST_CENTS });
   if (balance < COST_CENTS) {
-    return { sent: false, reason: "insufficient_balance", balance_cents: balance };
+    return { ok: false, reason: "insufficient_balance", balance_cents: balance };
   }
 
-  // Prefer the beneficiary *name*; expose legacy + explicit keys
+  // 4) Render template vars (prefer beneficiary_name)
   const beneficiary_name = S(lead.beneficiary_name) || S(lead.beneficiary);
   const vars = {
     first_name: S(lead.name).split(" ")[0] || "",
@@ -211,7 +207,7 @@ async function trySendNewLeadText({ userId, leadId, contactId, lead }) {
   };
   const text = renderTemplate(tpl, vars);
 
-  // PHASE 1: Insert first → lets AFTER INSERT debit trigger handle accounting
+  // PHASE 1: Insert first → AFTER INSERT debit trigger handles accounting
   const preRow = {
     user_id: userId,
     contact_id: contactId || null,
@@ -223,7 +219,7 @@ async function trySendNewLeadText({ userId, leadId, contactId, lead }) {
     body: text,
     status: "queued",     // will flip to 'sent' after Telnyx ok
     segments: 1,
-    price_cents: COST_CENTS, // 1¢
+    price_cents: COST_CENTS,
     channel: "sms",
   };
 
@@ -235,7 +231,8 @@ async function trySendNewLeadText({ userId, leadId, contactId, lead }) {
 
   if (preErr) {
     // Likely insufficient funds (trigger aborted insert) or constraint failure
-    return { sent: false, reason: "preinsert_failed", detail: preErr.message };
+    console.error("messages pre-insert failed:", preErr.message);
+    return { ok: false, reason: "preinsert_failed", detail: preErr.message };
   }
   const messageId = inserted.id;
 
@@ -260,7 +257,7 @@ async function trySendNewLeadText({ userId, leadId, contactId, lead }) {
         .from("messages")
         .update({ status: "error", error_detail: JSON.stringify(json).slice(0, 1000) })
         .eq("id", messageId);
-      return { sent: false, reason: "telnyx_error", telnyx: json };
+      return { ok: false, reason: "telnyx_error", telnyx: json, message_id: messageId };
     }
 
     const providerId = json?.data?.id || null;
@@ -271,13 +268,13 @@ async function trySendNewLeadText({ userId, leadId, contactId, lead }) {
       .update({ status: "sent", provider_sid: providerId, provider_message_id: providerId })
       .eq("id", messageId);
 
-    return { sent: true, provider_message_id: providerId, message_id: messageId };
+    return { ok: true, provider_message_id: providerId, message_id: messageId };
   } catch (e) {
     await supabase
       .from("messages")
       .update({ status: "error", error_detail: String(e?.message || e).slice(0, 1000) })
       .eq("id", messageId);
-    return { sent: false, reason: "telnyx_request_failed", detail: e?.message };
+    return { ok: false, reason: "telnyx_request_failed", detail: e?.message, message_id: messageId };
   }
 }
 
@@ -310,8 +307,7 @@ exports.handler = async (event) => {
     const computed = crypto.createHmac("sha256", wh.secret).update(rawBody, "utf8").digest("base64");
     if (!timingSafeEqual(computed, providedSig)) return { statusCode: 401, body: "Invalid signature" };
 
-    let p;
-    try { p = JSON.parse(rawBody); } catch { return { statusCode: 400, body: "Invalid JSON" }; }
+    let p; try { p = JSON.parse(rawBody); } catch { return { statusCode: 400, body: "Invalid JSON" }; }
 
     const nowIso = new Date().toISOString();
     const lead = {
@@ -321,7 +317,6 @@ exports.handler = async (event) => {
       email: U(p.email) ?? null,
       state: U(p.state) ?? null,
       created_at: U(p.created_at) || nowIso,
-
       stage: "no_pickup",
       stage_changed_at: nowIso,
       priority: "medium",
@@ -334,14 +329,12 @@ exports.handler = async (event) => {
       notes: U(p.notes),
       beneficiary: U(p.beneficiary),
       beneficiary_name: U(p.beneficiary_name),
-      beneficiary_relation: U(p.beneficiary_relation), // if present
+      beneficiary_relation: U(p.beneficiary_relation),
       company: U(p.company),
       gender: U(p.gender),
       military_branch: U(p.military_branch),
     };
-
-    const dobMDY = toMDY(p.dob);
-    if (dobMDY) extras.dob = dobMDY;
+    const dobMDY = toMDY(p.dob); if (dobMDY) extras.dob = dobMDY;
     for (const [k, v] of Object.entries(extras)) if (v !== undefined) lead[k] = v;
 
     if (!lead.name && !lead.phone && !lead.email) {
@@ -391,13 +384,9 @@ exports.handler = async (event) => {
         }
 
         // Wallet-gated send
+        let sendRes = null;
         try {
-          await trySendNewLeadText({
-            userId: wh.user_id,
-            leadId: dupId,
-            contactId,
-            lead,
-          });
+          sendRes = await trySendNewLeadText({ userId: wh.user_id, leadId: dupId, contactId, lead });
         } catch (e) {
           console.error("send (dedup) failed:", e);
         }
@@ -407,7 +396,7 @@ exports.handler = async (event) => {
           .update({ last_used_at: new Date().toISOString() })
           .eq("id", webhookId);
 
-        return { statusCode: 200, body: JSON.stringify({ ok: true, id: dupId, deduped: true }) };
+        return { statusCode: 200, body: JSON.stringify({ ok: true, id: dupId, deduped: true, send: sendRes }) };
       }
     }
 
@@ -444,13 +433,9 @@ exports.handler = async (event) => {
     }
 
     // Wallet-gated send
+    let sendRes = null;
     try {
-      await trySendNewLeadText({
-        userId: wh.user_id,
-        leadId: insertedId,
-        contactId,
-        lead,
-      });
+      sendRes = await trySendNewLeadText({ userId: wh.user_id, leadId: insertedId, contactId, lead });
     } catch (err) {
       console.error("send new lead failed:", err);
     }
@@ -462,8 +447,7 @@ exports.handler = async (event) => {
       .maybeSingle();
 
     const projectRef =
-      (process.env.SUPABASE_URL || "").match(/https?:\/\/([^.]+)\.supabase\.co/i)?.[1] ||
-      "unknown";
+      (process.env.SUPABASE_URL || "").match(/https?:\/\/([^.]+)\.supabase\.co/i)?.[1] || "unknown";
 
     await supabase
       .from("user_inbound_webhooks")
@@ -477,6 +461,7 @@ exports.handler = async (event) => {
         id: insertedId,
         verify_found: !!verifyRow && !verifyErr,
         project_ref: projectRef,
+        send: sendRes, // ← shows exactly why/why not
       }),
     };
   } catch (e) {
