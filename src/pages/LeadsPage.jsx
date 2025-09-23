@@ -659,7 +659,7 @@ export default function LeadsPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Realtime inserts → ignore duplicates (id/email/phone)
+  // Realtime inserts → ignore duplicates (id/email/phone) + SEND AUTO-TEXT
   useEffect(() => {
     let channel;
     (async () => {
@@ -673,7 +673,7 @@ export default function LeadsPage() {
           .on(
             "postgres_changes",
             { event: "INSERT", schema: "public", table: "leads", filter: `user_id=eq.${userId}` },
-            (payload) => {
+            async (payload) => {
               const row = preserveStage([...leads, ...clients], payload.new);
 
               const idDup = [...leads, ...clients].some(x => x.id === row.id);
@@ -688,6 +688,14 @@ export default function LeadsPage() {
               setLeads(newLeads);
               setClients(newClients);
               setServerMsg("✅ New lead arrived (deduped)");
+
+              // 🔔 NEW: fire auto-text for realtime-created lead (e.g., Sheets/webhook)
+              try {
+                await triggerAutoTextForLeadId({ leadId: row.id, userId, person: row });
+                setServerMsg("📨 New lead text queued");
+              } catch (err) {
+                console.error("Realtime auto-text error:", err);
+              }
             }
           )
           .subscribe();
