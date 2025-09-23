@@ -184,7 +184,7 @@ async function upsertContactByUserPhone(
   }
 }
 
-// --- templates → send helper (NOW: direct Telnyx send; includes contactId so UI sees it) ---
+// --- templates → send helper (direct Telnyx; logs with user_id + contact_id) ---
 function renderTemplate(tpl, ctx) {
   return String(tpl || "").replace(/\{\{\s*([a-zA-Z0-9_]+)\s*\}\}/g, (_, k) => S(ctx[k]));
 }
@@ -265,17 +265,24 @@ async function trySendNewLeadText({ userId, leadId, contactId, lead }) {
 
   const providerId = json?.data?.id || null;
 
-  // 5) Log to messages table with contact_id so UI shows it
-  await supabase.from("messages").insert({
-    contact_id: contactId || null, // 🔑 now linked to the contact
+  // 5) Log to messages table with user_id + contact_id so UI sees it (RLS)
+  const insertRow = {
+    user_id: userId,              // 🔑 make visible to client under RLS
+    contact_id: contactId || null,
     lead_id: leadId || null,
     direction: "outbound",
+    channel: "sms",               // 🟢 many UIs filter on channel
     body: text,
     provider: "telnyx",
     provider_message_id: providerId,
     client_ref: clientRef,
     template_key,
-  });
+    // Optional columns if your schema has them:
+    // from_number: FROM_NUMBER,
+    // to_number: to,
+  };
+
+  await supabase.from("messages").insert(insertRow);
 
   return { sent: true, provider_message_id: providerId, client_ref: clientRef };
 }
