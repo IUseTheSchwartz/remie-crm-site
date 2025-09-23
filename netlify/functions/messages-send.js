@@ -4,9 +4,8 @@
 
 const { getServiceClient } = require("./_supabase");
 
-// ---- Config / helpers ----
 const TELNYX_API_KEY = process.env.TELNYX_API_KEY;
-const DEFAULT_FROM_NUMBER = process.env.DEFAULT_FROM_NUMBER || process.env.TELNYX_FROM || null; // E.164
+const DEFAULT_FROM_NUMBER = process.env.DEFAULT_FROM_NUMBER || process.env.TELNYX_FROM || null; // E.164 or blank
 const MESSAGING_PROFILE_ID = process.env.TELNYX_MESSAGING_PROFILE_ID || null;
 
 function json(obj, statusCode = 200) {
@@ -33,7 +32,7 @@ function renderTemplate(tpl, ctx) {
   }).trim();
 }
 
-async function getUserFromLead(db, lead_id) {
+async function getLead(db, lead_id) {
   const { data, error } = await db
     .from("leads")
     .select("id, user_id, name, phone, email, state, beneficiary, beneficiary_name, military_branch")
@@ -85,10 +84,37 @@ async function getTemplatesRow(db, user_id) {
 }
 
 async function pickFromNumber(db, user_id) {
-  // Prefer agent_profiles.phone → must be E.164
+  // 1) agent profile
   const ap = await getAgentProfile(db, user_id);
-  if (ap?.phone) return toE164(ap.phone) || DEFAULT_FROM_NUMBER;
-  return DEFAULT_FROM_NUMBER;
+  if (ap?.phone) {
+    const e = toE164(ap.phone);
+    if (e) return e;
+  }
+
+  // 2) last used from_number in messages
+  try {
+    const { data } = await db
+      .from("messages")
+      .select("from_number")
+      .eq("user_id", user_id)
+      .not("from_number", "is", null)
+      .order("created_at", { ascending: false })
+      .limit(1);
+    const last = data && data[0]?.from_number;
+    if (last) {
+      const e = toE164(last);
+      if (e) return e;
+    }
+  } catch {}
+
+  // 3) env default
+  if (DEFAULT_FROM_NUMBER) {
+    const e = toE164(DEFAULT_FROM_NUMBER);
+    if (e) return e;
+  }
+
+  // 4) fallback: let Telnyx pick from profile by omitting "from"
+  return null;
 }
 
 // ---- Telnyx send ----
@@ -98,7 +124,7 @@ async function telnyxSend({ from, to, text, profileId }) {
     to,
     text,
     ...(profileId ? { messaging_profile_id: profileId } : {}),
-    ...(from ? { from } : {}), // if your account requires a specific from, keep this
+    ...(from ? { from } : {}), // omit if null to let profile route
   };
   const res = await fetch("https://api.telnyx.com/v2/messages", {
     method: "POST",
@@ -116,6 +142,13 @@ async function telnyxSend({ from, to, text, profileId }) {
     throw err;
   }
   return out; // contains data.id, etc.
+}
+
+// choose a reasonable fallback template key if the requested one is missing
+function chooseFallbackKey(reqKey, { isMilitary }) {
+  const wanted = S(reqKey).trim();
+  if (wanted) return wanted; // still try requested first
+  return isMilitary ? "new_lead_military" : "new_lead";
 }
 
 exports.handler = async (event) => {
@@ -138,23 +171,21 @@ exports.handler = async (event) => {
     } = body || {};
 
     // -------- Resolve user_id, contact, destination phone --------
-    // Priority: lead_id → user_id + phone, else contact_id → user_id + phone, else requesterId + to
     let user_id = null;
     let contact = null;
     let lead = null;
 
     if (lead_id) {
-      lead = await getUserFromLead(db, lead_id);
-      if (!lead) return json({ error: "lead_not_found", lead_id }, 404);
+      lead = await getLead(db, lead_id);
+      if (!lead) return json({ error: "lead_not_found", lead_id, trace }, 404);
       user_id = lead.user_id;
-      // If 'to' not given, use lead.phone
       to = to || lead.phone;
+      trace.push({ step: "lead.loaded", lead_id, user_id });
     }
 
     if (!user_id && requesterId) user_id = requesterId;
 
     if (contact_id) {
-      // if user_id not known yet, we need it to read the contact
       if (!user_id) {
         const { data: cRow, error } = await db
           .from("message_contacts")
@@ -165,32 +196,22 @@ exports.handler = async (event) => {
         user_id = cRow?.user_id || user_id;
       }
       contact = await getContact(db, user_id, contact_id);
-      if (!contact) return json({ error: "contact_not_found", contact_id }, 404);
+      if (!contact) return json({ error: "contact_not_found", contact_id, trace }, 404);
       to = to || contact.phone;
+      trace.push({ step: "contact.loaded", contact_id, user_id });
     }
 
     if (!user_id) {
-      return json({ error: "missing_user_context", hint: "provide lead_id, contact_id, or requesterId" }, 400);
+      return json({ error: "missing_user_context", hint: "provide lead_id, contact_id, or requesterId", trace }, 400);
     }
 
     const toE = toE164(to);
-    if (!toE) return json({ error: "invalid_destination", to }, 400);
+    if (!toE) return json({ error: "invalid_destination", to, trace }, 400);
 
-    // If contact missing, try to find it by phone for this user (so message joins a contact thread)
-    if (!contact) contact = await findContactByPhone(db, user_id, toE);
-
-    // ---- Wallet gate (optional but recommended) ----
-    // If this is a fully automated send, your UI guard may not apply—so keep this server-side too.
-    try {
-      const { data: wal } = await db
-        .from("user_wallets")
-        .select("balance_cents")
-        .eq("user_id", user_id)
-        .maybeSingle();
-      if (wal && (wal.balance_cents || 0) <= 0 && !rawBody /* automated */) {
-        return json({ error: "insufficient_balance", trace }, 402);
-      }
-    } catch {}
+    if (!contact) {
+      contact = await findContactByPhone(db, user_id, toE);
+      if (contact) trace.push({ step: "contact.resolved_by_phone", contact_id: contact.id });
+    }
 
     // -------- DEDUPE: provider_message_id guard --------
     if (provider_message_id) {
@@ -211,37 +232,32 @@ exports.handler = async (event) => {
     let bodyText = String(rawBody || "").trim();
 
     if (!bodyText) {
-      // Load templates row
       const mt = await getTemplatesRow(db, user_id);
-      if (!mt) return json({ error: "template_not_configured" }, 400);
+      if (!mt) return json({ error: "template_not_configured", trace }, 400);
 
-      // enabled flag(s)
-      // supports either a boolean .enabled or shape .enabled[key]
+      // enabled flag(s) – permissive: if not explicitly false, we treat as enabled
       const enabledGlobal = typeof mt.enabled === "boolean" ? mt.enabled : true;
-      const enabledByKey   = typeof mt.enabled === "object" && mt.enabled !== null ? mt.enabled[templateKey] : undefined;
+      const enabledByKey   = (mt.enabled && typeof mt.enabled === "object") ? mt.enabled[templateKey] : undefined;
       const isEnabled = enabledGlobal && (enabledByKey !== false);
+      if (!isEnabled) return json({ status: "skipped_disabled", templateKey, trace });
 
-      if (!isEnabled) {
-        return json({ status: "skipped_disabled", templateKey, trace });
-      }
+      const tags = Array.isArray(contact?.tags) ? contact.tags.map(String) : [];
+      const isMilitary = S(lead?.military_branch) || tags.includes("military");
 
-      // pick template string (supports legacy columns or nested mt.templates)
+      const keyToUse = chooseFallbackKey(templateKey, { isMilitary: !!isMilitary });
       const T = (k) => (mt.templates?.[k] ?? mt[k] ?? "");
-      let tpl = "";
-      if (templateKey) {
-        tpl = String(T(templateKey) || "").trim();
-      }
-      if (!tpl) {
-        return json({ error: "template_not_found", templateKey }, 404);
-      }
+      let tpl = String(T(keyToUse) || "").trim();
 
-      // Build context
+      // extra fallback: if asked for military and it's missing, try new_lead; vice-versa
+      if (!tpl && keyToUse === "new_lead_military") tpl = String(T("new_lead") || "").trim();
+      if (!tpl && keyToUse === "new_lead") tpl = String(T("new_lead_military") || "").trim();
+
+      if (!tpl) return json({ error: "template_not_found", requested: templateKey, tried: keyToUse, trace }, 404);
+
       const ap = await getAgentProfile(db, user_id);
       const ctx = {
-        // lead/contact fields
         first_name: "", last_name: "", full_name: "",
         state: "", beneficiary: "", military_branch: "",
-        // agent fields
         agent_name: ap?.name || "",
         company: ap?.company || "",
         agent_phone: ap?.phone || "",
@@ -249,12 +265,7 @@ exports.handler = async (event) => {
         calendly_link: ap?.calendly_link || "",
       };
 
-      // Try to populate name & fields from lead or contact
-      const fullName =
-        (lead?.name) ||
-        (contact?.full_name) ||
-        "";
-
+      const fullName = (lead?.name) || (contact?.full_name) || "";
       if (fullName) {
         ctx.full_name = fullName;
         const parts = fullName.split(/\s+/).filter(Boolean);
@@ -263,28 +274,33 @@ exports.handler = async (event) => {
       }
       ctx.state = lead?.state || "";
       ctx.beneficiary = lead?.beneficiary || lead?.beneficiary_name || "";
-      ctx.military_branch = lead?.military_branch || (
-        (Array.isArray(contact?.tags) && contact.tags.includes("military")) ? "Military" : ""
-      );
+      ctx.military_branch = S(lead?.military_branch) || (tags.includes("military") ? "Military" : "");
 
       bodyText = renderTemplate(tpl, ctx);
-      if (!bodyText) return json({ error: "rendered_empty_body" }, 400);
+      if (!bodyText) return json({ error: "rendered_empty_body", trace }, 400);
+
+      trace.push({ step: "template.rendered", key: keyToUse, body_len: bodyText.length });
     }
 
-    // -------- Determine FROM number --------
-    const fromE164 = await pickFromNumber(db, user_id);
-    if (!fromE164) return json({ error: "no_from_number_configured" }, 400);
+    // -------- Determine FROM number (robust) --------
+    const fromE164 = await pickFromNumber(db, user_id); // may be null (we'll omit "from")
+    if (!fromE164 && !MESSAGING_PROFILE_ID && !DEFAULT_FROM_NUMBER) {
+      // Absolutely no way to route – fail fast with a clear error
+      return json({ error: "no_from_number_configured", trace }, 400);
+    }
 
     // -------- Send via Telnyx --------
+    if (!TELNYX_API_KEY) return json({ error: "missing_telnyx_api_key", trace }, 500);
+
     let telnyxResp;
     try {
       telnyxResp = await telnyxSend({
-        from: fromE164,
+        from: fromE164, // can be null
         to: toE,
         text: bodyText,
         profileId: MESSAGING_PROFILE_ID,
       });
-      trace.push({ step: "telnyx.sent", id: telnyxResp?.data?.id });
+      trace.push({ step: "telnyx.sent", id: telnyxResp?.data?.id, used_from: fromE164 || "(profile-routed)" });
     } catch (e) {
       trace.push({ step: "telnyx.error", detail: e?.message || String(e) });
       return json({ error: "send_failed", detail: e?.message || String(e), telnyx_response: e?.telnyx_response, trace }, 502);
@@ -298,19 +314,14 @@ exports.handler = async (event) => {
       contact_id: contact?.id || null,
       direction: "outgoing",
       provider: "telnyx",
-      from_number: fromE164,
+      from_number: fromE164 || null,
       to_number: toE,
       body: bodyText,
       status: "sent",
       provider_sid,
-      // DEDUPE KEY stored on the row:
       provider_message_id: provider_message_id || null,
-      price_cents: 0, // (optional) fill in if you rate/charge per message
-      // For traceability:
-      meta: {
-        templateKey: templateKey || null,
-        lead_id: lead?.id || (lead_id || null),
-      },
+      price_cents: 0,
+      meta: { templateKey: templateKey || null, lead_id: lead?.id || (lead_id || null) },
     };
 
     const ins = await db.from("messages").insert([row]).select("id, contact_id").maybeSingle();
@@ -323,7 +334,6 @@ exports.handler = async (event) => {
       return json({ error: "db_insert_failed", detail: ins.error.message, trace }, 500);
     }
 
-    // Success
     return json({
       ok: true,
       id: ins?.data?.id || null,
