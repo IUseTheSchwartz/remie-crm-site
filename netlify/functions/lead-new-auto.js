@@ -123,7 +123,7 @@ exports.handler = async (event) => {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         lead_id,
-        templateKey,
+        template_key: templateKey,     // ← ← FIXED: use snake_case key
         provider_message_id,
       }),
     });
