@@ -659,7 +659,7 @@ export default function LeadsPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Realtime inserts → ignore duplicates (id/email/phone) + SEND AUTO-TEXT
+  // Realtime inserts → ignore duplicates (id/email/phone) + send auto-text on INSERT
   useEffect(() => {
     let channel;
     (async () => {
@@ -673,7 +673,7 @@ export default function LeadsPage() {
           .on(
             "postgres_changes",
             { event: "INSERT", schema: "public", table: "leads", filter: `user_id=eq.${userId}` },
-            async (payload) => {
+            (payload) => {
               const row = preserveStage([...leads, ...clients], payload.new);
 
               const idDup = [...leads, ...clients].some(x => x.id === row.id);
@@ -689,13 +689,28 @@ export default function LeadsPage() {
               setClients(newClients);
               setServerMsg("✅ New lead arrived (deduped)");
 
-              // 🔔 NEW: fire auto-text for realtime-created lead (e.g., Sheets/webhook)
-              try {
-                await triggerAutoTextForLeadId({ leadId: row.id, userId, person: row });
-                setServerMsg("📨 New lead text queued");
-              } catch (err) {
-                console.error("Realtime auto-text error:", err);
-              }
+              // 🔽 keep Contacts in sync + trigger the auto-text for THIS new lead id
+              (async () => {
+                try {
+                  await upsertLeadContact({
+                    userId,
+                    phone: row.phone,
+                    fullName: row.name,
+                    militaryBranch: row.military_branch,
+                  });
+
+                  await triggerAutoTextForLeadId({
+                    leadId: row.id,
+                    userId,
+                    person: row,
+                  });
+
+                  setServerMsg("📨 New lead text queued");
+                } catch (e) {
+                  console.error("Realtime auto-text error:", e);
+                  setServerMsg(`⚠️ Auto-text error: ${e.message || e}`);
+                }
+              })();
             }
           )
           .subscribe();
@@ -1384,7 +1399,7 @@ function PolicyViewer({ person, onClose }) {
           <Field label="Phone"><div className="ro">{s.phone || person?.phone || "—"}</div></Field>
           <Field label="Email"><div className="ro break-all">{s.email || person?.email || "—"}</div></Field>
 
-        <Field label="Carrier"><div className="ro">{s.carrier || "—"}</div></Field>
+          <Field label="Carrier"><div className="ro">{s.carrier || "—"}</div></Field>
           <Field label="Face Amount"><div className="ro">{s.faceAmount || "—"}</div></Field>
           <Field label="AP (Annual premium)"><div className="ro">{s.premium || "—"}</div></Field>
           <Field label="Monthly Payment"><div className="ro">{s.monthlyPayment || "—"}</div></Field>
@@ -1667,7 +1682,7 @@ function ManualAddLeadModal({ onClose, onSave }) {
           <div className="mt-3 flex items-center justify-end gap-2">
             <button type="button" onClick={onClose}
               className="rounded-xl border border-white/15 px-4 py-2 text-sm hover:bg-white/10">
-              Cancel
+            Cancel
             </button>
             <button type="submit"
               className="rounded-xl bg-white px-4 py-2 text-sm font-medium text-black hover:bg-white/90">
