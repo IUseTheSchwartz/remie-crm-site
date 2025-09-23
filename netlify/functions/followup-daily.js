@@ -1,27 +1,30 @@
 // File: netlify/functions/followup-daily.js
-// Calendar-day based follow-ups: next day at send hour (local), then daily.
-// If loop_enabled=true and there's no template for a day, reuse the last non-empty template daily.
-// Stops on inbound reply (since contact.created_at).
+// Lead Rescue (calendar-day based): Day 2 = next day at user-configured hour, then daily.
+// - Uses Day 2+ bodies from lead_rescue_templates
+// - loop_enabled: reuse last non-empty body after the last configured day
+// - Stops on inbound reply since contact.created_at
+// - Only one send per local calendar day
+// Test switches:
+//   ?force=1            -> run regardless of local hour
+//   ?user_id=<uuid>     -> process only that user
 
 const { createClient } = require("@supabase/supabase-js");
 
 const DEFAULT_TZ = "America/Chicago";
-const TEMPLATE_KEY_FALLBACK = "follow_up_2d"; // reuse your existing template key/category
 
 function admin() {
   const url = process.env.SUPABASE_URL;
   const key = process.env.SUPABASE_SERVICE_ROLE || process.env.SUPABASE_SERVICE_ROLE_KEY;
   if (!url || !key) throw new Error("Missing Supabase admin env");
-  return createClient(url, key);
+  return createClient(url, key, { auth: { persistSession: false } });
 }
 
-// --- time helpers ---
+// ---- time helpers (TZ-aware via Intl) ----
 function localParts(date, tz) {
   const fmt = new Intl.DateTimeFormat("en-US", {
     timeZone: tz,
     year: "numeric", month: "2-digit", day: "2-digit",
-    hour: "2-digit", minute: "2-digit", second: "2-digit",
-    hour12: false,
+    hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false,
   }).formatToParts(date);
   const m = Object.fromEntries(fmt.map(p => [p.type, p.value]));
   return { y:+m.year, m:+m.month, d:+m.day, hh:+m.hour, mm:+m.minute, ss:+m.second };
@@ -34,26 +37,28 @@ function isRightHour(date, tz, targetHour) {
   const { hh } = localParts(date, tz);
   return hh === Number(targetHour);
 }
-function daysSince(startDate, now, tz) {
-  // Difference in calendar days in the target TZ
-  const sKey = localDateKey(new Date(startDate), tz);
-  const nKey = localDateKey(now, tz);
-  const s = new Date(sKey + "T00:00:00");
-  const n = new Date(nKey + "T00:00:00");
+function daysSince(start, now, tz) {
+  const startKey = localDateKey(new Date(start), tz);
+  const nowKey   = localDateKey(now, tz);
+  const s = new Date(`${startKey}T00:00:00`);
+  const n = new Date(`${nowKey}T00:00:00`);
   return Math.round((n - s) / 86400000);
 }
 function sameLocalDay(a, b, tz) {
   return localDateKey(a, tz) === localDateKey(b, tz);
 }
 
-// --- sending ---
-async function sendTemplate(contactId, templateKey, meta = {}) {
-  const res = await fetch(process.env.URL + "/.netlify/functions/messages-send", {
+// ---- send raw body through messages-send ----
+async function sendBody(contactId, body, meta = {}) {
+  const base = process.env.SITE_URL || process.env.URL;
+  if (!base) throw new Error("Missing SITE_URL/URL");
+  const res = await fetch(base + "/.netlify/functions/messages-send", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
+    // IMPORTANT: send actual body so lead_rescue_templates is used
     body: JSON.stringify({
       contact_id: contactId,
-      template_key: templateKey,
+      body,
       trace_meta: { reason: "lead_rescue_due", ...meta },
     }),
   });
@@ -63,19 +68,26 @@ async function sendTemplate(contactId, templateKey, meta = {}) {
   }
 }
 
-exports.handler = async () => {
+exports.handler = async (event) => {
   const db = admin();
   const now = new Date();
+  const qs = (event && event.queryStringParameters) || {};
+  const force = String(qs.force || "") === "1";
+  const onlyUser = qs.user_id || null;
 
-  // 1) Get enabled users + their settings
-  const { data: settings, error: sErr } = await db
+  // 1) Enabled users + settings
+  let sQuery = db
     .from("lead_rescue_settings")
     .select("user_id, enabled, send_tz, send_hour_local, loop_enabled")
     .eq("enabled", true);
+  if (onlyUser) sQuery = sQuery.eq("user_id", onlyUser);
 
-  if (sErr) throw sErr;
-  if (!settings || !settings.length) {
-    return { statusCode: 200, body: JSON.stringify({ ok: true, users: 0, sent: 0 }) };
+  const { data: settings, error: sErr } = await sQuery;
+  if (sErr) {
+    return { statusCode: 500, body: JSON.stringify({ ok: false, error: sErr.message }) };
+  }
+  if (!settings?.length) {
+    return { statusCode: 200, body: JSON.stringify({ ok: true, users: 0, totalSent: 0, results: [] }) };
   }
 
   let totalSent = 0;
@@ -86,124 +98,130 @@ exports.handler = async () => {
     const hour = Number.isFinite(s.send_hour_local) ? s.send_hour_local : 9;
     const loopEnabled = !!s.loop_enabled;
 
-    // Gate by each user's hour in their timezone
-    if (!isRightHour(now, tz, hour)) {
+    // Gate by user's local hour (unless force)
+    if (!force && !isRightHour(now, tz, hour)) {
       results.push({ user: s.user_id, skipped: "outside_user_hour" });
       continue;
     }
 
-    // 2) Load trackers for this user that are active and not responded
+    // 2) Trackers: active, not responded
     const { data: trs, error: tErr } = await db
       .from("lead_rescue_trackers")
-      .select("contact_id, current_day, last_attempt_at, responded, paused, started_at")
+      .select("contact_id, current_day, last_attempt_at, responded, paused, started_at, updated_at")
       .eq("user_id", s.user_id)
       .eq("responded", false);
 
-    if (tErr) throw tErr;
+    if (tErr) {
+      results.push({ user: s.user_id, error: "trackers_load_failed", detail: tErr.message });
+      continue;
+    }
 
     const active = (trs || []).filter(r => !r.paused);
-    if (active.length === 0) {
+    if (!active.length) {
       results.push({ user: s.user_id, sent: 0, considered: 0 });
       continue;
     }
 
-    // 3) Load contacts for those trackers
+    // 3) Contacts for these trackers
     const ids = active.map(a => a.contact_id);
     const { data: contacts, error: cErr } = await db
       .from("message_contacts")
       .select("id, user_id, tags, created_at")
       .in("id", ids);
 
-    if (cErr) throw cErr;
-
+    if (cErr) {
+      results.push({ user: s.user_id, error: "contacts_load_failed", detail: cErr.message });
+      continue;
+    }
     const contactById = new Map((contacts || []).map(c => [c.id, c]));
 
-    // 4) Load messages for those contacts to compute inbound-since-lead & last attempt day guard
+    // 4) Messages history (to stop on inbound since contact.created_at)
     const { data: msgs, error: mErr } = await db
       .from("messages")
       .select("contact_id, created_at, direction")
       .in("contact_id", ids);
 
-    if (mErr) throw mErr;
-
+    if (mErr) {
+      results.push({ user: s.user_id, error: "messages_load_failed", detail: mErr.message });
+      continue;
+    }
     const msgsByContact = new Map();
     for (const m of msgs || []) {
       if (!msgsByContact.has(m.contact_id)) msgsByContact.set(m.contact_id, []);
       msgsByContact.get(m.contact_id).push(m);
     }
 
-    // 5) Load templates Day 2+ for this user (map day_number => body)
+    // 5) Templates Day 2+ for this user (map day_number -> body)
     const { data: tpls, error: tplErr } = await db
       .from("lead_rescue_templates")
       .select("day_number, body")
       .eq("user_id", s.user_id)
       .order("day_number", { ascending: true });
 
-    if (tplErr) throw tplErr;
+    if (tplErr) {
+      results.push({ user: s.user_id, error: "templates_load_failed", detail: tplErr.message });
+      continue;
+    }
 
     const templateMap = new Map();
     for (const t of tpls || []) {
-      if (t.day_number >= 2 && (t.body || "").trim().length > 0) {
-        templateMap.set(t.day_number, t.body.trim());
+      if ((t.day_number || 0) >= 2) {
+        const b = (t.body || "").trim();
+        if (b) templateMap.set(t.day_number, b);
       }
     }
-    // Track last non-empty template day
     const nonEmptyDays = [...templateMap.keys()].sort((a,b)=>a-b);
     const lastNonEmptyDay = nonEmptyDays.length ? nonEmptyDays[nonEmptyDays.length - 1] : null;
+    const lastNonEmptyBody = lastNonEmptyDay ? templateMap.get(lastNonEmptyDay) : null;
 
     let sentForUser = 0;
 
-    // 6) Evaluate who should get a message today
+    // 6) Who should get a message today?
     for (const tr of active) {
       const c = contactById.get(tr.contact_id);
       if (!c) continue;
 
-      // Must be lead or military
-      const tags = Array.isArray(c.tags) ? c.tags : [];
+      // Must still be lead/military
+      const tags = Array.isArray(c.tags) ? c.tags.map(t=>String(t).toLowerCase()) : [];
       if (!tags.includes("lead") && !tags.includes("military")) continue;
 
-      // If inbound since contact.created_at -> stop
+      // Stop if inbound since lead created
       const history = msgsByContact.get(tr.contact_id) || [];
-      const inboundAfterLead = history.some(m => m.direction === "inbound" && new Date(m.created_at) >= new Date(c.created_at));
+      const inboundAfterLead = history.some(
+        m => m.direction === "inbound" && new Date(m.created_at) >= new Date(c.created_at)
+      );
       if (inboundAfterLead) continue;
 
-      // Only once per local day
-      if (tr.last_attempt_at && sameLocalDay(new Date(tr.last_attempt_at), now, tz)) {
+      // Once per local calendar day
+      if (tr.last_attempt_at && sameLocalDay(new Date(tr.last_attempt_at), now, tz)) continue;
+
+      // Day 1 = lead day (non-rescue). Rescue starts at Day 2 (next calendar day).
+      const startAnchor = tr.started_at || c.created_at; // prefer tracker.start
+      const dayNumber = 1 + daysSince(startAnchor, now, tz);
+      if (dayNumber < 2) continue;
+
+      // Only send if advancing beyond what we've already sent
+      const current = tr.current_day || 1;
+      if (dayNumber <= current) continue;
+
+      // Pick body for this day
+      let body = null;
+      if (templateMap.has(dayNumber)) {
+        body = templateMap.get(dayNumber);
+      } else if (lastNonEmptyBody && !!s.loop_enabled && dayNumber > lastNonEmptyDay) {
+        body = lastNonEmptyBody; // loop reuse
+      } else {
+        // No template and no loop → skip without advancing
         continue;
       }
 
-      // Which "day number" is today?
-      // Day 1 is the day they entered (your initial). First follow-up goes on Day 2 (next calendar day).
-      const dayNumber = 1 + daysSince(c.created_at, now, tz);
-
-      if (dayNumber < 2) continue; // before first follow-up day in local calendar
-
-      // Pick template:
-      let templateKey = TEMPLATE_KEY_FALLBACK; // we still route through messages-send by key
-      let shouldSend = false;
-
-      if (templateMap.has(dayNumber)) {
-        // Specific template exists
-        shouldSend = true;
-      } else if (loopEnabled && lastNonEmptyDay) {
-        // After the last configured day: reuse last non-empty template daily
-        if (dayNumber > lastNonEmptyDay) shouldSend = true;
-      } else {
-        // No template for this day and no loop -> skip
-        shouldSend = false;
-      }
-
-      if (!shouldSend) continue;
-
-      // 7) Send
+      // Send & advance to the *actual* day
       try {
-        await sendTemplate(tr.contact_id, templateKey, { day_number: dayNumber });
-
-        // 8) Update tracker: bump to next day and set last_attempt_at
+        await sendBody(tr.contact_id, body, { day_number: dayNumber });
         const { error: upErr } = await db
           .from("lead_rescue_trackers")
           .update({
-            current_day: Math.max(tr.current_day || 1, dayNumber) + 1,
+            current_day: dayNumber,
             last_attempt_at: new Date().toISOString(),
             updated_at: new Date().toISOString(),
           })
@@ -213,7 +231,7 @@ exports.handler = async () => {
 
         sentForUser += 1;
       } catch (e) {
-        // Optional: record error reason on tracker
+        // Record reason; do not advance day
         await db
           .from("lead_rescue_trackers")
           .update({ stop_reason: String(e), updated_at: new Date().toISOString() })
