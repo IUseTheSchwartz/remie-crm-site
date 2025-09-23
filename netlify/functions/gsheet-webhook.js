@@ -145,8 +145,10 @@ function renderTemplate(tpl, ctx) {
 }
 
 /**
- * Gate by wallet by inserting first (AFTER INSERT trigger debits).
- * If insert fails, do NOT send. If send succeeds, update to 'sent'.
+ * Gate by wallet two ways:
+ * 1) **Pre-check** wallet balance in code (cheap + avoids negative).
+ * 2) **Insert first** so your AFTER INSERT debit trigger runs (for funded users).
+ *    If insert fails, we do NOT send. If send succeeds, we mark 'sent'.
  */
 async function trySendNewLeadText({ userId, leadId, contactId, lead }) {
   // 1) Phone
@@ -181,6 +183,21 @@ async function trySendNewLeadText({ userId, leadId, contactId, lead }) {
     .single();
   if (aerr) return { sent: false, reason: "agent_profile_missing", detail: aerr.message };
 
+  // 3.5) 💳 Pre-check wallet (soft guard; prevents negative)
+  const COST_CENTS = 1;
+  let balance = 0;
+  try {
+    const { data: w } = await supabase
+      .from("wallets")
+      .select("balance_cents")
+      .eq("user_id", userId)
+      .single();
+    balance = w?.balance_cents ?? 0;
+  } catch {}
+  if (balance < COST_CENTS) {
+    return { sent: false, reason: "insufficient_balance", balance_cents: balance };
+  }
+
   // Prefer the beneficiary *name*; expose legacy + explicit keys
   const beneficiary_name = S(lead.beneficiary_name) || S(lead.beneficiary);
   const vars = {
@@ -194,7 +211,7 @@ async function trySendNewLeadText({ userId, leadId, contactId, lead }) {
   };
   const text = renderTemplate(tpl, vars);
 
-  // PHASE 1: Insert first → lets AFTER INSERT debit trigger block if $0
+  // PHASE 1: Insert first → lets AFTER INSERT debit trigger handle accounting
   const preRow = {
     user_id: userId,
     contact_id: contactId || null,
@@ -206,7 +223,7 @@ async function trySendNewLeadText({ userId, leadId, contactId, lead }) {
     body: text,
     status: "queued",     // will flip to 'sent' after Telnyx ok
     segments: 1,
-    price_cents: 1,       // 1¢ per text as requested
+    price_cents: COST_CENTS, // 1¢
     channel: "sms",
   };
 
@@ -217,7 +234,7 @@ async function trySendNewLeadText({ userId, leadId, contactId, lead }) {
     .single();
 
   if (preErr) {
-    // Likely insufficient funds (trigger raised) or constraint failure
+    // Likely insufficient funds (trigger aborted insert) or constraint failure
     return { sent: false, reason: "preinsert_failed", detail: preErr.message };
   }
   const messageId = inserted.id;
@@ -373,7 +390,7 @@ exports.handler = async (event) => {
           console.error("contact tag/meta sync (dedup) failed:", err);
         }
 
-        // Gate by wallet → insert first, then send
+        // Wallet-gated send
         try {
           await trySendNewLeadText({
             userId: wh.user_id,
@@ -426,7 +443,7 @@ exports.handler = async (event) => {
       console.error("contact tag/meta sync failed:", err);
     }
 
-    // Send welcome/new-lead (wallet-gated)
+    // Wallet-gated send
     try {
       await trySendNewLeadText({
         userId: wh.user_id,
