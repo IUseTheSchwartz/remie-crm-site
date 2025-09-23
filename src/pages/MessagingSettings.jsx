@@ -7,14 +7,17 @@ import { CreditCard, Check, Loader2, MessageSquare, Info, RotateCcw, Lock, X } f
 const TEMPLATE_DEFS = [
   { key: "new_lead", label: "New Lead (instant)" },
   { key: "new_lead_military", label: "New Lead (military)" },
-  { key: "appointment", label: "Appointment Reminder" }, // 🔒 locked (coming soon)
+  { key: "appointment", label: "Appointment Reminder" },
   { key: "sold", label: "Sold - Policy Info" },
   { key: "payment_reminder", label: "Payment Reminder" },
-  { key: "birthday_text", label: "Birthday Text" },
-  { key: "holiday_text", label: "Holiday Text" },
+  { key: "birthday_text", label: "Birthday Text (coming soon)" },
+  { key: "holiday_text", label: "Holiday Text (coming soon)" },
 ];
 
 const APPOINTMENT_KEY = "appointment";
+
+// Templates that are UI-only for now
+const LOCKED_KEYS = new Set(["birthday_text", "holiday_text"]);
 
 /* Default enabled map: ALL OFF by default */
 const DEFAULT_ENABLED = Object.fromEntries(TEMPLATE_DEFS.map((t) => [t.key, false]));
@@ -245,7 +248,8 @@ export default function MessagingSettings() {
         initialEnabled = { ...DEFAULT_ENABLED, ...maybeEnabledFromTemplates };
       }
 
-      initialEnabled[APPOINTMENT_KEY] = false;
+      // Force UI-locked templates off
+      for (const k of LOCKED_KEYS) initialEnabled[k] = false;
       setEnabledMap(initialEnabled);
 
       if (!maybeEnabledFromCol && !maybeEnabledFromTemplates) {
@@ -349,7 +353,8 @@ export default function MessagingSettings() {
   async function persistEnabled(nextMap) {
     if (!userId) return;
     setEnabledSaveState("saving");
-    const fixed = { ...nextMap, [APPOINTMENT_KEY]: false };
+    const fixed = { ...nextMap };
+    for (const k of LOCKED_KEYS) fixed[k] = false;
     setEnabledMap(fixed);
     try {
       const { error } = await supabase.from("message_templates").upsert({ user_id: userId, enabled: fixed });
@@ -374,7 +379,7 @@ export default function MessagingSettings() {
   }
 
   function setEnabled(key, val) {
-    if (key === APPOINTMENT_KEY) {
+    if (LOCKED_KEYS.has(key)) {
       const next = { ...enabledMap, [key]: false };
       setEnabledMap(next);
       setEnabledSaveState("saving");
@@ -538,7 +543,7 @@ export default function MessagingSettings() {
           <div className="min-w-0">
             <h3 className="text-sm font-semibold">Message Templates</h3>
             <p className="text-xs text-white/60 truncate">
-              Customize what’s sent for each event. Variables like <code className="px-1 rounded bg-white/10">{'{{first_name}}'}</code> are replaced automatically.
+              Customize what’s sent for each event. Variables like <code className="px-1 rounded bg-white/10">{{"{first_name}"}}</code> are replaced automatically.
             </p>
           </div>
 
@@ -598,7 +603,7 @@ export default function MessagingSettings() {
           {TEMPLATE_DEFS.map(({ key, label }) => {
             const isDirty = (templates[key] ?? "") !== (DEFAULTS[key] ?? "");
             const enabled = !!enabledMap[key];
-            const isAppointment = key === APPOINTMENT_KEY;
+            const isLocked = LOCKED_KEYS.has(key);
 
             return (
               <div key={key} className="rounded-xl border border-white/10 bg-white/[0.02] p-3">
@@ -609,7 +614,7 @@ export default function MessagingSettings() {
                     <Toggle
                       checked={enabled}
                       onChange={(v) => setEnabled(key, v)}
-                      disabled={isAppointment}
+                      disabled={isLocked}
                       label={enabled ? "Disable this template" : "Enable this template"}
                     />
                   </div>
@@ -637,10 +642,10 @@ export default function MessagingSettings() {
                   </button>
                 </div>
 
-                {isAppointment && (
+                {isLocked && (
                   <div className="mb-2 inline-flex items-center gap-2 rounded-lg border border-amber-400/30 bg-amber-400/10 px-2 py-1 text-[11px] text-amber-200">
                     <Lock className="h-3.5 w-3.5" />
-                    Appointment reminders are <b className="ml-1">coming soon</b>. This toggle is locked for now.
+                    This template is <b className="ml-1">coming soon</b>. It's disabled until scheduling is ready.
                   </div>
                 )}
 
@@ -656,7 +661,7 @@ export default function MessagingSettings() {
                   placeholder={DEFAULTS[key]}
                 />
 
-                {!enabled && !isAppointment && (
+                {!enabled && !isLocked && (
                   <div className="mt-2 text-[11px] text-amber-300/90">
                     Disabled — this template will not send until you enable it.
                   </div>
