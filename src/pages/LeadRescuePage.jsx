@@ -41,6 +41,17 @@ function fillTemplate(text, data) {
   );
 }
 
+// Status renderer: Day 1 is not part of Rescue -> show "Waiting for Day 2 @ ..." until first Rescue send
+function renderRescueStatus(currentDay, sendHourLocal, tz) {
+  const cd = Number(currentDay || 1);
+  if (cd <= 1) {
+    const hh = String(Number(sendHourLocal ?? 9)).padStart(2, "0");
+    return `Waiting for Day 2 @ ${hh}:00 ${tz || TZ_DEFAULT}`;
+    // After the next calendar day hits that hour (in tz), Day 2 will send and current_day will become 2.
+  }
+  return `Day ${cd}`;
+}
+
 // ---- Page ----
 export default function LeadRescuePage() {
   const [loading, setLoading] = useState(true);
@@ -50,7 +61,7 @@ export default function LeadRescuePage() {
   const [enabled, setEnabled] = useState(false);
   const [sendTz, setSendTz] = useState(TZ_DEFAULT);
   const [sendHourLocal, setSendHourLocal] = useState(9);
-  const [loopEnabled, setLoopEnabled] = useState(true); // NEW
+  const [loopEnabled, setLoopEnabled] = useState(true);
   const [savingSettings, setSavingSettings] = useState("idle");
 
   // Templates (Day 2+)
@@ -89,7 +100,7 @@ export default function LeadRescuePage() {
         setEnabled(!!s.enabled);
         setSendTz(s.send_tz || TZ_DEFAULT);
         setSendHourLocal(Number.isFinite(s.send_hour_local) ? s.send_hour_local : 9);
-        setLoopEnabled(s.loop_enabled !== undefined ? !!s.loop_enabled : true); // NEW
+        setLoopEnabled(s.loop_enabled !== undefined ? !!s.loop_enabled : true);
       } else {
         // create default row once
         try {
@@ -98,7 +109,7 @@ export default function LeadRescuePage() {
             enabled: false,
             send_tz: TZ_DEFAULT,
             send_hour_local: 9,
-            loop_enabled: true, // NEW
+            loop_enabled: true,
           });
         } catch {}
       }
@@ -164,7 +175,7 @@ export default function LeadRescuePage() {
         enabled: !!enabled,
         send_tz: sendTz || TZ_DEFAULT,
         send_hour_local: Number(sendHourLocal) || 9,
-        loop_enabled: !!loopEnabled, // NEW
+        loop_enabled: !!loopEnabled,
       };
       const { error } = await supabase
         .from("lead_rescue_settings")
@@ -365,7 +376,7 @@ export default function LeadRescuePage() {
             </button>
           </label>
 
-          {/* Loop (NEW) */}
+          {/* Loop */}
           <label className="text-sm">
             <div className="mb-1 text-white/70">Loop (daily after last day)</div>
             <button
@@ -517,7 +528,7 @@ export default function LeadRescuePage() {
               <tr>
                 <Th>Name</Th>
                 <Th>Phone</Th>
-                <Th>Day</Th>
+                <Th>Status</Th>
                 <Th>Responded</Th>
                 <Th>Paused</Th>
                 <Th>Last Attempt</Th>
@@ -546,7 +557,7 @@ export default function LeadRescuePage() {
                     <tr key={`${r.contact_id}`} className="border-t border-white/10">
                       <Td>{name}</Td>
                       <Td>{phone}</Td>
-                      <Td>Day {r.current_day}</Td>
+                      <Td>{renderRescueStatus(r.current_day, sendHourLocal, sendTz)}</Td>
                       <Td>{r.responded ? "Yes" : "No"}</Td>
                       <Td>{r.paused ? "Yes" : "No"}</Td>
                       <Td>{last}</Td>
