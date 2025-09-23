@@ -414,7 +414,7 @@ function LandingPage() {
                 rel="noreferrer"
                 className="mt-1 inline-flex items-center gap-1 font-medium hover:underline"
               >
-                @jacob_prietoo <ExternalLink className="h-3.5 w-3.5" />
+                @jprietocloses <ExternalLink className="h-3.5 w-3.5" />
               </a>
             </div>
           </div>
