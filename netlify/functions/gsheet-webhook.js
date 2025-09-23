@@ -208,7 +208,7 @@ async function trySendNewLeadText({ userId, leadId, contactId, lead }) {
 
   const providerId = json?.data?.id || null;
 
-  // 5) Log (schema-aligned; never block the send)
+  // 5) Log (schema-aligned; mark SENT; price 1¢)
   try {
     const insertRow = {
       user_id: userId,                  // uuid, required
@@ -221,12 +221,14 @@ async function trySendNewLeadText({ userId, leadId, contactId, lead }) {
       to_number: to,                    // required
       body: text,                       // required
 
-      status: "queued",                 // ok (your default too)
-      provider_sid: providerId || null, // you have a unique idx on (provider, provider_sid)
+      status: "sent",                   // force SENT
+      segments: 1,                      // sane default
+      price_cents: 1,                   // 👈 1¢ per text
+      provider_sid: providerId || null, // unique idx on (provider, provider_sid)
       provider_message_id: providerId || null,
 
       channel: "sms"                    // useful for UI filter
-      // NOTE: do not insert client_ref; your table has no such column
+      // NOTE: no client_ref column
     };
 
     await supabase.from("messages").insert(insertRow);
