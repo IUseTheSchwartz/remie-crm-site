@@ -307,6 +307,39 @@ export default function MessagesPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeNumber]);
 
+  // Auto-scroll on new messages (incoming/outgoing)
+  useEffect(() => {
+    if (!scrollerRef.current) return;
+    scrollerRef.current.scrollTop = scrollerRef.current.scrollHeight;
+  }, [conversation.length]);
+
+  // Keyboard-aware padding for iOS (safe, no effect on desktop)
+  useEffect(() => {
+    const el = document.getElementById("chat-scroll");
+    const vv = window.visualViewport;
+    if (!el || !vv) return;
+
+    let raf = 0;
+    const onResize = () => {
+      cancelAnimationFrame(raf);
+      raf = requestAnimationFrame(() => {
+        const overlap = Math.max(0, window.innerHeight - vv.height - vv.offsetTop);
+        el.style.paddingBottom = `${overlap + 80}px`; // ~composer height buffer
+        el.scrollTop = el.scrollHeight;
+      });
+    };
+
+    vv.addEventListener("resize", onResize);
+    vv.addEventListener("scroll", onResize);
+    onResize();
+
+    return () => {
+      cancelAnimationFrame(raf);
+      vv.removeEventListener("resize", onResize);
+      vv.removeEventListener("scroll", onResize);
+    };
+  }, []);
+
   /* ---------- Send ---------- */
 
   async function handleSend() {
@@ -363,59 +396,6 @@ export default function MessagesPage() {
     }
   }
 
-  /* ---------- PayPal Top-up ---------- */
-
-  async function openPayPal(amountCents) {
-    if (!user?.id) return alert("Please sign in first.");
-    try {
-      setPaypalAmountCents(amountCents);
-      setPaypalOpen(true);
-      setPaypalLoading(true);
-
-      await loadPayPalSdk();
-
-      // Clear previous render if reopening
-      if (paypalContainerRef.current) {
-        paypalContainerRef.current.innerHTML = "";
-      }
-
-      window.paypal
-        .Buttons({
-          style: { layout: "vertical", shape: "rect", label: "paypal" },
-          createOrder: async () => {
-            const res = await fetch("/.netlify/functions/paypal-create-order", {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ amount_cents: amountCents, user_id: user.id }),
-            });
-            const data = await res.json();
-            if (!data?.id) throw new Error("Failed to create PayPal order");
-            return data.id;
-          },
-          onApprove: async () => {
-            // Capture handled by PayPal; webhook credits wallet.
-            setPaypalOpen(false);
-            // Soft refresh wallet after a brief delay in case webhook already landed
-            setTimeout(fetchWallet, 2500);
-            alert("Payment approved. Your wallet will update shortly.");
-          },
-          onCancel: () => setPaypalOpen(false),
-          onError: (err) => {
-            console.error(err);
-            setPaypalOpen(false);
-            alert("PayPal error. Please try again.");
-          },
-        })
-        .render(paypalContainerRef.current);
-    } catch (e) {
-      console.error(e);
-      setPaypalOpen(false);
-      alert(e.message || "Could not start PayPal checkout.");
-    } finally {
-      setPaypalLoading(false);
-    }
-  }
-
   /* ---------- UI ---------- */
 
   if (loading) {
@@ -429,7 +409,7 @@ export default function MessagesPage() {
   }
 
   return (
-    <div className="grid h-[calc(100vh-140px)] grid-cols-1 gap-4 md:grid-cols-[320px_1fr]">
+    <div className="grid h-[100dvh] grid-cols-1 gap-4 md:grid-cols-[320px_1fr]">
       {/* Left: threads */}
       <aside className="flex flex-col rounded-2xl border border-white/10 bg-white/[0.03]">
         {/* Wallet */}
@@ -574,7 +554,11 @@ export default function MessagesPage() {
         </div>
 
         {/* Messages */}
-        <div ref={scrollerRef} className="scrollbar-thin flex-1 overflow-y-auto p-4">
+        <div
+          ref={scrollerRef}
+          id="chat-scroll"
+          className="scrollbar-thin flex-1 overflow-y-auto px-3 py-2 space-y-2"
+        >
           {activeNumber ? (
             conversation.length === 0 ? (
               <div className="grid h-full place-items-center text-sm text-white/50">
@@ -593,7 +577,7 @@ export default function MessagesPage() {
                   >
                     <div
                       className={classNames(
-                        "max-w-[75%] rounded-2xl px-3 py-2 text-sm ring-1",
+                        "max-w-[82%] rounded-2xl px-3 py-2 text-sm leading-snug ring-1 break-words [overflow-wrap:anywhere]",
                         isOut
                           ? "bg-gradient-to-r from-indigo-500/30 via-purple-500/30 to-fuchsia-500/30 ring-indigo-400/30"
                           : "bg-white/5 ring-white/10"
@@ -619,15 +603,15 @@ export default function MessagesPage() {
         </div>
 
         {/* Composer */}
-        <div className="border-t border-white/10 p-3">
+        <div className="border-t border-white/10 px-3 pt-3 pb-[calc(env(safe-area-inset-bottom)+10px)]">
           <div className="flex items-end gap-2">
             <textarea
               value={text}
               onChange={(e) => setText(e.target.value)}
               placeholder={activeNumber ? "Type a message…" : "Pick a conversation first"}
               disabled={!activeNumber || sending}
-              rows={2}
-              className="min-h-[44px] w-full resize-y rounded-xl border border-white/15 bg-white/5 p-2 text-sm placeholder:text-white/40 focus:outline-none focus:ring-1 focus:ring-indigo-400/50"
+              rows={1}
+              className="min-h-[44px] w-full resize-none rounded-xl border border-white/15 bg-white/5 px-3 py-2 text-base leading-tight placeholder:text-white/40 focus:outline-none focus:ring-1 focus:ring-indigo-400/50 max-h-40"
             />
             <button
               onClick={handleSend}
