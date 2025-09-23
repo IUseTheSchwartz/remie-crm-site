@@ -139,7 +139,7 @@ async function upsertContactByUserPhone(supabase, { user_id, phone, full_name, t
   }
 }
 
-// --- templates → send helper (DIRECT Telnyx; logs with user_id + contact_id) ---
+// --- templates → send helper (DIRECT Telnyx; logs with user_id + contact_id; schema-aligned) ---
 function renderTemplate(tpl, ctx) {
   return String(tpl || "").replace(/\{\{\s*([a-zA-Z0-9_]+)\s*\}\}/g, (_, k) => S(ctx[k]));
 }
@@ -167,7 +167,6 @@ async function trySendNewLeadText({ userId, leadId, contactId, lead }) {
   if (terr) return { sent: false, reason: "template_load_error", detail: terr.message };
 
   const template_key = "new_lead";
-
   const tpl = trow?.templates?.[template_key];
   if (!tpl) return { sent: false, reason: "template_not_found", template_key };
 
@@ -178,22 +177,17 @@ async function trySendNewLeadText({ userId, leadId, contactId, lead }) {
     .single();
   if (aerr) return { sent: false, reason: "agent_profile_missing", detail: aerr.message };
 
-  // 🔧 Beneficiary mapping (prefer the *name*):
+  // Prefer the beneficiary *name*; make both keys available to templates
   const beneficiary_name = S(lead.beneficiary_name) || S(lead.beneficiary);
-  const beneficiary_relation = S(lead.beneficiary_relation); // optional if you have it
-
-  // Expose both; and map {{beneficiary}} → name for legacy templates
   const vars = {
     first_name: S(lead.name).split(" ")[0] || "",
     agent_name: agent?.full_name || "",
     agent_phone: agent?.phone || "",
     calendly_link: agent?.calendly_url || "",
     state: S(lead.state),
-    beneficiary: beneficiary_name,          // ✅ legacy key now returns the NAME
-    beneficiary_name: beneficiary_name,     // ✅ explicit key for templates
-    beneficiary_relation: beneficiary_relation || "", // optional if you use it
+    beneficiary: beneficiary_name,      // legacy key → name
+    beneficiary_name: beneficiary_name, // explicit key too
   };
-
   const text = renderTemplate(tpl, vars);
 
   // 4) Send via Telnyx
@@ -214,29 +208,33 @@ async function trySendNewLeadText({ userId, leadId, contactId, lead }) {
 
   const providerId = json?.data?.id || null;
 
-  // 5) Log (with user_id/contact_id). Never block sending on logging.
+  // 5) Log (schema-aligned; never block the send)
   try {
     const insertRow = {
-      user_id: userId,              // RLS-visible
+      user_id: userId,                  // uuid, required
       contact_id: contactId || null,
       lead_id: leadId || null,
-      direction: "outbound",
-      channel: "sms",
-      body: text,
-      provider: "telnyx",
-      provider_message_id: providerId,
-      client_ref: clientRef,
-      template_key,
-      // If your schema has these, uncomment:
-      // from_number: FROM_NUMBER,
-      // to_number: to,
+
+      provider: "telnyx",               // required
+      direction: "outgoing",            // ✅ matches your check constraint
+      from_number: FROM_NUMBER,         // required
+      to_number: to,                    // required
+      body: text,                       // required
+
+      status: "queued",                 // ok (your default too)
+      provider_sid: providerId || null, // you have a unique idx on (provider, provider_sid)
+      provider_message_id: providerId || null,
+
+      channel: "sms"                    // useful for UI filter
+      // NOTE: do not insert client_ref; your table has no such column
     };
+
     await supabase.from("messages").insert(insertRow);
   } catch (e) {
     console.error("messages insert failed (non-fatal):", e?.message);
   }
 
-  return { sent: true, provider_message_id: providerId, client_ref: clientRef };
+  return { sent: true, provider_message_id: providerId };
 }
 
 // --- main handler ---
