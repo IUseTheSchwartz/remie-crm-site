@@ -21,7 +21,7 @@ export default function DashboardHome() {
   const { user } = useAuth();
 
   // --- Welcome video settings ---
-  const YT_VIDEO_ID = "https://youtu.be/h4hUVnDB_SU"; // replace with your YouTube ID
+  const YT_VIDEO_ID = "h4hUVnDB_SU"; // your actual video ID
 
   const [showVideo, setShowVideo] = useState(() => {
     try {
@@ -38,7 +38,7 @@ export default function DashboardHome() {
     setShowVideo(false);
   }
 
-  // snapshot + refresh logic (unchanged)
+  // snapshot + refresh logic
   const [snap, setSnap] = useState(dashboardSnapshot());
   const [loading, setLoading] = useState(false);
 
@@ -163,7 +163,7 @@ export default function DashboardHome() {
         </Card>
       </div>
 
-      {/* Getting Started Video (now at bottom) */}
+      {/* Getting Started Video (bottom) */}
       {showVideo && YT_VIDEO_ID && (
         <Card
           title="Getting Started"
@@ -183,9 +183,10 @@ export default function DashboardHome() {
           <div className="relative w-full overflow-hidden rounded-2xl border border-white/10 bg-black pt-[56.25%]">
             <iframe
               className="absolute inset-0 h-full w-full"
-              src={`https://www.youtube.com/embed/${YT_VIDEO_ID}?rel=0&modestbranding=1`}
+              src={`https://www.youtube-nocookie.com/embed/${YT_VIDEO_ID}?rel=0&modestbranding=1`}
               title="Getting Started with RemieCRM"
               frameBorder="0"
+              referrerPolicy="strict-origin-when-cross-origin"
               allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share"
               allowFullScreen
             />
