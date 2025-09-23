@@ -139,11 +139,15 @@ async function upsertContactByUserPhone(supabase, { user_id, phone, full_name, t
   }
 }
 
-// --- templates → send helper (DIRECT Telnyx; logs with user_id + contact_id; schema-aligned) ---
+// --- templates → send helper (wallet-gated; schema-aligned logging) ---
 function renderTemplate(tpl, ctx) {
   return String(tpl || "").replace(/\{\{\s*([a-zA-Z0-9_]+)\s*\}\}/g, (_, k) => S(ctx[k]));
 }
 
+/**
+ * Gate by wallet by inserting first (AFTER INSERT trigger debits).
+ * If insert fails, do NOT send. If send succeeds, update to 'sent'.
+ */
 async function trySendNewLeadText({ userId, leadId, contactId, lead }) {
   // 1) Phone
   if (!S(lead.phone)) return { sent: false, reason: "missing_phone" };
@@ -177,7 +181,7 @@ async function trySendNewLeadText({ userId, leadId, contactId, lead }) {
     .single();
   if (aerr) return { sent: false, reason: "agent_profile_missing", detail: aerr.message };
 
-  // Prefer the beneficiary *name*; make both keys available to templates
+  // Prefer the beneficiary *name*; expose legacy + explicit keys
   const beneficiary_name = S(lead.beneficiary_name) || S(lead.beneficiary);
   const vars = {
     first_name: S(lead.name).split(" ")[0] || "",
@@ -185,58 +189,79 @@ async function trySendNewLeadText({ userId, leadId, contactId, lead }) {
     agent_phone: agent?.phone || "",
     calendly_link: agent?.calendly_url || "",
     state: S(lead.state),
-    beneficiary: beneficiary_name,      // legacy key → name
-    beneficiary_name: beneficiary_name, // explicit key too
+    beneficiary: beneficiary_name,
+    beneficiary_name: beneficiary_name,
   };
   const text = renderTemplate(tpl, vars);
 
-  // 4) Send via Telnyx
-  const clientRef = `c=${contactId || "n/a"}|lead=${leadId || "n/a"}|tpl=${template_key}|ts=${Date.now()}`;
-  const resp = await fetch("https://api.telnyx.com/v2/messages", {
-    method: "POST",
-    headers: { Authorization: `Bearer ${TELNYX_API_KEY}`, "Content-Type": "application/json" },
-    body: JSON.stringify({
-      from: FROM_NUMBER,
-      to,
-      text,
-      messaging_profile_id: TELNYX_MESSAGING_PROFILE_ID,
-      client_ref: clientRef,
-    }),
-  });
-  const json = await resp.json().catch(() => ({}));
-  if (!resp.ok) return { sent: false, reason: "telnyx_error", telnyx: json };
+  // PHASE 1: Insert first → lets AFTER INSERT debit trigger block if $0
+  const preRow = {
+    user_id: userId,
+    contact_id: contactId || null,
+    lead_id: leadId || null,
+    provider: "telnyx",
+    direction: "outgoing",
+    from_number: FROM_NUMBER,
+    to_number: to,
+    body: text,
+    status: "queued",     // will flip to 'sent' after Telnyx ok
+    segments: 1,
+    price_cents: 1,       // 1¢ per text as requested
+    channel: "sms",
+  };
 
-  const providerId = json?.data?.id || null;
+  const { data: inserted, error: preErr } = await supabase
+    .from("messages")
+    .insert(preRow)
+    .select("id")
+    .single();
 
-  // 5) Log (schema-aligned; mark SENT; price 1¢)
-  try {
-    const insertRow = {
-      user_id: userId,                  // uuid, required
-      contact_id: contactId || null,
-      lead_id: leadId || null,
-
-      provider: "telnyx",               // required
-      direction: "outgoing",            // ✅ matches your check constraint
-      from_number: FROM_NUMBER,         // required
-      to_number: to,                    // required
-      body: text,                       // required
-
-      status: "sent",                   // force SENT
-      segments: 1,                      // sane default
-      price_cents: 1,                   // 👈 1¢ per text
-      provider_sid: providerId || null, // unique idx on (provider, provider_sid)
-      provider_message_id: providerId || null,
-
-      channel: "sms"                    // useful for UI filter
-      // NOTE: no client_ref column
-    };
-
-    await supabase.from("messages").insert(insertRow);
-  } catch (e) {
-    console.error("messages insert failed (non-fatal):", e?.message);
+  if (preErr) {
+    // Likely insufficient funds (trigger raised) or constraint failure
+    return { sent: false, reason: "preinsert_failed", detail: preErr.message };
   }
+  const messageId = inserted.id;
 
-  return { sent: true, provider_message_id: providerId };
+  // PHASE 2: Send via Telnyx
+  const clientRef = `c=${contactId || "n/a"}|lead=${leadId || "n/a"}|tpl=${template_key}|ts=${Date.now()}`;
+  try {
+    const resp = await fetch("https://api.telnyx.com/v2/messages", {
+      method: "POST",
+      headers: { Authorization: `Bearer ${TELNYX_API_KEY}`, "Content-Type": "application/json" },
+      body: JSON.stringify({
+        from: FROM_NUMBER,
+        to,
+        text,
+        messaging_profile_id: TELNYX_MESSAGING_PROFILE_ID,
+        client_ref: clientRef,
+      }),
+    });
+    const json = await resp.json().catch(() => ({}));
+
+    if (!resp.ok) {
+      await supabase
+        .from("messages")
+        .update({ status: "error", error_detail: JSON.stringify(json).slice(0, 1000) })
+        .eq("id", messageId);
+      return { sent: false, reason: "telnyx_error", telnyx: json };
+    }
+
+    const providerId = json?.data?.id || null;
+
+    // PHASE 3: Mark sent + provider ids
+    await supabase
+      .from("messages")
+      .update({ status: "sent", provider_sid: providerId, provider_message_id: providerId })
+      .eq("id", messageId);
+
+    return { sent: true, provider_message_id: providerId, message_id: messageId };
+  } catch (e) {
+    await supabase
+      .from("messages")
+      .update({ status: "error", error_detail: String(e?.message || e).slice(0, 1000) })
+      .eq("id", messageId);
+    return { sent: false, reason: "telnyx_request_failed", detail: e?.message };
+  }
 }
 
 // --- main handler ---
@@ -306,7 +331,7 @@ exports.handler = async (event) => {
       return { statusCode: 400, body: "Empty lead payload" };
     }
 
-    // ---------- DEDUPE GUARD ----------
+    // ---------- DEDUPE GUARD (10 min, phone/email) ----------
     const orFilters = [];
     if (lead.email) orFilters.push(`email.eq.${encodeURIComponent(lead.email)}`);
     if (lead.phone) orFilters.push(`phone.eq.${encodeURIComponent(lead.phone)}`);
@@ -324,7 +349,7 @@ exports.handler = async (event) => {
       if (!qErr && existing && existing.length) {
         const dupId = existing[0].id;
 
-        // Upsert contact first → get contactId for logging
+        // Upsert contact (for logging/threading)
         let contactId = null;
         try {
           if (lead.phone) {
@@ -348,7 +373,7 @@ exports.handler = async (event) => {
           console.error("contact tag/meta sync (dedup) failed:", err);
         }
 
-        // Send (direct Telnyx) with contactId
+        // Gate by wallet → insert first, then send
         try {
           await trySendNewLeadText({
             userId: wh.user_id,
@@ -377,7 +402,7 @@ exports.handler = async (event) => {
     }
     const insertedId = data?.[0]?.id || null;
 
-    // Upsert contact BEFORE sending → capture contactId
+    // Upsert contact BEFORE sending → capture contactId for logging/threading
     let contactId = null;
     try {
       if (lead.phone) {
@@ -401,7 +426,7 @@ exports.handler = async (event) => {
       console.error("contact tag/meta sync failed:", err);
     }
 
-    // Send welcome/new-lead (direct Telnyx) with contactId (so UI shows it)
+    // Send welcome/new-lead (wallet-gated)
     try {
       await trySendNewLeadText({
         userId: wh.user_id,
@@ -414,10 +439,14 @@ exports.handler = async (event) => {
     }
 
     const { data: verifyRow, error: verifyErr } = await supabase
-      .from("leads").select("id, created_at").eq("id", insertedId).maybeSingle();
+      .from("leads")
+      .select("id, created_at")
+      .eq("id", insertedId)
+      .maybeSingle();
 
     const projectRef =
-      (process.env.SUPABASE_URL || "").match(/https?:\/\/([^.]+)\.supabase\.co/i)?.[1] || "unknown";
+      (process.env.SUPABASE_URL || "").match(/https?:\/\/([^.]+)\.supabase\.co/i)?.[1] ||
+      "unknown";
 
     await supabase
       .from("user_inbound_webhooks")
