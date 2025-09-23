@@ -139,12 +139,12 @@ async function upsertContactByUserPhone(supabase, { user_id, phone, full_name, t
   }
 }
 
-// --- templates → send helper (DIRECT Telnyx; baseline working path) ---
+// --- templates → send helper (DIRECT Telnyx; logs with user_id + contact_id) ---
 function renderTemplate(tpl, ctx) {
   return String(tpl || "").replace(/\{\{\s*([a-zA-Z0-9_]+)\s*\}\}/g, (_, k) => S(ctx[k]));
 }
 
-async function trySendNewLeadText({ userId, leadId, lead }) {
+async function trySendNewLeadText({ userId, leadId, contactId, lead }) {
   // 1) Phone
   if (!S(lead.phone)) return { sent: false, reason: "missing_phone" };
   const to = toE164(lead.phone);
@@ -167,6 +167,7 @@ async function trySendNewLeadText({ userId, leadId, lead }) {
   if (terr) return { sent: false, reason: "template_load_error", detail: terr.message };
 
   const template_key = "new_lead";
+
   const tpl = trow?.templates?.[template_key];
   if (!tpl) return { sent: false, reason: "template_not_found", template_key };
 
@@ -177,18 +178,26 @@ async function trySendNewLeadText({ userId, leadId, lead }) {
     .single();
   if (aerr) return { sent: false, reason: "agent_profile_missing", detail: aerr.message };
 
+  // 🔧 Beneficiary mapping (prefer the *name*):
+  const beneficiary_name = S(lead.beneficiary_name) || S(lead.beneficiary);
+  const beneficiary_relation = S(lead.beneficiary_relation); // optional if you have it
+
+  // Expose both; and map {{beneficiary}} → name for legacy templates
   const vars = {
     first_name: S(lead.name).split(" ")[0] || "",
     agent_name: agent?.full_name || "",
     agent_phone: agent?.phone || "",
     calendly_link: agent?.calendly_url || "",
     state: S(lead.state),
-    beneficiary: S(lead.beneficiary) || S(lead.beneficiary_name),
+    beneficiary: beneficiary_name,          // ✅ legacy key now returns the NAME
+    beneficiary_name: beneficiary_name,     // ✅ explicit key for templates
+    beneficiary_relation: beneficiary_relation || "", // optional if you use it
   };
+
   const text = renderTemplate(tpl, vars);
 
   // 4) Send via Telnyx
-  const clientRef = `c=${leadId || "n/a"}|tpl=${template_key}|ts=${Date.now()}`;
+  const clientRef = `c=${contactId || "n/a"}|lead=${leadId || "n/a"}|tpl=${template_key}|ts=${Date.now()}`;
   const resp = await fetch("https://api.telnyx.com/v2/messages", {
     method: "POST",
     headers: { Authorization: `Bearer ${TELNYX_API_KEY}`, "Content-Type": "application/json" },
@@ -205,20 +214,25 @@ async function trySendNewLeadText({ userId, leadId, lead }) {
 
   const providerId = json?.data?.id || null;
 
-  // 5) Log (baseline — minimal columns; UI may not show yet)
+  // 5) Log (with user_id/contact_id). Never block sending on logging.
   try {
-    await supabase.from("messages").insert({
-      contact_id: null, // baseline
+    const insertRow = {
+      user_id: userId,              // RLS-visible
+      contact_id: contactId || null,
       lead_id: leadId || null,
       direction: "outbound",
+      channel: "sms",
       body: text,
       provider: "telnyx",
       provider_message_id: providerId,
       client_ref: clientRef,
       template_key,
-    });
+      // If your schema has these, uncomment:
+      // from_number: FROM_NUMBER,
+      // to_number: to,
+    };
+    await supabase.from("messages").insert(insertRow);
   } catch (e) {
-    // logging failure should never block the send
     console.error("messages insert failed (non-fatal):", e?.message);
   }
 
@@ -278,6 +292,7 @@ exports.handler = async (event) => {
       notes: U(p.notes),
       beneficiary: U(p.beneficiary),
       beneficiary_name: U(p.beneficiary_name),
+      beneficiary_relation: U(p.beneficiary_relation), // if present
       company: U(p.company),
       gender: U(p.gender),
       military_branch: U(p.military_branch),
@@ -309,7 +324,8 @@ exports.handler = async (event) => {
       if (!qErr && existing && existing.length) {
         const dupId = existing[0].id;
 
-        // tags/meta sync (does not affect sending)
+        // Upsert contact first → get contactId for logging
+        let contactId = null;
         try {
           if (lead.phone) {
             const { tags } = await computeNextContactTags({
@@ -319,38 +335,33 @@ exports.handler = async (event) => {
               full_name: lead.name,
               military_branch: lead.military_branch,
             });
-            const beneficiary = lead.beneficiary || lead.beneficiary_name || "";
-            await upsertContactByUserPhone(supabase, {
+            const beneficiary_name = S(lead.beneficiary_name) || S(lead.beneficiary) || "";
+            contactId = await upsertContactByUserPhone(supabase, {
               user_id: wh.user_id,
               phone: lead.phone,
               full_name: lead.name,
               tags,
-              meta: { beneficiary, lead_id: dupId },
+              meta: { beneficiary: beneficiary_name, lead_id: dupId },
             });
           }
         } catch (err) {
           console.error("contact tag/meta sync (dedup) failed:", err);
         }
 
-        // send (baseline)
+        // Send (direct Telnyx) with contactId
         try {
           await trySendNewLeadText({
             userId: wh.user_id,
             leadId: dupId,
-            lead: {
-              name: lead.name,
-              phone: lead.phone,
-              state: lead.state,
-              beneficiary: lead.beneficiary,
-              beneficiary_name: lead.beneficiary_name,
-              military_branch: lead.military_branch,
-            },
+            contactId,
+            lead,
           });
         } catch (e) {
           console.error("send (dedup) failed:", e);
         }
 
-        await supabase.from("user_inbound_webhooks")
+        await supabase
+          .from("user_inbound_webhooks")
           .update({ last_used_at: new Date().toISOString() })
           .eq("id", webhookId);
 
@@ -366,7 +377,8 @@ exports.handler = async (event) => {
     }
     const insertedId = data?.[0]?.id || null;
 
-    // Upsert contact (baseline behavior)
+    // Upsert contact BEFORE sending → capture contactId
+    let contactId = null;
     try {
       if (lead.phone) {
         const { tags } = await computeNextContactTags({
@@ -376,32 +388,26 @@ exports.handler = async (event) => {
           full_name: lead.name,
           military_branch: lead.military_branch,
         });
-        const beneficiary = lead.beneficiary || lead.beneficiary_name || "";
-        await upsertContactByUserPhone(supabase, {
+        const beneficiary_name = S(lead.beneficiary_name) || S(lead.beneficiary) || "";
+        contactId = await upsertContactByUserPhone(supabase, {
           user_id: wh.user_id,
           phone: lead.phone,
           full_name: lead.name,
           tags,
-          meta: { beneficiary, lead_id: insertedId },
+          meta: { beneficiary: beneficiary_name, lead_id: insertedId },
         });
       }
     } catch (err) {
       console.error("contact tag/meta sync failed:", err);
     }
 
-    // Send welcome/new-lead message (baseline sender)
+    // Send welcome/new-lead (direct Telnyx) with contactId (so UI shows it)
     try {
       await trySendNewLeadText({
         userId: wh.user_id,
         leadId: insertedId,
-        lead: {
-          name: lead.name,
-          phone: lead.phone,
-          state: lead.state,
-          beneficiary: lead.beneficiary,
-          beneficiary_name: lead.beneficiary_name,
-          military_branch: lead.military_branch,
-        },
+        contactId,
+        lead,
       });
     } catch (err) {
       console.error("send new lead failed:", err);
@@ -413,7 +419,8 @@ exports.handler = async (event) => {
     const projectRef =
       (process.env.SUPABASE_URL || "").match(/https?:\/\/([^.]+)\.supabase\.co/i)?.[1] || "unknown";
 
-    await supabase.from("user_inbound_webhooks")
+    await supabase
+      .from("user_inbound_webhooks")
       .update({ last_used_at: new Date().toISOString() })
       .eq("id", webhookId);
 
