@@ -1,6 +1,6 @@
 // Sends an SMS via Telnyx using a template or raw body.
 // DEDUPE-SAFE using provider_message_id (pass it!)
-// Accepts: { to?, contact_id?, lead_id?, body?, templateKey?, requesterId?, provider_message_id? }
+// Accepts: { to?, contact_id?, lead_id?, body?, templateKey?/template_key?/template?, requesterId?, provider_message_id? }
 
 const { getServiceClient } = require("./_supabase");
 
@@ -165,10 +165,13 @@ exports.handler = async (event) => {
       contact_id,
       lead_id,
       body: rawBody,
-      templateKey,            // e.g. "new_lead", "new_lead_military", "follow_up_2d"
-      requesterId,            // optional (UI passes it on manual send)
-      provider_message_id,    // IMPORTANT for dedupe
+      templateKey,            // camelCase (UI/older callers)
+      requesterId,
+      provider_message_id,
     } = body || {};
+
+    // >>> Accept snake_case too <<<
+    templateKey = body.template_key || body.template || templateKey;
 
     // -------- Resolve user_id, contact, destination phone --------
     let user_id = null;
