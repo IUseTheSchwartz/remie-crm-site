@@ -543,7 +543,7 @@ export default function MessagingSettings() {
           <div className="min-w-0">
             <h3 className="text-sm font-semibold">Message Templates</h3>
             <p className="text-xs text-white/60 truncate">
-              Customize what’s sent for each event. Variables like <code className="px-1 rounded bg-white/10">{{"{first_name}"}}</code> are replaced automatically.
+              Customize what’s sent for each event. Variables like <code className="px-1 rounded bg-white/10">{'{{first_name}}'}</code> are replaced automatically.
             </p>
           </div>
 
