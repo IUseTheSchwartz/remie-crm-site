@@ -33,8 +33,6 @@ import CallRecorder from "./pages/CallRecorder.jsx";
 // ---- Contacts (NEW) ----
 import ContactsPage from "./pages/ContactsPage.jsx";
 
-// ---- Bootcamp (NEW) ----
-import BootcampPage from "./pages/BootcampPage.jsx";
 
 // ---- Message Lab (PRIVATE) ----
 import MessageTestPage from "./pages/MessageTestPage.jsx"; // <— NEW
@@ -81,7 +79,6 @@ export const routes = [
   { key: "team-dashboard", path: "/app/team/:teamId/dashboard", label: "Team Dashboard", component: TeamDashboard,  showInSidebar: false, section: "hidden" },
 
   // Bottom (Account & Help)
-  { key: "bootcamp", path: "/app/bootcamp", label: "Bootcamp", component: BootcampPage, showInSidebar: true, section: "bottom" }, // NEW
   { key: "settings", path: "/app/settings", label: "Settings", component: SettingsPage, showInSidebar: true, section: "bottom" },
   { key: "support",  path: "/app/support",  label: "Support",  component: SupportPage,  showInSidebar: true, section: "bottom" },
 
