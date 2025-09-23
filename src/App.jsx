@@ -409,7 +409,7 @@ function LandingPage() {
             <div className="rounded-xl border border-white/10 bg-black/30 p-4 sm:col-span-2 lg:col-span-1">
               <div className="text-white/60">Instagram</div>
               <a
-                href="https://instagram.com/jacob_prietoo"
+                href="https://instagram.com/jprietocloses"
                 target="_blank"
                 rel="noreferrer"
                 className="mt-1 inline-flex items-center gap-1 font-medium hover:underline"
