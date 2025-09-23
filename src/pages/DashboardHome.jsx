@@ -21,9 +21,7 @@ export default function DashboardHome() {
   const { user } = useAuth();
 
   // --- Welcome video settings ---
-  // Put your YouTube video ID here (the part after v= or after /embed/)
-  // Example: https://www.youtube.com/watch?v=dQw4w9WgXcQ -> "dQw4w9WgXcQ"
-  const YT_VIDEO_ID = "YOUR_VIDEO_ID_HERE";
+  const YT_VIDEO_ID = "https://youtu.be/h4hUVnDB_SU"; // replace with your YouTube ID
 
   const [showVideo, setShowVideo] = useState(() => {
     try {
@@ -40,7 +38,7 @@ export default function DashboardHome() {
     setShowVideo(false);
   }
 
-  // read cached snapshot immediately to avoid layout shift
+  // snapshot + refresh logic (unchanged)
   const [snap, setSnap] = useState(dashboardSnapshot());
   const [loading, setLoading] = useState(false);
 
@@ -56,7 +54,6 @@ export default function DashboardHome() {
       setLoading(true);
       const data = await refreshDashboardSnapshot(getOptions());
       setSnap(data);
-      // console.debug("[Dashboard] refreshed:", reason, data);
     } finally {
       setLoading(false);
     }
@@ -64,11 +61,8 @@ export default function DashboardHome() {
 
   useEffect(() => {
     let isMounted = true;
-
-    // Initial
     doRefresh("mount");
 
-    // Realtime: refresh on any insert/update/delete against likely tables
     const WATCH = [
       { table: "leads", events: ["INSERT", "UPDATE", "DELETE"] },
       { table: "appointments", events: ["INSERT", "UPDATE", "DELETE"] },
@@ -89,23 +83,18 @@ export default function DashboardHome() {
       return ch;
     });
 
-    // Cross-tab storage changes
     const onStorage = () => isMounted && doRefresh("storage");
     window.addEventListener("storage", onStorage);
 
-    // Same-tab manual signal after local changes:
-    // window.dispatchEvent(new CustomEvent("stats:changed"))
     const onCustom = () => isMounted && doRefresh("custom");
     window.addEventListener("stats:changed", onCustom);
 
-    // Focus/visibility (helps pick up local-only edits)
     const onFocus = () => isMounted && doRefresh("focus");
     const onVis = () =>
       document.visibilityState === "visible" && isMounted && doRefresh("visible");
     window.addEventListener("focus", onFocus);
     document.addEventListener("visibilitychange", onVis);
 
-    // Polling fallback
     const poll = setInterval(() => isMounted && doRefresh("poll"), 60000);
 
     return () => {
@@ -145,7 +134,36 @@ export default function DashboardHome() {
         </button>
       </div>
 
-      {/* Getting Started / Welcome Video */}
+      {/* KPI Cards */}
+      <div className="grid gap-4 md:grid-cols-4">
+        {kpi.map((x) => (
+          <NumberCard key={x.label} label={x.label} value={x.value} sublabel={x.sub} />
+        ))}
+      </div>
+
+      {/* Week/Month Cards */}
+      <div className="grid gap-4 md:grid-cols-2">
+        <Card title="This Week">
+          <div className="grid grid-cols-5 gap-3 text-sm">
+            <NumberCard label="Closed" value={snap.thisWeek.closed} />
+            <NumberCard label="Clients" value={snap.thisWeek.clients} />
+            <NumberCard label="Leads" value={snap.thisWeek.leads} />
+            <NumberCard label="Appts" value={snap.thisWeek.appointments} />
+            <NumberCard label="Premium" value={money(snap.thisWeek.premium)} />
+          </div>
+        </Card>
+        <Card title="This Month">
+          <div className="grid grid-cols-5 gap-3 text-sm">
+            <NumberCard label="Closed" value={snap.thisMonth.closed} />
+            <NumberCard label="Clients" value={snap.thisMonth.clients} />
+            <NumberCard label="Leads" value={snap.thisMonth.leads} />
+            <NumberCard label="Appts" value={snap.thisMonth.appointments} />
+            <NumberCard label="Premium" value={money(snap.thisMonth.premium)} />
+          </div>
+        </Card>
+      </div>
+
+      {/* Getting Started Video (now at bottom) */}
       {showVideo && YT_VIDEO_ID && (
         <Card
           title="Getting Started"
@@ -162,7 +180,6 @@ export default function DashboardHome() {
           <div className="mb-3 text-white/70">
             Watch this quick walkthrough to set up your account, connect messaging, and book your first appointments.
           </div>
-          {/* Responsive 16:9 wrapper */}
           <div className="relative w-full overflow-hidden rounded-2xl border border-white/10 bg-black pt-[56.25%]">
             <iframe
               className="absolute inset-0 h-full w-full"
@@ -187,33 +204,6 @@ export default function DashboardHome() {
           </div>
         </Card>
       )}
-
-      <div className="grid gap-4 md:grid-cols-4">
-        {kpi.map((x) => (
-          <NumberCard key={x.label} label={x.label} value={x.value} sublabel={x.sub} />
-        ))}
-      </div>
-
-      <div className="grid gap-4 md:grid-cols-2">
-        <Card title="This Week">
-          <div className="grid grid-cols-5 gap-3 text-sm">
-            <NumberCard label="Closed" value={snap.thisWeek.closed} />
-            <NumberCard label="Clients" value={snap.thisWeek.clients} />
-            <NumberCard label="Leads" value={snap.thisWeek.leads} />
-            <NumberCard label="Appts" value={snap.thisWeek.appointments} />
-            <NumberCard label="Premium" value={money(snap.thisWeek.premium)} />
-          </div>
-        </Card>
-        <Card title="This Month">
-          <div className="grid grid-cols-5 gap-3 text-sm">
-            <NumberCard label="Closed" value={snap.thisMonth.closed} />
-            <NumberCard label="Clients" value={snap.thisMonth.clients} />
-            <NumberCard label="Leads" value={snap.thisMonth.leads} />
-            <NumberCard label="Appts" value={snap.thisMonth.appointments} />
-            <NumberCard label="Premium" value={money(snap.thisMonth.premium)} />
-          </div>
-        </Card>
-      </div>
     </div>
   );
 }
