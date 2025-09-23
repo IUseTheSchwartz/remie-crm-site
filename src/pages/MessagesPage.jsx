@@ -1,7 +1,9 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { supabase } from "../lib/supabaseClient.js";
 import { useAuth } from "../auth.jsx";
-import { Send, CreditCard, Plus, Loader2, Trash2, Edit3, X } from "lucide-react";
+import {
+  Send, CreditCard, Plus, Loader2, Trash2, Edit3, X, ChevronLeft, Search
+} from "lucide-react";
 
 /* ---------------- Phone helpers (US/CA default) ---------------- */
 
@@ -58,10 +60,26 @@ async function loadPayPalSdk() {
   });
 }
 
+/* ---------------- Utility ---------------- */
+
+function useIsMobile() {
+  const [isMobile, setIsMobile] = useState(false);
+  useEffect(() => {
+    const mq = window.matchMedia("(max-width: 767px)");
+    const apply = () => setIsMobile(mq.matches);
+    apply();
+    mq.addEventListener?.("change", apply);
+    return () => mq.removeEventListener?.("change", apply);
+  }, []);
+  return isMobile;
+}
+
 /* ---------------- Main page ---------------- */
 
 export default function MessagesPage() {
   const { user } = useAuth();
+  const isMobile = useIsMobile();
+
   const [loading, setLoading] = useState(true);
 
   // Wallet
@@ -209,7 +227,6 @@ export default function MessagesPage() {
     }
   }
 
-  // NEW: safe delete by IDs gathered from to_number and from_number with .in(...) filters
   async function removeConversation(partnerNumberE164) {
     if (!user?.id || !partnerNumberE164) return;
     const confirmDelete = confirm(
@@ -218,50 +235,83 @@ export default function MessagesPage() {
     if (!confirmDelete) return;
 
     try {
-      // Build variant sets to catch older stored formats
       const digits = partnerNumberE164.replace(/\D/g, "");
       const ten = digits.length === 11 && digits.startsWith("1") ? digits.slice(1) : digits.slice(0, 10);
-      const variants = new Set([
-        partnerNumberE164,
-        ten,
-        "1" + ten,
-        "+1" + ten,
-      ]);
+      const variants = new Set([ partnerNumberE164, ten, "1"+ten, "+1"+ten ]);
 
-      // 1) ids where to_number IN variants
       const { data: toRows } = await supabase
-        .from("messages")
-        .select("id")
-        .eq("user_id", user.id)
-        .in("to_number", Array.from(variants));
-      // 2) ids where from_number IN variants
+        .from("messages").select("id")
+        .eq("user_id", user.id).in("to_number", Array.from(variants));
       const { data: fromRows } = await supabase
-        .from("messages")
-        .select("id")
-        .eq("user_id", user.id)
-        .in("from_number", Array.from(variants));
+        .from("messages").select("id")
+        .eq("user_id", user.id).in("from_number", Array.from(variants));
 
       const ids = [
-        ...(toRows || []).map((r) => r.id),
-        ...(fromRows || []).map((r) => r.id),
+        ...(toRows || []).map(r => r.id),
+        ...(fromRows || []).map(r => r.id),
       ];
-      // Dedupe
       const idSet = Array.from(new Set(ids));
       if (idSet.length > 0) {
-        const { error: delErr } = await supabase
-          .from("messages")
-          .delete()
-          .in("id", idSet);
+        const { error: delErr } = await supabase.from("messages").delete().in("id", idSet);
         if (delErr) throw delErr;
       }
 
-      // Update UI
       setConversation([]);
       if (activeNumber === partnerNumberE164) setActiveNumber(null);
       await fetchThreads();
     } catch (e) {
       console.error(e);
       alert("Could not remove conversation.");
+    }
+  }
+
+  /* ---------- PayPal Top-up ---------- */
+
+  async function openPayPal(amountCents) {
+    if (!user?.id) return alert("Please sign in first.");
+    try {
+      setPaypalAmountCents(amountCents);
+      setPaypalOpen(true);
+      setPaypalLoading(true);
+
+      await loadPayPalSdk();
+
+      if (paypalContainerRef.current) {
+        paypalContainerRef.current.innerHTML = "";
+      }
+
+      window.paypal
+        .Buttons({
+          style: { layout: "vertical", shape: "rect", label: "paypal" },
+          createOrder: async () => {
+            const res = await fetch("/.netlify/functions/paypal-create-order", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ amount_cents: amountCents, user_id: user.id }),
+            });
+            const data = await res.json();
+            if (!data?.id) throw new Error("Failed to create PayPal order");
+            return data.id;
+          },
+          onApprove: async () => {
+            setPaypalOpen(false);
+            setTimeout(fetchWallet, 2500);
+            alert("Payment approved. Your wallet will update shortly.");
+          },
+          onCancel: () => setPaypalOpen(false),
+          onError: (err) => {
+            console.error(err);
+            setPaypalOpen(false);
+            alert("PayPal error. Please try again.");
+          },
+        })
+        .render(paypalContainerRef.current);
+    } catch (e) {
+      console.error(e);
+      setPaypalOpen(false);
+      alert(e.message || "Could not start PayPal checkout.");
+    } finally {
+      setPaypalLoading(false);
     }
   }
 
@@ -279,12 +329,7 @@ export default function MessagesPage() {
       .channel("messages_rt")
       .on(
         "postgres_changes",
-        {
-          event: "*",
-          schema: "public",
-          table: "messages",
-          filter: `user_id=eq.${user?.id || ""}`,
-        },
+        { event: "*", schema: "public", table: "messages", filter: `user_id=eq.${user?.id || ""}` },
         async () => {
           if (!mounted) return;
           await fetchThreads();
@@ -295,9 +340,7 @@ export default function MessagesPage() {
 
     return () => {
       mounted = false;
-      try {
-        supabase.removeChannel(channel);
-      } catch {}
+      try { supabase.removeChannel(channel); } catch {}
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [user?.id]);
@@ -307,13 +350,12 @@ export default function MessagesPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeNumber]);
 
-  // Auto-scroll on new messages (incoming/outgoing)
   useEffect(() => {
     if (!scrollerRef.current) return;
     scrollerRef.current.scrollTop = scrollerRef.current.scrollHeight;
   }, [conversation.length]);
 
-  // Keyboard-aware padding for iOS (safe, no effect on desktop)
+  // Keyboard-aware padding for iOS
   useEffect(() => {
     const el = document.getElementById("chat-scroll");
     const vv = window.visualViewport;
@@ -324,15 +366,13 @@ export default function MessagesPage() {
       cancelAnimationFrame(raf);
       raf = requestAnimationFrame(() => {
         const overlap = Math.max(0, window.innerHeight - vv.height - vv.offsetTop);
-        el.style.paddingBottom = `${overlap + 80}px`; // ~composer height buffer
+        el.style.paddingBottom = `${overlap + 80}px`;
         el.scrollTop = el.scrollHeight;
       });
     };
-
     vv.addEventListener("resize", onResize);
     vv.addEventListener("scroll", onResize);
     onResize();
-
     return () => {
       cancelAnimationFrame(raf);
       vv.removeEventListener("resize", onResize);
@@ -352,7 +392,6 @@ export default function MessagesPage() {
     try {
       const { data: session } = await supabase.auth.getSession();
       const token = session?.session?.access_token;
-
       const toE164 = normalizeToE164_US_CA(activeNumber);
       if (!toE164) {
         alert("Invalid phone number format. Please enter a valid US/CA number.");
@@ -362,35 +401,21 @@ export default function MessagesPage() {
 
       const res = await fetch("/.netlify/functions/messages-send", {
         method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${token}`,
-        },
-        body: JSON.stringify({
-          to: toE164,
-          body: text,
-          requesterId: user?.id, // <-- critical so rows show up for you
-        }),
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ to: toE164, body: text, requesterId: user?.id }),
       });
       const out = await res.json().catch(() => ({}));
       if (!res.ok || out?.error) {
-        throw new Error(
-          out?.telnyx_response?.errors?.[0]?.detail ||
-            out?.error ||
-            "Send failed"
-        );
+        throw new Error(out?.telnyx_response?.errors?.[0]?.detail || out?.error || "Send failed");
       }
       setText("");
-      scrollerRef.current?.scrollTo({
-        top: scrollerRef.current.scrollHeight,
-        behavior: "smooth",
-      });
+      scrollerRef.current?.scrollTo({ top: scrollerRef.current.scrollHeight, behavior: "smooth" });
       fetchWallet();
       await fetchConversation(toE164);
       setActiveNumber(toE164);
     } catch (e) {
       console.error(e);
-      alert("Failed to send message.\n" + (e?.message || "")); 
+      alert("Failed to send message.\n" + (e?.message || ""));
     } finally {
       setSending(false);
     }
@@ -409,237 +434,211 @@ export default function MessagesPage() {
   }
 
   return (
-    <div className="grid h-[100dvh] grid-cols-1 gap-4 md:grid-cols-[320px_1fr]">
-      {/* Left: threads */}
-      <aside className="flex flex-col rounded-2xl border border-white/10 bg-white/[0.03]">
-        {/* Wallet */}
-        <div className="flex items-center justify-between border-b border-white/10 p-3">
-          <div className="text-sm">
-            <div className="text-white/60">Text Balance</div>
-            <div className="text-lg font-semibold">${balanceDollars}</div>
-          </div>
-          <div className="flex gap-2">
-            <button
-              onClick={() => openPayPal(2000)}
-              className="inline-flex items-center gap-1 rounded-lg border border-white/15 bg-white/5 px-2.5 py-1.5 text-xs hover:bg-white/10"
-              title="Add $20"
-            >
-              <CreditCard className="h-4 w-4" /> +$20
-            </button>
-            <button
-              onClick={() => openPayPal(5000)}
-              className="inline-flex items-center gap-1 rounded-lg border border-white/15 bg-white/5 px-2.5 py-1.5 text-xs hover:bg-white/10"
-              title="Add $50"
-            >
-              <CreditCard className="h-4 w-4" /> +$50
-            </button>
-          </div>
-        </div>
-
-        {/* Threads header */}
-        <div className="flex items-center justify-between px-3 pt-2 text-xs text-white/60">
-          <div>Conversations</div>
-          <button
-            onClick={() => {
-              const raw = prompt(
-                "Text a new number.\nEnter any format (e.g., 915-494-3286 or +19154943286):"
-              );
+    <div className="h-[100dvh]">
+      {/* --- MOBILE: iOS-style two-screen nav --- */}
+      <div className="md:hidden h-full">
+        {!activeNumber ? (
+          <MobileThreads
+            threads={threads}
+            balanceDollars={balanceDollars}
+            onNew={() => {
+              const raw = prompt("Text a new number.\nEnter any format (e.g., 915-494-3286 or +19154943286):");
               if (!raw) return;
               const e164 = normalizeToE164_US_CA(raw);
-              if (!e164) {
-                alert("Invalid number. Use a valid US/CA number.");
-                return;
-              }
+              if (!e164) return alert("Invalid number. Use a valid US/CA number.");
               setActiveNumber(e164);
             }}
-            className="inline-flex items-center gap-1 rounded-md border border-white/15 bg-white/5 px-2 py-1 hover:bg-white/10"
-          >
-            <Plus className="h-3.5 w-3.5" /> New
-          </button>
-        </div>
+            onOpen={(n) => setActiveNumber(n)}
+            displayForNumber={displayForNumber}
+            smallPhoneForNumber={smallPhoneForNumber}
+            openPayPal={(cents) => openPayPal(cents)}
+          />
+        ) : (
+          <MobileChat
+            activeNumber={activeNumber}
+            conversation={conversation}
+            scrollerRef={scrollerRef}
+            displayForNumber={displayForNumber}
+            smallPhoneForNumber={smallPhoneForNumber}
+            text={text}
+            setText={setText}
+            sending={sending}
+            balanceCents={balanceCents}
+            onBack={() => setActiveNumber(null)}
+            onRename={() => renameConversation(activeNumber)}
+            onRemove={() => removeConversation(activeNumber)}
+            onSend={handleSend}
+          />
+        )}
+      </div>
 
-        {/* Threads list */}
-        <div className="scrollbar-thin mt-2 flex-1 overflow-y-auto px-2 pb-2">
-          {threads.length === 0 ? (
-            <div className="p-3 text-xs text-white/50">No conversations yet.</div>
-          ) : (
-            threads.map((t) => {
-              const name = displayForNumber(t.partnerNumber);
-              const small = smallPhoneForNumber(t.partnerNumber);
-              const isActive = activeNumber === t.partnerNumber;
-              return (
-                <div
-                  key={t.partnerNumber}
-                  className={classNames(
-                    "group relative w-full rounded-xl p-3 hover:bg-white/5",
-                    isActive ? "bg-white/5 ring-1 ring-indigo-400/50" : ""
-                  )}
-                >
-                  <button
-                    onClick={() => setActiveNumber(t.partnerNumber)}
-                    className="block w-full text-left"
-                  >
-                    <div className="text-sm font-medium truncate">{name}</div>
-                    <div className="truncate text-xs text-white/60">
-                      {small || t.lastMessage}
-                    </div>
-                    {small && (
-                      <div className="truncate text-[11px] text-white/40">
-                        {t.lastMessage}
-                      </div>
-                    )}
-                  </button>
-
-                  <div className="absolute right-2 top-2 hidden gap-1 group-hover:flex">
-                    <button
-                      onClick={() => renameConversation(t.partnerNumber)}
-                      className="rounded-md border border-white/15 bg-white/5 px-2 py-1 text-[11px] hover:bg-white/10"
-                      title="Rename"
-                    >
-                      <Edit3 className="h-3.5 w-3.5" />
-                    </button>
-                    <button
-                      onClick={() => removeConversation(t.partnerNumber)}
-                      className="rounded-md border border-rose-400/30 bg-rose-500/10 px-2 py-1 text-[11px] text-rose-200 hover:bg-rose-500/20"
-                      title="Remove conversation"
-                    >
-                      <Trash2 className="h-3.5 w-3.5" />
-                    </button>
-                  </div>
-                </div>
-              );
-            })
-          )}
-        </div>
-      </aside>
-
-      {/* Right: conversation */}
-      <section className="flex min-h-0 flex-col rounded-2xl border border-white/10 bg-white/[0.03]">
-        {/* Header */}
-        <div className="flex items-center justify-between border-b border-white/10 p-3">
-          <div className="text-sm">
-            <div className="text-white/60">Chatting with</div>
-            <div className="font-semibold">
-              {activeNumber ? displayForNumber(activeNumber) : "—"}
+      {/* --- DESKTOP: keep your existing two-panel layout --- */}
+      <div className="hidden md:grid h-full grid-cols-[320px_1fr] gap-4">
+        {/* Left: threads */}
+        <aside className="flex flex-col rounded-2xl border border-white/10 bg-white/[0.03]">
+          {/* Wallet */}
+          <div className="flex items-center justify-between border-b border-white/10 p-3">
+            <div className="text-sm">
+              <div className="text-white/60">Text Balance</div>
+              <div className="text-lg font-semibold">${balanceDollars}</div>
             </div>
-            {activeNumber && smallPhoneForNumber(activeNumber) && (
-              <div className="text-xs text-white/50">
-                {smallPhoneForNumber(activeNumber)}
-              </div>
-            )}
-            {activeNumber && (
-              <div className="text-[11px] text-white/40 mt-0.5">
-                E.164: <span className="font-mono">{activeNumber}</span>
-              </div>
-            )}
+            <div className="flex gap-2">
+              <button onClick={() => openPayPal(2000)} className="inline-flex items-center gap-1 rounded-lg border border-white/15 bg-white/5 px-2.5 py-1.5 text-xs hover:bg-white/10" title="Add $20">
+                <CreditCard className="h-4 w-4" /> +$20
+              </button>
+              <button onClick={() => openPayPal(5000)} className="inline-flex items-center gap-1 rounded-lg border border-white/15 bg-white/5 px-2.5 py-1.5 text-xs hover:bg-white/10" title="Add $50">
+                <CreditCard className="h-4 w-4" /> +$50
+              </button>
+            </div>
           </div>
-          {activeNumber && (
-            <div className="flex items-center gap-2">
-              <button
-                onClick={() => renameConversation(activeNumber)}
-                className="inline-flex items-center gap-1 rounded-md border border-white/15 bg-white/5 px-2 py-1 text-xs hover:bg-white/10"
-                title="Rename"
-              >
-                <Edit3 className="h-3.5 w-3.5" /> Rename
-              </button>
-              <button
-                onClick={() => removeConversation(activeNumber)}
-                className="inline-flex items-center gap-1 rounded-md border border-rose-400/30 bg-rose-500/10 px-2 py-1 text-xs text-rose-200 hover:bg-rose-500/20"
-                title="Remove"
-              >
-                <Trash2 className="h-3.5 w-3.5" /> Remove
-              </button>
-            </div>
-          )}
-        </div>
 
-        {/* Messages */}
-        <div
-          ref={scrollerRef}
-          id="chat-scroll"
-          className="scrollbar-thin flex-1 overflow-y-auto px-3 py-2 space-y-2"
-        >
-          {activeNumber ? (
-            conversation.length === 0 ? (
-              <div className="grid h-full place-items-center text-sm text-white/50">
-                No messages yet.
-              </div>
+          {/* Threads header */}
+          <div className="flex items-center justify-between px-3 pt-2 text-xs text-white/60">
+            <div>Conversations</div>
+            <button
+              onClick={() => {
+                const raw = prompt("Text a new number.\nEnter any format (e.g., 915-494-3286 or +19154943286):");
+                if (!raw) return;
+                const e164 = normalizeToE164_US_CA(raw);
+                if (!e164) return alert("Invalid number. Use a valid US/CA number.");
+                setActiveNumber(e164);
+              }}
+              className="inline-flex items-center gap-1 rounded-md border border-white/15 bg-white/5 px-2 py-1 hover:bg-white/10"
+            >
+              <Plus className="h-3.5 w-3.5" /> New
+            </button>
+          </div>
+
+          {/* Threads list */}
+          <div className="scrollbar-thin mt-2 flex-1 overflow-y-auto px-2 pb-2">
+            {threads.length === 0 ? (
+              <div className="p-3 text-xs text-white/50">No conversations yet.</div>
             ) : (
-              conversation.map((m) => {
-                const isOut = m.direction === "out" || m.direction === "outgoing";
+              threads.map((t) => {
+                const name = displayForNumber(t.partnerNumber);
+                const small = smallPhoneForNumber(t.partnerNumber);
+                const isActive = activeNumber === t.partnerNumber;
                 return (
                   <div
-                    key={m.id}
+                    key={t.partnerNumber}
                     className={classNames(
-                      "mb-2 flex",
-                      isOut ? "justify-end" : "justify-start"
+                      "group relative w-full rounded-xl p-3 hover:bg-white/5",
+                      isActive ? "bg-white/5 ring-1 ring-indigo-400/50" : ""
                     )}
                   >
-                    <div
-                      className={classNames(
-                        "max-w-[82%] rounded-2xl px-3 py-2 text-sm leading-snug ring-1 break-words [overflow-wrap:anywhere]",
-                        isOut
-                          ? "bg-gradient-to-r from-indigo-500/30 via-purple-500/30 to-fuchsia-500/30 ring-indigo-400/30"
-                          : "bg-white/5 ring-white/10"
-                      )}
-                      title={new Date(m.created_at).toLocaleString()}
-                    >
-                      <div>{m.body}</div>
-                      {isOut && (
-                        <div className="mt-1 text-[10px] uppercase tracking-wide text-white/50">
-                          {m.status}
-                        </div>
-                      )}
+                    <button onClick={() => setActiveNumber(t.partnerNumber)} className="block w-full text-left">
+                      <div className="text-sm font-medium truncate">{name}</div>
+                      <div className="truncate text-xs text-white/60">{small || t.lastMessage}</div>
+                      {small && <div className="truncate text-[11px] text-white/40">{t.lastMessage}</div>}
+                    </button>
+                    <div className="absolute right-2 top-2 hidden gap-1 group-hover:flex">
+                      <button onClick={() => renameConversation(t.partnerNumber)} className="rounded-md border border-white/15 bg-white/5 px-2 py-1 text-[11px] hover:bg-white/10" title="Rename">
+                        <Edit3 className="h-3.5 w-3.5" />
+                      </button>
+                      <button onClick={() => removeConversation(t.partnerNumber)} className="rounded-md border border-rose-400/30 bg-rose-500/10 px-2 py-1 text-[11px] text-rose-200 hover:bg-rose-500/20" title="Remove conversation">
+                        <Trash2 className="h-3.5 w-3.5" />
+                      </button>
                     </div>
                   </div>
                 );
               })
-            )
-          ) : (
-            <div className="grid h-full place-items-center text-sm text-white/50">
-              Select or start a conversation.
-            </div>
-          )}
-        </div>
-
-        {/* Composer */}
-        <div className="border-t border-white/10 px-3 pt-3 pb-[calc(env(safe-area-inset-bottom)+10px)]">
-          <div className="flex items-end gap-2">
-            <textarea
-              value={text}
-              onChange={(e) => setText(e.target.value)}
-              placeholder={activeNumber ? "Type a message…" : "Pick a conversation first"}
-              disabled={!activeNumber || sending}
-              rows={1}
-              className="min-h-[44px] w-full resize-none rounded-xl border border-white/15 bg-white/5 px-3 py-2 text-base leading-tight placeholder:text-white/40 focus:outline-none focus:ring-1 focus:ring-indigo-400/50 max-h-40"
-            />
-            <button
-              onClick={handleSend}
-              disabled={!activeNumber || !text.trim() || sending || balanceCents <= 0}
-              className={classNames(
-                "inline-flex h-[44px] items-center gap-2 rounded-xl border px-4 font-medium",
-                "border-white/15 bg-white/5 hover:bg-white/10",
-                (!activeNumber || !text.trim() || sending || balanceCents <= 0) &&
-                  "opacity-50 cursor-not-allowed"
-              )}
-            >
-              {sending ? (
-                <Loader2 className="h-4 w-4 animate-spin" />
-              ) : (
-                <Send className="h-4 w-4" />
-              )}
-              Send
-            </button>
+            )}
           </div>
-          {balanceCents <= 0 && (
-            <div className="mt-2 text-xs text-amber-300/90">
-              Your balance is $0. Add funds to send messages.
-            </div>
-          )}
-        </div>
-      </section>
+        </aside>
 
-      {/* PayPal Modal */}
+        {/* Right: conversation */}
+        <section className="flex min-h-0 flex-col rounded-2xl border border-white/10 bg-white/[0.03]">
+          {/* Header */}
+          <div className="flex items-center justify-between border-b border-white/10 p-3">
+            <div className="text-sm">
+              <div className="text-white/60">Chatting with</div>
+              <div className="font-semibold">{activeNumber ? displayForNumber(activeNumber) : "—"}</div>
+              {activeNumber && smallPhoneForNumber(activeNumber) && (
+                <div className="text-xs text-white/50">{smallPhoneForNumber(activeNumber)}</div>
+              )}
+              {activeNumber && (
+                <div className="text-[11px] text-white/40 mt-0.5">
+                  E.164: <span className="font-mono">{activeNumber}</span>
+                </div>
+              )}
+            </div>
+            {activeNumber && (
+              <div className="flex items-center gap-2">
+                <button onClick={() => renameConversation(activeNumber)} className="inline-flex items-center gap-1 rounded-md border border-white/15 bg-white/5 px-2 py-1 text-xs hover:bg-white/10" title="Rename">
+                  <Edit3 className="h-3.5 w-3.5" /> Rename
+                </button>
+                <button onClick={() => removeConversation(activeNumber)} className="inline-flex items-center gap-1 rounded-md border border-rose-400/30 bg-rose-500/10 px-2 py-1 text-xs text-rose-200 hover:bg-rose-500/20" title="Remove">
+                  <Trash2 className="h-3.5 w-3.5" /> Remove
+                </button>
+              </div>
+            )}
+          </div>
+
+          {/* Messages */}
+          <div ref={scrollerRef} id="chat-scroll" className="scrollbar-thin flex-1 overflow-y-auto px-3 py-2 space-y-2">
+            {activeNumber ? (
+              conversation.length === 0 ? (
+                <div className="grid h-full place-items-center text-sm text-white/50">No messages yet.</div>
+              ) : (
+                conversation.map((m) => {
+                  const isOut = m.direction === "out" || m.direction === "outgoing";
+                  return (
+                    <div key={m.id} className={classNames("mb-2 flex", isOut ? "justify-end" : "justify-start")}>
+                      <div
+                        className={classNames(
+                          "max-w-[82%] rounded-2xl px-3 py-2 text-sm leading-snug ring-1 break-words [overflow-wrap:anywhere]",
+                          isOut
+                            ? "bg-gradient-to-r from-indigo-500/30 via-purple-500/30 to-fuchsia-500/30 ring-indigo-400/30"
+                            : "bg-white/5 ring-white/10"
+                        )}
+                        title={new Date(m.created_at).toLocaleString()}
+                      >
+                        <div>{m.body}</div>
+                        {isOut && (
+                          <div className="mt-1 text-[10px] uppercase tracking-wide text-white/50">{m.status}</div>
+                        )}
+                      </div>
+                    </div>
+                  );
+                })
+              )
+            ) : (
+              <div className="grid h-full place-items-center text-sm text-white/50">Select or start a conversation.</div>
+            )}
+          </div>
+
+          {/* Composer */}
+          <div className="border-t border-white/10 px-3 pt-3 pb-[calc(env(safe-area-inset-bottom)+10px)]">
+            <div className="flex items-end gap-2">
+              <textarea
+                value={text}
+                onChange={(e) => setText(e.target.value)}
+                placeholder={activeNumber ? "Type a message…" : "Pick a conversation first"}
+                disabled={!activeNumber || sending}
+                rows={1}
+                className="min-h[44px] w-full resize-none rounded-xl border border-white/15 bg-white/5 px-3 py-2 text-base leading-tight placeholder:text-white/40 focus:outline-none focus:ring-1 focus:ring-indigo-400/50 max-h-40"
+              />
+              <button
+                onClick={handleSend}
+                disabled={!activeNumber || !text.trim() || sending || balanceCents <= 0}
+                className={classNames(
+                  "inline-flex h-[44px] items-center gap-2 rounded-xl border px-4 font-medium",
+                  "border-white/15 bg-white/5 hover:bg-white/10",
+                  (!activeNumber || !text.trim() || sending || balanceCents <= 0) && "opacity-50 cursor-not-allowed"
+                )}
+              >
+                {sending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Send className="h-4 w-4" />}
+                Send
+              </button>
+            </div>
+            {balanceCents <= 0 && (
+              <div className="mt-2 text-xs text-amber-300/90">Your balance is $0. Add funds to send messages.</div>
+            )}
+          </div>
+        </section>
+      </div>
+
+      {/* --- PayPal Modal (global) --- */}
       {paypalOpen && (
         <div className="fixed inset-0 z-50 grid place-items-center bg-black/60 p-4">
           <div className="w-full max-w-md rounded-2xl border border-white/10 bg-[#0b0b12] p-4 shadow-2xl">
@@ -671,6 +670,223 @@ export default function MessagesPage() {
           </div>
         </div>
       )}
+    </div>
+  );
+}
+
+/* ---------------- Mobile components ---------------- */
+
+function MobileThreads({
+  threads,
+  balanceDollars,
+  onNew,
+  onOpen,
+  displayForNumber,
+  smallPhoneForNumber,
+  openPayPal,
+}) {
+  return (
+    <div className="h-full flex flex-col bg-white/[0.02]">
+      {/* Header */}
+      <div className="px-4 pt-[12px] pb-2 border-b border-white/10">
+        <div className="text-lg font-semibold">Messages</div>
+        <div className="mt-1 flex items-center justify-between">
+          <div className="text-sm">
+            <span className="text-white/60">Text Balance</span>{" "}
+            <span className="font-semibold">${balanceDollars}</span>
+          </div>
+          <div className="flex gap-2">
+            <button
+              onClick={() => openPayPal(2000)}
+              className="inline-flex items-center gap-1 rounded-md border border-white/15 bg-white/5 px-2 py-1 text-xs hover:bg-white/10"
+              title="Add $20"
+            >
+              <CreditCard className="h-3.5 w-3.5" /> +$20
+            </button>
+            <button
+              onClick={() => openPayPal(5000)}
+              className="inline-flex items-center gap-1 rounded-md border border-white/15 bg-white/5 px-2 py-1 text-xs hover:bg-white/10"
+              title="Add $50"
+            >
+              <CreditCard className="h-3.5 w-3.5" /> +$50
+            </button>
+          </div>
+        </div>
+
+        <div className="mt-2 flex items-center gap-2">
+          <div className="flex-1 relative">
+            <Search className="absolute left-2 top-1/2 -translate-y-1/2 h-4 w-4 text-white/40" />
+            <input
+              placeholder="Search"
+              className="w-full rounded-lg border border-white/15 bg-white/5 pl-8 pr-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-indigo-400/50"
+              onChange={(e) => {
+                const q = e.target.value.toLowerCase();
+                const items = Array.from(document.querySelectorAll("[data-thread-item]"));
+                items.forEach((el) => {
+                  const t = (el.getAttribute("data-search") || "").toLowerCase();
+                  el.style.display = t.includes(q) ? "" : "none";
+                });
+              }}
+            />
+          </div>
+          <button
+            onClick={onNew}
+            className="inline-flex items-center gap-1 rounded-md border border-white/15 bg-white/5 px-2 py-1 text-sm hover:bg-white/10"
+          >
+            <Plus className="h-4 w-4" /> New
+          </button>
+        </div>
+      </div>
+
+      {/* List */}
+      <div id="chat-scroll" className="flex-1 overflow-y-auto px-2 py-2 space-y-1">
+        {threads.length === 0 ? (
+          <div className="p-3 text-xs text-white/50">No conversations yet.</div>
+        ) : (
+          threads.map((t) => {
+            const name = displayForNumber(t.partnerNumber);
+            const small = smallPhoneForNumber(t.partnerNumber);
+            return (
+              <button
+                key={t.partnerNumber}
+                onClick={() => onOpen(t.partnerNumber)}
+                data-thread-item
+                data-search={`${name} ${small} ${t.lastMessage}`}
+                className="w-full rounded-xl border border-white/10 bg-white/[0.03] p-3 text-left hover:bg-white/[0.06]"
+              >
+                <div className="text-sm font-medium truncate">{name}</div>
+                {small ? (
+                  <>
+                    <div className="truncate text-xs text-white/60">{small}</div>
+                    <div className="truncate text-[11px] text-white/40">{t.lastMessage}</div>
+                  </>
+                ) : (
+                  <div className="truncate text-xs text-white/60">{t.lastMessage}</div>
+                )}
+              </button>
+            );
+          })
+        )}
+      </div>
+    </div>
+  );
+}
+
+function MobileChat({
+  activeNumber,
+  conversation,
+  scrollerRef,
+  displayForNumber,
+  smallPhoneForNumber,
+  text,
+  setText,
+  sending,
+  balanceCents,
+  onBack,
+  onRename,
+  onRemove,
+  onSend,
+}) {
+  return (
+    <div className="h-full flex flex-col">
+      {/* Chat header */}
+      <div className="sticky top-0 z-10 border-b border-white/10 bg-white/[0.02] px-2 py-2">
+        <div className="flex items-center gap-2">
+          <button
+            onClick={onBack}
+            className="p-1 rounded-lg border border-white/15 bg-white/5 hover:bg-white/10"
+            aria-label="Back"
+          >
+            <ChevronLeft className="h-5 w-5" />
+          </button>
+          <div className="flex-1">
+            <div className="text-sm font-semibold truncate">{displayForNumber(activeNumber)}</div>
+            {smallPhoneForNumber(activeNumber) && (
+              <div className="text-[11px] text-white/60 truncate">
+                {smallPhoneForNumber(activeNumber)}
+              </div>
+            )}
+          </div>
+          <button
+            onClick={onRename}
+            className="rounded-md border border-white/15 bg-white/5 px-2 py-1 text-[11px] hover:bg-white/10"
+            title="Rename"
+          >
+            <Edit3 className="h-3.5 w-3.5" />
+          </button>
+          <button
+            onClick={onRemove}
+            className="rounded-md border border-rose-400/30 bg-rose-500/10 px-2 py-1 text-[11px] text-rose-200 hover:bg-rose-500/20"
+            title="Remove"
+          >
+            <Trash2 className="h-3.5 w-3.5" />
+          </button>
+        </div>
+      </div>
+
+      {/* Messages */}
+      <div
+        ref={scrollerRef}
+        id="chat-scroll"
+        className="flex-1 overflow-y-auto px-3 py-2 space-y-2"
+      >
+        {conversation.length === 0 ? (
+          <div className="grid h-full place-items-center text-sm text-white/50">No messages yet.</div>
+        ) : (
+          conversation.map((m) => {
+            const isOut = m.direction === "out" || m.direction === "outgoing";
+            return (
+              <div key={m.id} className={classNames("mb-2 flex", isOut ? "justify-end" : "justify-start")}>
+                <div
+                  className={classNames(
+                    "max-w-[82%] rounded-2xl px-3 py-2 text-sm leading-snug ring-1 break-words [overflow-wrap:anywhere]",
+                    isOut
+                      ? "bg-gradient-to-r from-indigo-500/30 via-purple-500/30 to-fuchsia-500/30 ring-indigo-400/30"
+                      : "bg-white/5 ring-white/10"
+                  )}
+                  title={new Date(m.created_at).toLocaleString()}
+                >
+                  <div>{m.body}</div>
+                  {isOut && (
+                    <div className="mt-1 text-[10px] uppercase tracking-wide text-white/50">{m.status}</div>
+                  )}
+                </div>
+              </div>
+            );
+          })
+        )}
+      </div>
+
+      {/* Composer */}
+      <div className="border-t border-white/10 px-3 pt-3 pb-[calc(env(safe-area-inset-bottom)+10px)]">
+        <div className="flex items-end gap-2">
+          <textarea
+            value={text}
+            onChange={(e) => setText(e.target.value)}
+            placeholder="Type a message…"
+            disabled={sending}
+            rows={1}
+            className="min-h-[44px] w-full resize-none rounded-xl border border-white/15 bg-white/5 px-3 py-2 text-base leading-tight placeholder:text-white/40 focus:outline-none focus:ring-1 focus:ring-indigo-400/50 max-h-40"
+          />
+          <button
+            onClick={onSend}
+            disabled={!text.trim() || sending || balanceCents <= 0}
+            className={classNames(
+              "inline-flex h-[44px] items-center gap-2 rounded-xl border px-4 font-medium",
+              "border-white/15 bg-white/5 hover:bg-white/10",
+              (!text.trim() || sending || balanceCents <= 0) && "opacity-50 cursor-not-allowed"
+            )}
+          >
+            {sending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Send className="h-4 w-4" />}
+            Send
+          </button>
+        </div>
+        {balanceCents <= 0 && (
+          <div className="mt-2 text-xs text-amber-300/90">
+            Your balance is $0. Add funds to send messages.
+          </div>
+        )}
+      </div>
     </div>
   );
 }
