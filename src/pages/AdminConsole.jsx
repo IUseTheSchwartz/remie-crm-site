@@ -99,6 +99,16 @@ export default function AdminConsole() {
         backupByUser.set(b.user_id, b.enabled_backup || null);
       });
 
+      // 7) Lead Rescue flags (source of truth)
+      const { data: lr, error: lrErr } = await supabase
+        .from("lead_rescue_settings")
+        .select("user_id, enabled");
+      if (lrErr) throw lrErr;
+      const leadRescueByUser = new Map();
+      (lr || []).forEach((r) => {
+        leadRescueByUser.set(r.user_id, Boolean(r.enabled));
+      });
+
       // Merge into rows
       const merged = (profiles || []).map((p) => {
         const teamId = ownerToTeam.get(p.user_id) || null;
@@ -114,6 +124,10 @@ export default function AdminConsole() {
           : true; // treat empty as locked
         const templates_locked = allOff;
 
+        const lead_rescue_enabled = leadRescueByUser.has(p.user_id)
+          ? leadRescueByUser.get(p.user_id)
+          : true; // default ON if no row yet
+
         return {
           id: p.user_id,
           full_name: p.full_name || "",
@@ -121,6 +135,7 @@ export default function AdminConsole() {
           team_id: teamId,
           seats_purchased: seatsPurchased,
           balance_cents: balance,
+          lead_rescue_enabled,
           templates_locked,
           created_at: p.created_at,
           // raw blobs for lock/unlock logic
@@ -149,6 +164,17 @@ export default function AdminConsole() {
     setSaving(true);
     setErr("");
     try {
+      // 0) Lead Rescue enable/disable -> upsert into lead_rescue_settings
+      {
+        const { error } = await supabase
+          .from("lead_rescue_settings")
+          .upsert(
+            [{ user_id: row.id, enabled: !!row.lead_rescue_enabled }],
+            { onConflict: "user_id" }
+          );
+        if (error) throw error;
+      }
+
       // 1) Seats -> call RPC (works even if team_seat_counts is a view)
       if (row.team_id != null) {
         const { error: seatsErr } = await supabase.rpc("admin_set_team_seats", {
@@ -237,7 +263,18 @@ export default function AdminConsole() {
     try {
       const batched = [...rows];
 
-      // a) seats via RPC (per row; view-safe)
+      // a) lead rescue flags (upsert)
+      for (const r of batched) {
+        const { error } = await supabase
+          .from("lead_rescue_settings")
+          .upsert(
+            [{ user_id: r.id, enabled: !!r.lead_rescue_enabled }],
+            { onConflict: "user_id" }
+          );
+        if (error) throw error;
+      }
+
+      // b) seats via RPC (per row; view-safe)
       for (const r of batched) {
         if (r.team_id == null) continue;
         const { error } = await supabase.rpc("admin_set_team_seats", {
@@ -247,7 +284,7 @@ export default function AdminConsole() {
         if (error) throw error;
       }
 
-      // b) wallet upserts
+      // c) wallet upserts
       const walletPayload = batched.map((r) => ({
         user_id: r.id,
         balance_cents: Number(r.balance_cents) || 0,
@@ -259,7 +296,7 @@ export default function AdminConsole() {
         if (error) throw error;
       }
 
-      // c) templates lock/unlock respecting backup
+      // d) templates lock/unlock respecting backup
       for (const r of batched) {
         const enabled = r._enabled || {};
         const templates = r._templates || {};
@@ -346,8 +383,10 @@ export default function AdminConsole() {
             <tr>
               <th className="px-3 py-2 text-left text-white/70">User</th>
               <th className="px-3 py-2 text-left text-white/70">Email</th>
+              <th className="px-3 py-2 text-left text-white/70">Team ID</th>
               <th className="px-3 py-2 text-left text-white/70">Seats Purchased</th>
               <th className="px-3 py-2 text-left text-white/70">Balance ($)</th>
+              <th className="px-3 py-2 text-left text-white/70">Lead Rescue</th>
               <th className="px-3 py-2 text-left text-white/70">Templates Locked</th>
               <th className="px-3 py-2 text-left text-white/70">Actions</th>
             </tr>
@@ -359,13 +398,15 @@ export default function AdminConsole() {
                 <tr key={r.id} className="border-t border-white/10">
                   <td className="px-3 py-2">{r.full_name || "—"}</td>
                   <td className="px-3 py-2 text-white/80">{r.email || "—"}</td>
+                  <td className="px-3 py-2 text-white/60 text-[11px]">{r.team_id || "—"}</td>
                   <td className="px-3 py-2">
                     <input
                       type="number"
                       min={0}
                       value={r.seats_purchased ?? 0}
+                      disabled={!r.team_id}
                       onChange={(e) => patchRow(r.id, { seats_purchased: Number(e.target.value) })}
-                      className="w-24 rounded-md border border-white/15 bg-black/40 px-2 py-1 outline-none focus:ring-2 focus:ring-indigo-500/40"
+                      className="w-24 rounded-md border border-white/15 bg-black/40 px-2 py-1 outline-none focus:ring-2 focus:ring-indigo-500/40 disabled:opacity-50"
                     />
                   </td>
                   <td className="px-3 py-2">
@@ -381,6 +422,16 @@ export default function AdminConsole() {
                         className="w-28 rounded-md border border-white/15 bg-black/40 px-2 py-1 outline-none focus:ring-2 focus:ring-indigo-500/40"
                       />
                     </div>
+                  </td>
+                  <td className="px-3 py-2">
+                    <label className="inline-flex items-center gap-2">
+                      <input
+                        type="checkbox"
+                        checked={!!r.lead_rescue_enabled}
+                        onChange={(e) => patchRow(r.id, { lead_rescue_enabled: e.target.checked })}
+                      />
+                      <span className="text-white/80">Enabled</span>
+                    </label>
                   </td>
                   <td className="px-3 py-2">
                     <label className="inline-flex items-center gap-2">
@@ -406,7 +457,7 @@ export default function AdminConsole() {
 
             {rows.length === 0 && !fetching && (
               <tr>
-                <td className="px-3 py-6 text-center text-white/60" colSpan={6}>
+                <td className="px-3 py-6 text-center text-white/60" colSpan={8}>
                   No users found.
                 </td>
               </tr>
@@ -416,6 +467,7 @@ export default function AdminConsole() {
       </div>
 
       <p className="text-xs text-white/50">
+        Lead Rescue toggle is stored in <code>lead_rescue_settings.enabled</code> (upserted on save).
         Locked = all templates disabled. We keep the prior state in{" "}
         <code>message_templates_backup</code> so unlocking restores exactly what they had.
       </p>
