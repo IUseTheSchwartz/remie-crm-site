@@ -162,20 +162,23 @@ async function alreadySentRecently(userId, toNumberE164, minutes = 10) {
   return (data && data.length > 0);
 }
 
-// 💳 HARD-CODED balance lookup (text_wallets.balance_cents)
+// 💳 balance lookup (user_wallets.balance_cents)
 async function getBalanceCents(userId) {
   try {
     const { data, error } = await supabase
-      .from("text_wallets")
+      .from("user_wallets")
       .select("balance_cents")
       .eq("user_id", userId)
       .single();
     if (error) throw error;
     const n = Number(data?.balance_cents ?? 0);
     if (!Number.isNaN(n)) return Math.floor(n);
-  } catch {}
+  } catch (e) {
+    console.error("[getBalanceCents] lookup failed:", e.message || e);
+  }
   return 0;
 }
+
 
 // --- templates → send helper (wallet-gated; skip if recently sent; schema-aligned logging) ---
 function renderTemplate(tpl, ctx) {
