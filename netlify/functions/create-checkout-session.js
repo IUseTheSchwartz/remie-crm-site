@@ -6,29 +6,49 @@ export async function handler(event) {
     if (event.httpMethod !== "POST") {
       return { statusCode: 405, body: "Method Not Allowed" };
     }
+
     const stripe = new Stripe(process.env.STRIPE_SECRET_KEY);
 
-    const { priceId, userId, email, successUrl, cancelUrl } = JSON.parse(event.body || "{}");
+    const body = JSON.parse(event.body || "{}");
+    const {
+      priceId,
+      userId,
+      email,
+      successUrl,
+      cancelUrl,
+      trial,          // boolean
+      trialDays,      // optional, prefer 7 if provided/undefined
+    } = body;
+
     if (!priceId || !email || !userId) {
       return { statusCode: 400, body: "Missing priceId, email, or userId" };
     }
 
-    // Find or create customer by email; stamp metadata.user_id (like your old code)
+    // Find or create customer by email; stamp metadata.user_id
     const customers = await stripe.customers.list({ email, limit: 1 });
     const existing = customers.data?.[0];
     const customer = existing
       ? await stripe.customers.update(existing.id, { metadata: { user_id: userId } })
       : await stripe.customers.create({ email, metadata: { user_id: userId } });
 
-    // Create subscription checkout; add app_user_id so the webhook can map instantly
+    // Build subscription_data; include trial only when requested
+    const subData = {
+      metadata: { app_user_id: userId },
+    };
+    if (trial === true) {
+      subData.trial_period_days = Number.isFinite(trialDays) ? Number(trialDays) : 7; // ✅ enforce 7 by default
+    }
+
     const session = await stripe.checkout.sessions.create({
       mode: "subscription",
       customer: customer.id,
       line_items: [{ price: priceId, quantity: 1 }],
-      success_url: successUrl || (process.env.SITE_URL || "https://example.com") + "/app/settings",
-      cancel_url: cancelUrl || (process.env.SITE_URL || "https://example.com") + "/",
+      success_url:
+        successUrl || (process.env.SITE_URL || "https://example.com") + "/app/settings",
+      cancel_url:
+        cancelUrl || (process.env.SITE_URL || "https://example.com") + "/",
       allow_promotion_codes: true,
-      subscription_data: { metadata: { app_user_id: userId } },
+      subscription_data: subData,
       metadata: { app_user_id: userId },
     });
 
