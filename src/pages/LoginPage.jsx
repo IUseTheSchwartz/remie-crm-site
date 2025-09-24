@@ -15,8 +15,8 @@ export default function LoginPage() {
   const nav = useNavigate();
   const loc = useLocation();
   const [params] = useSearchParams();
-  const next = params.get("next");           // e.g. "start-trial"
-  const priceFromQuery = params.get("price");// explicit price id (optional)
+  const next = params.get("next");            // e.g. "start-trial"
+  const priceFromQuery = params.get("price"); // explicit price id (optional)
 
   const from = loc.state?.from?.pathname || "/app";
 
@@ -24,6 +24,14 @@ export default function LoginPage() {
   const [password, setPassword] = useState("");
   const [err, setErr] = useState("");
   const [loading, setLoading] = useState(false);
+
+  // Build the "Create an account" link (preserves trial intent + price)
+  const signupLink = (() => {
+    const q = new URLSearchParams();
+    if (next === "start-trial") q.set("next", "start-trial");
+    if (priceFromQuery) q.set("price", priceFromQuery);
+    return q.toString() ? `/signup?${q.toString()}` : "/signup";
+  })();
 
   const handleSubmit = async (e) => {
     e.preventDefault();
@@ -102,15 +110,7 @@ export default function LoginPage() {
 
         <div className="mt-4 text-center text-sm text-white/70">
           New here?{" "}
-          <Link
-            to={() => {
-              const q = new URLSearchParams();
-              if (next === "start-trial") q.set("next", "start-trial");
-              if (priceFromQuery) q.set("price", priceFromQuery);
-              return q.toString() ? `/signup?${q.toString()}` : "/signup";
-            }()}
-            className="underline"
-          >
+          <Link to={signupLink} className="underline">
             Create an account
           </Link>
         </div>
