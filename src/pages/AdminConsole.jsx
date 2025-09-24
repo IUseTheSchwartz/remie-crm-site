@@ -1,5 +1,5 @@
 // File: src/pages/AdminConsole.jsx
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { supabase } from "../lib/supabaseClient.js";
 import useIsAdminAllowlist from "../hooks/useIsAdminAllowlist.js";
 
@@ -20,21 +20,94 @@ export default function AdminConsole() {
   const [saving, setSaving] = useState(false);
   const [err, setErr] = useState("");
 
-  // ---- fetch users from your profiles table ----
+  // --- Load & merge across tables ---
   async function load() {
     setFetching(true);
     setErr("");
+
     try {
-      // Adjust columns/table names to match your schema
-      const { data, error } = await supabase
-        .from("profiles")
-        .select("id, email, full_name, seats, balance_cents, templates_locked, created_at")
+      // 1) Base list of users
+      const { data: profiles, error: pErr } = await supabase
+        .from("agent_profiles")
+        .select("user_id, email, full_name, created_at")
         .order("created_at", { ascending: false })
-        .limit(200);
-      if (error) throw error;
-      setRows(data || []);
+        .limit(1000);
+      if (pErr) throw pErr;
+
+      // 2) Map owner -> team
+      //    (If you have many teams not owned by users you care about, you can filter by owner_id IN (...users))
+      const { data: teams, error: tErr } = await supabase
+        .from("teams")
+        .select("id, owner_id");
+      if (tErr) throw tErr;
+      const ownerToTeam = new Map();
+      (teams || []).forEach((t) => {
+        if (t?.owner_id && t?.id && !ownerToTeam.has(t.owner_id)) {
+          ownerToTeam.set(t.owner_id, t.id);
+        }
+      });
+
+      // 3) Seats for each team
+      const { data: seatRows, error: sErr } = await supabase
+        .from("team_seat_counts")
+        .select("team_id, seats"); // <-- if your column is seat_count, change to 'seat_count'
+      if (sErr) throw sErr;
+      const teamSeats = new Map();
+      (seatRows || []).forEach((r) => {
+        if (!r) return;
+        // If your column is seat_count, change r.seats -> r.seat_count
+        teamSeats.set(r.team_id, Number(r.seats ?? 0));
+      });
+
+      // 4) Wallet balances
+      const { data: wallets, error: wErr } = await supabase
+        .from("user_wallets")
+        .select("user_id, balance_cents");
+      if (wErr) throw wErr;
+      const walletByUser = new Map();
+      (wallets || []).forEach((w) => {
+        walletByUser.set(w.user_id, Number(w.balance_cents ?? 0));
+      });
+
+      // 5) Templates enabled flags (aggregate per user)
+      //    We'll fetch user_id+enabled, then compute enabled_count by user.
+      const { data: tmpl, error: mtErr } = await supabase
+        .from("message_templates")
+        .select("user_id, enabled");
+      if (mtErr) throw mtErr;
+
+      const enabledCountByUser = new Map();
+      (tmpl || []).forEach((m) => {
+        const uid = m.user_id;
+        if (!uid) return;
+        const cur = enabledCountByUser.get(uid) || 0;
+        enabledCountByUser.set(uid, cur + (m.enabled ? 1 : 0));
+      });
+
+      // Merge all into a unified row per user
+      const merged = (profiles || []).map((p) => {
+        const teamId = ownerToTeam.get(p.user_id) || null;
+        const seats = teamId ? (teamSeats.get(teamId) ?? 0) : 0;
+        const balance_cents = walletByUser.get(p.user_id) ?? 0;
+        const enabledCount = enabledCountByUser.get(p.user_id) ?? 0;
+        // locked = NO templates enabled
+        const templates_locked = enabledCount === 0;
+
+        return {
+          id: p.user_id, // stable key we use for updates
+          full_name: p.full_name || "",
+          email: p.email || "",
+          team_id: teamId,
+          seats,
+          balance_cents,
+          templates_locked,
+          created_at: p.created_at,
+        };
+      });
+
+      setRows(merged);
     } catch (e) {
-      setErr(e.message || "Failed to load users");
+      setErr(e.message || "Failed to load admin data");
     } finally {
       setFetching(false);
     }
@@ -42,26 +115,44 @@ export default function AdminConsole() {
 
   useEffect(() => { if (isAdmin) load(); }, [isAdmin]);
 
-  // ---- optimistic update helper ----
   function patchRow(id, patch) {
-    setRows((prev) => prev.map(r => r.id === id ? { ...r, ...patch } : r));
+    setRows((prev) => prev.map((r) => (r.id === id ? { ...r, ...patch } : r)));
   }
 
-  // ---- persist changes for a single user ----
+  // --- Persist a single row back to the right tables ---
   async function saveRow(row) {
     setSaving(true);
     setErr("");
     try {
-      const update = {
-        seats: Number(row.seats) || 0,
-        balance_cents: Number(row.balance_cents) || 0,
-        templates_locked: !!row.templates_locked,
-      };
-      const { error } = await supabase
-        .from("profiles")
-        .update(update)
-        .eq("id", row.id);
-      if (error) throw error;
+      // 1) Seats -> team_seat_counts (requires team_id)
+      if (row.team_id != null) {
+        const { error: seatsErr } = await supabase
+          .from("team_seat_counts")
+          .update({ seats: Number(row.seats) || 0 }) // <-- if your column is seat_count, change to { seat_count: ... }
+          .eq("team_id", row.team_id);
+        if (seatsErr) throw seatsErr;
+      }
+
+      // 2) Balance -> user_wallets
+      {
+        const { error: wErr } = await supabase
+          .from("user_wallets")
+          .update({ balance_cents: Number(row.balance_cents) || 0 })
+          .eq("user_id", row.id);
+        if (wErr) throw wErr;
+      }
+
+      // 3) Templates lock -> message_templates (bulk)
+      //    locked=true  => set enabled=false for all that user
+      //    locked=false => set enabled=true  for all that user
+      {
+        const setEnabled = !row.templates_locked;
+        const { error: mtErr } = await supabase
+          .from("message_templates")
+          .update({ enabled: setEnabled })
+          .eq("user_id", row.id);
+        if (mtErr) throw mtErr;
+      }
     } catch (e) {
       setErr(e.message || "Failed to save");
     } finally {
@@ -69,19 +160,55 @@ export default function AdminConsole() {
     }
   }
 
-  // ---- bulk save all visible rows (optional) ----
+  // --- Optional: bulk save all visible rows ---
   async function saveAll() {
     setSaving(true);
     setErr("");
     try {
-      const updates = rows.map(r => ({
-        id: r.id,
-        seats: Number(r.seats) || 0,
+      // Do each write type in small batches. This keeps it simple and explicit.
+      const batched = [...rows];
+
+      // a) seats (only where team_id exists)
+      const seatsUpdates = batched
+        .filter((r) => r.team_id != null)
+        .map((r) => ({
+          team_id: r.team_id,
+          seats: Number(r.seats) || 0, // or seat_count
+        }));
+      if (seatsUpdates.length) {
+        // No upsert because we only want to update existing rows by team_id.
+        // Run updates one by one to keep it safe (simplest).
+        for (const u of seatsUpdates) {
+          const { error } = await supabase
+            .from("team_seat_counts")
+            .update({ seats: u.seats })
+            .eq("team_id", u.team_id);
+          if (error) throw error;
+        }
+      }
+
+      // b) wallet balances
+      const walletUpdates = batched.map((r) => ({
+        user_id: r.id,
         balance_cents: Number(r.balance_cents) || 0,
-        templates_locked: !!r.templates_locked,
       }));
-      const { error } = await supabase.from("profiles").upsert(updates);
-      if (error) throw error;
+      for (const u of walletUpdates) {
+        const { error } = await supabase
+          .from("user_wallets")
+          .update({ balance_cents: u.balance_cents })
+          .eq("user_id", u.user_id);
+        if (error) throw error;
+      }
+
+      // c) templates lock
+      for (const r of batched) {
+        const setEnabled = !r.templates_locked;
+        const { error } = await supabase
+          .from("message_templates")
+          .update({ enabled: setEnabled })
+          .eq("user_id", r.id);
+        if (error) throw error;
+      }
     } catch (e) {
       setErr(e.message || "Failed to save all");
     } finally {
@@ -197,9 +324,8 @@ export default function AdminConsole() {
       </div>
 
       <p className="text-xs text-white/50">
-        Tip: “Templates Locked” can be used to disable a user’s templates while you’re pushing updates.
+        Locked = all templates disabled (we set <code>enabled=false</code> on every template for that user).
       </p>
     </div>
   );
 }
-AdminConsole.jsx
