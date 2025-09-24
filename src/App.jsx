@@ -324,25 +324,39 @@ function PartnersGrid() {
 function PartnerCTA() {
   return (
     <section className="relative z-10 mx-auto max-w-5xl px-6 pb-14">
-      <div className="rounded-2xl p-6 sm:p-8 bg-gradient-to-br from-indigo-600/60 via-purple-600/60 to-fuchsia-600/60 text-white ring-1 ring-white/10 border border-white/10">
-        <h3 className="text-2xl font-semibold">Become a Partner (50% off)</h3>
-        <p className="mt-2 opacity-95">
-          Get <strong>50% off</strong> your subscription when you join our partner program.
-        </p>
-        <ul className="mt-4 space-y-1 text-sm opacity-95">
-          <li>• Minimum <strong>500 Instagram followers</strong></li>
-          <li>• Promote the CRM at least <strong>2× per month</strong> on your story</li>
-        </ul>
+      {/* subtle background halo */}
+      <div className="pointer-events-none absolute inset-0 -z-10">
+        <div className="mx-auto h-56 w-[85%] rounded-[2rem] bg-gradient-to-br from-indigo-600/20 via-purple-600/15 to-fuchsia-600/20 blur-2xl" />
+      </div>
 
-        <a
-          href="https://instagram.com/jprietocloses"
-          target="_blank"
-          rel="noopener noreferrer"
-          className="mt-5 inline-flex items-center gap-2 rounded-xl bg-white/10 px-4 py-2 ring-1 ring-white/30 hover:bg-white/15"
-        >
-          <Instagram className="h-5 w-5" />
-          <span>DM “PARTNER” to @jprietocloses</span>
-        </a>
+      <div className="rounded-3xl border border-white/10 bg-white/[0.05] p-6 sm:p-8 ring-1 ring-white/5 backdrop-blur">
+        <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+          <div>
+            <h3 className="text-xl sm:text-2xl font-semibold">Become a Partner</h3>
+            <p className="mt-1 text-white/70">
+              Get <span className="font-medium text-white">50% off</span> your subscription.
+            </p>
+            <ul className="mt-3 space-y-1 text-sm text-white/75">
+              <li>• Minimum <span className="font-medium">500 Instagram followers</span></li>
+              <li>• Share us on your story at least <span className="font-medium">2× / month</span></li>
+            </ul>
+          </div>
+
+          <a
+            href="https://instagram.com/jprietocloses"
+            target="_blank"
+            rel="noopener noreferrer"
+            className="group inline-flex items-center gap-2 rounded-2xl px-4 py-2 text-sm font-medium
+                       bg-white/5 hover:bg-white/10 transition
+                       ring-1 ring-white/10 hover:ring-white/20"
+          >
+            <span className="inline-grid place-items-center rounded-xl p-1.5
+                             ring-1 ring-white/15 bg-gradient-to-br from-indigo-500/20 via-purple-500/20 to-fuchsia-500/20">
+              <Instagram className="h-5 w-5" />
+            </span>
+            <span className="tracking-tight">DM “PARTNER” to @jprietocloses</span>
+          </a>
+        </div>
       </div>
     </section>
   );
