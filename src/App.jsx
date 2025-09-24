@@ -17,7 +17,7 @@ import {
 import ProtectedRoute from "./components/ProtectedRoute.jsx";
 import { AuthProvider, useAuth } from "./auth.jsx";
 import LoginPage from "./pages/LoginPage.jsx";
-import SignupPage from "./pages/SignupPage.jsx"; // ✅ FIX: real signup page
+import SignupPage from "./pages/SignupPage.jsx"; // ✅ FIX: point to the real signup page
 import AgentPublic from "./pages/AgentPublic.jsx";
 import AcceptInvite from "./pages/AcceptInvite.jsx";
 
@@ -290,7 +290,7 @@ function LandingPage() {
             <a href="#contact" className="text-sm opacity-80 hover:opacity-100">Contact</a>
             <Link to="/login" className="text-sm opacity-80 hover:opacity-100">Log in</Link>
             <Link
-              to="/signup"
+              to="/signup?next=start-trial" // ✅ pass the handoff flag
               className={`hidden rounded-xl bg-gradient-to-r from-indigo-500 via-purple-500 to-fuchsia-500 px-4 py-2 text-sm font-medium ring-1 ring-white/10 md:block`}
             >
               Start 7-day free trial
