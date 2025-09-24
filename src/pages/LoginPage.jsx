@@ -1,10 +1,9 @@
 // File: src/pages/LoginPage.jsx
 import { useState } from "react";
 import { Link, useLocation, useNavigate, useSearchParams } from "react-router-dom";
-// import { Zap } from "lucide-react"; // no longer used
 import { useAuth } from "../auth.jsx";
 import { startTrialCheckout, getPriceId } from "../lib/billing.js";
-import Logo from "../assets/logo-tight.png"; // ✅ use your trimmed logo
+import Logo from "../assets/logo-tight.png";
 
 const BRAND = {
   name: "Remie CRM",
@@ -16,7 +15,8 @@ export default function LoginPage() {
   const nav = useNavigate();
   const loc = useLocation();
   const [params] = useSearchParams();
-  const next = params.get("next"); // e.g. "start-trial"
+  const next = params.get("next");           // e.g. "start-trial"
+  const priceFromQuery = params.get("price");// explicit price id (optional)
 
   const from = loc.state?.from?.pathname || "/app";
 
@@ -32,20 +32,18 @@ export default function LoginPage() {
     try {
       await login({ email, password });
 
-      // If this login was initiated by the Free Trial CTA, immediately start the trial
       if (next === "start-trial") {
         try {
-          await startTrialCheckout(getPriceId());
-          // startTrialCheckout redirects to Stripe; no further code runs
-          return;
+          // Prefer the explicit price if it was passed; else fallback to env
+          await startTrialCheckout(priceFromQuery || getPriceId());
+          return; // will redirect to Stripe
         } catch (e) {
           console.error(e);
           alert(e.message || "Could not start your trial. Please try again.");
-          // Fallback to normal navigation if something goes wrong
+          // fall through to normal navigation
         }
       }
 
-      // Normal post-login navigation
       nav(from, { replace: true });
     } catch (e) {
       setErr(e.message || "Login failed");
@@ -58,7 +56,6 @@ export default function LoginPage() {
     <div className="min-h-screen grid place-items-center bg-neutral-950 text-white px-6">
       <div className="w-full max-w-md rounded-3xl border border-white/10 bg-white/[0.03] p-6 ring-1 ring-white/5">
         <div className="mb-4 flex items-center gap-3">
-          {/* ⬇️ no gradient circle; just the logo */}
           <div className="grid h-9 w-9 place-items-center">
             <img src={Logo} alt="Logo" className="h-9 w-9 object-contain" />
           </div>
@@ -70,7 +67,7 @@ export default function LoginPage() {
 
         {next === "start-trial" && (
           <div className="mt-3 rounded-xl border border-white/10 bg-white/[0.04] p-3 text-xs text-white/80">
-            After you log in, we’ll automatically start your 14-day trial.
+            After you log in, we’ll automatically start your <strong>7-day</strong> trial.
           </div>
         )}
 
@@ -106,7 +103,12 @@ export default function LoginPage() {
         <div className="mt-4 text-center text-sm text-white/70">
           New here?{" "}
           <Link
-            to={next === "start-trial" ? "/signup?next=start-trial" : "/signup"}
+            to={() => {
+              const q = new URLSearchParams();
+              if (next === "start-trial") q.set("next", "start-trial");
+              if (priceFromQuery) q.set("price", priceFromQuery);
+              return q.toString() ? `/signup?${q.toString()}` : "/signup";
+            }()}
             className="underline"
           >
             Create an account
