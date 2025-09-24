@@ -21,6 +21,14 @@ export default function SignupPage() {
   const [err, setErr] = useState("");
   const [ok, setOk] = useState("");
 
+  // Build the "Log in" link (preserves trial intent + price)
+  const loginLink = (() => {
+    const q = new URLSearchParams();
+    if (next === "start-trial") q.set("next", "start-trial");
+    if (price) q.set("price", price);
+    return q.toString() ? `/login?${q.toString()}` : "/login";
+  })();
+
   const handleSubmit = async (e) => {
     e.preventDefault();
     setErr(""); setOk("");
@@ -28,13 +36,7 @@ export default function SignupPage() {
       await signup({ email, password });
       setOk("Check your email to confirm your account, then log in.");
 
-      // forward the trial intent + price to login
-      const q = new URLSearchParams();
-      if (next === "start-trial") q.set("next", "start-trial");
-      if (price) q.set("price", price);
-
-      const target = q.toString() ? `/login?${q.toString()}` : "/login";
-      setTimeout(() => nav(target), 1200);
+      setTimeout(() => nav(loginLink), 1200);
     } catch (e) {
       setErr(e.message || "Signup failed");
     }
@@ -85,15 +87,7 @@ export default function SignupPage() {
 
         <div className="mt-4 text-center text-sm text-white/70">
           Already have an account?{" "}
-          <Link
-            to={() => {
-              const q = new URLSearchParams();
-              if (next === "start-trial") q.set("next", "start-trial");
-              if (price) q.set("price", price);
-              return q.toString() ? `/login?${q.toString()}` : "/login";
-            }()}
-            className="underline"
-          >
+          <Link to={loginLink} className="underline">
             Log in
           </Link>
         </div>
