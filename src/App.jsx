@@ -17,7 +17,7 @@ import {
 import ProtectedRoute from "./components/ProtectedRoute.jsx";
 import { AuthProvider, useAuth } from "./auth.jsx";
 import LoginPage from "./pages/LoginPage.jsx";
-import SignupPage from "./pages/LoginPage.jsx"; // keeping exactly what you had
+import SignupPage from "./pages/SignupPage.jsx"; // ✅ FIX: real signup page
 import AgentPublic from "./pages/AgentPublic.jsx";
 import AcceptInvite from "./pages/AcceptInvite.jsx";
 
@@ -293,7 +293,7 @@ function LandingPage() {
               to="/signup"
               className={`hidden rounded-xl bg-gradient-to-r from-indigo-500 via-purple-500 to-fuchsia-500 px-4 py-2 text-sm font-medium ring-1 ring-white/10 md:block`}
             >
-              Start 14-day free trial
+              Start 7-day free trial
             </Link>
           </div>
         </nav>
