@@ -1,10 +1,18 @@
 // netlify/functions/gsheet-webhook.js
 const crypto = require("crypto");
-const fetch = require("node-fetch"); // <-- ensure fetch exists in runtime
+const fetch = require("node-fetch"); // ensure fetch exists
 const { getServiceClient } = require("./_supabase");
 
 // Create service client (uses SUPABASE_URL + SUPABASE_SERVICE_ROLE or SUPABASE_SERVICE_ROLE_KEY)
 const supabase = getServiceClient();
+
+// --- config: tag → template mapping ---
+const TAG_TEMPLATE_MAP = {
+  military: "new_lead_military",
+  // add more here if you like:
+  // spanish: "new_lead_es",
+  // preneed: "new_lead_preneed",
+};
 
 function timingSafeEqual(a, b) {
   const A = Buffer.from(a || "", "utf8");
@@ -179,17 +187,43 @@ async function getBalanceCents(userId) {
   return 0;
 }
 
-
 // --- templates → send helper (wallet-gated; skip if recently sent; schema-aligned logging) ---
 function renderTemplate(tpl, ctx) {
   return String(tpl || "").replace(/\{\{\s*([a-zA-Z0-9_]+)\s*\}\}/g, (_, k) => S(ctx[k]));
+}
+
+// decide template key from tags / lead info
+async function chooseTemplateKey({ userId, contactId, lead }) {
+  // default
+  let key = "new_lead";
+
+  // Prefer explicit military flag on lead
+  if (S(lead.military_branch)) return TAG_TEMPLATE_MAP.military || key;
+
+  // Otherwise look at contact tags (if we have the id)
+  try {
+    if (contactId) {
+      const { data: c } = await supabase
+        .from("message_contacts")
+        .select("tags")
+        .eq("id", contactId)
+        .single();
+      const tags = Array.isArray(c?.tags) ? c.tags.map(t => String(t).toLowerCase()) : [];
+      for (const t of tags) {
+        const mapped = TAG_TEMPLATE_MAP[normalizeTag(t)];
+        if (mapped) return mapped;
+      }
+    }
+  } catch {}
+
+  return key;
 }
 
 /**
  * 1) Pre-check wallet (no negative)
  * 2) Skip sending if we've already sent to this number in the last 10 min
  * 3) Insert first (debit trigger), then send; mark 'sent' or 'error'
- *    + strong idempotency via provider_message_id = `lead:{leadId}:tpl:new_lead`
+ *    + strong idempotency via provider_message_id = `lead:{leadId}:tpl:{template_key}`
  */
 async function trySendNewLeadText({ userId, leadId, contactId, lead }) {
   // 1) Phone
@@ -201,7 +235,6 @@ async function trySendNewLeadText({ userId, leadId, contactId, lead }) {
   const TELNYX_API_KEY = process.env.TELNYX_API_KEY;
   const TELNYX_MESSAGING_PROFILE_ID = getMessagingProfileId();
   const FROM_NUMBER_ANY = getFromNumber();
-  // Require API key, plus at least one routing path
   if (!TELNYX_API_KEY || (!TELNYX_MESSAGING_PROFILE_ID && !FROM_NUMBER_ANY)) {
     return {
       ok: false,
@@ -214,7 +247,10 @@ async function trySendNewLeadText({ userId, leadId, contactId, lead }) {
     };
   }
 
-  // 3) Template + agent profile
+  // 3) Determine template key from tags / lead
+  const template_key = await chooseTemplateKey({ userId, contactId, lead });
+
+  // 4) Load template + agent profile
   const { data: trow, error: terr } = await supabase
     .from("message_templates")
     .select("templates")
@@ -222,7 +258,6 @@ async function trySendNewLeadText({ userId, leadId, contactId, lead }) {
     .single();
   if (terr) return { ok: false, reason: "template_load_error", detail: terr.message };
 
-  const template_key = "new_lead"; // currently fixed; can map from tags later if needed
   const tpl = trow?.templates?.[template_key];
   if (!tpl) return { ok: false, reason: "template_not_found", template_key };
 
@@ -233,19 +268,19 @@ async function trySendNewLeadText({ userId, leadId, contactId, lead }) {
     .single();
   if (aerr) return { ok: false, reason: "agent_profile_missing", detail: aerr.message };
 
-  // 3.5) 💳 Pre-check wallet (soft guard; prevents negative)
+  // 4.5) 💳 Pre-check wallet
   const COST_CENTS = 1;
   const balance = await getBalanceCents(userId);
   if (balance < COST_CENTS) {
     return { ok: false, reason: "insufficient_balance", balance_cents: balance };
   }
 
-  // 3.6) ⛔ Double-send guard (10 min window)
+  // 4.6) ⛔ Double-send guard (10 min)
   if (await alreadySentRecently(userId, to, 10)) {
     return { ok: true, skipped: true, reason: "already_sent_recently" };
   }
 
-  // Prefer the beneficiary *name*; expose legacy + explicit keys
+  // Build text body
   const beneficiary_name = S(lead.beneficiary_name) || S(lead.beneficiary);
   const vars = {
     first_name: S(lead.name).split(" ")[0] || "",
@@ -254,14 +289,14 @@ async function trySendNewLeadText({ userId, leadId, contactId, lead }) {
     calendly_link: agent?.calendly_url || "",
     state: S(lead.state),
     beneficiary: beneficiary_name,
-    beneficiary_name: beneficiary_name,
+    beneficiary_name,
   };
   const text = renderTemplate(tpl, vars);
 
-  // Strong idempotency key for this lead + template
+  // Strong idempotency key includes template
   const dedupeKey = `lead:${leadId || "n/a"}:tpl:${template_key}`;
 
-  // Pre-check for a prior send with this dedupe key (strong idempotency)
+  // Pre-check for a prior send with this dedupe key
   try {
     const { data: dupe } = await supabase
       .from("messages")
@@ -272,9 +307,9 @@ async function trySendNewLeadText({ userId, leadId, contactId, lead }) {
     if (dupe && dupe.length) {
       return { ok: true, skipped: true, reason: "deduped_by_provider_message_id", provider_message_id: dedupeKey };
     }
-  } catch (_) {}
+  } catch {}
 
-  // PHASE 1: Insert first → AFTER INSERT debit trigger handles accounting
+  // PHASE 1: Insert "queued"
   const preRow = {
     user_id: userId,
     contact_id: contactId || null,
@@ -284,11 +319,11 @@ async function trySendNewLeadText({ userId, leadId, contactId, lead }) {
     from_number: FROM_NUMBER_ANY || null,
     to_number: to,
     body: text,
-    status: "queued",     // will flip to 'sent' after Telnyx ok
+    status: "queued",
     segments: 1,
     price_cents: COST_CENTS,
     channel: "sms",
-    provider_message_id: dedupeKey, // store our idempotent key up front
+    provider_message_id: dedupeKey,
   };
 
   const { data: inserted, error: preErr } = await supabase
@@ -298,7 +333,6 @@ async function trySendNewLeadText({ userId, leadId, contactId, lead }) {
     .single();
 
   if (preErr) {
-    // If unique constraint exists on (user_id, provider_message_id), this covers the race
     if ((preErr.message || "").toLowerCase().includes("duplicate")) {
       return { ok: true, skipped: true, reason: "deduped_on_insert", provider_message_id: dedupeKey };
     }
@@ -315,7 +349,7 @@ async function trySendNewLeadText({ userId, leadId, contactId, lead }) {
 
     const resp = await fetch("https://api.telnyx.com/v2/messages", {
       method: "POST",
-      headers: { Authorization: `Bearer ${TELNYX_API_KEY}`, "Content-Type": "application/json" },
+      headers: { Authorization: `Bearer ${process.env.TELNYX_API_KEY}`, "Content-Type": "application/json" },
       body: JSON.stringify(telnyxBody),
     });
     const json = await resp.json().catch(() => ({}));
@@ -330,7 +364,7 @@ async function trySendNewLeadText({ userId, leadId, contactId, lead }) {
 
     const providerId = json?.data?.id || null;
 
-    // PHASE 3: Mark sent + keep our deterministic provider_message_id
+    // PHASE 3: Mark sent
     await supabase
       .from("messages")
       .update({ status: "sent", provider_sid: providerId })
@@ -392,6 +426,8 @@ exports.handler = async (event) => {
       call_attempts: 0,
       last_outcome: "",
       pipeline: {},
+      // military_branch comes straight from payload if present
+      military_branch: U(p.military_branch) ?? null,
     };
 
     const extras = {
@@ -401,7 +437,6 @@ exports.handler = async (event) => {
       beneficiary_relation: U(p.beneficiary_relation),
       company: U(p.company),
       gender: U(p.gender),
-      military_branch: U(p.military_branch),
     };
     const dobMDY = toMDY(p.dob); if (dobMDY) extras.dob = dobMDY;
     for (const [k, v] of Object.entries(extras)) if (v !== undefined) lead[k] = v;
@@ -501,7 +536,7 @@ exports.handler = async (event) => {
       }
     } catch (err) { console.error("contact tag/meta sync failed:", err); }
 
-    // Send (wallet-gated + double-send guard + strong idempotency)
+    // Send (wallet-gated + double-send guard + strong idempotency + tag-aware template)
     let sendRes = null;
     try {
       sendRes = await trySendNewLeadText({
