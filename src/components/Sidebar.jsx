@@ -3,6 +3,7 @@ import { NavLink } from "react-router-dom";
 import { useEffect, useMemo, useState } from "react";
 import { routes } from "../routesConfig.js";
 import { supabase } from "../lib/supabaseClient.js";
+import useIsAdminAllowlist from "../hooks/useIsAdminAllowlist.js"; // ← NEW
 import Logo from "../assets/logo-tight.png";
 
 /* Safe, widely-available Lucide icons */
@@ -23,7 +24,7 @@ import {
   Pencil,
   ExternalLink,
   X,
-  Shield, // ← added for Bootcamp
+  Shield, // ← for Admin Console
 } from "lucide-react";
 
 /* --- Gradient stroke helper (indigo → purple → fuchsia) --- */
@@ -58,10 +59,10 @@ const ICONS = {
   "Edit Agent Site": Pencil,
   "My Teams": Users,
   Contacts: Users,
-  "Lead Rescue": LifeBuoy,     // ✅ Added: gradient LifeBuoy for Lead Rescue
+  "Lead Rescue": LifeBuoy,
   Settings: SettingsIcon,
   Support: LifeBuoy,
-  Bootcamp: Shield,
+  "Admin Console": Shield, // ← NEW
 };
 
 function ItemLink({ r, onNavigate }) {
@@ -241,6 +242,8 @@ function SimpleList({ items, onNavigate }) {
 
 /* Content of the sidebar (used by desktop + mobile) */
 function SidebarContent({ onNavigate }) {
+  const { isAdmin } = useIsAdminAllowlist(); // ← NEW
+
   const sections = useMemo(() => {
     const visible = routes.filter((r) => r.showInSidebar);
     const by = (s) => visible.filter((r) => r.section === s);
@@ -253,6 +256,14 @@ function SidebarContent({ onNavigate }) {
       bottom: by("bottom"),
     };
   }, []);
+
+  // Inject Admin Console into bottom section only for admins
+  const bottomItems = isAdmin
+    ? [
+        { key: "admin-console", path: "/app/admin", label: "Admin Console" },
+        ...sections.bottom,
+      ]
+    : sections.bottom;
 
   return (
     <>
@@ -306,7 +317,7 @@ function SidebarContent({ onNavigate }) {
         <div className="text-xs uppercase tracking-wide text-white/50 px-3 pb-2">
           Account &amp; Help
         </div>
-        <SimpleList items={sections.bottom} onNavigate={onNavigate} />
+        <SimpleList items={bottomItems} onNavigate={onNavigate} />
       </div>
     </>
   );
