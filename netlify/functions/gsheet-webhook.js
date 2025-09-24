@@ -75,6 +75,19 @@ function phoneVariants(raw){
   return Array.from(variants);
 }
 
+// --- ENV fallbacks for Telnyx routing ---
+function getFromNumber() {
+  return (
+    process.env.TELNYX_FROM_NUMBER ||
+    process.env.DEFAULT_FROM_NUMBER ||
+    process.env.TELNYX_FROM ||
+    null
+  );
+}
+function getMessagingProfileId() {
+  return process.env.TELNYX_MESSAGING_PROFILE_ID || null;
+}
+
 // --- contact tag + helpers ---
 async function computeNextContactTags({ supabase, user_id, phone, full_name, military_branch }) {
   const phoneNorm = normalizePhone(phone);
@@ -176,6 +189,7 @@ function renderTemplate(tpl, ctx) {
  * 1) Pre-check wallet (no negative)
  * 2) Skip sending if we've already sent to this number in the last 10 min
  * 3) Insert first (debit trigger), then send; mark 'sent' or 'error'
+ *    + strong idempotency via provider_message_id = `lead:{leadId}:tpl:new_lead`
  */
 async function trySendNewLeadText({ userId, leadId, contactId, lead }) {
   // 1) Phone
@@ -183,12 +197,21 @@ async function trySendNewLeadText({ userId, leadId, contactId, lead }) {
   const to = toE164(lead.phone);
   if (!to) return { ok: false, reason: "invalid_phone", detail: lead.phone };
 
-  // 2) Telnyx env
+  // 2) Telnyx env (allow profile OR from number)
   const TELNYX_API_KEY = process.env.TELNYX_API_KEY;
-  const TELNYX_MESSAGING_PROFILE_ID = process.env.TELNYX_MESSAGING_PROFILE_ID;
-  const FROM_NUMBER = process.env.TELNYX_FROM_NUMBER;
-  if (!TELNYX_API_KEY || !TELNYX_MESSAGING_PROFILE_ID || !FROM_NUMBER) {
-    return { ok: false, reason: "telnyx_env_missing" };
+  const TELNYX_MESSAGING_PROFILE_ID = getMessagingProfileId();
+  const FROM_NUMBER_ANY = getFromNumber();
+  // Require API key, plus at least one routing path
+  if (!TELNYX_API_KEY || (!TELNYX_MESSAGING_PROFILE_ID && !FROM_NUMBER_ANY)) {
+    return {
+      ok: false,
+      reason: "telnyx_env_missing",
+      detail: {
+        have_api_key: !!TELNYX_API_KEY,
+        have_profile: !!TELNYX_MESSAGING_PROFILE_ID,
+        have_from_number: !!FROM_NUMBER_ANY,
+      },
+    };
   }
 
   // 3) Template + agent profile
@@ -235,6 +258,22 @@ async function trySendNewLeadText({ userId, leadId, contactId, lead }) {
   };
   const text = renderTemplate(tpl, vars);
 
+  // Strong idempotency key for this lead + template
+  const dedupeKey = `lead:${leadId || "n/a"}:tpl:${template_key}`;
+
+  // Pre-check for a prior send with this dedupe key (strong idempotency)
+  try {
+    const { data: dupe } = await supabase
+      .from("messages")
+      .select("id")
+      .eq("user_id", userId)
+      .eq("provider_message_id", dedupeKey)
+      .limit(1);
+    if (dupe && dupe.length) {
+      return { ok: true, skipped: true, reason: "deduped_by_provider_message_id", provider_message_id: dedupeKey };
+    }
+  } catch (_) {}
+
   // PHASE 1: Insert first → AFTER INSERT debit trigger handles accounting
   const preRow = {
     user_id: userId,
@@ -242,13 +281,14 @@ async function trySendNewLeadText({ userId, leadId, contactId, lead }) {
     lead_id: leadId || null,
     provider: "telnyx",
     direction: "outgoing",
-    from_number: FROM_NUMBER,
+    from_number: FROM_NUMBER_ANY || null,
     to_number: to,
     body: text,
     status: "queued",     // will flip to 'sent' after Telnyx ok
     segments: 1,
     price_cents: COST_CENTS,
     channel: "sms",
+    provider_message_id: dedupeKey, // store our idempotent key up front
   };
 
   const { data: inserted, error: preErr } = await supabase
@@ -258,6 +298,10 @@ async function trySendNewLeadText({ userId, leadId, contactId, lead }) {
     .single();
 
   if (preErr) {
+    // If unique constraint exists on (user_id, provider_message_id), this covers the race
+    if ((preErr.message || "").toLowerCase().includes("duplicate")) {
+      return { ok: true, skipped: true, reason: "deduped_on_insert", provider_message_id: dedupeKey };
+    }
     return { ok: false, reason: "preinsert_failed", detail: preErr.message };
   }
   const messageId = inserted.id;
@@ -265,16 +309,14 @@ async function trySendNewLeadText({ userId, leadId, contactId, lead }) {
   // PHASE 2: Send via Telnyx
   const clientRef = `c=${contactId || "n/a"}|lead=${leadId || "n/a"}|tpl=${template_key}|ts=${Date.now()}`;
   try {
+    const telnyxBody = { to, text, client_ref: clientRef };
+    if (getMessagingProfileId()) telnyxBody.messaging_profile_id = getMessagingProfileId();
+    if (getFromNumber()) telnyxBody.from = getFromNumber();
+
     const resp = await fetch("https://api.telnyx.com/v2/messages", {
       method: "POST",
       headers: { Authorization: `Bearer ${TELNYX_API_KEY}`, "Content-Type": "application/json" },
-      body: JSON.stringify({
-        from: process.env.TELNYX_FROM_NUMBER,
-        to: to,
-        text,
-        messaging_profile_id: TELNYX_MESSAGING_PROFILE_ID,
-        client_ref: clientRef,
-      }),
+      body: JSON.stringify(telnyxBody),
     });
     const json = await resp.json().catch(() => ({}));
 
@@ -288,13 +330,13 @@ async function trySendNewLeadText({ userId, leadId, contactId, lead }) {
 
     const providerId = json?.data?.id || null;
 
-    // PHASE 3: Mark sent + provider ids
+    // PHASE 3: Mark sent + keep our deterministic provider_message_id
     await supabase
       .from("messages")
-      .update({ status: "sent", provider_sid: providerId, provider_message_id: providerId })
+      .update({ status: "sent", provider_sid: providerId })
       .eq("id", messageId);
 
-    return { ok: true, provider_message_id: providerId, message_id: messageId };
+    return { ok: true, provider_message_id: dedupeKey, message_id: messageId };
   } catch (e) {
     await supabase
       .from("messages")
@@ -458,7 +500,7 @@ exports.handler = async (event) => {
       }
     } catch (err) { console.error("contact tag/meta sync failed:", err); }
 
-    // Send (wallet-gated + double-send guard)
+    // Send (wallet-gated + double-send guard + strong idempotency)
     let sendRes = null;
     try {
       sendRes = await trySendNewLeadText({
