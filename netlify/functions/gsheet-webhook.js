@@ -290,6 +290,11 @@ async function trySendNewLeadText({ userId, leadId, contactId, lead }) {
     state: S(lead.state),
     beneficiary: beneficiary_name,
     beneficiary_name,
+
+    // >>> added so {{military_branch}}, {{branch}}, or {{service_branch}} work
+    military_branch: S(lead.military_branch) || "",
+    branch: S(lead.military_branch) || "",
+    service_branch: S(lead.military_branch) || "",
   };
   const text = renderTemplate(tpl, vars);
 
