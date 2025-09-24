@@ -338,12 +338,12 @@ function PartnerCTA() {
             </p>
             <ul className="mt-3 space-y-1 text-sm text-white/75">
               <li>• Minimum <span className="font-medium">500 Instagram followers</span></li>
-              <li>• Share us on your story at least <span className="font-medium">2× / month</span></li>
+              <li>• Share the CRM on your story at least <span className="font-medium">2× / month</span></li>
             </ul>
           </div>
 
           <a
-            href="https://instagram.com/jprietocloses"
+            href="https://instagram.com/remiecrm"
             target="_blank"
             rel="noopener noreferrer"
             className="group inline-flex items-center gap-2 rounded-2xl px-4 py-2 text-sm font-medium
