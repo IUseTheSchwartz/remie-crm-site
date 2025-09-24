@@ -24,6 +24,9 @@ import TeamDashboard from "./pages/TeamDashboard.jsx";
 // ---- Admin-only Support Inbox ----
 import AdminSupportInbox from "./pages/AdminSupportInbox.jsx";
 
+// ---- Admin Console (NEW) ----
+import AdminConsole from "./pages/AdminConsole.jsx"; // ← NEW
+
 // ---- AI Rebuttal Helper ----
 import RebuttalChat from "./pages/RebuttalChat.jsx";
 
@@ -32,7 +35,6 @@ import CallRecorder from "./pages/CallRecorder.jsx";
 
 // ---- Contacts (NEW) ----
 import ContactsPage from "./pages/ContactsPage.jsx";
-
 
 // ---- Message Lab (PRIVATE) ----
 import MessageTestPage from "./pages/MessageTestPage.jsx"; // <— NEW
@@ -84,6 +86,7 @@ export const routes = [
 
   // Admin-only (hidden)
   { key: "support-inbox", path: "/app/support-inbox", label: "Support Inbox", component: AdminSupportInbox, showInSidebar: false, section: "hidden" },
+  { key: "admin-console", path: "/app/admin",          label: "Admin Console", component: AdminConsole,      showInSidebar: false, section: "hidden", adminOnly: true }, // ← NEW
 
   // PRIVATE: Message Lab (hidden)
   { key: "message-lab", path: "/app/message-lab", label: "Message Lab", component: MessageTestPage, showInSidebar: false, section: "hidden" }, // <— NEW
