@@ -1,5 +1,5 @@
 // File: src/pages/AdminConsole.jsx
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useState } from "react";
 import { supabase } from "../lib/supabaseClient.js";
 import useIsAdminAllowlist from "../hooks/useIsAdminAllowlist.js";
 
@@ -35,7 +35,6 @@ export default function AdminConsole() {
       if (pErr) throw pErr;
 
       // 2) Map owner -> team
-      //    (If you have many teams not owned by users you care about, you can filter by owner_id IN (...users))
       const { data: teams, error: tErr } = await supabase
         .from("teams")
         .select("id, owner_id");
@@ -47,15 +46,14 @@ export default function AdminConsole() {
         }
       });
 
-      // 3) Seats for each team
+      // 3) Seats per team
       const { data: seatRows, error: sErr } = await supabase
         .from("team_seat_counts")
-        .select("team_id, seats"); // <-- if your column is seat_count, change to 'seat_count'
+        .select("team_id, seats"); // change to seat_count if needed
       if (sErr) throw sErr;
       const teamSeats = new Map();
       (seatRows || []).forEach((r) => {
         if (!r) return;
-        // If your column is seat_count, change r.seats -> r.seat_count
         teamSeats.set(r.team_id, Number(r.seats ?? 0));
       });
 
@@ -69,8 +67,7 @@ export default function AdminConsole() {
         walletByUser.set(w.user_id, Number(w.balance_cents ?? 0));
       });
 
-      // 5) Templates enabled flags (aggregate per user)
-      //    We'll fetch user_id+enabled, then compute enabled_count by user.
+      // 5) Templates enabled flags
       const { data: tmpl, error: mtErr } = await supabase
         .from("message_templates")
         .select("user_id, enabled");
@@ -84,17 +81,16 @@ export default function AdminConsole() {
         enabledCountByUser.set(uid, cur + (m.enabled ? 1 : 0));
       });
 
-      // Merge all into a unified row per user
+      // Merge
       const merged = (profiles || []).map((p) => {
         const teamId = ownerToTeam.get(p.user_id) || null;
         const seats = teamId ? (teamSeats.get(teamId) ?? 0) : 0;
         const balance_cents = walletByUser.get(p.user_id) ?? 0;
         const enabledCount = enabledCountByUser.get(p.user_id) ?? 0;
-        // locked = NO templates enabled
         const templates_locked = enabledCount === 0;
 
         return {
-          id: p.user_id, // stable key we use for updates
+          id: p.user_id,
           full_name: p.full_name || "",
           email: p.email || "",
           team_id: teamId,
@@ -119,32 +115,36 @@ export default function AdminConsole() {
     setRows((prev) => prev.map((r) => (r.id === id ? { ...r, ...patch } : r)));
   }
 
-  // --- Persist a single row back to the right tables ---
+  // --- Save one row (with UPSERTs) ---
   async function saveRow(row) {
     setSaving(true);
     setErr("");
     try {
-      // 1) Seats -> team_seat_counts (requires team_id)
+      // 1) Seats -> team_seat_counts (upsert by team_id)
       if (row.team_id != null) {
         const { error: seatsErr } = await supabase
           .from("team_seat_counts")
-          .update({ seats: Number(row.seats) || 0 }) // <-- if your column is seat_count, change to { seat_count: ... }
-          .eq("team_id", row.team_id);
+          .upsert(
+            [{ team_id: row.team_id, seats: Number(row.seats) || 0 }],
+            { onConflict: "team_id" } // requires unique(team_id)
+          );
         if (seatsErr) throw seatsErr;
       }
 
-      // 2) Balance -> user_wallets
+      // 2) Balance -> user_wallets (upsert by user_id)
       {
         const { error: wErr } = await supabase
           .from("user_wallets")
-          .update({ balance_cents: Number(row.balance_cents) || 0 })
-          .eq("user_id", row.id);
+          .upsert(
+            [{ user_id: row.id, balance_cents: Number(row.balance_cents) || 0 }],
+            { onConflict: "user_id" } // requires unique(user_id)
+          );
         if (wErr) throw wErr;
       }
 
-      // 3) Templates lock -> message_templates (bulk)
-      //    locked=true  => set enabled=false for all that user
-      //    locked=false => set enabled=true  for all that user
+      // 3) Templates lock -> message_templates (bulk update)
+      //    locked=true  => enabled=false for all user's templates
+      //    locked=false => enabled=true  for all user's templates
       {
         const setEnabled = !row.templates_locked;
         const { error: mtErr } = await supabase
@@ -160,47 +160,37 @@ export default function AdminConsole() {
     }
   }
 
-  // --- Optional: bulk save all visible rows ---
+  // --- Save all (with UPSERTs) ---
   async function saveAll() {
     setSaving(true);
     setErr("");
     try {
-      // Do each write type in small batches. This keeps it simple and explicit.
       const batched = [...rows];
 
-      // a) seats (only where team_id exists)
-      const seatsUpdates = batched
+      // a) seats upserts (only where team_id exists)
+      const seatsPayload = batched
         .filter((r) => r.team_id != null)
-        .map((r) => ({
-          team_id: r.team_id,
-          seats: Number(r.seats) || 0, // or seat_count
-        }));
-      if (seatsUpdates.length) {
-        // No upsert because we only want to update existing rows by team_id.
-        // Run updates one by one to keep it safe (simplest).
-        for (const u of seatsUpdates) {
-          const { error } = await supabase
-            .from("team_seat_counts")
-            .update({ seats: u.seats })
-            .eq("team_id", u.team_id);
-          if (error) throw error;
-        }
-      }
-
-      // b) wallet balances
-      const walletUpdates = batched.map((r) => ({
-        user_id: r.id,
-        balance_cents: Number(r.balance_cents) || 0,
-      }));
-      for (const u of walletUpdates) {
+        .map((r) => ({ team_id: r.team_id, seats: Number(r.seats) || 0 }));
+      if (seatsPayload.length) {
         const { error } = await supabase
-          .from("user_wallets")
-          .update({ balance_cents: u.balance_cents })
-          .eq("user_id", u.user_id);
+          .from("team_seat_counts")
+          .upsert(seatsPayload, { onConflict: "team_id" });
         if (error) throw error;
       }
 
-      // c) templates lock
+      // b) wallet upserts
+      const walletPayload = batched.map((r) => ({
+        user_id: r.id,
+        balance_cents: Number(r.balance_cents) || 0,
+      }));
+      if (walletPayload.length) {
+        const { error } = await supabase
+          .from("user_wallets")
+          .upsert(walletPayload, { onConflict: "user_id" });
+        if (error) throw error;
+      }
+
+      // c) templates lock updates
       for (const r of batched) {
         const setEnabled = !r.templates_locked;
         const { error } = await supabase
