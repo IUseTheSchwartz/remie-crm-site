@@ -1,5 +1,5 @@
 // File: src/App.jsx
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { Routes, Route, Link, Navigate, useNavigate } from "react-router-dom";
 import { motion } from "framer-motion";
 import {
@@ -12,6 +12,7 @@ import {
   StickyNote,
   CheckCircle2,
   Menu, // mobile hamburger
+  Instagram, // ✅ added
 } from "lucide-react";
 
 import ProtectedRoute from "./components/ProtectedRoute.jsx";
@@ -230,6 +231,123 @@ function PipelineDemo() {
   );
 }
 
+/* ---------------------- Partners (grid + CTA) ---------------------- */
+
+function IGLink({ handle }) {
+  if (!handle) return null;
+  const clean = handle.startsWith("@") ? handle.slice(1) : handle;
+  const href = `https://instagram.com/${clean}`;
+  return (
+    <a
+      href={href}
+      target="_blank"
+      rel="noopener noreferrer"
+      className="inline-flex items-center gap-2 text-sm font-medium text-indigo-300 hover:text-white"
+    >
+      <Instagram className="h-4 w-4" />
+      @{clean}
+    </a>
+  );
+}
+
+function PartnersGrid() {
+  const [partners, setPartners] = useState([]);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    async function load() {
+      setLoading(true);
+      const { data, error } = await supabase
+        .from("partners")
+        .select("*")
+        .eq("active", true)
+        .order("sort_order", { ascending: true, nullsFirst: true })
+        .order("name", { ascending: true });
+    if (!error) setPartners(data || []);
+      setLoading(false);
+    }
+    load();
+  }, []);
+
+  if (loading) {
+    return (
+      <section className="relative z-10 mx-auto max-w-7xl px-6 py-10">
+        <div className="text-center text-white/60">Loading partners…</div>
+      </section>
+    );
+  }
+
+  if (!partners.length) return null;
+
+  return (
+    <section className="relative z-10 mx-auto max-w-7xl px-6 pt-2 pb-8">
+      <header className="text-center mb-10">
+        <h2 className="text-3xl font-semibold">Meet Our Partners</h2>
+        <p className="mt-2 text-white/70 max-w-2xl mx-auto">
+          We partner with top producers, influencers, and leaders who share our standards.
+        </p>
+      </header>
+
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-6">
+        {partners.map((p) => (
+          <article
+            key={p.id}
+            className="rounded-2xl border border-white/10 bg-white/[0.06] p-5 ring-1 ring-white/5 transition hover:border-white/30 hover:bg-white/[0.08]"
+          >
+            <div className="flex items-start gap-4">
+              <img
+                src={p.photo_url || "/assets/partners/placeholder-avatar.png"}
+                alt={`${p.name} headshot`}
+                className="h-16 w-16 rounded-xl object-cover ring-1 ring-white/15"
+                loading="lazy"
+              />
+              <div className="min-w-0">
+                <h3 className="text-lg font-semibold truncate">{p.name}</h3>
+                <p className="text-sm text-white/70">{p.role || "Partner"}</p>
+              </div>
+            </div>
+
+            {p.bio && (
+              <p className="mt-4 text-sm leading-relaxed text-white/80">{p.bio}</p>
+            )}
+
+            <div className="mt-5">
+              <IGLink handle={p.instagram_handle} />
+            </div>
+          </article>
+        ))}
+      </div>
+    </section>
+  );
+}
+
+function PartnerCTA() {
+  return (
+    <section className="relative z-10 mx-auto max-w-5xl px-6 pb-14">
+      <div className="rounded-2xl p-6 sm:p-8 bg-gradient-to-br from-indigo-600/60 via-purple-600/60 to-fuchsia-600/60 text-white ring-1 ring-white/10 border border-white/10">
+        <h3 className="text-2xl font-semibold">Become a Partner (50% off)</h3>
+        <p className="mt-2 opacity-95">
+          Get <strong>50% off</strong> your subscription when you join our partner program.
+        </p>
+        <ul className="mt-4 space-y-1 text-sm opacity-95">
+          <li>• Minimum <strong>500 Instagram followers</strong></li>
+          <li>• Promote the CRM at least <strong>2× per month</strong> on your story</li>
+        </ul>
+
+        <a
+          href="https://instagram.com/jprietocloses"
+          target="_blank"
+          rel="noopener noreferrer"
+          className="mt-5 inline-flex items-center gap-2 rounded-xl bg-white/10 px-4 py-2 ring-1 ring-white/30 hover:bg-white/15"
+        >
+          <Instagram className="h-5 w-5" />
+          <span>DM “PARTNER” to @jprietocloses</span>
+        </a>
+      </div>
+    </section>
+  );
+}
+
 /* ------------------------------- Main Landing ------------------------------ */
 
 function LandingPage() {
@@ -384,7 +502,11 @@ function LandingPage() {
         </p>
       </section>
 
-      {/* NEW: Contact section */}
+      {/* ✅ Partners grid & CTA: below pricing/demo, above contact */}
+      <PartnersGrid />
+      <PartnerCTA />
+
+      {/* Contact section */}
       <section id="contact" className="relative z-10 mx-auto max-w-7xl px-6 py-12">
         <div className="rounded-3xl border border-white/10 bg-white/[0.04] p-6 ring-1 ring-white/5">
           <h2 className="text-2xl font-semibold">Contact</h2>
