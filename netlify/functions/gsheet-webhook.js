@@ -1,5 +1,6 @@
 // netlify/functions/gsheet-webhook.js
 const crypto = require("crypto");
+const fetch = require("node-fetch"); // <-- ensure fetch exists in runtime
 const { getServiceClient } = require("./_supabase");
 
 // Create service client (uses SUPABASE_URL + SUPABASE_SERVICE_ROLE or SUPABASE_SERVICE_ROLE_KEY)
@@ -218,7 +219,7 @@ async function trySendNewLeadText({ userId, leadId, contactId, lead }) {
     .single();
   if (terr) return { ok: false, reason: "template_load_error", detail: terr.message };
 
-  const template_key = "new_lead";
+  const template_key = "new_lead"; // currently fixed; can map from tags later if needed
   const tpl = trow?.templates?.[template_key];
   if (!tpl) return { ok: false, reason: "template_not_found", template_key };
 
@@ -462,6 +463,7 @@ exports.handler = async (event) => {
           .update({ last_used_at: new Date().toISOString() })
           .eq("id", webhookId);
 
+        console.log("[gsheet-webhook] sendRes (dedupe path):", JSON.stringify(sendRes));
         return { statusCode: 200, body: JSON.stringify({ ok: true, id: dupId, deduped: true, send: sendRes }) };
       }
     }
@@ -521,6 +523,7 @@ exports.handler = async (event) => {
       .update({ last_used_at: new Date().toISOString() })
       .eq("id", webhookId);
 
+    console.log("[gsheet-webhook] sendRes:", JSON.stringify(sendRes));
     return {
       statusCode: 200,
       body: JSON.stringify({
