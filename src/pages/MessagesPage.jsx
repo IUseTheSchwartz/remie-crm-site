@@ -1,9 +1,8 @@
+// File: src/pages/MessagesPage.jsx
 import { useEffect, useMemo, useRef, useState } from "react";
 import { supabase } from "../lib/supabaseClient.js";
 import { useAuth } from "../auth.jsx";
-import {
-  Send, CreditCard, Plus, Loader2, Trash2, Edit3, X, ChevronLeft, Search
-} from "lucide-react";
+import { Send, Plus, Loader2, Trash2, Edit3, ChevronLeft, Search } from "lucide-react";
 
 /* ---------------- Phone helpers (US/CA default) ---------------- */
 
@@ -40,24 +39,6 @@ const normalizeDigits10 = (s) => {
 
 function classNames(...xs) {
   return xs.filter(Boolean).join(" ");
-}
-
-/* ---------------- PayPal SDK loader ---------------- */
-
-const PAYPAL_CLIENT_ID = import.meta.env.VITE_PAYPAL_CLIENT_ID;
-
-async function loadPayPalSdk() {
-  if (window.paypal) return;
-  await new Promise((resolve, reject) => {
-    const s = document.createElement("script");
-    s.src = `https://www.paypal.com/sdk/js?client-id=${encodeURIComponent(
-      PAYPAL_CLIENT_ID || ""
-    )}&currency=USD&intent=capture`;
-    s.async = true;
-    s.onload = resolve;
-    s.onerror = () => reject(new Error("Failed to load PayPal SDK"));
-    document.head.appendChild(s);
-  });
 }
 
 /* ---------------- Utility ---------------- */
@@ -101,12 +82,6 @@ export default function MessagesPage() {
   const [text, setText] = useState("");
   const [sending, setSending] = useState(false);
   const scrollerRef = useRef(null);
-
-  // PayPal modal
-  const [paypalOpen, setPaypalOpen] = useState(false);
-  const [paypalAmountCents, setPaypalAmountCents] = useState(0);
-  const [paypalLoading, setPaypalLoading] = useState(false);
-  const paypalContainerRef = useRef(null);
 
   /* ---------- Fetchers ---------- */
 
@@ -265,56 +240,6 @@ export default function MessagesPage() {
     }
   }
 
-  /* ---------- PayPal Top-up ---------- */
-
-  async function openPayPal(amountCents) {
-    if (!user?.id) return alert("Please sign in first.");
-    try {
-      setPaypalAmountCents(amountCents);
-      setPaypalOpen(true);
-      setPaypalLoading(true);
-
-      await loadPayPalSdk();
-
-      if (paypalContainerRef.current) {
-        paypalContainerRef.current.innerHTML = "";
-      }
-
-      window.paypal
-        .Buttons({
-          style: { layout: "vertical", shape: "rect", label: "paypal" },
-          createOrder: async () => {
-            const res = await fetch("/.netlify/functions/paypal-create-order", {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ amount_cents: amountCents, user_id: user.id }),
-            });
-            const data = await res.json();
-            if (!data?.id) throw new Error("Failed to create PayPal order");
-            return data.id;
-          },
-          onApprove: async () => {
-            setPaypalOpen(false);
-            setTimeout(fetchWallet, 2500);
-            alert("Payment approved. Your wallet will update shortly.");
-          },
-          onCancel: () => setPaypalOpen(false),
-          onError: (err) => {
-            console.error(err);
-            setPaypalOpen(false);
-            alert("PayPal error. Please try again.");
-          },
-        })
-        .render(paypalContainerRef.current);
-    } catch (e) {
-      console.error(e);
-      setPaypalOpen(false);
-      alert(e.message || "Could not start PayPal checkout.");
-    } finally {
-      setPaypalLoading(false);
-    }
-  }
-
   /* ---------- Effects ---------- */
 
   useEffect(() => {
@@ -451,7 +376,6 @@ export default function MessagesPage() {
             onOpen={(n) => setActiveNumber(n)}
             displayForNumber={displayForNumber}
             smallPhoneForNumber={smallPhoneForNumber}
-            openPayPal={(cents) => openPayPal(cents)}
           />
         ) : (
           <MobileChat
@@ -476,20 +400,13 @@ export default function MessagesPage() {
       <div className="hidden md:grid h-full grid-cols-[320px_1fr] gap-4">
         {/* Left: threads */}
         <aside className="flex flex-col rounded-2xl border border-white/10 bg-white/[0.03]">
-          {/* Wallet */}
+          {/* Wallet (display only) */}
           <div className="flex items-center justify-between border-b border-white/10 p-3">
             <div className="text-sm">
               <div className="text-white/60">Text Balance</div>
               <div className="text-lg font-semibold">${balanceDollars}</div>
             </div>
-            <div className="flex gap-2">
-              <button onClick={() => openPayPal(2000)} className="inline-flex items-center gap-1 rounded-lg border border-white/15 bg-white/5 px-2.5 py-1.5 text-xs hover:bg-white/10" title="Add $20">
-                <CreditCard className="h-4 w-4" /> +$20
-              </button>
-              <button onClick={() => openPayPal(5000)} className="inline-flex items-center gap-1 rounded-lg border border-white/15 bg-white/5 px-2.5 py-1.5 text-xs hover:bg-white/10" title="Add $50">
-                <CreditCard className="h-4 w-4" /> +$50
-              </button>
-            </div>
+            {/* No top-up buttons here anymore */}
           </div>
 
           {/* Threads header */}
@@ -637,39 +554,6 @@ export default function MessagesPage() {
           </div>
         </section>
       </div>
-
-      {/* --- PayPal Modal (global) --- */}
-      {paypalOpen && (
-        <div className="fixed inset-0 z-50 grid place-items-center bg-black/60 p-4">
-          <div className="w-full max-w-md rounded-2xl border border-white/10 bg-[#0b0b12] p-4 shadow-2xl">
-            <div className="mb-3 flex items-center justify-between">
-              <h3 className="text-sm font-semibold">
-                Add funds — ${ (paypalAmountCents/100).toFixed(2) }
-              </h3>
-              <button
-                onClick={() => setPaypalOpen(false)}
-                className="rounded-md border border-white/15 bg-white/5 p-1 hover:bg-white/10"
-                title="Close"
-              >
-                <X className="h-4 w-4" />
-              </button>
-            </div>
-
-            <div className="py-2">
-              {paypalLoading && (
-                <div className="mb-2 inline-flex items-center gap-2 text-xs text-white/70">
-                  <Loader2 className="h-3 w-3 animate-spin" /> Loading PayPal…
-                </div>
-              )}
-              <div ref={paypalContainerRef} />
-            </div>
-
-            <p className="mt-2 text-[11px] text-white/50">
-              After approval, your wallet updates automatically within a few seconds.
-            </p>
-          </div>
-        </div>
-      )}
     </div>
   );
 }
@@ -683,7 +567,6 @@ function MobileThreads({
   onOpen,
   displayForNumber,
   smallPhoneForNumber,
-  openPayPal,
 }) {
   return (
     <div className="h-full flex flex-col bg-white/[0.02]">
@@ -695,22 +578,7 @@ function MobileThreads({
             <span className="text-white/60">Text Balance</span>{" "}
             <span className="font-semibold">${balanceDollars}</span>
           </div>
-          <div className="flex gap-2">
-            <button
-              onClick={() => openPayPal(2000)}
-              className="inline-flex items-center gap-1 rounded-md border border-white/15 bg-white/5 px-2 py-1 text-xs hover:bg-white/10"
-              title="Add $20"
-            >
-              <CreditCard className="h-3.5 w-3.5" /> +$20
-            </button>
-            <button
-              onClick={() => openPayPal(5000)}
-              className="inline-flex items-center gap-1 rounded-md border border-white/15 bg-white/5 px-2 py-1 text-xs hover:bg-white/10"
-              title="Add $50"
-            >
-              <CreditCard className="h-3.5 w-3.5" /> +$50
-            </button>
-          </div>
+          {/* No top-up buttons on mobile either */}
         </div>
 
         <div className="mt-2 flex items-center gap-2">
