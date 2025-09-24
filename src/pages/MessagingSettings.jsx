@@ -1,7 +1,7 @@
 // File: src/pages/MessagingSettings.jsx
 import { useEffect, useRef, useState } from "react";
 import { supabase } from "../lib/supabaseClient";
-import { CreditCard, Check, Loader2, MessageSquare, Info, RotateCcw, Lock, X } from "lucide-react";
+import { CreditCard, Check, Loader2, MessageSquare, Info, RotateCcw, Lock } from "lucide-react";
 
 /* ---------------- Template Catalog ---------------- */
 const TEMPLATE_DEFS = [
@@ -123,27 +123,6 @@ const DEFAULT_TEST_DATA = {
   today: "",
 };
 
-/* ---------- PayPal SDK loader ---------- */
-const PAYPAL_CLIENT_ID = import.meta.env.VITE_PAYPAL_CLIENT_ID || "";
-
-/** Load PayPal SDK once */
-async function loadPayPalSdk() {
-  if (window.paypal) return;
-  if (!PAYPAL_CLIENT_ID) {
-    throw new Error("Missing VITE_PAYPAL_CLIENT_ID env var");
-  }
-  await new Promise((resolve, reject) => {
-    const s = document.createElement("script");
-    s.src = `https://www.paypal.com/sdk/js?client-id=${encodeURIComponent(
-      PAYPAL_CLIENT_ID
-    )}&currency=USD&intent=capture&components=buttons`;
-    s.async = true;
-    s.onload = resolve;
-    s.onerror = () => reject(new Error("Failed to load PayPal SDK"));
-    document.head.appendChild(s);
-  });
-}
-
 export default function MessagingSettings() {
   const [loading, setLoading] = useState(true);
 
@@ -185,11 +164,6 @@ export default function MessagingSettings() {
     agent_phone: "",
     calendly_link: "",
   });
-
-  // --- PayPal modal state ---
-  const [paypalOpen, setPaypalOpen] = useState(false);
-  const [paypalAmountCents, setPaypalAmountCents] = useState(0);
-  const paypalContainerRef = useRef(null);
 
   const balanceDollars = (balanceCents / 100).toFixed(2);
 
@@ -394,59 +368,44 @@ export default function MessagingSettings() {
     enabledTimer.current = setTimeout(() => persistEnabled(next), 500);
   }
 
-  /* -------- PayPal top-up (replaces Stripe) -------- */
-  async function openPayPal(amountCents) {
+  /* -------- Stripe top-up (replaces PayPal) -------- */
+  async function startStripeTopUp({ userId, netTopUpCents, clientRef, coverFees = true, returnTo }) {
+    const res = await fetch("/.netlify/functions/create-checkout-session", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        walletTopUp: true,
+        userId,
+        netTopUpCents,
+        clientRef,
+        coverFees,
+        successUrl: returnTo || window.location.origin + "/app/wallet?success=1",
+        cancelUrl: returnTo || window.location.origin + "/app/wallet?canceled=1",
+      }),
+    });
+    if (!res.ok) {
+      const txt = await res.text();
+      throw new Error(`Stripe session failed: ${txt}`);
+    }
+    const data = await res.json();
+    if (!data?.url) throw new Error("Missing Stripe Checkout URL");
+    window.location.href = data.url;
+  }
+
+  async function topUpStripe(amountCents) {
     if (!userId) return alert("Please sign in first.");
-    setCustomMsg("");
-    setTopping(true);
-    setPaypalAmountCents(amountCents);
-    setPaypalOpen(true);
-
     try {
-      await loadPayPalSdk();
-
-      // Clear old buttons if re-opened
-      if (paypalContainerRef.current) {
-        paypalContainerRef.current.innerHTML = "";
-      }
-
-      window.paypal.Buttons({
-        style: { layout: "vertical", shape: "rect", label: "paypal" },
-        createOrder: async () => {
-          const res = await fetch("/.netlify/functions/paypal-create-order", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ amount_cents: amountCents, user_id: userId }),
-          });
-          const data = await res.json();
-          if (!data?.id) throw new Error("Failed to create PayPal order");
-          return data.id;
-        },
-        onApprove: async (_data, actions) => {
-          try {
-            // Capture the payment; webhook will credit wallet on capture completed
-            await actions.order.capture();
-            setPaypalOpen(false);
-            alert("Payment captured. Funds will appear in your wallet shortly.");
-          } catch (err) {
-            console.error(err);
-            setPaypalOpen(false);
-            alert("Capture failed. Please check PayPal or try again.");
-          }
-        },
-        onCancel: () => {
-          setPaypalOpen(false);
-        },
-        onError: (err) => {
-          console.error(err);
-          setPaypalOpen(false);
-          alert("PayPal error. Please try again.");
-        },
-      }).render(paypalContainerRef.current);
+      setTopping(true);
+      await startStripeTopUp({
+        userId,
+        netTopUpCents: amountCents,
+        clientRef: `${userId}:${Date.now()}`,
+        coverFees: true,
+        returnTo: window.location.origin,
+      });
     } catch (e) {
       console.error(e);
-      setPaypalOpen(false);
-      alert(e.message || "Could not load PayPal.");
+      alert(e.message || "Could not start checkout.");
     } finally {
       setTopping(false);
     }
@@ -464,7 +423,7 @@ export default function MessagingSettings() {
       setCustomMsg("Amount must be between $1 and $500.");
       return;
     }
-    openPayPal(cents);
+    topUpStripe(cents);
   }
 
   if (loading) {
@@ -501,10 +460,10 @@ export default function MessagingSettings() {
 
           <div className="flex flex-col gap-2 md:items-end">
             <div className="flex flex-wrap gap-2">
-              <button type="button" onClick={() => openPayPal(500)} disabled={topping} className="inline-flex items-center gap-1 rounded-lg border border-white/15 bg-white/5 px-3 py-2 text-sm hover:bg-white/10 disabled:opacity-50"><CreditCard className="h-4 w-4" /> +$5</button>
-              <button type="button" onClick={() => openPayPal(1000)} disabled={topping} className="inline-flex items-center gap-1 rounded-lg border border-white/15 bg-white/5 px-3 py-2 text-sm hover:bg-white/10 disabled:opacity-50"><CreditCard className="h-4 w-4" /> +$10</button>
-              <button type="button" onClick={() => openPayPal(2000)} disabled={topping} className="inline-flex items-center gap-1 rounded-lg border border-white/15 bg-white/5 px-3 py-2 text-sm hover:bg-white/10 disabled:opacity-50"><CreditCard className="h-4 w-4" /> +$20</button>
-              <button type="button" onClick={() => openPayPal(5000)} disabled={topping} className="inline-flex items-center gap-1 rounded-lg border border-white/15 bg-white/5 px-3 py-2 text-sm hover:bg-white/10 disabled:opacity-50"><CreditCard className="h-4 w-4" /> +$50</button>
+              <button type="button" onClick={() => topUpStripe(500)} disabled={topping} className="inline-flex items-center gap-1 rounded-lg border border-white/15 bg-white/5 px-3 py-2 text-sm hover:bg-white/10 disabled:opacity-50"><CreditCard className="h-4 w-4" /> +$5</button>
+              <button type="button" onClick={() => topUpStripe(1000)} disabled={topping} className="inline-flex items-center gap-1 rounded-lg border border-white/15 bg-white/5 px-3 py-2 text-sm hover:bg-white/10 disabled:opacity-50"><CreditCard className="h-4 w-4" /> +$10</button>
+              <button type="button" onClick={() => topUpStripe(2000)} disabled={topping} className="inline-flex items-center gap-1 rounded-lg border border-white/15 bg-white/5 px-3 py-2 text-sm hover:bg-white/10 disabled:opacity-50"><CreditCard className="h-4 w-4" /> +$20</button>
+              <button type="button" onClick={() => topUpStripe(5000)} disabled={topping} className="inline-flex items-center gap-1 rounded-lg border border-white/15 bg-white/5 px-3 py-2 text-sm hover:bg-white/10 disabled:opacity-50"><CreditCard className="h-4 w-4" /> +$50</button>
             </div>
 
             <div className="flex items-center gap-2">
@@ -805,30 +764,6 @@ export default function MessagingSettings() {
           <li>Include any disclosures your brand requires.</li>
         </ul>
       </section>
-
-      {/* PayPal Modal — SCROLLABLE */}
-      {paypalOpen && (
-        <div className="fixed inset-0 z-50 bg-black/60">
-          <div className="flex h-screen w-screen items-start justify-center overflow-y-auto p-4" style={{ WebkitOverflowScrolling: "touch" }}>
-            <div className="mt-8 w-full max-w-md rounded-2xl border border-white/10 bg-[#0b0b12] p-4 shadow-2xl max-h-[88vh] overflow-y-auto" style={{ overscrollBehavior: "contain" }}>
-              <div className="mb-3 flex items-center justify-between">
-                <h3 className="text-sm font-semibold">Add funds — ${ (paypalAmountCents/100).toFixed(2) }</h3>
-                <button
-                  onClick={() => setPaypalOpen(false)}
-                  className="rounded-md border border-white/15 bg-white/5 p-1 hover:bg-white/10"
-                  title="Close"
-                >
-                  <X className="h-4 w-4" />
-                </button>
-              </div>
-              <div ref={paypalContainerRef} className="py-2" />
-              <p className="mt-2 text-[11px] text-white/50">
-                After capture, your wallet updates automatically within a few seconds.
-              </p>
-            </div>
-          </div>
-        </div>
-      )}
     </div>
   );
 }
