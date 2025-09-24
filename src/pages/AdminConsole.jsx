@@ -3,6 +3,9 @@ import { useEffect, useState } from "react";
 import { supabase } from "../lib/supabaseClient.js";
 import useIsAdminAllowlist from "../hooks/useIsAdminAllowlist.js";
 
+// ✅ NEW: Partners admin section
+import PartnersAdminSection from "../components/admin/PartnersAdminSection.jsx";
+
 /* ------------------------ small helpers ------------------------ */
 function centsToUsd(cents) {
   if (cents == null || Number.isNaN(cents)) return "0.00";
@@ -112,7 +115,7 @@ export default function AdminConsole() {
       // Merge into rows
       const merged = (profiles || []).map((p) => {
         const teamId = ownerToTeam.get(p.user_id) || null;
-        const seatsPurchased = teamId ? (teamSeats.get(teamId) ?? 0) : 0;
+        the const seatsPurchased = teamId ? (teamSeats.get(teamId) ?? 0) : 0;
         const balance = walletByUser.get(p.user_id) ?? 0;
 
         const t = tmplByUser.get(p.user_id) || { enabled: {}, templates: {} };
@@ -471,6 +474,11 @@ export default function AdminConsole() {
         Locked = all templates disabled. We keep the prior state in{" "}
         <code>message_templates_backup</code> so unlocking restores exactly what they had.
       </p>
+
+      {/* ---------- NEW: Partners Admin Section ---------- */}
+      <div className="pt-6 border-t border-white/10">
+        <PartnersAdminSection />
+      </div>
     </div>
   );
 }
