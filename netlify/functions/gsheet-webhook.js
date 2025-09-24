@@ -127,7 +127,7 @@ async function upsertContactByUserPhone(supabase, { user_id, phone, full_name, t
     const { error: uErr } = await supabase
       .from("message_contacts")
       .update({
-        phone: phoneE164,                                 // store canonical
+        phone: phoneE164,   // store canonical
         full_name: full_name || existing.full_name || null,
         tags: cleanTags,
         meta: mergedMeta,
@@ -161,19 +161,15 @@ async function alreadySentRecently(userId, toNumberE164, minutes = 10) {
   return (data && data.length > 0);
 }
 
-// 💳 balance lookup (env override supported)
+// 💳 HARD-CODED balance lookup (text_wallets.balance_cents)
 async function getBalanceCents(userId) {
-  const T = process.env.WALLET_TABLE;
-  const C = process.env.WALLET_COLUMN || "balance_cents";
-  if (T) {
-    try {
-      const { data } = await supabase.from(T).select(C).eq("user_id", userId).single();
-      const n = Number(data?.[C] ?? 0);
-      if (!Number.isNaN(n)) return Math.floor(n);
-    } catch {}
-  }
   try {
-    const { data } = await supabase.from("wallets").select("balance_cents").eq("user_id", userId).single();
+    const { data, error } = await supabase
+      .from("text_wallets")
+      .select("balance_cents")
+      .eq("user_id", userId)
+      .single();
+    if (error) throw error;
     const n = Number(data?.balance_cents ?? 0);
     if (!Number.isNaN(n)) return Math.floor(n);
   } catch {}
