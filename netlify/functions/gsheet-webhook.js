@@ -39,13 +39,13 @@ function toMDY(v) {
     let mm = parseInt(us[1], 10); let dd = parseInt(us[2], 10); let yy = us[3];
     if (yy.length === 2) yy = (yy >= "50" ? "19" : "20") + yy;
     if (mm >= 1 && mm <= 12 && dd >= 1 && dd <= 31) {
-      return `${String(mm).padStart(2, "0")}/${String(dd).padStart(2, "0")}/${yy}`;
+      return `${String(mm).padStart(2,"0")}/${String(dd).padStart(2,"0")}/${yy}`;
     }
   }
   const d = new Date(s);
   if (!Number.isNaN(d.getTime())) {
-    const mm = String(d.getMonth() + 1).padStart(2, "0");
-    const dd = String(d.getDate()).padStart(2, "0");
+    const mm = String(d.getMonth()+1).padStart(2,"0");
+    const dd = String(d.getDate()).padStart(2,"0");
     const yy = d.getFullYear();
     return `${mm}/${dd}/${yy}`;
   }
@@ -60,12 +60,22 @@ function getRawBody(event) {
   return raw;
 }
 
-// --- contact helpers ---
-function normalizeTag(s) { return String(s ?? "").trim().toLowerCase().replace(/\s+/g, "_"); }
-function uniqTags(arr) { return Array.from(new Set((arr || []).map(normalizeTag))).filter(Boolean); }
-function normalizePhone(s) { const d = String(s || "").replace(/\D/g, ""); return d.length === 11 && d.startsWith("1") ? d.slice(1) : d; }
-function toE164(s) { const d = String(s || "").replace(/\D/g, ""); if (!d) return null; if (d.length===11 && d.startsWith("1")) return `+${d}`; if (d.length===10) return `+1${d}`; return s && s.startsWith("+") ? s : null; }
+// --- phone helpers ---
+function normalizeTag(s){return String(s??"").trim().toLowerCase().replace(/\s+/g,"_")}
+function uniqTags(arr){return Array.from(new Set((arr||[]).map(normalizeTag))).filter(Boolean)}
+function onlyDigits(s){return String(s||"").replace(/\D/g,"")}
+function normalizePhone(s){const d=onlyDigits(s); return d.length===11&&d.startsWith("1")?d.slice(1):d;}
+function toE164(s){const d=onlyDigits(s); if(!d) return null; if(d.length===11&&d.startsWith("1")) return `+${d}`; if(d.length===10) return `+1${d}`; return s&&s.startsWith("+")?s:null;}
+function phoneVariants(raw){
+  const d = onlyDigits(raw);
+  const e = toE164(raw);
+  const variants = new Set([raw, d, e].filter(Boolean));
+  if (d.length===11 && d.startsWith("1")) variants.add(d.slice(1));
+  if (d.length===10) { variants.add("1"+d); variants.add("+1"+d); }
+  return Array.from(variants);
+}
 
+// --- contact tag + helpers ---
 async function computeNextContactTags({ supabase, user_id, phone, full_name, military_branch }) {
   const phoneNorm = normalizePhone(phone);
   const { data: candidates, error } = await supabase
@@ -73,6 +83,7 @@ async function computeNextContactTags({ supabase, user_id, phone, full_name, mil
     .select("id, phone, tags")
     .eq("user_id", user_id);
   if (error) throw error;
+
   const existing = (candidates || []).find((c) => normalizePhone(c.phone) === phoneNorm);
   const current = Array.isArray(existing?.tags) ? existing.tags : [];
   const withoutStatus = current.filter((t) => !["lead", "military"].includes(normalizeTag(t)));
@@ -81,27 +92,40 @@ async function computeNextContactTags({ supabase, user_id, phone, full_name, mil
   return { contactId: existing?.id ?? null, tags: next };
 }
 
-async function upsertContactByUserPhone(supabase, { user_id, phone, full_name, tags, meta = {} }) {
-  const phoneNorm = normalizePhone(phone);
-  const cleanTags = Array.isArray(tags) ? tags.filter(Boolean).map(String) : [];
-  const { data: candidates, error } = await supabase
+async function findContactByPhone(user_id, phone) {
+  const vars = phoneVariants(phone);
+  const { data, error } = await supabase
     .from("message_contacts")
     .select("id, phone, full_name, tags, meta")
-    .eq("user_id", user_id);
+    .eq("user_id", user_id)
+    .in("phone", vars)
+    .limit(1);
   if (error) throw error;
-  const existing = (candidates || []).find((c) => normalizePhone(c.phone) === phoneNorm);
+  return data?.[0] || null;
+}
+
+async function upsertContactByUserPhone(supabase, { user_id, phone, full_name, tags, meta = {} }) {
+  const cleanTags = Array.isArray(tags) ? tags.filter(Boolean).map(String) : [];
+  const phoneE164 = toE164(phone) || phone; // canonical we store
+
+  const existing = await findContactByPhone(user_id, phone);
   if (existing?.id) {
     const mergedMeta = { ...(existing.meta || {}), ...(meta || {}) };
     const { error: uErr } = await supabase
       .from("message_contacts")
-      .update({ full_name: full_name || existing.full_name || null, tags: cleanTags, meta: mergedMeta })
+      .update({
+        phone: phoneE164,                                 // store canonical
+        full_name: full_name || existing.full_name || null,
+        tags: cleanTags,
+        meta: mergedMeta,
+      })
       .eq("id", existing.id);
     if (uErr) throw uErr;
     return existing.id;
   } else {
     const { data: ins, error: iErr } = await supabase
       .from("message_contacts")
-      .insert([{ user_id, phone, full_name: full_name || null, subscribed: true, tags: cleanTags, meta }])
+      .insert([{ user_id, phone: phoneE164, full_name: full_name || null, subscribed: true, tags: cleanTags, meta }])
       .select("id")
       .single();
     if (iErr) throw iErr;
@@ -109,49 +133,49 @@ async function upsertContactByUserPhone(supabase, { user_id, phone, full_name, t
   }
 }
 
-function renderTemplate(tpl, ctx) {
-  return String(tpl || "").replace(/\{\{\s*([a-zA-Z0-9_]+)\s*\}\}/g, (_, k) => S(ctx[k]));
+// --- message de-dupe (skip double send within window) ---
+async function alreadySentRecently(userId, toNumberE164, minutes = 10) {
+  const since = new Date(Date.now() - minutes * 60 * 1000).toISOString();
+  const { data, error } = await supabase
+    .from("messages")
+    .select("id")
+    .eq("user_id", userId)
+    .eq("direction", "outgoing")
+    .eq("to_number", toNumberE164)
+    .gte("created_at", since)
+    .limit(1);
+  if (error) return false; // don't hard-fail; just allow
+  return (data && data.length > 0);
 }
 
-// 💳 Robust balance lookup: supports env overrides + common fallbacks
+// 💳 balance lookup (env override supported)
 async function getBalanceCents(userId) {
-  // 1) Env override (recommended if your schema is custom)
   const T = process.env.WALLET_TABLE;
   const C = process.env.WALLET_COLUMN || "balance_cents";
   if (T) {
     try {
       const { data } = await supabase.from(T).select(C).eq("user_id", userId).single();
-      const v = data?.[C];
-      const n = v == null ? 0 : Number(v);
+      const n = Number(data?.[C] ?? 0);
       if (!Number.isNaN(n)) return Math.floor(n);
     } catch {}
   }
-  // 2) Common patterns
-  const candidates = [
-    { table: "wallets", column: "balance_cents" },
-    { table: "wallets", column: "balance" },
-    { table: "user_wallets", column: "balance_cents" },
-    { table: "user_wallets", column: "balance" },
-    { table: "accounts", column: "balance_cents" },
-    { table: "accounts", column: "balance" },
-  ];
-  for (const { table, column } of candidates) {
-    try {
-      const { data } = await supabase.from(table).select(column).eq("user_id", userId).single();
-      const v = data?.[column];
-      if (v !== undefined) {
-        const n = Number(v);
-        if (!Number.isNaN(n)) return Math.floor(n);
-      }
-    } catch {}
-  }
-  return 0; // default if nothing found
+  try {
+    const { data } = await supabase.from("wallets").select("balance_cents").eq("user_id", userId).single();
+    const n = Number(data?.balance_cents ?? 0);
+    if (!Number.isNaN(n)) return Math.floor(n);
+  } catch {}
+  return 0;
+}
+
+// --- templates → send helper (wallet-gated; skip if recently sent; schema-aligned logging) ---
+function renderTemplate(tpl, ctx) {
+  return String(tpl || "").replace(/\{\{\s*([a-zA-Z0-9_]+)\s*\}\}/g, (_, k) => S(ctx[k]));
 }
 
 /**
- * Gate by wallet two ways:
- * 1) Pre-check wallet balance in code (prevents negative).
- * 2) Insert first (for funded users) so AFTER INSERT debit trigger runs; then send; then mark 'sent'.
+ * 1) Pre-check wallet (no negative)
+ * 2) Skip sending if we've already sent to this number in the last 10 min
+ * 3) Insert first (debit trigger), then send; mark 'sent' or 'error'
  */
 async function trySendNewLeadText({ userId, leadId, contactId, lead }) {
   // 1) Phone
@@ -189,12 +213,16 @@ async function trySendNewLeadText({ userId, leadId, contactId, lead }) {
   // 3.5) 💳 Pre-check wallet (soft guard; prevents negative)
   const COST_CENTS = 1;
   const balance = await getBalanceCents(userId);
-  console.log("wallet_precheck", { userId, balance_cents: balance, needed: COST_CENTS });
   if (balance < COST_CENTS) {
     return { ok: false, reason: "insufficient_balance", balance_cents: balance };
   }
 
-  // 4) Render template vars (prefer beneficiary_name)
+  // 3.6) ⛔ Double-send guard (10 min window)
+  if (await alreadySentRecently(userId, to, 10)) {
+    return { ok: true, skipped: true, reason: "already_sent_recently" };
+  }
+
+  // Prefer the beneficiary *name*; expose legacy + explicit keys
   const beneficiary_name = S(lead.beneficiary_name) || S(lead.beneficiary);
   const vars = {
     first_name: S(lead.name).split(" ")[0] || "",
@@ -230,8 +258,6 @@ async function trySendNewLeadText({ userId, leadId, contactId, lead }) {
     .single();
 
   if (preErr) {
-    // Likely insufficient funds (trigger aborted insert) or constraint failure
-    console.error("messages pre-insert failed:", preErr.message);
     return { ok: false, reason: "preinsert_failed", detail: preErr.message };
   }
   const messageId = inserted.id;
@@ -243,8 +269,8 @@ async function trySendNewLeadText({ userId, leadId, contactId, lead }) {
       method: "POST",
       headers: { Authorization: `Bearer ${TELNYX_API_KEY}`, "Content-Type": "application/json" },
       body: JSON.stringify({
-        from: FROM_NUMBER,
-        to,
+        from: process.env.TELNYX_FROM_NUMBER,
+        to: to,
         text,
         messaging_profile_id: TELNYX_MESSAGING_PROFILE_ID,
         client_ref: clientRef,
@@ -317,6 +343,7 @@ exports.handler = async (event) => {
       email: U(p.email) ?? null,
       state: U(p.state) ?? null,
       created_at: U(p.created_at) || nowIso,
+
       stage: "no_pickup",
       stage_changed_at: nowIso,
       priority: "medium",
@@ -359,7 +386,7 @@ exports.handler = async (event) => {
       if (!qErr && existing && existing.length) {
         const dupId = existing[0].id;
 
-        // Upsert contact (for logging/threading)
+        // Upsert contact (for logging/threading) with canonical phone
         let contactId = null;
         try {
           if (lead.phone) {
@@ -379,17 +406,18 @@ exports.handler = async (event) => {
               meta: { beneficiary: beneficiary_name, lead_id: dupId },
             });
           }
-        } catch (err) {
-          console.error("contact tag/meta sync (dedup) failed:", err);
-        }
+        } catch (err) { console.error("contact tag/meta sync (dedup) failed:", err); }
 
-        // Wallet-gated send
+        // Send only if not sent recently (prevents duplicate text)
         let sendRes = null;
         try {
-          sendRes = await trySendNewLeadText({ userId: wh.user_id, leadId: dupId, contactId, lead });
-        } catch (e) {
-          console.error("send (dedup) failed:", e);
-        }
+          sendRes = await trySendNewLeadText({
+            userId: wh.user_id,
+            leadId: dupId,
+            contactId,
+            lead,
+          });
+        } catch (e) { console.error("send (dedup) failed:", e); }
 
         await supabase
           .from("user_inbound_webhooks")
@@ -428,17 +456,18 @@ exports.handler = async (event) => {
           meta: { beneficiary: beneficiary_name, lead_id: insertedId },
         });
       }
-    } catch (err) {
-      console.error("contact tag/meta sync failed:", err);
-    }
+    } catch (err) { console.error("contact tag/meta sync failed:", err); }
 
-    // Wallet-gated send
+    // Send (wallet-gated + double-send guard)
     let sendRes = null;
     try {
-      sendRes = await trySendNewLeadText({ userId: wh.user_id, leadId: insertedId, contactId, lead });
-    } catch (err) {
-      console.error("send new lead failed:", err);
-    }
+      sendRes = await trySendNewLeadText({
+        userId: wh.user_id,
+        leadId: insertedId,
+        contactId,
+        lead,
+      });
+    } catch (err) { console.error("send new lead failed:", err); }
 
     const { data: verifyRow, error: verifyErr } = await supabase
       .from("leads")
@@ -461,7 +490,7 @@ exports.handler = async (event) => {
         id: insertedId,
         verify_found: !!verifyRow && !verifyErr,
         project_ref: projectRef,
-        send: sendRes, // ← shows exactly why/why not
+        send: sendRes,
       }),
     };
   } catch (e) {
