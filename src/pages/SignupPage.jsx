@@ -28,9 +28,7 @@ export default function SignupPage() {
       await signup({ email, password });
       setOk("Check your email to confirm your account, then log in.");
 
-      // IMPORTANT: if user arrived via "Start 14-day Free Trial",
-      // send them to login with the same next param so the login page
-      // can auto-continue into the trial checkout flow.
+      // If user arrived via "Start 7-day Free Trial", send them to login with same next param
       const target = next === "start-trial" ? "/login?next=start-trial" : "/login";
       setTimeout(() => nav(target), 1500);
     } catch (e) {
@@ -57,7 +55,7 @@ export default function SignupPage() {
         {/* Subtle banner when continuing into a trial */}
         {next === "start-trial" && (
           <div className="mt-3 rounded-xl border border-white/10 bg-white/[0.04] p-3 text-xs text-white/80">
-            After you confirm and log in, we’ll automatically start your 14-day trial.
+            After you confirm and log in, we’ll automatically start your <strong>7-day</strong> trial.
           </div>
         )}
 
