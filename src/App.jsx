@@ -354,7 +354,7 @@ function PartnerCTA() {
                              ring-1 ring-white/15 bg-gradient-to-br from-indigo-500/20 via-purple-500/20 to-fuchsia-500/20">
               <Instagram className="h-5 w-5" />
             </span>
-            <span className="tracking-tight">DM “PARTNER” to @jprietocloses</span>
+            <span className="tracking-tight">DM “PARTNER” to @remiecrm</span>
           </a>
         </div>
       </div>
