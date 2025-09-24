@@ -2,7 +2,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { supabase } from "../lib/supabaseClient";
 import {
-  Loader2, Check, RotateCcw, Pause, Play, SkipForward, Trash2, Plus, Info
+  Loader2, Check, RotateCcw, Pause, Play, SkipForward, Trash2, Plus, Info, RefreshCcw
 } from "lucide-react";
 
 // ---- Helpers ----
@@ -51,6 +51,42 @@ function renderRescueStatus(currentDay, sendHourLocal, tz) {
   }
   return `Day ${cd}`;
 }
+
+/* ---------- Preset library (Day 2 → Day 31) ----------
+   Uses your placeholders {{first_name}}, {{agent_name}}, {{state}}, {{beneficiary}},
+   {{calendly_link}}, {{agent_phone}}. Edit copy as you like. */
+const PRESETS = {
+  2:  "Hi {{first_name}}, it’s {{agent_name}} in {{state}}. You listed {{beneficiary}} on your form. I can help you pick the right coverage. Book a quick call: {{calendly_link}} — or text me here at {{agent_phone}}.",
+  3:  "Hi {{first_name}}, just checking in. I reviewed your request with {{beneficiary}} listed. When’s best today or tomorrow? You can also grab a time: {{calendly_link}}.",
+  4:  "{{first_name}}, quick heads up: rates are based on age/health and can change. Let’s lock yours in. 5–10 min is fine. Scheduler: {{calendly_link}}.",
+  5:  "Hi {{first_name}}, this is {{agent_name}} (licensed in {{state}}). I help families set up tax-free benefits for loved ones like {{beneficiary}}. Want me to text you options or hop on a quick call? {{calendly_link}}",
+  6:  "Follow-up for {{beneficiary}}’s protection: I can show 2–3 simple plans that fit your budget. Reply “Options” and I’ll text them, or book: {{calendly_link}}.",
+  7:  "Weekly check-in: Did you still want that coverage for {{beneficiary}}? I can tailor something around your budget. Quick call: {{calendly_link}}.",
+  8:  "Hey {{first_name}}, I prepared quotes already—just need 5 minutes to confirm details. Want me to text them or call? {{calendly_link}}",
+  9:  "Reminder: your info shows eligibility now. We can lock in pricing before the next birthday/age band. Book here: {{calendly_link}}.",
+  10: "I can compare top carriers and show you the best 2. Free and no pressure. Save your spot: {{calendly_link}}.",
+  11: "Hi {{first_name}}, do mornings or afternoons work better? I’ll keep it under 10 minutes. {{calendly_link}}",
+  12: "Most families choose a plan that covers final expenses and leaves a little for {{beneficiary}}. Want that breakdown? {{calendly_link}}",
+  13: "Quick nudge: completing this now avoids re-quoting later. Reply “Ready” and I’ll call, or use: {{calendly_link}}.",
+  14: "2-week follow-up: still want coverage for {{beneficiary}}? I can finalize this today. {{calendly_link}}",
+  15: "I’ll tailor options to your budget (no medical exam needed in most cases). Call/text or book: {{calendly_link}}.",
+  16: "Hi {{first_name}}, want me to run a lower-payment option that still protects {{beneficiary}}? Reply “Lower” or book: {{calendly_link}}.",
+  17: "We can start with a small starter plan and increase later. Interested? {{calendly_link}}",
+  18: "Fast path: Valid ID + a few questions. Coverage can start same day. Want to try? {{calendly_link}}.",
+  19: "I can also email the quotes if easier. What’s best—text, call, or email? {{calendly_link}}",
+  20: "Your form mentioned {{beneficiary}}. Let’s make sure they’re protected. 5 minutes: {{calendly_link}}.",
+  21: "3-week check-in: any changes to your budget or timing? I’ll adjust the plan. {{calendly_link}}.",
+  22: "Many pick a plan that covers funeral costs + a cushion. Want those two options? {{calendly_link}}.",
+  23: "Carrier promos change; I’ll make sure you get the best one you qualify for. Quick chat? {{calendly_link}}.",
+  24: "If you prefer weekends/evenings, I can open a slot. When works? Or grab one: {{calendly_link}}.",
+  25: "Would you like a text with ‘Good/Better/Best’ options? Reply “G/B/B” or book: {{calendly_link}}.",
+  26: "We can protect {{beneficiary}} even on a tight budget. I’ll fit the plan to you. {{calendly_link}}.",
+  27: "Almost done: a few yes/no questions and we’re set. Want to wrap this up? {{calendly_link}}.",
+  28: "Month check-in: still planning to set this up? I can finalize today or send updated quotes. {{calendly_link}}.",
+  29: "If calling isn’t your thing, I’ll text the two best fits right here. Want me to? {{calendly_link}}.",
+  30: "Final follow-up for now: I’m here when you’re ready, {{first_name}}. Save this: {{calendly_link}} — {{agent_phone}}.",
+  31: "Re-touch: Life changes fast—if now’s a better time, I’ll make it easy. Book here: {{calendly_link}}.",
+};
 
 // ---- Page ----
 export default function LeadRescuePage() {
@@ -232,10 +268,41 @@ export default function LeadRescuePage() {
     return Math.max(2, max) + 1;
   }
 
+  // ⬇️ changed: add day with PRESET instead of blank
   async function addDay() {
     const d = nextDayNumber();
-    upsertLocalTemplate(d, "");
-    await persistTemplate(d, "");
+    const preset = PRESETS[d] || `Follow-up for Day ${d}.`;
+    upsertLocalTemplate(d, preset);
+    await persistTemplate(d, preset);
+  }
+
+  // ⬇️ new: add 30-day plan (fills missing 2→31 with presets)
+  async function addThirtyPlan() {
+    if (!userId) return;
+    const existing = new Set(templates.map(t => t.day_number));
+    const toAdd = [];
+    for (let d = 2; d <= 31; d++) {
+      if (!existing.has(d)) {
+        toAdd.push({ day_number: d, body: PRESETS[d] || `Follow-up for Day ${d}.` });
+      }
+    }
+    if (!toAdd.length) return;
+
+    // Update UI immediately
+    setTemplates(prev => [...prev, ...toAdd].sort((a,b)=>a.day_number-b.day_number));
+
+    // Persist in one batch
+    try {
+      setSavingTpl("saving");
+      const payload = toAdd.map(r => ({ user_id: userId, day_number: r.day_number, body: r.body }));
+      const { error } = await supabase.from("lead_rescue_templates").insert(payload);
+      if (error) throw error;
+      setSavingTpl("saved");
+      setTimeout(() => setSavingTpl("idle"), 800);
+    } catch (e) {
+      console.error(e);
+      setSavingTpl("error");
+    }
   }
 
   async function removeDay(day) {
@@ -459,6 +526,13 @@ export default function LeadRescuePage() {
             >
               <Plus className="h-3.5 w-3.5" /> Add day
             </button>
+            <button
+              onClick={addThirtyPlan}
+              className="inline-flex items-center gap-1 rounded-lg border border-white/15 bg-white/5 px-2 py-1 text-xs hover:bg-white/10"
+              title="Fill missing days up to Day 31 with presets"
+            >
+              <RefreshCcw className="h-3.5 w-3.5" /> Add 30-day plan
+            </button>
           </div>
         </div>
 
@@ -468,12 +542,15 @@ export default function LeadRescuePage() {
 
         {templates.length === 0 && (
           <div className="rounded-xl border border-white/10 bg-black/30 p-3 text-sm text-white/70">
-            No Day 2+ templates yet. Click “Add day” to create Day 2.
+            No Day 2+ templates yet. Click “Add day” to create Day 2, or “Add 30-day plan” to fill 2→31 with presets.
           </div>
         )}
 
         <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
-          {templates.map((t) => (
+          {templates
+            .slice()
+            .sort((a,b)=>a.day_number - b.day_number)
+            .map((t) => (
             <div key={t.day_number} className="rounded-xl border border-white/10 bg-white/[0.02] p-3">
               <div className="mb-2 flex items-center justify-between">
                 <div className="text-xs text-white/70">Day {t.day_number}</div>
@@ -492,6 +569,12 @@ export default function LeadRescuePage() {
                 className="w-full rounded-lg border border-white/15 bg-white/5 px-3 py-2 text-sm outline-none focus:ring-1 focus:ring-indigo-400/40"
                 placeholder="(blank = skip this day)"
               />
+              {/* Preset hint if blank */}
+              {(!t.body?.trim() && PRESETS[t.day_number]) ? (
+                <div className="mt-2 text-[11px] text-white/50">
+                  Preset suggestion: <span className="italic">{PRESETS[t.day_number]}</span>
+                </div>
+              ) : null}
               <div className="mt-2 text-[11px] text-white/50">
                 Use variables like {" "}<VarBadge token="first_name" />{" "}<VarBadge token="agent_name" />{" "}
                 <VarBadge token="calendly_link" /> etc.
