@@ -3,7 +3,7 @@ import { useEffect, useState } from "react";
 import { supabase } from "../lib/supabaseClient.js";
 import useIsAdminAllowlist from "../hooks/useIsAdminAllowlist.js";
 
-// ✅ NEW: Partners admin section
+// ✅ Partners admin section
 import PartnersAdminSection from "../components/admin/PartnersAdminSection.jsx";
 
 /* ------------------------ small helpers ------------------------ */
@@ -115,7 +115,7 @@ export default function AdminConsole() {
       // Merge into rows
       const merged = (profiles || []).map((p) => {
         const teamId = ownerToTeam.get(p.user_id) || null;
-        the const seatsPurchased = teamId ? (teamSeats.get(teamId) ?? 0) : 0;
+        const seatsPurchased = teamId ? (teamSeats.get(teamId) ?? 0) : 0; // ✅ fixed
         const balance = walletByUser.get(p.user_id) ?? 0;
 
         const t = tmplByUser.get(p.user_id) || { enabled: {}, templates: {} };
