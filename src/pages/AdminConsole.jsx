@@ -55,7 +55,7 @@ export default function AdminConsole() {
         if (t?.owner_id && t?.id && !ownerToTeam.has(t.owner_id)) ownerToTeam.set(t.owner_id, t.id);
       });
 
-      // 3) seats per team (we edit seats_purchased)
+      // 3) seats per team (read from the view)
       const { data: seatRows, error: sErr } = await supabase
         .from("team_seat_counts")
         .select("team_id, seats_purchased");
@@ -149,14 +149,12 @@ export default function AdminConsole() {
     setSaving(true);
     setErr("");
     try {
-      // 1) Seats -> team_seat_counts (upsert by team_id)
+      // 1) Seats -> call RPC (works even if team_seat_counts is a view)
       if (row.team_id != null) {
-        const { error: seatsErr } = await supabase
-          .from("team_seat_counts")
-          .upsert(
-            [{ team_id: row.team_id, seats_purchased: Number(row.seats_purchased) || 0 }],
-            { onConflict: "team_id" }
-          );
+        const { error: seatsErr } = await supabase.rpc("admin_set_team_seats", {
+          p_team_id: row.team_id,
+          p_seats_purchased: Number(row.seats_purchased) || 0,
+        });
         if (seatsErr) throw seatsErr;
       }
 
@@ -239,14 +237,13 @@ export default function AdminConsole() {
     try {
       const batched = [...rows];
 
-      // a) seats upserts
-      const seatsPayload = batched
-        .filter((r) => r.team_id != null)
-        .map((r) => ({ team_id: r.team_id, seats_purchased: Number(r.seats_purchased) || 0 }));
-      if (seatsPayload.length) {
-        const { error } = await supabase
-          .from("team_seat_counts")
-          .upsert(seatsPayload, { onConflict: "team_id" });
+      // a) seats via RPC (per row; view-safe)
+      for (const r of batched) {
+        if (r.team_id == null) continue;
+        const { error } = await supabase.rpc("admin_set_team_seats", {
+          p_team_id: r.team_id,
+          p_seats_purchased: Number(r.seats_purchased) || 0,
+        });
         if (error) throw error;
       }
 
