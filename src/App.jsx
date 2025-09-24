@@ -17,7 +17,7 @@ import {
 import ProtectedRoute from "./components/ProtectedRoute.jsx";
 import { AuthProvider, useAuth } from "./auth.jsx";
 import LoginPage from "./pages/LoginPage.jsx";
-import SignupPage from "./pages/SignupPage.jsx"; // ✅ FIX: point to the real signup page
+import SignupPage from "./pages/SignupPage.jsx"; // ✅ real signup page
 import AgentPublic from "./pages/AgentPublic.jsx";
 import AcceptInvite from "./pages/AcceptInvite.jsx";
 
@@ -290,8 +290,8 @@ function LandingPage() {
             <a href="#contact" className="text-sm opacity-80 hover:opacity-100">Contact</a>
             <Link to="/login" className="text-sm opacity-80 hover:opacity-100">Log in</Link>
             <Link
-              to="/signup?next=start-trial" // ✅ pass the handoff flag
-              className={`hidden rounded-xl bg-gradient-to-r from-indigo-500 via-purple-500 to-fuchsia-500 px-4 py-2 text-sm font-medium ring-1 ring-white/10 md:block`}
+              to="/signup?next=start-trial&price=price_1S2jggPgdGNoe2LHTnBIX94d" // ✅ pass exact Price ID
+              className="hidden rounded-xl bg-gradient-to-r from-indigo-500 via-purple-500 to-fuchsia-500 px-4 py-2 text-sm font-medium ring-1 ring-white/10 md:block"
             >
               Start 7-day free trial
             </Link>
@@ -339,7 +339,7 @@ function LandingPage() {
             return (
               <div
                 key={plan.name}
-                className={`relative rounded-3xl border border-white/10 bg-white/[0.06] p-6 ring-1 ring-white/5 transition hover:border-white/30 hover:bg-white/[0.08] hover:ring-indigo-400/50`}
+                className="relative rounded-3xl border border-white/10 bg-white/[0.06] p-6 ring-1 ring-white/5 transition hover:border-white/30 hover:bg-white/[0.08] hover:ring-indigo-400/50"
               >
                 {plan.ctaNote && (
                   <div className="absolute -top-3 left-6 rounded-full border border-white/15 bg-white/10 px-3 py-1 text-xs font-medium backdrop-blur">
@@ -368,7 +368,7 @@ function LandingPage() {
                   href={href}
                   target="_blank"
                   rel="noreferrer"
-                  className={`mt-6 grid w-full place-items-center rounded-2xl border border-white/15 px-4 py-3 font-medium transition bg-white/5 hover:bg-gradient-to-r from-indigo-500 via-purple-500 to-fuchsia-500 hover:text-white`}
+                  className="mt-6 grid w-full place-items-center rounded-2xl border border-white/15 px-4 py-3 font-medium transition bg-white/5 hover:bg-gradient-to-r from-indigo-500 via-purple-500 to-fuchsia-500 hover:text-white"
                 >
                   <CreditCard className="mr-2 h-5 w-5" /> Buy {plan.name}
                 </a>
