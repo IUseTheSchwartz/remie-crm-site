@@ -34,7 +34,7 @@ export function getPriceId() {
   return pid;
 }
 
-/** 14-day trial checkout */
+/** 7-day trial checkout */
 export async function startTrialCheckout(priceId) {
   const { data: u } = await supabase.auth.getUser();
   const user = u?.user;
@@ -51,6 +51,7 @@ export async function startTrialCheckout(priceId) {
       email: user.email,
       userId: user.id,
       trial: true,
+      trialDays: 7, // ✅ tell the backend it's a 7-day trial
       successUrl: window.location.origin + "/app/settings",
       cancelUrl: window.location.origin + "/",
     }),
