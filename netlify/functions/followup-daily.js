@@ -3,14 +3,19 @@
 // - Uses Day 2+ bodies from lead_rescue_templates
 // - loop_enabled: reuse last non-empty body after the last configured day
 // - Stops on inbound reply since contact.created_at
-// - Only one send per local calendar day
+// - Uses next_run_at with a forgiving window (so small timing drift doesn't skip)
 // Test switches:
-//   ?force=1            -> run regardless of local hour
+//   ?force=1            -> ignore next_run_at window and hour gate; consider all active trackers
 //   ?user_id=<uuid>     -> process only that user
 
 const { createClient } = require("@supabase/supabase-js");
 
 const DEFAULT_TZ = "America/Chicago";
+const DEFAULT_HOUR = 9;
+
+// Forgiving window around next_run_at
+const WINDOW_BEFORE_MIN = 10; // run up to 10m early
+const WINDOW_AFTER_MIN  = 30; // or up to 30m late
 
 function admin() {
   const url = process.env.SUPABASE_URL;
@@ -32,10 +37,6 @@ function localParts(date, tz) {
 function localDateKey(date, tz) {
   const { y, m, d } = localParts(date, tz);
   return `${y}-${String(m).padStart(2,"0")}-${String(d).padStart(2,"0")}`;
-}
-function isRightHour(date, tz, targetHour) {
-  const { hh } = localParts(date, tz);
-  return hh === Number(targetHour);
 }
 function daysSince(start, now, tz) {
   const startKey = localDateKey(new Date(start), tz);
@@ -94,31 +95,33 @@ exports.handler = async (event) => {
   const results = [];
 
   for (const s of settings) {
-    const tz = s.send_tz || DEFAULT_TZ;
-    const hour = Number.isFinite(s.send_hour_local) ? s.send_hour_local : 9;
+    const tz   = s.send_tz || DEFAULT_TZ;
+    const hour = Number.isFinite(s.send_hour_local) ? s.send_hour_local : DEFAULT_HOUR;
     const loopEnabled = !!s.loop_enabled;
 
-    // Gate by user's local hour (unless force)
-    if (!force && !isRightHour(now, tz, hour)) {
-      results.push({ user: s.user_id, skipped: "outside_user_hour" });
-      continue;
-    }
+    // 2) Trackers: active, not responded, due (by next_run_at window) unless force
+    const earlyISO = new Date(now.getTime() - WINDOW_BEFORE_MIN*60*1000).toISOString();
+    const lateISO  = new Date(now.getTime() + WINDOW_AFTER_MIN*60*1000).toISOString();
 
-    // 2) Trackers: active, not responded
-    const { data: trs, error: tErr } = await db
+    let tQuery = db
       .from("lead_rescue_trackers")
-      .select("contact_id, current_day, last_attempt_at, responded, paused, started_at, updated_at")
+      .select("contact_id, current_day, last_attempt_at, responded, paused, started_at, updated_at, next_run_at")
       .eq("user_id", s.user_id)
+      .eq("seq_key", "lead_rescue")
       .eq("responded", false);
 
+    if (!force) {
+      tQuery = tQuery.gte("next_run_at", earlyISO).lte("next_run_at", lateISO);
+    }
+
+    const { data: trs, error: tErr } = await tQuery;
     if (tErr) {
       results.push({ user: s.user_id, error: "trackers_load_failed", detail: tErr.message });
       continue;
     }
-
     const active = (trs || []).filter(r => !r.paused);
     if (!active.length) {
-      results.push({ user: s.user_id, sent: 0, considered: 0 });
+      results.push({ user: s.user_id, sent: 0, considered: 0, skipped: force ? "no_active" : "no_due_in_window" });
       continue;
     }
 
@@ -176,7 +179,7 @@ exports.handler = async (event) => {
 
     let sentForUser = 0;
 
-    // 6) Who should get a message today?
+    // 6) Who should get a message now?
     for (const tr of active) {
       const c = contactById.get(tr.contact_id);
       if (!c) continue;
@@ -192,13 +195,12 @@ exports.handler = async (event) => {
       );
       if (inboundAfterLead) continue;
 
-      // Once per local calendar day
+      // Safety: once per local calendar day (prevents duplicate within window)
       if (tr.last_attempt_at && sameLocalDay(new Date(tr.last_attempt_at), now, tz)) continue;
 
-      // Day 1 = lead day (non-rescue). Rescue starts at Day 2 (next calendar day).
+      // Determine the day number (Day 1 is creation day; rescue begins Day 2)
       const startAnchor = tr.started_at || c.created_at; // prefer tracker.start
-      const dayNumber = 1 + daysSince(startAnchor, now, tz);
-      if (dayNumber < 2) continue;
+      const dayNumber = Math.max(2, 1 + daysSince(startAnchor, now, tz));
 
       // Only send if advancing beyond what we've already sent
       const current = tr.current_day || 1;
@@ -208,26 +210,24 @@ exports.handler = async (event) => {
       let body = null;
       if (templateMap.has(dayNumber)) {
         body = templateMap.get(dayNumber);
-      } else if (lastNonEmptyBody && !!s.loop_enabled && dayNumber > lastNonEmptyDay) {
+      } else if (lastNonEmptyBody && loopEnabled && dayNumber > lastNonEmptyDay) {
         body = lastNonEmptyBody; // loop reuse
       } else {
         // No template and no loop → skip without advancing
         continue;
       }
 
-      // Send & advance to the *actual* day
+      // Send & advance to the *actual* computed day
       try {
         await sendBody(tr.contact_id, body, { day_number: dayNumber });
-        const { error: upErr } = await db
-          .from("lead_rescue_trackers")
-          .update({
-            current_day: dayNumber,
-            last_attempt_at: new Date().toISOString(),
-            updated_at: new Date().toISOString(),
-          })
-          .eq("contact_id", tr.contact_id)
-          .eq("user_id", s.user_id);
-        if (upErr) throw upErr;
+
+        // Advance to this day and compute next_run_at on the DB side
+        const { error: advErr } = await db.rpc("lead_rescue_advance_after_send", {
+          p_user_id: s.user_id,
+          p_contact_id: tr.contact_id,
+          p_new_day: dayNumber,
+        });
+        if (advErr) throw advErr;
 
         sentForUser += 1;
       } catch (e) {
@@ -236,7 +236,8 @@ exports.handler = async (event) => {
           .from("lead_rescue_trackers")
           .update({ stop_reason: String(e), updated_at: new Date().toISOString() })
           .eq("contact_id", tr.contact_id)
-          .eq("user_id", s.user_id);
+          .eq("user_id", s.user_id)
+          .eq("seq_key", "lead_rescue");
       }
     }
 
@@ -247,5 +248,6 @@ exports.handler = async (event) => {
   return {
     statusCode: 200,
     body: JSON.stringify({ ok: true, users: settings.length, totalSent, results }),
+    headers: { "Content-Type": "application/json" },
   };
 };
