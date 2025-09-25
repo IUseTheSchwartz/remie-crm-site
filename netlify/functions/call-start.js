@@ -11,7 +11,10 @@ const { createClient } = require("@supabase/supabase-js");
 
 const TELNYX_API_KEY = process.env.TELNYX_API_KEY;
 const CALL_CONTROL_APP_ID = process.env.TELNYX_CALL_CONTROL_APP_ID;
+// Optional ringback audio while B-leg is dialing (MP3/WAV URL). Safe to leave blank.
+const RINGBACK_URL = process.env.RINGBACK_URL || "";
 
+// You already have one of these set in Netlify; support both env names.
 const SUPABASE_URL = process.env.SUPABASE_URL;
 const SUPABASE_SERVICE_ROLE_KEY =
   process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_SERVICE_ROLE;
@@ -50,9 +53,7 @@ const STATE_CENTROID = {
 
 /**
  * --- US NPA → USPS two-letter state map (United States only) ---
- * This is a comprehensive, up-to-date set as of late 2025 (NANPA/Wikipedia).
- * If a brand-new overlay appears later, add it here; the algorithm will use it automatically.
- * (Overlays share the same state as the parent NPA.)
+ * Comprehensive set as of 2025. Overlays share the same state as the parent NPA.
  */
 const NPA_STATE = {
   // AL
@@ -261,6 +262,7 @@ exports.handler = async (event) => {
   const callerId = pickBestCallerId({ leadNPA, owned: nums });
   if (!callerId) return bad(400, "Could not choose a caller ID");
 
+  // Client state tells the webhook what to do next, including ringback + B timeout
   const client_state = b64({
     kind: "crm_outbound",
     user_id: agent_id,
@@ -270,6 +272,8 @@ exports.handler = async (event) => {
     from_number: callerId,
     lead_npa: leadNPA,
     lead_state: stateFromAreaCode(leadNPA),
+    ringback_url: RINGBACK_URL || null,   // optional; webhook will skip if null/empty
+    b_timeout_secs: 25                    // dial B-leg for up to ~25s, then bail
   });
 
   const createPayload = {
