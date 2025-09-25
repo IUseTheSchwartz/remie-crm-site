@@ -7,7 +7,7 @@ const fetch = require("node-fetch"); // ensure fetch exists in function runtime
 
 const TELNYX_API_KEY = process.env.TELNYX_API_KEY;
 
-// Accept a few env names; you said you’re using TELNYX_FROM, so we honor that first.
+// Accept several env names; you’re using TELNYX_FROM, so honor that first
 const ENV_FROM_RAW =
   process.env.TELNYX_FROM ||
   process.env.TELNYX_FROM_NUMBER ||
@@ -17,11 +17,7 @@ const ENV_FROM_RAW =
 const MESSAGING_PROFILE_ID = process.env.TELNYX_MESSAGING_PROFILE_ID || null;
 
 function json(obj, statusCode = 200) {
-  return {
-    statusCode,
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(obj),
-  };
+  return { statusCode, headers: { "Content-Type": "application/json" }, body: JSON.stringify(obj) };
 }
 const S = (x) => (x == null ? "" : String(x));
 const onlyDigits = (s) => String(s || "").replace(/\D/g, "");
@@ -39,20 +35,16 @@ function toE164(p) {
 // tiny mustache: {{ token }}
 function renderTemplate(tpl, ctx) {
   if (!tpl) return "";
-  return String(tpl)
-    .replace(/\{\{\s*([\w.]+)\s*\}\}/g, (_, k) => {
-      const v = ctx && Object.prototype.hasOwnProperty.call(ctx, k) ? ctx[k] : "";
-      return v == null ? "" : String(v);
-    })
-    .trim();
+  return String(tpl).replace(/\{\{\s*([\w.]+)\s*\}\}/g, (_, k) => {
+    const v = ctx && Object.prototype.hasOwnProperty.call(ctx, k) ? ctx[k] : "";
+    return v == null ? "" : String(v);
+  }).trim();
 }
 
 async function getLead(db, lead_id) {
   const { data, error } = await db
     .from("leads")
-    .select(
-      "id, user_id, name, phone, email, state, beneficiary, beneficiary_name, military_branch"
-    )
+    .select("id, user_id, name, phone, email, state, beneficiary, beneficiary_name, military_branch")
     .eq("id", lead_id)
     .maybeSingle();
   if (error) throw error;
@@ -80,7 +72,7 @@ async function findContactByPhone(db, user_id, phoneLike) {
   return (data || []).find((c) => norm10(c.phone) === d10) || null;
 }
 
-// Select * so schema differences (full_name vs name, calendly_url vs calendly_link) don't break sends
+// schema-agnostic to avoid column mismatches
 async function getAgentProfile(db, user_id) {
   const { data, error } = await db
     .from("agent_profiles")
@@ -101,16 +93,26 @@ async function getTemplatesRow(db, user_id) {
   return data || null;
 }
 
-// Prefer ENV_FROM first (your TELNYX_FROM), then last-used, then agent profile,
-// and finally let the profile route (omit "from").
+// WALLET helper
+async function getBalanceCents(db, user_id) {
+  const { data, error } = await db
+    .from("user_wallets")
+    .select("balance_cents")
+    .eq("user_id", user_id)
+    .maybeSingle();
+  if (error) throw error;
+  return Number(data?.balance_cents ?? 0);
+}
+
+// Prefer ENV_FROM first (TELNYX_FROM), then last-used, then agent profile, then let profile route
 async function pickFromNumber(db, user_id) {
-  // 1) explicit env (TELNYX_FROM, TELNYX_FROM_NUMBER, DEFAULT_FROM_NUMBER)
+  // 1) explicit env
   if (ENV_FROM_RAW) {
     const e = toE164(ENV_FROM_RAW);
     if (e) return e;
   }
 
-  // 2) last used from_number in messages
+  // 2) last used from_number
   try {
     const { data } = await db
       .from("messages")
@@ -126,14 +128,14 @@ async function pickFromNumber(db, user_id) {
     }
   } catch {}
 
-  // 3) agent profile phone (often a personal cell; may fail with Telnyx if not hosted there)
+  // 3) agent profile phone (may not be Telnyx-hosted; last resort)
   const ap = await getAgentProfile(db, user_id);
   if (ap?.phone) {
     const e = toE164(ap.phone);
     if (e) return e;
   }
 
-  // 4) fallback: omit "from" and rely on messaging profile routing
+  // 4) omit "from" and rely on messaging profile routing
   return null;
 }
 
@@ -164,10 +166,9 @@ async function telnyxSend({ from, to, text, profileId }) {
   return out; // contains data.id, etc.
 }
 
-// choose a reasonable fallback template key if the requested one is missing
 function chooseFallbackKey(reqKey, { isMilitary }) {
   const wanted = S(reqKey).trim();
-  if (wanted) return wanted; // still try requested first
+  if (wanted) return wanted;
   return isMilitary ? "new_lead_military" : "new_lead";
 }
 
@@ -177,23 +178,20 @@ exports.handler = async (event) => {
 
   try {
     let body;
-    try {
-      body = JSON.parse(event.body || "{}");
-    } catch {
-      return json({ error: "invalid_json" }, 400);
-    }
+    try { body = JSON.parse(event.body || "{}"); }
+    catch { return json({ error: "invalid_json" }, 400); }
 
     let {
       to,
       contact_id,
       lead_id,
       body: rawBody,
-      templateKey, // camelCase (UI/older callers)
+      templateKey,            // camelCase
       requesterId,
       provider_message_id,
     } = body || {};
 
-    // Accept snake_case too
+    // accept snake_case too
     templateKey = body.template_key || body.template || templateKey;
 
     // -------- Resolve user_id, contact, destination phone --------
@@ -228,14 +226,7 @@ exports.handler = async (event) => {
     }
 
     if (!user_id) {
-      return json(
-        {
-          error: "missing_user_context",
-          hint: "provide lead_id, contact_id, or requesterId",
-          trace,
-        },
-        400
-      );
+      return json({ error: "missing_user_context", hint: "provide lead_id, contact_id, or requesterId", trace }, 400);
     }
 
     const toE = toE164(to);
@@ -268,38 +259,27 @@ exports.handler = async (event) => {
       const mt = await getTemplatesRow(db, user_id);
       if (!mt) return json({ error: "template_not_configured", trace }, 400);
 
-      // enabled flag(s) – permissive: if not explicitly false, we treat as enabled
       const enabledGlobal = typeof mt.enabled === "boolean" ? mt.enabled : true;
-      const enabledByKey =
-        mt.enabled && typeof mt.enabled === "object" ? mt.enabled[templateKey] : undefined;
-      const isEnabled = enabledGlobal && enabledByKey !== false;
+      const enabledByKey   = (mt.enabled && typeof mt.enabled === "object") ? mt.enabled[templateKey] : undefined;
+      const isEnabled = enabledGlobal && (enabledByKey !== false);
       if (!isEnabled) return json({ status: "skipped_disabled", templateKey, trace });
 
       const tags = Array.isArray(contact?.tags) ? contact.tags.map(String) : [];
       const isMilitary = S(lead?.military_branch) || tags.includes("military");
 
       const keyToUse = chooseFallbackKey(templateKey, { isMilitary: !!isMilitary });
-      const T = (k) => mt.templates?.[k] ?? mt[k] ?? "";
+      const T = (k) => (mt.templates?.[k] ?? mt[k] ?? "");
       let tpl = String(T(keyToUse) || "").trim();
 
-      // extra fallback: if asked for military and it's missing, try new_lead; vice-versa
       if (!tpl && keyToUse === "new_lead_military") tpl = String(T("new_lead") || "").trim();
       if (!tpl && keyToUse === "new_lead") tpl = String(T("new_lead_military") || "").trim();
 
-      if (!tpl)
-        return json(
-          { error: "template_not_found", requested: templateKey, tried: keyToUse, trace },
-          404
-        );
+      if (!tpl) return json({ error: "template_not_found", requested: templateKey, tried: keyToUse, trace }, 404);
 
       const ap = await getAgentProfile(db, user_id);
       const ctx = {
-        first_name: "",
-        last_name: "",
-        full_name: "",
-        state: "",
-        beneficiary: "",
-        military_branch: "",
+        first_name: "", last_name: "", full_name: "",
+        state: "", beneficiary: "", military_branch: "",
         agent_name: ap?.name || ap?.full_name || "",
         company: ap?.company || "",
         agent_phone: ap?.phone || "",
@@ -307,12 +287,12 @@ exports.handler = async (event) => {
         calendly_link: ap?.calendly_link || ap?.calendly_url || "",
       };
 
-      const fullName = lead?.name || contact?.full_name || "";
+      const fullName = (lead?.name) || (contact?.full_name) || "";
       if (fullName) {
         ctx.full_name = fullName;
         const parts = fullName.split(/\s+/).filter(Boolean);
         ctx.first_name = parts[0] || "";
-        ctx.last_name = parts.slice(1).join(" ");
+        ctx.last_name  = parts.slice(1).join(" ");
       }
       ctx.state = lead?.state || "";
       ctx.beneficiary = lead?.beneficiary || lead?.beneficiary_name || "";
@@ -327,8 +307,15 @@ exports.handler = async (event) => {
     // -------- Determine FROM number (robust) --------
     const fromE164 = await pickFromNumber(db, user_id); // may be null (we'll omit "from")
     if (!fromE164 && !MESSAGING_PROFILE_ID && !ENV_FROM_RAW) {
-      // Absolutely no way to route – fail fast with a clear error
       return json({ error: "no_from_number_configured", trace }, 400);
+    }
+
+    // -------- WALLET pre-flight --------
+    const COST_CENTS = 1; // keep in sync with webhook + trigger expectation
+    let balance = 0;
+    try { balance = await getBalanceCents(db, user_id); } catch { balance = 0; }
+    if (balance < COST_CENTS) {
+      return json({ error: "insufficient_balance", balance_cents: balance, trace }, 402);
     }
 
     // -------- Send via Telnyx --------
@@ -342,17 +329,10 @@ exports.handler = async (event) => {
         text: bodyText,
         profileId: MESSAGING_PROFILE_ID,
       });
-      trace.push({
-        step: "telnyx.sent",
-        id: telnyxResp?.data?.id,
-        used_from: fromE164 || "(profile-routed)",
-      });
+      trace.push({ step: "telnyx.sent", id: telnyxResp?.data?.id, used_from: fromE164 || "(profile-routed)" });
     } catch (e) {
       trace.push({ step: "telnyx.error", detail: e?.message || String(e) });
-      return json(
-        { error: "send_failed", detail: e?.message || String(e), telnyx_response: e?.telnyx_response, trace },
-        502
-      );
+      return json({ error: "send_failed", detail: e?.message || String(e), telnyx_response: e?.telnyx_response, trace }, 502);
     }
 
     const provider_sid = telnyxResp?.data?.id || null;
@@ -369,18 +349,19 @@ exports.handler = async (event) => {
       status: "sent",
       provider_sid,
       provider_message_id: provider_message_id || null,
-      price_cents: 0,
-      meta: { templateKey: templateKey || null, lead_id: lead?.id || lead_id || null },
+      price_cents: COST_CENTS, // debit trigger expects a cost > 0
+      meta: { templateKey: templateKey || null, lead_id: lead?.id || (lead_id || null) },
     };
 
     const ins = await db.from("messages").insert([row]).select("id, contact_id").maybeSingle();
     if (ins?.error) {
-      // If insert fails due to unique(provider_message_id), we’re deduped anyway
-      if ((ins.error.message || "").toLowerCase().includes("duplicate")) {
+      const msg = ins.error?.message || ins.error?.hint || "unknown_db_error";
+      if (msg.toLowerCase().includes("duplicate") || msg.toLowerCase().includes("unique")) {
         trace.push({ step: "insert.duplicate", provider_message_id });
         return json({ ok: true, deduped: true, provider_message_id, trace });
       }
-      return json({ error: "db_insert_failed", detail: ins.error.message, trace }, 500);
+      console.error("[messages-send] db insert failed:", ins.error);
+      return json({ error: `db_insert_failed: ${msg}`, trace }, 500);
     }
 
     return json({
