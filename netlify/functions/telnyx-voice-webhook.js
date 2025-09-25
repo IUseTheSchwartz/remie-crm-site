@@ -1,8 +1,6 @@
 // netlify/functions/telnyx-voice-webhook.js
-// Call Control webhook that:
-// 1) Receives events
-// 2) When the AGENT answers, transfer the call to the LEAD
-// Docs: /v2/calls/:call_control_id/actions/transfer
+// When AGENT answers, transfer to LEAD.
+// Adds robust parsing + logging and won't silently skip failures.
 
 const crypto = require("crypto");
 const fetch = require("node-fetch");
@@ -10,14 +8,18 @@ const fetch = require("node-fetch");
 const TELNYX_API_KEY = process.env.TELNYX_API_KEY || "";
 const TELNYX_WEBHOOK_SECRET = process.env.TELNYX_WEBHOOK_SECRET || "";
 
-// Verify Telnyx signature (if secret set)
+function log(...args) {
+  try { console.log("[telnyx-webhook]", ...args); } catch {}
+}
+
+// Verify Telnyx signature (HMAC-SHA256 v2). If secret absent, allow all.
 function verifySignature(rawBody, signatureHeader) {
   if (!TELNYX_WEBHOOK_SECRET) return true;
   if (!signatureHeader) return false;
   try {
-    const parts = String(signatureHeader).split(",").map((s) => s.trim());
-    const ts = parts.find((p) => p.startsWith("t="))?.split("=")[1];
-    const sig = parts.find((p) => p.startsWith("sig="))?.split("=")[1];
+    const parts = String(signatureHeader).split(",").map(s => s.trim());
+    const ts = parts.find(p => p.startsWith("t="))?.split("=")[1];
+    const sig = parts.find(p => p.startsWith("sig="))?.split("=")[1];
     if (!ts || !sig) return false;
     const payload = `${ts}.${rawBody}`;
     const hmac = crypto.createHmac("sha256", TELNYX_WEBHOOK_SECRET);
@@ -29,93 +31,126 @@ function verifySignature(rawBody, signatureHeader) {
   }
 }
 
-function decodeClientState(b64) {
+function decodeClientState(any) {
   try {
-    if (!b64) return null;
-    const json = Buffer.from(String(b64), "base64").toString("utf8");
-    return JSON.parse(json);
+    if (!any) return null;
+    // support raw JSON, base64 JSON, or already-object
+    if (typeof any === "object") return any;
+    const s = String(any);
+    // base64?
+    if (/^[A-Za-z0-9+/=]+$/.test(s)) {
+      const json = Buffer.from(s, "base64").toString("utf8");
+      return JSON.parse(json);
+    }
+    return JSON.parse(s);
   } catch {
     return null;
   }
 }
 
 async function transferCall({ callControlId, to, from }) {
-  if (!TELNYX_API_KEY) return;
+  if (!TELNYX_API_KEY) {
+    log("transfer skipped: missing TELNYX_API_KEY");
+    return { ok: false, skipped: "no_api_key" };
+  }
   const url = `https://api.telnyx.com/v2/calls/${callControlId}/actions/transfer`;
-  const body = { to, from }; // E.164 numbers
-  await fetch(url, {
+  const body = { to, from };
+  const resp = await fetch(url, {
     method: "POST",
     headers: {
       Authorization: `Bearer ${TELNYX_API_KEY}`,
       "Content-Type": "application/json",
     },
     body: JSON.stringify(body),
-  }).catch(() => {});
+  });
+  const data = await resp.json().catch(() => ({}));
+  if (!resp.ok) {
+    log("transfer failed", resp.status, data);
+    return { ok: false, status: resp.status, data };
+  }
+  log("transfer ok", { to, from });
+  return { ok: true };
 }
 
 exports.handler = async (event) => {
   const rawBody = event.body || "";
   const sig =
-    event.headers["telnyx-signature-ed25519"] ||
     event.headers["telnyx-signature"] ||
-    event.headers["Telnyx-Signature-Ed25519"] ||
-    event.headers["Telnyx-Signature"];
+    event.headers["telnyx-signature-ed25519"] ||
+    event.headers["Telnyx-Signature"] ||
+    event.headers["Telnyx-Signature-Ed25519"];
 
   if (!verifySignature(rawBody, sig)) {
+    log("invalid signature");
     return { statusCode: 400, body: "Invalid signature" };
   }
 
   let payload;
-  try {
-    payload = JSON.parse(rawBody);
-  } catch {
+  try { payload = JSON.parse(rawBody); } catch {
+    log("json parse error");
     return { statusCode: 200, body: "ok" };
   }
 
   const data = payload?.data || {};
   const eventType = data?.event_type || data?.record_type;
-  const p = data?.payload || data; // v2 puts fields in data.payload
-  const callControlId = p?.call_control_id || null;
+  const p = data?.payload || data; // support both shapes
 
-  // Pull our state from when we created the call
-  const clientState = decodeClientState(p?.client_state || p?.client_state_b64);
+  const callControlId =
+    p?.call_control_id ||
+    p?.call_control_ids?.[0] || // some events carry arrays
+    null;
+
+  const clientState =
+    decodeClientState(p?.client_state) ||
+    decodeClientState(p?.client_state_b64);
+
   const kind = clientState?.kind;
   const leadNumber = clientState?.lead_number;
-  const callerId = clientState?.from_number; // our Telnyx DID chosen server-side
+  const fromNumber = clientState?.from_number;
+
+  // minimal log (no PII beyond area codes)
+  log("event", eventType, {
+    hasCallControlId: !!callControlId,
+    kind,
+    leadSample: leadNumber ? String(leadNumber).slice(0, 4) + "..." : null,
+  });
 
   try {
     switch (eventType) {
-      case "call.initiated":
-        // Created first leg (agent)
-        break;
-
-      case "call.answered":
-        // When the AGENT answers the first leg, transfer to the LEAD
-        // We only do this for our outbound CRM calls
-        if (kind === "crm_outbound" && callControlId && leadNumber && callerId) {
-          // Issue transfer to ring the lead, presenting our DID as caller ID
-          // Endpoint: /v2/calls/:call_control_id/actions/transfer
-          // Ref: Telnyx Voice API commands. 
-          transferCall({ callControlId, to: leadNumber, from: callerId });
+      case "call.answered": {
+        // Only transfer for our outbound agent leg
+        if (kind === "crm_outbound" && callControlId && leadNumber && fromNumber) {
+          await transferCall({
+            callControlId,
+            to: leadNumber,
+            from: fromNumber,
+          });
+        } else {
+          log("answered but missing fields", {
+            hasCallControlId: !!callControlId,
+            hasLead: !!leadNumber,
+            hasFrom: !!fromNumber,
+            kind,
+          });
         }
         break;
-
+      }
+      // (optional) log helpful events
+      case "call.initiated":
       case "call.bridged":
-        // Agent and lead are now connected
-        break;
-
       case "call.hangup":
       case "call.ended":
-        // End of call; you could log duration here
+      case "call.transfer.initiated":
+      case "call.transfer.completed":
+        log("info", eventType);
         break;
-
       default:
+        // ignore noisy events
         break;
     }
-  } catch {
-    // swallow
+  } catch (e) {
+    log("handler error", e?.message);
   }
 
-  // Always ack quickly
   return { statusCode: 200, body: "ok" };
 };
