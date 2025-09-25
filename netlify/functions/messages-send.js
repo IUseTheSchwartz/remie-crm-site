@@ -3,6 +3,7 @@
 // Accepts: { to?, contact_id?, lead_id?, body?, templateKey?/template_key?/template?, requesterId?, provider_message_id? }
 
 const { getServiceClient } = require("./_supabase");
+const fetch = require("node-fetch"); // <- ensure fetch exists in function runtime
 
 const TELNYX_API_KEY = process.env.TELNYX_API_KEY;
 const DEFAULT_FROM_NUMBER = process.env.DEFAULT_FROM_NUMBER || process.env.TELNYX_FROM || null; // E.164 or blank
@@ -63,10 +64,11 @@ async function findContactByPhone(db, user_id, phoneLike) {
   return (data || []).find((c) => norm10(c.phone) === d10) || null;
 }
 
+// EDIT 2: make this schema-agnostic by selecting *
 async function getAgentProfile(db, user_id) {
   const { data, error } = await db
     .from("agent_profiles")
-    .select("user_id, name, company, phone, email, calendly_link")
+    .select("*")
     .eq("user_id", user_id)
     .maybeSingle();
   if (error) throw error;
@@ -261,11 +263,11 @@ exports.handler = async (event) => {
       const ctx = {
         first_name: "", last_name: "", full_name: "",
         state: "", beneficiary: "", military_branch: "",
-        agent_name: ap?.name || "",
+        agent_name: ap?.name || ap?.full_name || "",
         company: ap?.company || "",
         agent_phone: ap?.phone || "",
         agent_email: ap?.email || "",
-        calendly_link: ap?.calendly_link || "",
+        calendly_link: ap?.calendly_link || ap?.calendly_url || "",
       };
 
       const fullName = (lead?.name) || (contact?.full_name) || "";
@@ -346,6 +348,7 @@ exports.handler = async (event) => {
       trace,
     });
   } catch (e) {
+    console.error("[messages-send] unhandled:", e); // <- extra visibility
     return json({ error: "unhandled", detail: String(e?.message || e) });
   }
 };
