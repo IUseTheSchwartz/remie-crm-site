@@ -1,105 +1,143 @@
 // File: src/components/ClickToCall.jsx
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Phone, Loader2 } from "lucide-react";
-import { supabase } from "../lib/supabaseClient.js";
-import { listMyNumbers } from "../lib/numbers.js";
-import { startCall } from "../lib/calls.js";
+import { supabase } from "../lib/supabaseClient";
+import { toE164 } from "../lib/phone";
 
-/** Match DialerPage's normalization */
-function normUS(s) {
-  const d = String(s || "").replace(/\D+/g, "");
-  if (/^1\d{10}$/.test(d)) return `+${d}`;
-  if (/^\d{10}$/.test(d)) return `+1${d}`;
-  return s || "";
+const FN_BASE = import.meta.env?.VITE_FUNCTIONS_BASE || "/.netlify/functions";
+
+/**
+ * Renders a monospace phone link like 1 (615) 555-1234 and makes it tel: clickable.
+ */
+export function PhoneLink({ number, className = "" }) {
+  const pretty = useMemo(() => {
+    const d = String(number || "").replace(/\D+/g, "");
+    if (d.length === 11 && d.startsWith("1")) {
+      return `1 (${d.slice(1,4)}) ${d.slice(4,7)}-${d.slice(7,11)}`;
+    }
+    if (d.length === 10) {
+      return `(${d.slice(0,3)}) ${d.slice(3,6)}-${d.slice(6,10)}`;
+    }
+    return number || "—";
+  }, [number]);
+
+  return (
+    <a href={`tel:${number}`} className={`font-mono underline-offset-2 hover:underline ${className}`}>
+      {pretty}
+    </a>
+  );
 }
 
 /**
- * Props:
- * - toNumber (E.164 or US 10/11-digit)
- * - variant: "icon" | "button" (default "button")
- * - className: optional extra classes for wrapper
- * - ariaLabel: optional for accessibility (defaults to "Call")
+ * Click-to-call button used on the Leads table.
+ * It ensures:
+ *  - agent phone is known (load from agent_profiles if not provided)
+ *  - numbers are normalized to E.164 (+1…)
+ *  - payload matches call-start.js (user_id, agent_number, lead_number, contact_id)
  */
-export default function ClickToCall({ toNumber, variant = "button", className, ariaLabel }) {
+export default function ClickToCall({
+  number,           // lead phone
+  contactId,        // optional: for logging
+  callerNumber,     // optional agent phone; if missing we load it
+  dialSessionKey,   // optional: for local “busy” key per row
+  fromView = "leads",
+  className = "",
+}) {
+  const [agentPhone, setAgentPhone] = useState(callerNumber || "");
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
-  const [hasNumber, setHasNumber] = useState(false);
-  const [agentCell, setAgentCell] = useState("");
-  const lastLoadedPhoneRef = useRef("");
 
-  // Prefetch agent phone & owned numbers like DialerPage
+  // keep prop in sync if parent updates
+  useEffect(() => { if (callerNumber) setAgentPhone(callerNumber); }, [callerNumber]);
+
+  // load agent phone from agent_profiles once
   useEffect(() => {
+    if (agentPhone) return;
     (async () => {
       try {
         const { data: auth } = await supabase.auth.getUser();
         const uid = auth?.user?.id;
         if (!uid) return;
-
-        const { data: row } = await supabase
+        const { data } = await supabase
           .from("agent_profiles")
           .select("phone")
           .eq("user_id", uid)
           .maybeSingle();
-
-        const phone = row?.phone || "";
-        lastLoadedPhoneRef.current = phone;
-        setAgentCell(phone);
-
-        const mine = await listMyNumbers();
-        setHasNumber((mine?.length || 0) > 0);
+        if (data?.phone) setAgentPhone(data.phone);
       } catch (e) {
-        console.warn("ClickToCall init warning:", e);
+        // non-fatal; user will see “add your phone” message below
+        console.warn("load agent phone failed", e?.message || e);
       }
     })();
-  }, []);
+  }, []); // run once
 
-  const onClick = useCallback(async () => {
+  async function start() {
     setErr("");
-    if (!agentCell) { setErr("Add your phone in Dialer first (we call you there)."); return; }
-    if (!toNumber) { setErr("Missing lead number."); return; }
-    if (!hasNumber) { setErr("You don’t own any numbers yet. Buy one in the Dialer."); return; }
-
-    setBusy(true);
     try {
-      await startCall({
-        agentNumber: normUS(agentCell),
-        leadNumber: normUS(toNumber),
+      const { data: auth } = await supabase.auth.getUser();
+      const uid = auth?.user?.id;
+      if (!uid) {
+        setErr("You must be logged in.");
+        return;
+      }
+
+      const to = toE164(number);
+      const fromAgent = toE164(agentPhone);
+
+      if (!fromAgent) { setErr("Add your phone in Dialer first (we call you there)."); return; }
+      if (!to)        { setErr("Lead phone is invalid."); return; }
+
+      setBusy(true);
+
+      const res = await fetch(`${FN_BASE}/call-start`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          // 🔐 matches call-start.js keys exactly
+          user_id: uid,
+          agent_id: uid,
+          agent_number: fromAgent,
+          lead_number: to,
+          contact_id: contactId || null,
+
+          // Not strictly required, but helps debug in your webhook logs
+          source: fromView,
+          dial_session_key: dialSessionKey || null,
+        }),
       });
-      // Let your webhook update logs; no UI change needed here.
+
+      const out = await res.json().catch(() => ({}));
+      if (!res.ok || out?.ok === false) {
+        const msg = out?.error || out?.message || `Call failed (${res.status})`;
+        throw new Error(msg);
+      }
+      // success: Telnyx calls your phone now; webhook will handle bridging
     } catch (e) {
-      setErr(e?.message || "Failed to start call");
+      setErr(e.message || "Failed to start call");
     } finally {
       setBusy(false);
     }
-  }, [agentCell, toNumber, hasNumber]);
+  }
 
-  const label = ariaLabel || "Call";
-
-  // Styles
-  const iconBtn =
-    "inline-grid place-items-center rounded-full border border-white/15 bg-white/10 hover:bg-white/15 " +
-    "h-8 w-8 text-white/90 disabled:opacity-60";
-  const fullBtn =
-    "inline-flex items-center gap-2 rounded-xl px-3 py-2 bg-emerald-600 text-white hover:bg-emerald-700 disabled:opacity-60";
+  const disabled = busy || !agentPhone || !number;
 
   return (
-    <div className={className || ""}>
+    <div className={`inline-flex flex-col ${className}`}>
       <button
-        onClick={onClick}
-        disabled={busy}
-        className={variant === "icon" ? iconBtn : fullBtn}
-        title={label}
-        aria-label={label}
+        onClick={start}
+        disabled={disabled}
+        className={`inline-flex items-center gap-2 rounded-lg bg-emerald-600 px-3 py-1.5 text-sm text-white
+          hover:bg-emerald-500 disabled:opacity-60 disabled:cursor-not-allowed`}
+        title={agentPhone ? "Call this lead" : "Add your phone in Dialer first"}
       >
-        {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Phone size={16} />}
-        {variant === "button" ? <span>{label}</span> : null}
+        {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Phone className="h-4 w-4" />}
+        <span>Call</span>
       </button>
-      {err ? <div className="mt-1 text-xs text-rose-500">{err}</div> : null}
+      {(!agentPhone || err) && (
+        <span className="mt-1 text-[11px] leading-4 text-rose-300">
+          {err || "Add your phone in Dialer first (we call you there)."}
+        </span>
+      )}
     </div>
   );
-}
-
-/** Compatibility wrapper used on LeadsPage */
-export function PhoneLink({ number, variant = "icon" }) {
-  return <ClickToCall toNumber={number} variant={variant} />;
 }
