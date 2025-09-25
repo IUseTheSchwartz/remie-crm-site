@@ -23,8 +23,13 @@ import GoogleSheetsConnector from "../components/GoogleSheetsConnector.jsx";
 // Phone normalizer (E.164)
 import { toE164 } from "../lib/phone.js";
 
-/* ✅ Click-to-call */
-import ClickToCall, { PhoneLink } from "../components/ClickToCall.jsx";
+/* startCall so Leads page can dial exactly like Dialer */
+import { startCall } from "../lib/calls";
+
+/* (Optional) simple phone link UI; remove if you don’t want it */
+const PhoneMono = ({ children }) => (
+  <span className="font-mono whitespace-nowrap">{children}</span>
+);
 
 /* ---------------- Functions base (Netlify) ---------------- */
 const FN_BASE = import.meta.env?.VITE_FUNCTIONS_BASE || "/.netlify/functions";
@@ -67,7 +72,6 @@ const H = {
   beneficiary: ["beneficiary","beneficiary type"],
   beneficiary_name: ["beneficiary name","beneficiary_name","beneficiary full name"],
   gender: ["gender","sex"],
-  // underscored + variants so CSV headers like "military_branch" import
   military_branch: ["military","military branch","branch","service branch","military_branch","branch_of_service"],
 };
 
@@ -488,11 +492,9 @@ async function triggerAutoTextForLeadId({ leadId, userId, person }) {
 
   // 1) If military, aggressively try military flows first
   if (isMilitary) {
-    // (a) try server with military keys (lets backend render if configured there)
     for (const k of militaryKeys) {
       if (await tryServerSend(k)) return;
     }
-    // (b) client fallback: fetch a military body and send
     const mb = await fetchBodyFromKeys(militaryKeys);
     if (mb?.body) {
       try {
@@ -522,11 +524,9 @@ async function triggerAutoTextForLeadId({ leadId, userId, person }) {
         console.warn("[auto-text] client body send error", e?.message || e);
       }
     }
-    // (c) last resort: still ask server to send using generic normal keys
     for (const k of normalKeys) {
       if (await tryServerSend(k)) return;
     }
-    // (d) client fallback to normal body if exists
     const nb = await fetchBodyFromKeys(normalKeys);
     if (nb?.body) {
       try {
@@ -604,7 +604,7 @@ export default function LeadsPage() {
   const [viewSelected, setViewSelected] = useState(null); // read-only policy drawer
   const [filter, setFilter] = useState("");
 
-  /* NEW: caller (agent) phone for ClickToCall on this page */
+  /* NEW: caller (agent) phone for dialing from this page */
   const [agentPhone, setAgentPhone] = useState("");
 
   const [serverMsg, setServerMsg] = useState("");
@@ -619,7 +619,7 @@ export default function LeadsPage() {
     setClients(loadClients());
   }, []);
 
-  /* NEW: load agent phone from agent_profiles -> phone */
+  /* Load saved agent phone (same as Dialer) */
   useEffect(() => {
     (async () => {
       try {
@@ -639,6 +639,56 @@ export default function LeadsPage() {
       }
     })();
   }, []);
+
+  // Helper to save agent phone if user enters it here
+  async function saveAgentPhone(newPhone) {
+    const phone = (newPhone || "").trim();
+    if (!phone) return;
+    try {
+      const { data: auth } = await supabase.auth.getUser();
+      const uid = auth?.user?.id;
+      if (!uid) return;
+
+      const { data: existing } = await supabase
+        .from("agent_profiles")
+        .select("user_id")
+        .eq("user_id", uid)
+        .maybeSingle();
+
+      if (existing) {
+        await supabase.from("agent_profiles").update({ phone }).eq("user_id", uid);
+      } else {
+        await supabase.from("agent_profiles").insert({ user_id: uid, phone });
+      }
+      setAgentPhone(phone);
+    } catch (e) {
+      console.error("saveAgentPhone failed", e);
+      alert("Could not save your phone. Try again on the Dialer page.");
+    }
+  }
+
+  // Click-to-call from Leads page with graceful prompt if agent phone is missing
+  async function onCallLead(leadNumber, contactId) {
+    try {
+      const to = toE164(leadNumber);
+      if (!to) return alert("Invalid lead phone.");
+
+      let fromAgent = agentPhone;
+      if (!fromAgent) {
+        const p = prompt("Enter your phone (we call you first):", "+1 ");
+        if (!p) return; // user cancelled
+        const e164 = toE164(p);
+        if (!e164) return alert("That phone doesn’t look valid. Use +1XXXXXXXXXX");
+        await saveAgentPhone(e164);
+        fromAgent = e164;
+      }
+
+      await startCall({ agentNumber: fromAgent, leadNumber: to, contactId });
+      setServerMsg("📞 Calling…");
+    } catch (e) {
+      alert(e.message || "Failed to start call");
+    }
+  }
 
   // One-time server pull → merge without duplicates (id/email/phone)
   useEffect(() => {
@@ -908,7 +958,7 @@ export default function LeadsPage() {
         .from("leads")
         .select("id")
         .eq("user_id", userId)
-        .ilike("email", e) // case-insensitive equals when no wildcards
+        .ilike("email", e)
         .limit(1)
         .maybeSingle();
       if (error || !data) return null;
@@ -1083,7 +1133,6 @@ export default function LeadsPage() {
   }
 
   function toggleSelectAll() {
-    // Toggle: if everything visible selected -> clear visible, else select all visible
     setSelectedIds(prev => {
       const next = new Set(prev);
       const visibleIds = visible.map(v => v.id);
@@ -1154,7 +1203,6 @@ export default function LeadsPage() {
 
   // Manual add: uses saved id to trigger auto-text (no lookup race)
   async function handleManualAdd(personInput) {
-    // Normalize just like CSV import
     const person = normalizePerson({
       ...personInput,
       stage: "no_pickup",
@@ -1354,12 +1402,19 @@ export default function LeadsPage() {
                   </Td>
                   <Td>{p.name || "—"}</Td>
 
-                  {/* ✅ Phone column: show number text + small round call icon */}
+                  {/* Phone: show number + our call button (no dependency on other components) */}
                   <Td>
                     {p.phone ? (
                       <div className="flex items-center gap-2">
-                        <span className="font-mono text-sm text-white/90">{p.phone}</span>
-                        <PhoneLink number={toE164(p.phone)} variant="icon" />
+                        <PhoneMono>{p.phone}</PhoneMono>
+                        <button
+                          onClick={() => onCallLead(p.phone, p.id)}
+                          className="inline-flex items-center gap-1 rounded-lg border border-emerald-500/40 bg-emerald-500/10 px-2 py-1 hover:bg-emerald-500/15"
+                          title="Call this lead"
+                        >
+                          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="16" height="16" fill="currentColor"><path d="M6.62 10.79a15.05 15.05 0 006.59 6.59l2.2-2.2a1 1 0 011.01-.24c1.11.37 2.31.57 3.58.57a1 1 0 011 1V21a1 1 0 01-1 1C10.07 22 2 13.93 2 3a1 1 0 011-1h3.5a1 1 0 011 1c0 1.27.2 2.47.57 3.58a1 1 0 01-.24 1.01l-2.21 2.2z"/></svg>
+                          <span>Call</span>
+                        </button>
                       </div>
                     ) : "—"}
                   </Td>
