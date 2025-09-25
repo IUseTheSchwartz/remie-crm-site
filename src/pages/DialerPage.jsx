@@ -38,7 +38,7 @@ export default function DialerPage() {
   const [busy, setBusy] = useState(false);
 
   // buy modal
-  the const [openBuy, setOpenBuy] = useState(false);
+  const [openBuy, setOpenBuy] = useState(false);
   const [npa, setNpa] = useState("");
   const [results, setResults] = useState([]);
   const [searching, setSearching] = useState(false);
