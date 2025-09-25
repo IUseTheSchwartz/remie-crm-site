@@ -19,7 +19,8 @@ import { getMyBalanceCents, formatUSD } from "../lib/wallet";
 import { supabase } from "../lib/supabaseClient";
 
 /* ------- config & small helpers ------- */
-const PRICE_CENTS = 500; // $5.00 per number (first number is free)
+const PRICE_CENTS = 500; // $5.00 per number after freebies
+const FREE_NUMBERS = 5;  // first 5 numbers are free
 
 const fmt = (s) => { try { return new Date(s).toLocaleString(); } catch { return s || ""; } };
 const normUS = (s) => {
@@ -52,6 +53,10 @@ export default function DialerPage() {
   const [savingPhone, setSavingPhone] = useState(false);
   const [phoneSavedAt, setPhoneSavedAt] = useState(0);
   const lastLoadedPhoneRef = useRef("");
+
+  /* ---------- computed ---------- */
+  const freebiesLeft = Math.max(0, FREE_NUMBERS - (myNumbers?.length || 0));
+  const hasNumber = (myNumbers?.length || 0) > 0;
 
   /* ---------- effects ---------- */
   useEffect(() => {
@@ -133,15 +138,11 @@ export default function DialerPage() {
   async function onCall() {
     if (!agentCell) return alert("Add your phone first (we call you there).");
     if (!toNumber) return alert("Enter a number to call.");
-    if (myNumbers.length === 0) return alert("You don’t own any numbers yet. Buy one to place calls.");
-    if ((balanceCents || 0) < 1) return alert("You need at least $0.01 to place a call.");
-
+    if (!hasNumber) return alert("You don’t own any numbers yet. Buy one to place calls.");
     setBusy(true);
     try {
       await startCall({ agentNumber: normUS(agentCell), leadNumber: normUS(toNumber) });
-      // Allow webhook time to log (and compute billed_cents on short calls)
-      setTimeout(refreshLogs, 4000);
-      setTimeout(refreshBalance, 4500); // refresh wallet after webhook debit
+      setTimeout(refreshLogs, 2000); // allow webhook to log
     } catch (e) {
       alert(e.message || "Failed to start call");
     } finally {
@@ -162,16 +163,16 @@ export default function DialerPage() {
     }
   }
 
-  // Confirm and complete purchase (charges $5 = 500 cents unless first number)
+  // Confirm and complete purchase (charges $5 = 500 cents unless within free allotment)
   async function confirmPurchase() {
-    const firstFree = myNumbers.length === 0;
-    if (!firstFree && balanceCents < PRICE_CENTS) {
+    const isFree = freebiesLeft > 0;
+    if (!isFree && balanceCents < PRICE_CENTS) {
       alert("You need at least $5.00 (500 cents) to buy another number.");
       return;
     }
     setBusy(true);
     try {
-      await purchaseNumber(selectedNum); // server enforces first-free & wallet debit/refund on failure
+      await purchaseNumber(selectedNum); // server also enforces freebies
       await refreshNumbers();
       await refreshBalance();
       alert(`Number purchased: ${selectedNum}`);
@@ -184,8 +185,6 @@ export default function DialerPage() {
       setBusy(false);
     }
   }
-
-  const hasNumber = myNumbers.length > 0;
 
   /* ---------- UI ---------- */
   return (
@@ -210,16 +209,6 @@ export default function DialerPage() {
           <div>
             <h1 className="text-2xl font-semibold tracking-tight">Dialer</h1>
             <p className="text-sm text-white/60">Local-presence calling with your owned numbers.</p>
-          </div>
-
-          {/* balance + rate */}
-          <div className="ml-auto flex items-center gap-2 text-xs sm:text-sm">
-            <span className="rounded-lg border border-white/10 bg-white/10 px-2 py-1 font-mono">
-              Balance: {formatUSD(balanceCents)} ({balanceCents}¢)
-            </span>
-            <span className="rounded-lg border border-white/10 bg-white/10 px-2 py-1">
-              Rate: $0.01/min (per started min)
-            </span>
           </div>
         </div>
       </header>
@@ -274,7 +263,7 @@ export default function DialerPage() {
             <div className="sm:col-span-1 flex items-end">
               <Button
                 onClick={onCall}
-                disabled={busy || !agentCell || !toNumber || !hasNumber || (balanceCents || 0) < 1}
+                disabled={busy || !agentCell || !toNumber || !hasNumber}
                 className="w-full"
               >
                 {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Phone className="h-4 w-4" />}
@@ -293,8 +282,18 @@ export default function DialerPage() {
 
         {/* right: my numbers */}
         <section className="rounded-2xl border border-white/10 bg-white/5 backdrop-blur-xl p-5 shadow-[0_8px_30px_rgba(0,0,0,0.12)]">
-          <div className="mb-3 flex items-center justify-between">
-            <h2 className="text-lg font-medium">My numbers</h2>
+          <div className="mb-3 flex items-center justify-between gap-2">
+            <div className="flex items-center gap-2">
+              <h2 className="text-lg font-medium">My numbers</h2>
+              <span
+                className={`rounded-full px-2 py-0.5 text-[11px] ${freebiesLeft > 0
+                  ? "bg-emerald-500/15 text-emerald-300"
+                  : "bg-white/10 text-white/60"}`}
+                title="First 5 numbers are free"
+              >
+                Free left: {freebiesLeft}
+              </span>
+            </div>
             <button
               onClick={() => setOpenBuy(true)}
               className="inline-flex items-center gap-1 rounded-lg border border-white/15 bg-white/5 px-3 py-1.5 text-sm hover:bg-white/10"
@@ -324,7 +323,7 @@ export default function DialerPage() {
           </div>
 
           <p className="mt-3 text-[11px] text-white/50">
-            We’ll automatically match the lead’s area code when possible, or use the closest area code you own.
+            First {FREE_NUMBERS} numbers are free. We’ll automatically match the lead’s area code when possible, or use the closest area code you own.
           </p>
         </section>
       </div>
@@ -351,7 +350,6 @@ export default function DialerPage() {
                   <Th>Status</Th>
                   <Th>Started</Th>
                   <Th>Duration</Th>
-                  <Th>Charge</Th>
                   <Th>Recording</Th>
                 </tr>
               </thead>
@@ -363,7 +361,6 @@ export default function DialerPage() {
                     <Td><StatusBadge status={c.status} /></Td>
                     <Td>{fmt(c.started_at)}</Td>
                     <Td>{c.duration_seconds ? `${c.duration_seconds}s` : "-"}</Td>
-                    <Td>{typeof c.billed_cents === "number" ? formatUSD(c.billed_cents) : "-"}</Td>
                     <Td>
                       {c.recording_url ? (
                         <a className="underline" href={c.recording_url} target="_blank" rel="noreferrer">
@@ -491,7 +488,6 @@ function StatusBadge({ status }) {
     queued: "bg-sky-500/15 text-sky-300",
     ringing: "bg-amber-500/15 text-amber-300",
     answered: "bg-emerald-500/15 text-emerald-300",
-    bridged: "bg-emerald-500/15 text-emerald-300",
     completed: "bg-indigo-500/15 text-indigo-300",
     failed: "bg-rose-500/15 text-rose-300",
   };
@@ -524,11 +520,13 @@ function EmptyCard({ text, compact = false }) {
 
 /* ---------- helper component ---------- */
 function PurchaseDetails({ myNumbers, balanceCents }) {
-  const firstFree = myNumbers.length === 0;
-  if (firstFree) {
+  const freebiesLeft = Math.max(0, FREE_NUMBERS - (myNumbers?.length || 0));
+  const isFree = freebiesLeft > 0;
+
+  if (isFree) {
     return (
       <div className="text-white/80">
-        <div><strong>Price:</strong> $0.00 (first number is free)</div>
+        <div><strong>Price:</strong> $0.00 <span className="text-white/60">(you have {freebiesLeft} free {freebiesLeft === 1 ? "number" : "numbers"} left)</span></div>
         <div><strong>Your balance:</strong> {formatUSD(balanceCents)} ({balanceCents} cents)</div>
       </div>
     );
