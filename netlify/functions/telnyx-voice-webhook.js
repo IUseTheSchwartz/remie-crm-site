@@ -1,40 +1,59 @@
 // netlify/functions/telnyx-voice-webhook.js
-// Minimal, production-safe Telnyx Call Control webhook.
-// - Optional signature verification (set TELNYX_WEBHOOK_SECRET to enable).
-// - Always 200s quickly to avoid retries.
-// - Clear switch/cases for common events.
+// Call Control webhook that:
+// 1) Receives events
+// 2) When the AGENT answers, transfer the call to the LEAD
+// Docs: /v2/calls/:call_control_id/actions/transfer
 
 const crypto = require("crypto");
+const fetch = require("node-fetch");
 
-// If you enabled "Signed webhooks" in Telnyx Portal, set this ENV:
+const TELNYX_API_KEY = process.env.TELNYX_API_KEY || "";
 const TELNYX_WEBHOOK_SECRET = process.env.TELNYX_WEBHOOK_SECRET || "";
 
-/** Verify Telnyx signature (v2 style). If no secret, skip verification. */
+// Verify Telnyx signature (if secret set)
 function verifySignature(rawBody, signatureHeader) {
-  if (!TELNYX_WEBHOOK_SECRET) return true; // verification disabled
+  if (!TELNYX_WEBHOOK_SECRET) return true;
   if (!signatureHeader) return false;
-
-  // Telnyx sends two comma-separated parts, e.g. "t=...,sig=..."
   try {
     const parts = String(signatureHeader).split(",").map((s) => s.trim());
     const ts = parts.find((p) => p.startsWith("t="))?.split("=")[1];
     const sig = parts.find((p) => p.startsWith("sig="))?.split("=")[1];
     if (!ts || !sig) return false;
-
     const payload = `${ts}.${rawBody}`;
     const hmac = crypto.createHmac("sha256", TELNYX_WEBHOOK_SECRET);
     hmac.update(payload);
     const digest = hmac.digest("hex");
-
-    // constant-time compare
     return crypto.timingSafeEqual(Buffer.from(digest), Buffer.from(sig));
   } catch {
     return false;
   }
 }
 
+function decodeClientState(b64) {
+  try {
+    if (!b64) return null;
+    const json = Buffer.from(String(b64), "base64").toString("utf8");
+    return JSON.parse(json);
+  } catch {
+    return null;
+  }
+}
+
+async function transferCall({ callControlId, to, from }) {
+  if (!TELNYX_API_KEY) return;
+  const url = `https://api.telnyx.com/v2/calls/${callControlId}/actions/transfer`;
+  const body = { to, from }; // E.164 numbers
+  await fetch(url, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${TELNYX_API_KEY}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(body),
+  }).catch(() => {});
+}
+
 exports.handler = async (event) => {
-  // Telnyx posts JSON; we want raw body for signature calc
   const rawBody = event.body || "";
   const sig =
     event.headers["telnyx-signature-ed25519"] ||
@@ -42,69 +61,61 @@ exports.handler = async (event) => {
     event.headers["Telnyx-Signature-Ed25519"] ||
     event.headers["Telnyx-Signature"];
 
-  // If signature invalid, 400 (unless verification disabled)
   if (!verifySignature(rawBody, sig)) {
     return { statusCode: 400, body: "Invalid signature" };
   }
 
-  let payload = null;
+  let payload;
   try {
     payload = JSON.parse(rawBody);
   } catch {
-    // Even on parse error, return 200 to avoid retries
     return { statusCode: 200, body: "ok" };
   }
 
-  // Telnyx Call Control webhook shape
   const data = payload?.data || {};
-  const eventType = data?.event_type || data?.record_type; // record_type for legacy
+  const eventType = data?.event_type || data?.record_type;
+  const p = data?.payload || data; // v2 puts fields in data.payload
+  const callControlId = p?.call_control_id || null;
 
-  // Use these IDs for follow-up commands if/when you add actions.
-  const callControlId = data?.payload?.call_control_id || data?.call_control_id || null;
-  const callLegId = data?.payload?.call_leg_id || data?.call_leg_id || null;
+  // Pull our state from when we created the call
+  const clientState = decodeClientState(p?.client_state || p?.client_state_b64);
+  const kind = clientState?.kind;
+  const leadNumber = clientState?.lead_number;
+  const callerId = clientState?.from_number; // our Telnyx DID chosen server-side
 
-  // QUICKLY acknowledge; do heavy work async if needed.
-  // (If you want to queue work, call your own background endpoint here.)
   try {
     switch (eventType) {
       case "call.initiated":
-        // Outbound call created.
-        // e.g., log to DB, set call status to "dialing"
+        // Created first leg (agent)
         break;
 
       case "call.answered":
-        // Media is flowing. Good moment to mark "in-progress".
-        // Example: you could start recording or speak text via Call Control command.
-        //   POST https://api.telnyx.com/v2/calls/{callControlId}/actions/speak
-        // Make sure you store callControlId somewhere if you’ll use it later.
+        // When the AGENT answers the first leg, transfer to the LEAD
+        // We only do this for our outbound CRM calls
+        if (kind === "crm_outbound" && callControlId && leadNumber && callerId) {
+          // Issue transfer to ring the lead, presenting our DID as caller ID
+          // Endpoint: /v2/calls/:call_control_id/actions/transfer
+          // Ref: Telnyx Voice API commands. 
+          transferCall({ callControlId, to: leadNumber, from: callerId });
+        }
+        break;
+
+      case "call.bridged":
+        // Agent and lead are now connected
         break;
 
       case "call.hangup":
       case "call.ended":
-        // Call finished. Mark as ended, compute duration, etc.
+        // End of call; you could log duration here
         break;
-
-      case "call.recording.saved":
-      case "call.recording.completed":
-        // If you enabled recordings, you’ll receive links/ids here.
-        // Save the recording URL for playback in your CRM.
-        break;
-
-      // Add more cases as you enable features in your Call Control app:
-      // - call.machine.detection.ended
-      // - call.sip.headers
-      // - call.speaker.started / call.speaker.ended
-      // - etc.
 
       default:
-        // Unknown/unused event — safe to ignore.
         break;
     }
-
-    // Always 200 quickly so Telnyx doesn’t retry.
-    return { statusCode: 200, body: "ok" };
-  } catch (_err) {
-    // Swallow errors and still return 200; log elsewhere if you need.
-    return { statusCode: 200, body: "ok" };
+  } catch {
+    // swallow
   }
+
+  // Always ack quickly
+  return { statusCode: 200, body: "ok" };
 };
