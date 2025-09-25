@@ -19,37 +19,33 @@ const APPOINTMENT_KEY = "appointment";
 // Templates locked until those flows are ready
 const LOCKED_KEYS = new Set(["payment_reminder", "birthday_text", "holiday_text"]);
 
-/* Default enabled map: ALL OFF by default */
-const DEFAULT_ENABLED = Object.fromEntries(TEMPLATE_DEFS.map((t) => [t.key, false]));
-
 /* ---------------- Carrier-safe defaults ----------------
    Notes:
    - First-touch messages (new_lead / new_lead_military) have NO LINKS.
-   - Every template ends with “Reply STOP to opt out.”
    - Keep messages short and conversational to reduce filtering.
 -------------------------------------------------------- */
 const DEFAULTS = {
   new_lead:
-    "Hi {{first_name}}, it’s {{agent_name}} in {{state}}. I received your request listing {{beneficiary}} as beneficiary. Can I text you here to help? Reply STOP to opt out.",
+    "Hi {{first_name}}, it’s {{agent_name}} in {{state}}. I received your request listing {{beneficiary}} as beneficiary. Can I text you here to help?",
 
   // CHANGED: direct to a phone call instead of texting back
   new_lead_military:
-    "Hi {{first_name}}, it’s {{agent_name}}. I see your {{military_branch}} background and your request listing {{beneficiary}}. For options, please call me at {{agent_phone}}. Reply STOP to opt out.",
+    "Hi {{first_name}}, it’s {{agent_name}}. I see your {{military_branch}} background and your request listing {{beneficiary}}. For options, please call me at {{agent_phone}}.",
 
   appointment:
-    "Hi {{first_name}}, it’s {{agent_name}}. Reminder for our appointment at {{appt_time}}. Reply YES to confirm or NO to reschedule. Reply STOP to opt out.",
+    "Hi {{first_name}}, it’s {{agent_name}}. Reminder for our appointment at {{appt_time}}. Reply YES to confirm or NO to reschedule.",
 
   sold:
-    "Hi {{first_name}}, it’s {{agent_name}}. Your policy is active:\n• Carrier: {{carrier}}\n• Policy #: {{policy_number}}\n• Premium: ${{premium}}/mo\nQuestions? Text me here. Reply STOP to opt out.",
+    "Hi {{first_name}}, it’s {{agent_name}}. Your policy is active:\n• Carrier: {{carrier}}\n• Policy #: {{policy_number}}\n• Premium: ${{premium}}/mo\nQuestions? Text me here.",
 
   payment_reminder:
-    "Hi {{first_name}}, it’s {{agent_name}}. Friendly reminder: your policy payment is coming up. Need anything updated? Text me here. Reply STOP to opt out.",
+    "Hi {{first_name}}, it’s {{agent_name}}. Friendly reminder: your policy payment is coming up. Need anything updated? Text me here.",
 
   birthday_text:
-    "Hi {{first_name}}, it’s {{agent_name}}. Happy birthday! If you need anything with your coverage, text me here. Reply STOP to opt out.",
+    "Hi {{first_name}}, it’s {{agent_name}}. Happy birthday! If you need anything with your coverage, text me here.",
 
   holiday_text:
-    "Hi {{first_name}}, it’s {{agent_name}}. Wishing you a happy holiday season. I’m here if you need anything for your coverage. Reply STOP to opt out.",
+    "Hi {{first_name}}, it’s {{agent_name}}. Wishing you a happy holiday season. I’m here if you need anything for your coverage.",
 };
 
 /* Small toggle (now supports disabled) */
