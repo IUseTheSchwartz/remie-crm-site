@@ -428,7 +428,6 @@ async function trySendNewLeadText({ userId, leadId, contactId, lead }) {
         const getRes = await telnyxGetMessage(providerId);
         const payload = getRes.json?.data || {};
 
-        // NEW: compact dump so we can see where Telnyx returns status for your account
         console.log("[gsheet-webhook] Telnyx GET payload (trunc)", {
           http_status: getRes.status,
           has_data: !!getRes.json?.data,
@@ -441,7 +440,13 @@ async function trySendNewLeadText({ userId, leadId, contactId, lead }) {
           payload?.delivery_status ||
           payload?.status || "";
 
-        // NEW: try a second quick poll if empty
+        // >>> NEW: dump carrier errors (if any)
+        const carrierErrs1 = payload?.to?.[0]?.errors || payload?.errors || null;
+        console.log("[gsheet-webhook] Telnyx carrier errors (trunc)",
+          JSON.stringify(carrierErrs1 || {}).slice(0, 400)
+        );
+
+        // Try a second quick poll if empty
         if (!statusRaw) {
           await new Promise(r => setTimeout(r, 1500));
           const getRes2 = await telnyxGetMessage(providerId);
@@ -456,6 +461,12 @@ async function trySendNewLeadText({ userId, leadId, contactId, lead }) {
             payload2?.to?.[0]?.status ||
             payload2?.delivery_status ||
             payload2?.status || "";
+
+          // >>> NEW: dump carrier errors from second poll too
+          const carrierErrs2 = payload2?.to?.[0]?.errors || payload2?.errors || null;
+          console.log("[gsheet-webhook] Telnyx carrier errors #2 (trunc)",
+            JSON.stringify(carrierErrs2 || {}).slice(0, 400)
+          );
         }
 
         const mapped = mapTelnyxStatus(statusRaw);
@@ -464,8 +475,7 @@ async function trySendNewLeadText({ userId, leadId, contactId, lead }) {
           http_status: getRes.status,
           provider_sid: providerId,
           statusRaw: statusRaw || "(empty)",
-          // keep a small error array if Telnyx provided
-          errors: payload?.to?.[0]?.errors || payload?.errors || null,
+          errors: (payload?.to?.[0]?.errors || payload?.errors || null),
         };
 
         // If carrier already says failed/rejected/undeliverable, flip to error now.
