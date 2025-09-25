@@ -60,9 +60,7 @@ function mergeRows(base, patch) {
   return out;
 }
 
-/** Find candidates by phone/email for this user (handles nulls safely).
- *  Email match is case-insensitive to align with unique index on lower(email).
- */
+/** Find candidates by phone/email for this user (email is case-insensitive) */
 async function findLeadCandidates({ userId, phoneE164, email }) {
   if (!phoneE164 && !email) return [];
 
@@ -82,6 +80,7 @@ async function findLeadCandidates({ userId, phoneE164, email }) {
   } else if (phoneE164) {
     query = query.eq("phone", phoneE164);
   } else if (email) {
+    // case-insensitive email match
     query = query.ilike("email", email);
   }
 
@@ -96,11 +95,10 @@ async function smartWriteLead(normalizedRow, { preferId } = {}) {
   const phoneE164 = normalizedRow.phone || null;
   const email = normalizedRow.email || null;
 
-  let candidates = await findLeadCandidates({ userId, phoneE164, email });
+  const candidates = await findLeadCandidates({ userId, phoneE164, email });
 
   if (candidates.length === 0) {
-    // INSERT new; if duplicate-key occurs (due to unique (user_id, lower(email))),
-    // recover by re-fetching case-insensitively and then UPDATE instead.
+    // INSERT new — recover gracefully on unique-constraint collisions
     try {
       const { data, error } = await supabase
         .from("leads")
@@ -110,18 +108,23 @@ async function smartWriteLead(normalizedRow, { preferId } = {}) {
       if (error) throw error;
       return data.id;
     } catch (err) {
-      const msg = String(err?.message || err);
-      if (msg.includes("duplicate key value")) {
-        // Re-fetch candidates now that we know a conflict exists
-        candidates = await findLeadCandidates({ userId, phoneE164, email });
-        if (candidates.length) {
-          const target = candidates[0];
-          const merged = mergeRows(target, normalizedRow);
+      // If unique violation (23505), re-fetch and UPDATE instead of failing
+      const code = err?.code || err?.status || "";
+      const msg = String(err?.message || "");
+      const isUnique =
+        code === "23505" ||
+        msg.includes("duplicate key value") ||
+        msg.includes("unique constraint");
+
+      if (isUnique) {
+        const retry = await findLeadCandidates({ userId, phoneE164, email });
+        if (retry[0]) {
+          const merged = mergeRows(retry[0], normalizedRow);
           const { data: upd, error: uErr } = await supabase
             .from("leads")
             .update(merged)
             .eq("user_id", userId)
-            .eq("id", target.id)
+            .eq("id", retry[0].id)
             .select("id")
             .single();
           if (uErr) throw uErr;
@@ -198,7 +201,11 @@ export async function upsertManyLeadsServer(leads = []) {
       await smartWriteLead(row, { preferId: p.id });
       wrote++;
     } catch (e) {
-      console.error("[leads] batch write failed for", p?.name || p?.email || p?.phone, e);
+      console.error(
+        "[leads] batch write failed for",
+        p?.name || p?.email || p?.phone,
+        e
+      );
       // continue with next row
     }
   }
@@ -212,6 +219,7 @@ export async function updatePipelineServer(lead) {
 
   const phoneE164 = lead.phone ? toE164(lead.phone) : null;
   const email = lead.email ? normEmail(lead.email) : null;
+
   const candidates = await findLeadCandidates({ userId, phoneE164, email });
   const target = candidates[0];
   if (!target) throw new Error("No matching server lead found for user");
