@@ -1354,18 +1354,12 @@ export default function LeadsPage() {
                   </Td>
                   <Td>{p.name || "—"}</Td>
 
-                  {/* ✅ Click-to-call: phone text is clickable + icon button */}
+                  {/* ✅ Phone column: show number text + small round call icon */}
                   <Td>
                     {p.phone ? (
                       <div className="flex items-center gap-2">
-                        <PhoneLink number={p.phone} contactId={p.id} className="font-mono" />
-                        <ClickToCall
-                          number={p.phone}
-                          contactId={p.id}
-                          callerNumber={agentPhone}
-                          dialSessionKey={`leads-${p.id}-${onlyDigits(p.phone)}`}
-                          fromView="leads"
-                        />
+                        <span className="font-mono text-sm text-white/90">{p.phone}</span>
+                        <PhoneLink number={toE164(p.phone)} variant="icon" />
                       </div>
                     ) : "—"}
                   </Td>
