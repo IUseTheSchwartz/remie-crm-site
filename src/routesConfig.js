@@ -42,6 +42,9 @@ import MessageTestPage from "./pages/MessageTestPage.jsx"; // <— NEW
 // ---- Lead Rescue (NEW) ----
 import LeadRescuePage from "./pages/LeadRescuePage.jsx"; // <— NEW
 
+// ---- Dialer (NEW) ----
+import DialerPage from "./pages/DialerPage.jsx"; // <— NEW
+
 // Sidebar sections:
 // "top" → Top-Level (Most Used Daily)
 // "productivity" → Productivity & Communication
@@ -60,8 +63,9 @@ export const routes = [
   { key: "calendar", path: "/app/calendar", label: "Calendar", component: CalendarPage,              showInSidebar: true, section: "top" },
 
   // Productivity & Communication
-  { key: "contacts",      path: "/app/contacts",           label: "Contacts",           component: ContactsPage,     showInSidebar: true, section: "productivity" }, // NEW
-  { key: "lead-rescue",   path: "/app/lead-rescue",        label: "Lead Rescue",        component: LeadRescuePage,   showInSidebar: true, section: "productivity" }, // NEW
+  { key: "dialer",        path: "/app/dialer",        label: "Dialer",              component: DialerPage,       showInSidebar: true, section: "productivity" }, // NEW
+  { key: "contacts",      path: "/app/contacts",           label: "Contacts",           component: ContactsPage,     showInSidebar: true, section: "productivity" },
+  { key: "lead-rescue",   path: "/app/lead-rescue",        label: "Lead Rescue",        component: LeadRescuePage,   showInSidebar: true, section: "productivity" },
   { key: "msgSettings",   path: "/app/messaging-settings", label: "Messaging Settings", component: MessagingSettings, showInSidebar: true, section: "productivity" },
   { key: "mailing",       path: "/app/mailing",            label: "Mailing",            component: MailingPage,      showInSidebar: true, section: "productivity" },
   { key: "rebuttal",      path: "/app/rebuttal",           label: "AI Rebuttal Helper", component: RebuttalChat,     showInSidebar: true, section: "productivity" },
@@ -86,10 +90,10 @@ export const routes = [
 
   // Admin-only (hidden)
   { key: "support-inbox", path: "/app/support-inbox", label: "Support Inbox", component: AdminSupportInbox, showInSidebar: false, section: "hidden" },
-  { key: "admin-console", path: "/app/admin",          label: "Admin Console", component: AdminConsole,      showInSidebar: false, section: "hidden", adminOnly: true }, // ← NEW
+  { key: "admin-console", path: "/app/admin",          label: "Admin Console", component: AdminConsole,      showInSidebar: false, section: "hidden", adminOnly: true },
 
   // PRIVATE: Message Lab (hidden)
-  { key: "message-lab", path: "/app/message-lab", label: "Message Lab", component: MessageTestPage, showInSidebar: false, section: "hidden" }, // <— NEW
+  { key: "message-lab", path: "/app/message-lab", label: "Message Lab", component: MessageTestPage, showInSidebar: false, section: "hidden" },
 
   // Legal (hidden)
   { key: "terms",   path: "/legal/terms",   label: "Terms of Service", component: TermsPage,   showInSidebar: false, section: "hidden" },
