@@ -1,17 +1,13 @@
 // netlify/functions/telnyx-voice-webhook.js
-// Transfers AGENT -> LEAD after answer, and logs to your existing call_logs schema.
-//
-// Writes/updates (your columns):
-// user_id, contact_id, direction, to_number, from_number, agent_number,
-// telnyx_leg_a_id, telnyx_leg_b_id, status, started_at, answered_at, ended_at,
-// duration_seconds, recording_url, error, billed_cents (if column exists)
+// Transfers AGENT -> LEAD after answer, logs to call_logs, computes billed_cents,
+// and DEBITS user_wallet on call end (idempotent per call via SQL function).
 
 const crypto = require("crypto");
 const fetch = require("node-fetch");
 const { createClient } = require("@supabase/supabase-js");
 
 const TELNYX_API_KEY = process.env.TELNYX_API_KEY || "";
-const TELNYX_WEBHOOK_SECRET = process.env.TELNYX_WEBHOOK_SECRET || ""; // optional (HMAC); leave empty to disable
+const TELNYX_WEBHOOK_SECRET = process.env.TELNYX_WEBHOOK_SECRET || ""; // optional
 const SUPABASE_URL = process.env.SUPABASE_URL || "";
 const SUPABASE_SERVICE_ROLE =
   process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_SERVICE_ROLE || "";
@@ -20,11 +16,11 @@ const supa = (SUPABASE_URL && SUPABASE_SERVICE_ROLE)
   ? createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE)
   : null;
 
-function log(...args) { try { console.log("[telnyx-webhook]", ...args); } catch { /* noop */ } }
+function log(...args) { try { console.log("[telnyx-webhook]", ...args); } catch {} }
 
-/* ---------------- Signature (optional, HMAC "t=...,sig=...") ---------------- */
+/* -------- Signature (optional, HMAC "t=...,sig=...") -------- */
 function verifySignature(rawBody, signatureHeader) {
-  if (!TELNYX_WEBHOOK_SECRET) return true;        // disabled
+  if (!TELNYX_WEBHOOK_SECRET) return true;
   if (!signatureHeader) return false;
   try {
     const parts = String(signatureHeader).split(",").map(s => s.trim());
@@ -47,7 +43,6 @@ function decodeClientState(any) {
     if (!any) return null;
     if (typeof any === "object") return any;
     const s = String(any);
-    // base64 JSON?
     if (/^[A-Za-z0-9+/=]+={0,2}$/.test(s)) {
       const json = Buffer.from(s, "base64").toString("utf8");
       return JSON.parse(json);
@@ -71,14 +66,28 @@ async function transferCall({ callControlId, to, from }) {
   else log("transfer ok", { to, from });
 }
 
+/* -------- Wallet debit (calls SQL function for atomic/idempotent charge) -------- */
+async function debitWallet({ user_id, cents, ref_legA }) {
+  if (!supa || !user_id || !cents || cents <= 0) return { ok: true, skipped: true };
+  // Calls SQL function wallet_apply_call_charge(user_id uuid, amount_cents int, ref_id text)
+  const { data, error } = await supa.rpc("wallet_apply_call_charge", {
+    _user_id: user_id,
+    _amount_cents: cents,
+    _ref_id: ref_legA,
+  });
+  if (error) {
+    log("wallet debit err", error.message);
+    return { ok: false, error: error.message };
+  }
+  return { ok: true, data };
+}
+
 /* ---------------- DB writes (your schema) ---------------- */
 async function upsertInitiated({
   user_id, contact_id, to_number, from_number, agent_number,
   legA, started_at
 }) {
   if (!supa) return;
-
-  // If row exists for this legA, update minimal fields; else insert a new one
   const { data: existing } = await supa
     .from("call_logs")
     .select("id")
@@ -132,24 +141,23 @@ async function markBridged({ legA, maybeLegB }) {
   if (error) log("markBridged err", error.message);
 }
 
-// --- $0.01 per started minute billing added here
+// --- $0.01 per started minute + Wallet debit here
 async function markEnded({ legA, ended_at, hangup_cause }) {
   if (!supa || !legA) return;
 
   const endedISO = ended_at || new Date().toISOString();
 
-  // 1) get started_at so we can compute duration
-  let startedAt = null;
-  try {
-    const { data: row } = await supa
-      .from("call_logs")
-      .select("started_at")
-      .eq("telnyx_leg_a_id", legA)
-      .maybeSingle();
-    startedAt = row?.started_at || null;
-  } catch {}
+  // Pull needed info to compute duration AND know which user to charge
+  const { data: row } = await supa
+    .from("call_logs")
+    .select("started_at, user_id")
+    .eq("telnyx_leg_a_id", legA)
+    .maybeSingle();
 
-  // 2) compute duration
+  const startedAt = row?.started_at || null;
+  const user_id = row?.user_id || null;
+
+  // duration
   let duration_seconds = null;
   if (startedAt) {
     const t0 = new Date(startedAt).getTime();
@@ -157,48 +165,52 @@ async function markEnded({ legA, ended_at, hangup_cause }) {
     duration_seconds = Math.max(0, Math.round((t1 - t0) / 1000));
   }
 
-  // 3) BUSINESS RULE: $0.01 per started minute, minimum $0.01
-  //    10s -> 1¢, 50s -> 1¢, 60s -> 1¢, 61s -> 2¢, etc.
+  // billing: 1¢ per started minute, min 1¢
   let billed_cents = null;
   if (duration_seconds !== null) {
     const minsStarted = Math.max(1, Math.ceil(duration_seconds / 60));
-    billed_cents = minsStarted * 1; // 1 cent per started minute
+    billed_cents = minsStarted * 1;
   }
 
-  // 4) status + optional error
+  // status + error
   const failed = hangup_cause && hangup_cause !== "normal_clearing";
-  const baseUpdates = {
+  const updates = {
     status: failed ? "failed" : "completed",
     ended_at: endedISO,
   };
-  if (duration_seconds !== null) baseUpdates.duration_seconds = duration_seconds;
-  if (failed) baseUpdates.error = hangup_cause;
+  if (duration_seconds !== null) updates.duration_seconds = duration_seconds;
+  if (billed_cents !== null) updates.billed_cents = billed_cents;
+  if (failed) updates.error = hangup_cause;
 
-  // 5) Try to include billed_cents if your column exists; otherwise fallback
-  try {
-    const updates = (billed_cents !== null)
-      ? { ...baseUpdates, billed_cents }
-      : baseUpdates;
-
-    const { error } = await supa
-      .from("call_logs")
-      .update(updates)
-      .eq("telnyx_leg_a_id", legA);
-
-    if (error) {
-      // Column doesn't exist? Fallback without billed_cents.
-      if (error.code === "42703" || /billed_cents/i.test(error.message || "")) {
-        const { error: err2 } = await supa
-          .from("call_logs")
-          .update(baseUpdates)
-          .eq("telnyx_leg_a_id", legA);
-        if (err2) log("markEnded fallback err", err2.message);
-      } else {
-        log("markEnded err", error.message);
-      }
+  // Update call row
+  const { error: upErr } = await supa
+    .from("call_logs")
+    .update(updates)
+    .eq("telnyx_leg_a_id", legA);
+  if (upErr) {
+    // If column billed_cents doesn't exist yet, retry without it
+    if (upErr.code === "42703" || /billed_cents/i.test(upErr.message || "")) {
+      const { error: up2 } = await supa
+        .from("call_logs")
+        .update({
+          status: updates.status, ended_at: updates.ended_at,
+          duration_seconds: updates.duration_seconds, error: updates.error
+        })
+        .eq("telnyx_leg_a_id", legA);
+      if (up2) log("markEnded fallback err", up2.message);
+    } else {
+      log("markEnded err", upErr.message);
     }
-  } catch (e) {
-    log("markEnded try-catch err", e?.message);
+  }
+
+  // Debit wallet (idempotent via SQL function + ledger unique(ref))
+  if (billed_cents && user_id) {
+    const debit = await debitWallet({ user_id, cents: billed_cents, ref_legA: legA });
+    if (!debit.ok) {
+      log("wallet debit failed (non-fatal)", debit.error || "unknown");
+    } else {
+      log("wallet debit ok", { user_id, billed_cents });
+    }
   }
 }
 
@@ -222,31 +234,26 @@ exports.handler = async (event) => {
 
   const data = payload?.data || {};
   const eventType = data?.event_type || data?.record_type;
-  const p = data?.payload || data; // v2 payloads often nest under data.payload
+  const p = data?.payload || data;
   const occurred_at = p?.occurred_at || payload?.occurred_at || new Date().toISOString();
 
-  // Leg IDs
-  const legA =
-    p?.call_control_id ||
-    p?.call_control_ids?.[0] || null;
+  const legA = p?.call_control_id || p?.call_control_ids?.[0] || null;
 
-  // Sometimes Telnyx includes the peer leg in bridged/transfer events
   const peerLeg =
     p?.other_leg_id ||
     p?.peer_call_control_id ||
     p?.bridge_target_call_control_id ||
     null;
 
-  // Client state from /call-start (base64 JSON)
   const cs =
     decodeClientState(p?.client_state) ||
     decodeClientState(p?.client_state_b64) || {};
 
-  const kind = cs.kind || null;                 // "crm_outbound"
+  const kind = cs.kind || null;
   const user_id = cs.user_id || cs.agent_id || null;
   const contact_id = cs.contact_id || null;
   const lead_number = cs.lead_number || p?.to || null;
-  const from_number = cs.from_number || p?.from || null; // your DID used as caller ID
+  const from_number = cs.from_number || p?.from || null;
   const agent_number = cs.agent_number || null;
 
   log("event", eventType, {
@@ -258,7 +265,6 @@ exports.handler = async (event) => {
   try {
     switch (eventType) {
       case "call.initiated": {
-        // Agent leg created when you POST /v2/calls
         if (legA && user_id && lead_number && from_number) {
           await upsertInitiated({
             user_id, contact_id,
@@ -271,28 +277,22 @@ exports.handler = async (event) => {
         }
         break;
       }
-
       case "call.answered": {
-        // When agent answers, transfer to the lead using our chosen DID
         if (kind === "crm_outbound" && legA && lead_number && from_number) {
           await transferCall({ callControlId: legA, to: lead_number, from: from_number });
         }
         if (legA) await markAnswered({ legA, answered_at: occurred_at });
         break;
       }
-
       case "call.bridged": {
         await markBridged({ legA, maybeLegB: peerLeg || null });
         break;
       }
-
       case "call.ended":
       case "call.hangup": {
         await markEnded({ legA, ended_at: occurred_at, hangup_cause: p?.hangup_cause });
         break;
       }
-
-      // (Optional) If Telnyx ever emits explicit transfer/peer leg ids, capture them
       case "call.transfer.initiated":
       case "call.transfer.completed":
       case "call.initiated.outbound":
@@ -302,15 +302,12 @@ exports.handler = async (event) => {
         }
         break;
       }
-
       default:
-        // ignore other noise
         break;
     }
   } catch (e) {
     log("handler error", e?.message);
   }
 
-  // Always ACK fast
   return { statusCode: 200, body: "ok" };
 };
