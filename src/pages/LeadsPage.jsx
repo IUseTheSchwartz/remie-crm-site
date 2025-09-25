@@ -872,10 +872,32 @@ export default function LeadsPage() {
 
   function openAsSold(person) { setSelected(person); }
 
+  /** Case-insensitive email lookup: find an existing lead id for this user */
+  async function findLeadIdByUserAndEmailCI(userId, email) {
+    const e = (email || "").trim();
+    if (!userId || !e) return null;
+    try {
+      const { data, error } = await supabase
+        .from("leads")
+        .select("id")
+        .eq("user_id", userId)
+        .ilike("email", e) // case-insensitive equals when no wildcards
+        .limit(1)
+        .maybeSingle();
+      if (error || !data) return null;
+      return data.id || null;
+    } catch {
+      return null;
+    }
+  }
+
   async function saveSoldInfo(id, soldPayload) {
     let list = [...allClients];
     const idx = list.findIndex(x => x.id === id);
     const base = idx >= 0 ? list[idx] : normalizePerson({ id });
+
+    // normalize email to lowercase so it aligns with DB unique (user_id, lower(email))
+    const emailLower = (soldPayload.email || base.email || "").trim().toLowerCase();
 
     const updated = {
       ...base,
@@ -889,11 +911,11 @@ export default function LeadsPage() {
         startDate: soldPayload.startDate || "",
         name: soldPayload.name || base.name || "",
         phone: soldPayload.phone || base.phone || "",
-        email: soldPayload.email || base.email || "",
+        email: emailLower,
       },
       name: soldPayload.name || base.name || "",
       phone: soldPayload.phone || base.phone || "",
-      email: soldPayload.email || base.email || "",
+      email: emailLower,
 
       // Keep only bday/holiday toggle
       automationPrefs: {
@@ -912,10 +934,21 @@ export default function LeadsPage() {
     setSelected(null);
     setTab("sold");
 
-    // --- Save to Supabase and capture id
+    // --- Save to Supabase and capture id (reusing existing row if same email)
     let savedId = null;
     try {
       setServerMsg("Syncing SOLD to Supabase…");
+
+      const { data: authData } = await supabase.auth.getUser();
+      const userId = authData?.user?.id || null;
+
+      if (userId && updated.email) {
+        const existingId = await findLeadIdByUserAndEmailCI(userId, updated.email);
+        if (existingId && existingId !== updated.id) {
+          updated.id = existingId; // ensure server takes UPDATE path
+        }
+      }
+
       savedId = await upsertLeadServer(updated);
       setServerMsg("✅ SOLD synced");
     } catch (e) {
@@ -1701,7 +1734,7 @@ function ManualAddLeadModal({ onClose, onSave }) {
 function Field({ label, children }) {
   return (
     <label className="text-sm">
-      <div className="mb-1 text-white/70">{label}</div>
+      <div className="mb-1 text:white/70 text-white/70">{label}</div>
       {children}
     </label>
   );
