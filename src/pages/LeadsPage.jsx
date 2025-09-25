@@ -604,6 +604,9 @@ export default function LeadsPage() {
   const [viewSelected, setViewSelected] = useState(null); // read-only policy drawer
   const [filter, setFilter] = useState("");
 
+  /* NEW: caller (agent) phone for ClickToCall on this page */
+  const [agentPhone, setAgentPhone] = useState("");
+
   const [serverMsg, setServerMsg] = useState("");
   const [showConnector, setShowConnector] = useState(false);
   const [showAdd, setShowAdd] = useState(false); // manual add modal
@@ -614,6 +617,27 @@ export default function LeadsPage() {
   useEffect(() => {
     setLeads(loadLeads());
     setClients(loadClients());
+  }, []);
+
+  /* NEW: load agent phone from agent_profiles -> phone */
+  useEffect(() => {
+    (async () => {
+      try {
+        const { data: authData } = await supabase.auth.getUser();
+        const userId = authData?.user?.id;
+        if (!userId) return;
+
+        const { data, error } = await supabase
+          .from("agent_profiles")
+          .select("phone")
+          .eq("user_id", userId)
+          .maybeSingle();
+
+        if (!error && data?.phone) setAgentPhone(data.phone);
+      } catch (e) {
+        console.error("load agent phone failed:", e);
+      }
+    })();
   }, []);
 
   // One-time server pull → merge without duplicates (id/email/phone)
@@ -1335,7 +1359,13 @@ export default function LeadsPage() {
                     {p.phone ? (
                       <div className="flex items-center gap-2">
                         <PhoneLink number={p.phone} contactId={p.id} className="font-mono" />
-                        <ClickToCall number={p.phone} contactId={p.id} />
+                        <ClickToCall
+                          number={p.phone}
+                          contactId={p.id}
+                          callerNumber={agentPhone}
+                          dialSessionKey={`leads-${p.id}-${onlyDigits(p.phone)}`}
+                          fromView="leads"
+                        />
                       </div>
                     ) : "—"}
                   </Td>
