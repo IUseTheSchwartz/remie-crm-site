@@ -192,15 +192,30 @@ function renderTemplate(tpl, ctx) {
   return String(tpl || "").replace(/\{\{\s*([a-zA-Z0-9_]+)\s*\}\}/g, (_, k) => S(ctx[k]));
 }
 
-// decide template key from tags / lead info
-async function chooseTemplateKey({ userId, contactId, lead }) {
-  // default
-  let key = "new_lead";
+// ✨ soften content to reduce carrier filtering
+function softenContent(text) {
+  if (!text) return text;
+  let out = String(text);
 
-  // Prefer explicit military flag on lead
+  // Replace bare 10-digit sequences with a formatted +1 version (carriers dislike bare 10s)
+  out = out.replace(/\b(\d{3})(\d{3})(\d{4})\b/g, "+1 $1-$2-$3");
+
+  // Ensure opt-out hint (helps trust)
+  if (!/stop to opt out/i.test(out)) {
+    out = out.trim() + " Reply STOP to opt out.";
+  }
+
+  // Keep first message reasonably short
+  if (out.length > 500) out = out.slice(0, 500);
+
+  return out;
+}
+
+// Decide template key from tags / lead info
+async function chooseTemplateKey({ userId, contactId, lead }) {
+  let key = "new_lead";
   if (S(lead.military_branch)) return TAG_TEMPLATE_MAP.military || key;
 
-  // Otherwise look at contact tags (if we have the id)
   try {
     if (contactId) {
       const { data: c } = await supabase
@@ -215,8 +230,42 @@ async function chooseTemplateKey({ userId, contactId, lead }) {
       }
     }
   } catch {}
-
   return key;
+}
+
+// --- Telnyx helpers ---
+async function telnyxSendSMS({ to, text }) {
+  const body = { to, text };
+  const profile = getMessagingProfileId();
+  const from = getFromNumber();
+  if (profile) body.messaging_profile_id = profile;
+  if (from) body.from = from;
+
+  const resp = await fetch("https://api.telnyx.com/v2/messages", {
+    method: "POST",
+    headers: { Authorization: `Bearer ${process.env.TELNYX_API_KEY}`, "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  const json = await resp.json().catch(() => ({}));
+  return { ok: resp.ok, status: resp.status, json };
+}
+
+// Poll once for latest Telnyx status (no webhook required)
+async function telnyxGetMessage(messageId) {
+  const resp = await fetch(`https://api.telnyx.com/v2/messages/${encodeURIComponent(messageId)}`, {
+    method: "GET",
+    headers: { Authorization: `Bearer ${process.env.TELNYX_API_KEY}` },
+  });
+  const json = await resp.json().catch(() => ({}));
+  return { ok: resp.ok, status: resp.status, json };
+}
+
+function mapTelnyxStatus(raw) {
+  const s = String(raw || "").toLowerCase();
+  if (s.includes("delivered")) return "delivered";
+  if (s === "sent" || s === "accepted" || s.includes("queued") || s.includes("sending")) return "sent";
+  if (s.includes("undeliverable") || s.includes("delivery_failed") || s.includes("failed") || s.includes("rejected")) return "error";
+  return "sent";
 }
 
 /**
@@ -231,7 +280,7 @@ async function trySendNewLeadText({ userId, leadId, contactId, lead }) {
   const to = toE164(lead.phone);
   if (!to) return { ok: false, reason: "invalid_phone", detail: lead.phone };
 
-  // 2) Telnyx env (allow profile OR from number)
+  // 2) Telnyx env
   const TELNYX_API_KEY = process.env.TELNYX_API_KEY;
   const TELNYX_MESSAGING_PROFILE_ID = getMessagingProfileId();
   const FROM_NUMBER_ANY = getFromNumber();
@@ -280,7 +329,7 @@ async function trySendNewLeadText({ userId, leadId, contactId, lead }) {
     return { ok: true, skipped: true, reason: "already_sent_recently" };
   }
 
-  // Build text body
+  // Build + soften text body
   const beneficiary_name = S(lead.beneficiary_name) || S(lead.beneficiary);
   const vars = {
     first_name: S(lead.name).split(" ")[0] || "",
@@ -290,13 +339,12 @@ async function trySendNewLeadText({ userId, leadId, contactId, lead }) {
     state: S(lead.state),
     beneficiary: beneficiary_name,
     beneficiary_name,
-
-    // >>> added so {{military_branch}}, {{branch}}, or {{service_branch}} work
     military_branch: S(lead.military_branch) || "",
     branch: S(lead.military_branch) || "",
     service_branch: S(lead.military_branch) || "",
   };
-  const text = renderTemplate(tpl, vars);
+  let text = renderTemplate(tpl, vars);
+  text = softenContent(text);
 
   // Strong idempotency key includes template
   const dedupeKey = `lead:${leadId || "n/a"}:tpl:${template_key}`;
@@ -345,46 +393,68 @@ async function trySendNewLeadText({ userId, leadId, contactId, lead }) {
   }
   const messageId = inserted.id;
 
-  // ---------------- PHASE 2: Send via Telnyx (strengthened) ----------------
-  const clientRef = `c=${contactId || "n/a"}|lead=${leadId || "n/a"}|tpl=${template_key}|ts=${Date.now()}`;
+  // ---------------- PHASE 2: Send via Telnyx ----------------
   try {
-    const telnyxBody = { to, text, client_ref: clientRef };
-    if (getMessagingProfileId()) telnyxBody.messaging_profile_id = getMessagingProfileId();
-    if (getFromNumber()) telnyxBody.from = getFromNumber();
-
-    const resp = await fetch("https://api.telnyx.com/v2/messages", {
-      method: "POST",
-      headers: { Authorization: `Bearer ${process.env.TELNYX_API_KEY}`, "Content-Type": "application/json" },
-      body: JSON.stringify(telnyxBody),
-    });
-    const json = await resp.json().catch(() => ({}));
-
-    // Explicit log so you can trace what Telnyx returned for this webhook call
+    const send = await telnyxSendSMS({ to, text });
     console.log("[gsheet-webhook] Telnyx response", {
-      ok: resp.ok,
-      status: resp.status,
-      id: json?.data?.id || null,                  // <-- the REAL provider_sid
-      errors: json?.errors || null,
+      ok: send.ok,
+      status: send.status,
+      id: send.json?.data?.id || null,
+      errors: send.json?.errors || null,
       to,
       from: getFromNumber() || "(profile)",
       provider_message_id: dedupeKey,
     });
 
-    if (!resp.ok) {
+    if (!send.ok) {
       await supabase
         .from("messages")
-        .update({ status: "error", error_detail: JSON.stringify(json).slice(0, 1000) })
+        .update({ status: "error", error_detail: JSON.stringify(send.json).slice(0, 1000) })
         .eq("id", messageId);
-      return { ok: false, reason: "telnyx_error", telnyx: json, message_id: messageId };
+      return { ok: false, reason: "telnyx_error", telnyx: send.json, message_id: messageId };
     }
 
-    const providerId = json?.data?.id || null;
+    const providerId = send.json?.data?.id || null;
 
-    // PHASE 3: Mark sent ONLY if we got a real Telnyx id
+    // Mark sent initially (accepted by Telnyx)
     await supabase
       .from("messages")
       .update({ status: providerId ? "sent" : "error", provider_sid: providerId })
       .eq("id", messageId);
+
+    // -------- PHASE 2.5: Poll once for latest status (no webhooks needed) --------
+    if (providerId) {
+      try {
+        // Small wait is optional; Telnyx often reflects a status immediately
+        // await new Promise(r => setTimeout(r, 600));
+        const getRes = await telnyxGetMessage(providerId);
+        const payload = getRes.json?.data || {};
+        const statusRaw =
+          payload?.to?.[0]?.status ||
+          payload?.delivery_status ||
+          payload?.status || "";
+
+        const mapped = mapTelnyxStatus(statusRaw);
+        const detail = {
+          polled: true,
+          http_status: getRes.status,
+          provider_sid: providerId,
+          statusRaw,
+          errors: payload?.to?.[0]?.errors || payload?.errors || null,
+        };
+
+        // If carrier already says failed/rejected/undeliverable, flip to error now.
+        const updates = { error_detail: JSON.stringify(detail).slice(0, 1000) };
+        if (mapped === "error") updates.status = "error";
+        if (mapped === "delivered") updates.status = "delivered";
+
+        await supabase.from("messages").update(updates).eq("id", messageId);
+
+        console.log("[gsheet-webhook] Telnyx polled", { provider_sid: providerId, mapped, statusRaw });
+      } catch (pollErr) {
+        console.error("[gsheet-webhook] Telnyx poll failed:", pollErr?.message || pollErr);
+      }
+    }
 
     return { ok: true, telnyx_ok: true, provider_message_id: dedupeKey, provider_sid: providerId, message_id: messageId };
   } catch (e) {
