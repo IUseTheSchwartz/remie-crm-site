@@ -1,11 +1,12 @@
 // netlify/functions/purchase-number.js
-// Charges 500 cents ($5) from CRM wallet (first number free), orders Telnyx DID,
+// Charges 500 cents ($5) from CRM wallet (first 5 numbers free), orders Telnyx DID,
 // assigns to your Call Control app, and inserts into agent_numbers.
 
 const fetch = require("node-fetch");
 const { createClient } = require("@supabase/supabase-js");
 
-const PRICE_CENTS = 500; // $5.00
+const PRICE_CENTS = 500; // $5.00 after freebies
+const FREE_NUMBERS = parseInt(process.env.FREE_NUMBERS || "5", 10); // first N numbers are free
 
 // Env
 const TELNYX_API_KEY = process.env.TELNYX_API_KEY;
@@ -44,15 +45,17 @@ exports.handler = async (event) => {
   const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY);
 
   try {
-    // A) First number free?
+    // A) Freebies remaining for this agent?
     const { count, error: countErr } = await supabase
       .from("agent_numbers")
       .select("*", { head: true, count: "exact" })
       .eq("agent_id", agent_id);
     if (countErr) return bad(500, "DB error (count): " + countErr.message);
 
-    const firstFree = (count || 0) === 0;
-    const priceCents = firstFree ? 0 : PRICE_CENTS;
+    const owned = count || 0;
+    const freebiesLeft = Math.max(0, FREE_NUMBERS - owned);
+    const isFree = freebiesLeft > 0;
+    const priceCents = isFree ? 0 : PRICE_CENTS;
 
     // B) If not free, atomic debit via RPC
     if (priceCents > 0) {
@@ -114,7 +117,7 @@ exports.handler = async (event) => {
     const { error: insErr } = await supabase.from("agent_numbers").insert({
       agent_id,
       telnyx_number: purchasedNumber,
-      is_free: firstFree,
+      is_free: isFree,
     });
     if (insErr) {
       // Don't refund here—you already own the number; just report
@@ -127,7 +130,8 @@ exports.handler = async (event) => {
         ok: true,
         phone_number: purchasedNumber,
         charged_cents: priceCents,
-        firstNumberFree: firstFree,
+        freebies_left_after: Math.max(0, freebiesLeft - 1),
+        firstFiveFree: FREE_NUMBERS, // echo config for the UI if needed
       }),
     };
   } catch (e) {
