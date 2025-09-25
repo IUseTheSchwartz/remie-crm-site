@@ -1,13 +1,13 @@
 // netlify/functions/telnyx-voice-webhook.js
 // Transfers AGENT -> LEAD after answer, logs to call_logs, computes billed_cents,
-// and DEBITS user_wallet on call end (idempotent per call via SQL function).
+// and debits user_wallets on call end (idempotent via SQL function).
 
 const crypto = require("crypto");
 const fetch = require("node-fetch");
 const { createClient } = require("@supabase/supabase-js");
 
 const TELNYX_API_KEY = process.env.TELNYX_API_KEY || "";
-const TELNYX_WEBHOOK_SECRET = process.env.TELNYX_WEBHOOK_SECRET || ""; // optional
+const TELNYX_WEBHOOK_SECRET = process.env.TELNYX_WEBHOOK_SECRET || ""; // optional HMAC
 const SUPABASE_URL = process.env.SUPABASE_URL || "";
 const SUPABASE_SERVICE_ROLE =
   process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_SERVICE_ROLE || "";
@@ -18,7 +18,6 @@ const supa = (SUPABASE_URL && SUPABASE_SERVICE_ROLE)
 
 function log(...args) { try { console.log("[telnyx-webhook]", ...args); } catch {} }
 
-/* -------- Signature (optional, HMAC "t=...,sig=...") -------- */
 function verifySignature(rawBody, signatureHeader) {
   if (!TELNYX_WEBHOOK_SECRET) return true;
   if (!signatureHeader) return false;
@@ -32,12 +31,9 @@ function verifySignature(rawBody, signatureHeader) {
     hmac.update(payload);
     const digest = hmac.digest("hex");
     return crypto.timingSafeEqual(Buffer.from(digest), Buffer.from(sig));
-  } catch {
-    return false;
-  }
+  } catch { return false; }
 }
 
-/* ---------------- Helpers ---------------- */
 function decodeClientState(any) {
   try {
     if (!any) return null;
@@ -48,9 +44,7 @@ function decodeClientState(any) {
       return JSON.parse(json);
     }
     return JSON.parse(s);
-  } catch {
-    return null;
-  }
+  } catch { return null; }
 }
 
 async function transferCall({ callControlId, to, from }) {
@@ -66,27 +60,23 @@ async function transferCall({ callControlId, to, from }) {
   else log("transfer ok", { to, from });
 }
 
-/* -------- Wallet debit (calls SQL function for atomic/idempotent charge) -------- */
-async function debitWallet({ user_id, cents, ref_legA }) {
-  if (!supa || !user_id || !cents || cents <= 0) return { ok: true, skipped: true };
-  // Calls SQL function wallet_apply_call_charge(user_id uuid, amount_cents int, ref_id text)
-  const { data, error } = await supa.rpc("wallet_apply_call_charge", {
+// Call the SQL function to debit wallet + mark call debited (idempotent)
+async function debitWalletForCall({ legA, user_id, cents }) {
+  if (!supa || !legA || !user_id || !cents || cents <= 0) return { ok: true, skipped: true };
+  const { data, error } = await supa.rpc("wallet_debit_for_call", {
+    _leg_a: legA,
     _user_id: user_id,
     _amount_cents: cents,
-    _ref_id: ref_legA,
   });
   if (error) {
-    log("wallet debit err", error.message);
+    log("wallet_debit_for_call err", error.message);
     return { ok: false, error: error.message };
   }
   return { ok: true, data };
 }
 
 /* ---------------- DB writes (your schema) ---------------- */
-async function upsertInitiated({
-  user_id, contact_id, to_number, from_number, agent_number,
-  legA, started_at
-}) {
+async function upsertInitiated({ user_id, contact_id, to_number, from_number, agent_number, legA, started_at }) {
   if (!supa) return;
   const { data: existing } = await supa
     .from("call_logs")
@@ -141,13 +131,12 @@ async function markBridged({ legA, maybeLegB }) {
   if (error) log("markBridged err", error.message);
 }
 
-// --- $0.01 per started minute + Wallet debit here
+// Compute billed_cents (1¢ per started minute) + update row + debit wallet
 async function markEnded({ legA, ended_at, hangup_cause }) {
   if (!supa || !legA) return;
 
   const endedISO = ended_at || new Date().toISOString();
 
-  // Pull needed info to compute duration AND know which user to charge
   const { data: row } = await supa
     .from("call_logs")
     .select("started_at, user_id")
@@ -157,7 +146,6 @@ async function markEnded({ legA, ended_at, hangup_cause }) {
   const startedAt = row?.started_at || null;
   const user_id = row?.user_id || null;
 
-  // duration
   let duration_seconds = null;
   if (startedAt) {
     const t0 = new Date(startedAt).getTime();
@@ -165,36 +153,37 @@ async function markEnded({ legA, ended_at, hangup_cause }) {
     duration_seconds = Math.max(0, Math.round((t1 - t0) / 1000));
   }
 
-  // billing: 1¢ per started minute, min 1¢
+  // $0.01 per started minute, minimum 1¢
   let billed_cents = null;
   if (duration_seconds !== null) {
-    const minsStarted = Math.max(1, Math.ceil(duration_seconds / 60));
-    billed_cents = minsStarted * 1;
+    const mins = Math.max(1, Math.ceil(duration_seconds / 60));
+    billed_cents = mins * 1;
   }
 
-  // status + error
   const failed = hangup_cause && hangup_cause !== "normal_clearing";
-  const updates = {
+  const baseUpdates = {
     status: failed ? "failed" : "completed",
     ended_at: endedISO,
   };
-  if (duration_seconds !== null) updates.duration_seconds = duration_seconds;
-  if (billed_cents !== null) updates.billed_cents = billed_cents;
-  if (failed) updates.error = hangup_cause;
+  if (duration_seconds !== null) baseUpdates.duration_seconds = duration_seconds;
+  if (billed_cents !== null) baseUpdates.billed_cents = billed_cents;
+  if (failed) baseUpdates.error = hangup_cause;
 
-  // Update call row
+  // Update call row (with graceful fallback if billed_cents column not present)
   const { error: upErr } = await supa
     .from("call_logs")
-    .update(updates)
+    .update(baseUpdates)
     .eq("telnyx_leg_a_id", legA);
+
   if (upErr) {
-    // If column billed_cents doesn't exist yet, retry without it
     if (upErr.code === "42703" || /billed_cents/i.test(upErr.message || "")) {
       const { error: up2 } = await supa
         .from("call_logs")
         .update({
-          status: updates.status, ended_at: updates.ended_at,
-          duration_seconds: updates.duration_seconds, error: updates.error
+          status: baseUpdates.status,
+          ended_at: baseUpdates.ended_at,
+          duration_seconds: baseUpdates.duration_seconds,
+          error: baseUpdates.error,
         })
         .eq("telnyx_leg_a_id", legA);
       if (up2) log("markEnded fallback err", up2.message);
@@ -203,14 +192,11 @@ async function markEnded({ legA, ended_at, hangup_cause }) {
     }
   }
 
-  // Debit wallet (idempotent via SQL function + ledger unique(ref))
+  // Debit wallet (atomic + idempotent in SQL function)
   if (billed_cents && user_id) {
-    const debit = await debitWallet({ user_id, cents: billed_cents, ref_legA: legA });
-    if (!debit.ok) {
-      log("wallet debit failed (non-fatal)", debit.error || "unknown");
-    } else {
-      log("wallet debit ok", { user_id, billed_cents });
-    }
+    const res = await debitWalletForCall({ legA, user_id, cents: billed_cents });
+    if (!res.ok) log("wallet debit failed (non-fatal)", res.error || "unknown");
+    else log("wallet debit ok", { user_id, billed_cents });
   }
 }
 
