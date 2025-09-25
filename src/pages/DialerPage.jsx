@@ -19,8 +19,12 @@ import { getMyBalanceCents, formatUSD } from "../lib/wallet";
 import { supabase } from "../lib/supabaseClient";
 
 /* ------- config & small helpers ------- */
-const PRICE_CENTS = 500; // $5.00 per number after freebies
-const FREE_NUMBERS = 5;  // first 5 numbers are free
+const PRICE_CENTS = 500;                 // $5.00 after freebies
+const FREE_NUMBERS = 5;                  // first 5 numbers are free
+const COST_PER_SEGMENT_CENTS =
+  Number(import.meta.env?.VITE_COST_PER_SEGMENT_CENTS ?? 1); // default 1¢ per started min
+
+const rateLabel = `$${(COST_PER_SEGMENT_CENTS / 100).toFixed(2)}/min (per started min)`;
 
 const fmt = (s) => { try { return new Date(s).toLocaleString(); } catch { return s || ""; } };
 const normUS = (s) => {
@@ -29,6 +33,7 @@ const normUS = (s) => {
   if (/^\d{10}$/.test(d)) return `+1${d}`;
   return s;
 };
+const startedMinuteSegments = (seconds) => Math.max(1, Math.ceil((Number(seconds) || 0) / 60));
 
 export default function DialerPage() {
   /* ---------- state ---------- */
@@ -74,7 +79,6 @@ export default function DialerPage() {
   }
 
   async function loadAgentPhone() {
-    // Load from agent_profiles.phone
     const { data: auth } = await supabase.auth.getUser();
     const uid = auth?.user?.id;
     if (!uid) return;
@@ -93,7 +97,7 @@ export default function DialerPage() {
   async function saveAgentPhoneIfChanged() {
     const next = agentCell?.trim();
     const prev = lastLoadedPhoneRef.current?.trim();
-    if (next === prev) return; // no change
+    if (next === prev) return;
 
     const { data: auth } = await supabase.auth.getUser();
     const uid = auth?.user?.id;
@@ -101,16 +105,13 @@ export default function DialerPage() {
 
     setSavingPhone(true);
     try {
-      // Try update first
       const { data: updated, error: upErr } = await supabase
         .from("agent_profiles")
         .update({ phone: next || null })
         .eq("user_id", uid)
         .select("user_id");
-
       if (upErr) throw upErr;
 
-      // If no row existed, insert one
       if (!updated || updated.length === 0) {
         const { error: insErr } = await supabase
           .from("agent_profiles")
@@ -163,7 +164,7 @@ export default function DialerPage() {
     }
   }
 
-  // Confirm and complete purchase (charges $5 = 500 cents unless within free allotment)
+  // Confirm purchase (server enforces freebies + charges wallet if needed)
   async function confirmPurchase() {
     const isFree = freebiesLeft > 0;
     if (!isFree && balanceCents < PRICE_CENTS) {
@@ -172,10 +173,20 @@ export default function DialerPage() {
     }
     setBusy(true);
     try {
-      await purchaseNumber(selectedNum); // server also enforces freebies
+      const res = await purchaseNumber(selectedNum); // server returns { charged_cents, ... }
+      const charged = typeof res?.charged_cents === "number" ? res.charged_cents : null;
+      const left = typeof res?.freebies_left_after === "number" ? res.freebies_left_after : null;
+
+      if (charged === 0) {
+        alert(`Number purchased: ${selectedNum} (free)${left !== null ? ` • Free left: ${left}` : ""}`);
+      } else if (charged > 0) {
+        alert(`Number purchased: ${selectedNum}. Charged ${charged}¢${left !== null ? ` • Free left: ${left}` : ""}`);
+      } else {
+        alert(`Number purchased: ${selectedNum}.`);
+      }
+
       await refreshNumbers();
       await refreshBalance();
-      alert(`Number purchased: ${selectedNum}`);
       setConfirmOpen(false);
       setOpenBuy(false);
       setResults([]);
@@ -198,6 +209,16 @@ export default function DialerPage() {
               "radial-gradient(40rem 20rem at 30% 30%, rgba(99,102,241,.35), transparent), radial-gradient(40rem 20rem at 70% 40%, rgba(217,70,239,.25), transparent)",
           }}
         />
+      </div>
+
+      {/* top pills: Balance + Rate */}
+      <div className="mb-3 flex items-center justify-end gap-2 text-xs">
+        <span className="rounded-md border border-white/10 bg-white/10 px-2 py-1">
+          Balance: {formatUSD(balanceCents)} ({balanceCents}¢)
+        </span>
+        <span className="rounded-md border border-white/10 bg-white/10 px-2 py-1">
+          Rate: {rateLabel}
+        </span>
       </div>
 
       {/* header */}
@@ -233,7 +254,7 @@ export default function DialerPage() {
                     placeholder="+1 615 555 1234"
                     value={agentCell}
                     onChange={(e) => setAgentCell(e.target.value)}
-                    onBlur={saveAgentPhoneIfChanged} // auto-save on blur
+                    onBlur={saveAgentPhoneIfChanged}
                   />
                 </div>
                 {/* save state */}
@@ -289,7 +310,7 @@ export default function DialerPage() {
                 className={`rounded-full px-2 py-0.5 text-[11px] ${freebiesLeft > 0
                   ? "bg-emerald-500/15 text-emerald-300"
                   : "bg-white/10 text-white/60"}`}
-                title="First 5 numbers are free"
+                title={`First ${FREE_NUMBERS} numbers are free`}
               >
                 Free left: {freebiesLeft}
               </span>
@@ -350,26 +371,36 @@ export default function DialerPage() {
                   <Th>Status</Th>
                   <Th>Started</Th>
                   <Th>Duration</Th>
+                  <Th>Charge</Th>
                   <Th>Recording</Th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-white/10 bg-black/20">
-                {logs.map((c) => (
-                  <tr key={c.id} className="hover:bg-white/5">
-                    <Td mono>{c.to_number}</Td>
-                    <Td mono>{c.from_number}</Td>
-                    <Td><StatusBadge status={c.status} /></Td>
-                    <Td>{fmt(c.started_at)}</Td>
-                    <Td>{c.duration_seconds ? `${c.duration_seconds}s` : "-"}</Td>
-                    <Td>
-                      {c.recording_url ? (
-                        <a className="underline" href={c.recording_url} target="_blank" rel="noreferrer">
-                          Listen
-                        </a>
-                      ) : "-"}
-                    </Td>
-                  </tr>
-                ))}
+                {logs.map((c) => {
+                  const status = (c.status || "").toLowerCase();
+                  const billable = status === "completed" || status === "answered" || status === "bridged";
+                  const cents = billable && c.duration_seconds > 0
+                    ? startedMinuteSegments(c.duration_seconds) * COST_PER_SEGMENT_CENTS
+                    : null;
+
+                  return (
+                    <tr key={c.id} className="hover:bg-white/5">
+                      <Td mono>{c.to_number}</Td>
+                      <Td mono>{c.from_number}</Td>
+                      <Td><StatusBadge status={c.status} /></Td>
+                      <Td>{fmt(c.started_at)}</Td>
+                      <Td>{c.duration_seconds ? `${c.duration_seconds}s` : "-"}</Td>
+                      <Td>{cents != null ? formatUSD(cents) : "-"}</Td>
+                      <Td>
+                        {c.recording_url ? (
+                          <a className="underline" href={c.recording_url} target="_blank" rel="noreferrer">
+                            Listen
+                          </a>
+                        ) : "-"}
+                      </Td>
+                    </tr>
+                  );
+                })}
               </tbody>
             </table>
           </div>
