@@ -1505,7 +1505,7 @@ function SoldDrawer({ initial, allClients, onClose, onSave }) {
     <div className="fixed inset-0 z-50 grid bg-black/60 p-3">
       <div className="relative m-auto w-full max-w-xl rounded-2xl border border-white/15 bg-neutral-950 p-4">
         <div className="mb-2 flex items-center justify-between">
-          <div className="text.base font-semibold text-base font-semibold">Mark as SOLD</div>
+          <div className="text-base font-semibold">Mark as SOLD</div>
           <button onClick={onClose} className="rounded-lg px-2 py-1 text-sm hover:bg-white/10">Close</button>
         </div>
 
@@ -1572,7 +1572,7 @@ function SoldDrawer({ initial, allClients, onClose, onSave }) {
           </div>
 
           {/* Options */}
-          <div className="rounded-2xl border border-white/15 bg.white/[0.03] p-3 bg-white/[0.03] p-3">
+          <div className="rounded-2xl border border-white/15 bg-white/[0.03] p-3">
             <div className="mb-2 text-sm font-semibold text-white/90">Post-sale options</div>
             <div className="grid gap-2">
               <label className="flex items-start gap-3 rounded-xl border border-white/10 bg-black/30 p-3 hover:bg-white/[0.06]">
@@ -1747,7 +1747,7 @@ function ManualAddLeadModal({ onClose, onSave }) {
 function Field({ label, children }) {
   return (
     <label className="text-sm">
-      <div className="mb-1 text:white/70 text-white/70">{label}</div>
+      <div className="mb-1 text-white/70">{label}</div>
       {children}
     </label>
   );
