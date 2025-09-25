@@ -425,21 +425,46 @@ async function trySendNewLeadText({ userId, leadId, contactId, lead }) {
     // -------- PHASE 2.5: Poll once for latest status (no webhooks needed) --------
     if (providerId) {
       try {
-        // Small wait is optional; Telnyx often reflects a status immediately
-        // await new Promise(r => setTimeout(r, 600));
         const getRes = await telnyxGetMessage(providerId);
         const payload = getRes.json?.data || {};
-        const statusRaw =
+
+        // NEW: compact dump so we can see where Telnyx returns status for your account
+        console.log("[gsheet-webhook] Telnyx GET payload (trunc)", {
+          http_status: getRes.status,
+          has_data: !!getRes.json?.data,
+          keys: payload ? Object.keys(payload).slice(0, 12) : [],
+          raw_snippet: JSON.stringify(payload).slice(0, 400)
+        });
+
+        let statusRaw =
           payload?.to?.[0]?.status ||
           payload?.delivery_status ||
           payload?.status || "";
+
+        // NEW: try a second quick poll if empty
+        if (!statusRaw) {
+          await new Promise(r => setTimeout(r, 1500));
+          const getRes2 = await telnyxGetMessage(providerId);
+          const payload2 = getRes2.json?.data || {};
+          console.log("[gsheet-webhook] Telnyx GET payload #2 (trunc)", {
+            http_status: getRes2.status,
+            has_data: !!getRes2.json?.data,
+            keys: payload2 ? Object.keys(payload2).slice(0, 12) : [],
+            raw_snippet: JSON.stringify(payload2).slice(0, 400)
+          });
+          statusRaw =
+            payload2?.to?.[0]?.status ||
+            payload2?.delivery_status ||
+            payload2?.status || "";
+        }
 
         const mapped = mapTelnyxStatus(statusRaw);
         const detail = {
           polled: true,
           http_status: getRes.status,
           provider_sid: providerId,
-          statusRaw,
+          statusRaw: statusRaw || "(empty)",
+          // keep a small error array if Telnyx provided
           errors: payload?.to?.[0]?.errors || payload?.errors || null,
         };
 
@@ -450,7 +475,7 @@ async function trySendNewLeadText({ userId, leadId, contactId, lead }) {
 
         await supabase.from("messages").update(updates).eq("id", messageId);
 
-        console.log("[gsheet-webhook] Telnyx polled", { provider_sid: providerId, mapped, statusRaw });
+        console.log("[gsheet-webhook] Telnyx polled", { provider_sid: providerId, mapped, statusRaw: statusRaw || "(empty)" });
       } catch (pollErr) {
         console.error("[gsheet-webhook] Telnyx poll failed:", pollErr?.message || pollErr);
       }
