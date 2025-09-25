@@ -15,9 +15,12 @@ import {
 } from "lucide-react";
 import { listMyNumbers, searchNumbersByAreaCode, purchaseNumber } from "../lib/numbers";
 import { startCall, listMyCallLogs } from "../lib/calls";
+import { getMyBalanceCents, formatUSD } from "../lib/wallet";
 import { supabase } from "../lib/supabaseClient";
 
-/* ------- small helpers ------- */
+/* ------- config & small helpers ------- */
+const PRICE_CENTS = 500; // $5.00 per number (first number is free)
+
 const fmt = (s) => { try { return new Date(s).toLocaleString(); } catch { return s || ""; } };
 const normUS = (s) => {
   const d = String(s || "").replace(/\D+/g, "");
@@ -40,6 +43,11 @@ export default function DialerPage() {
   const [results, setResults] = useState([]);
   const [searching, setSearching] = useState(false);
 
+  // confirm purchase modal
+  const [confirmOpen, setConfirmOpen] = useState(false);
+  const [selectedNum, setSelectedNum] = useState("");
+  const [balanceCents, setBalanceCents] = useState(0);
+
   // profile phone save state
   const [savingPhone, setSavingPhone] = useState(false);
   const [phoneSavedAt, setPhoneSavedAt] = useState(0);
@@ -50,7 +58,15 @@ export default function DialerPage() {
     refreshNumbers();
     refreshLogs();
     loadAgentPhone();
+    refreshBalance();
   }, []);
+
+  async function refreshBalance() {
+    try {
+      const b = await getMyBalanceCents();
+      setBalanceCents(b || 0);
+    } catch {}
+  }
 
   async function loadAgentPhone() {
     // Load from agent_profiles.phone
@@ -142,12 +158,20 @@ export default function DialerPage() {
     }
   }
 
-  async function buyNumber(num) {
+  // Confirm and complete purchase (charges $5 = 500 cents unless first number)
+  async function confirmPurchase() {
+    const firstFree = myNumbers.length === 0;
+    if (!firstFree && balanceCents < PRICE_CENTS) {
+      alert("You need at least $5.00 (500 cents) to buy another number.");
+      return;
+    }
+    setBusy(true);
     try {
-      setBusy(true);
-      await purchaseNumber(num, { isFree: false });
+      await purchaseNumber(selectedNum); // server enforces first-free & wallet debit/refund on failure
       await refreshNumbers();
-      alert(`Purchased ${num}`);
+      await refreshBalance();
+      alert(`Number purchased: ${selectedNum}`);
+      setConfirmOpen(false);
       setOpenBuy(false);
       setResults([]);
     } catch (e) {
@@ -362,12 +386,46 @@ export default function DialerPage() {
               {results.map((num) => (
                 <div key={num} className="flex items-center justify-between rounded-xl border border-white/10 bg-black/30 px-3 py-2">
                   <div className="font-mono">{num}</div>
-                  <Button onClick={() => buyNumber(num)} intent="secondary" size="sm">Buy</Button>
+                  <Button
+                    onClick={() => { setSelectedNum(num); setConfirmOpen(true); }}
+                    intent="secondary"
+                    size="sm"
+                  >
+                    Buy
+                  </Button>
                 </div>
               ))}
               {results.length === 0 && !searching && (
                 <EmptyCard text="No results yet. Try a different area code." compact />
               )}
+            </div>
+          </div>
+        </Modal>
+      )}
+
+      {/* confirm purchase modal */}
+      {confirmOpen && (
+        <Modal onClose={() => setConfirmOpen(false)} title="Confirm purchase">
+          <div className="space-y-3 text-sm">
+            <div className="rounded-xl border border-white/10 bg-black/20 p-3 font-mono">{selectedNum}</div>
+
+            <PurchaseDetails
+              myNumbers={myNumbers}
+              balanceCents={balanceCents}
+            />
+
+            <div className="flex gap-2 pt-2">
+              <Button
+                onClick={confirmPurchase}
+                disabled={busy}
+                className="flex-1"
+              >
+                {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
+                Confirm
+              </Button>
+              <Button intent="secondary" onClick={() => setConfirmOpen(false)} className="flex-1">
+                Cancel
+              </Button>
             </div>
           </div>
         </Modal>
@@ -443,6 +501,33 @@ function EmptyCard({ text, compact = false }) {
   return (
     <div className={`rounded-xl border border-white/10 bg-black/20 text-sm text-white/60 ${compact ? "px-3 py-2" : "px-4 py-3"}`}>
       {text}
+    </div>
+  );
+}
+
+/* ---------- helper component ---------- */
+function PurchaseDetails({ myNumbers, balanceCents }) {
+  const firstFree = myNumbers.length === 0;
+  if (firstFree) {
+    return (
+      <div className="text-white/80">
+        <div><strong>Price:</strong> $0.00 (first number is free)</div>
+        <div><strong>Your balance:</strong> {formatUSD(balanceCents)} ({balanceCents} cents)</div>
+      </div>
+    );
+  }
+  return (
+    <div className="text-white/80">
+      <div><strong>Price:</strong> $5.00 (500 cents)</div>
+      <div><strong>Your balance:</strong> {formatUSD(balanceCents)} ({balanceCents} cents)</div>
+      {balanceCents < PRICE_CENTS && (
+        <div className="mt-2 rounded-md bg-amber-100/10 border border-amber-200/20 px-2 py-1 text-amber-200">
+          You don’t have enough credits. Please top up to continue.
+        </div>
+      )}
+      <p className="mt-2 text-xs text-white/60">
+        By confirming, you agree to deduct 500 cents ($5.00) from your CRM balance to purchase this number.
+      </p>
     </div>
   );
 }
