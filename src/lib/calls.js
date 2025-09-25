@@ -1,94 +1,50 @@
-// netlify/functions/call-start.js
-// Canonical version: calls the AGENT first (their phone) and uses your numeric
-// Call Control Application ID via `call_control_app_id` (NOT connection_id).
+// src/lib/calls.js
+import { supabase } from "./supabaseClient";
 
-const fetch = require("node-fetch");
-const { createClient } = require("@supabase/supabase-js");
+/**
+ * Start an outbound call:
+ *  - Calls the agent's phone first (agentNumber)
+ *  - Uses local presence FROM one of the agent's DIDs (chosen server-side)
+ *  - Serverless function uses Telnyx call_control_app_id (numeric) under the hood
+ */
+export async function startCall({ agentNumber, leadNumber, contactId = null }) {
+  const { data } = await supabase.auth.getUser();
+  const uid = data?.user?.id;
+  if (!uid) throw new Error("Not signed in");
 
-const TELNYX_API_KEY = process.env.TELNYX_API_KEY;
-const CALL_CONTROL_APP_ID = process.env.TELNYX_CALL_CONTROL_APP_ID; // e.g. 2791847680295306865
-const SUPABASE_URL = process.env.SUPABASE_URL;
-const SUPABASE_SERVICE_ROLE_KEY =
-  process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_SERVICE_ROLE;
-
-const bad = (s, e, extra = {}) => ({ statusCode: s, body: JSON.stringify({ ok:false, error:e, ...extra }) });
-const ok  = (obj = { ok:true }) => ({ statusCode: 200, body: JSON.stringify(obj) });
-const isE164 = n => /^\+\d{8,15}$/.test(String(n||"").trim());
-const b64 = o => Buffer.from(JSON.stringify(o), "utf8").toString("base64");
-
-exports.handler = async (event) => {
-  if (event.httpMethod !== "POST") return bad(405, "Method Not Allowed");
-  if (!TELNYX_API_KEY) return bad(500, "TELNYX_API_KEY missing");
-  if (!CALL_CONTROL_APP_ID) return bad(500, "TELNYX_CALL_CONTROL_APP_ID missing");
-  if (!SUPABASE_URL || !SUPABASE_SERVICE_ROLE_KEY) return bad(500, "Supabase server creds missing");
-
-  let body = {};
-  try { body = JSON.parse(event.body || "{}"); } catch { return bad(400, "Invalid JSON"); }
-
-  const agent_id     = String(body.agent_id || body.user_id || "").trim();
-  const agent_number = String(body.agent_number || "").trim(); // agent's phone (we call this first)
-  const lead_number  = String(body.lead_number  || "").trim(); // the target
-  const contact_id   = body.contact_id || null;
-
-  if (!agent_id) return bad(422, "agent_id required");
-  if (!isE164(agent_number)) return bad(422, "agent_number must be E.164 (+1...)");
-  if (!isE164(lead_number))  return bad(422, "lead_number must be E.164 (+1...)");
-
-  const supa = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY);
-
-  // pick FROM from THIS user's numbers (match lead NPA if possible)
-  const digits = lead_number.replace(/\D+/g, "");
-  const npa = digits.length >= 11 ? digits.slice(1,4) : null;
-
-  const { data: nums, error: listErr } = await supa
-    .from("agent_numbers")
-    .select("telnyx_number, area_code")
-    .eq("agent_id", agent_id)
-    .order("purchased_at", { ascending: true });
-
-  if (listErr) return bad(500, "DB list error: " + listErr.message);
-  if (!nums || nums.length === 0) return bad(400, "You don’t own any Telnyx numbers yet");
-
-  const callerId = (npa && nums.find(x => x.area_code === npa)?.telnyx_number) || nums[0].telnyx_number;
-
-  const client_state = b64({
-    kind: "crm_outbound",
-    user_id: agent_id,
-    contact_id,
-    lead_number,
-    agent_number,
-    from_number: callerId,
+  const r = await fetch("/.netlify/functions/call-start", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      agent_number: agentNumber,
+      lead_number: leadNumber,
+      agent_id: uid,
+      user_id: uid,
+      contact_id: contactId,
+    }),
   });
 
-  const createPayload = {
-    to: agent_number,
-    from: callerId,                              // MUST be their DID
-    call_control_app_id: String(CALL_CONTROL_APP_ID), // <-- numeric App ID here
-    client_state,
-    timeout_secs: 45,
-  };
-
-  try {
-    const r = await fetch("https://api.telnyx.com/v2/calls", {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${TELNYX_API_KEY}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify(createPayload),
-    });
-
-    const j = await r.json().catch(() => ({}));
-    if (!r.ok) {
-      // Bubble up Telnyx’s detail and show exactly what we sent (helps debug).
-      return bad(r.status,
-        j?.errors?.[0]?.detail || j?.error || "Telnyx error",
-        { telnyx_status: r.status, sent: createPayload }
-      );
-    }
-
-    return ok({ call_leg_id: j?.data?.call_leg_id || null });
-  } catch (e) {
-    return bad(500, e?.message || "Unexpected error");
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok || j?.ok === false) {
+    throw new Error(j?.error || "Failed to start call");
   }
-};
+  return j;
+}
+
+/**
+ * List recent call logs for the signed-in user.
+ * Assumes a `call_logs` table with RLS allowing user_id = auth.uid()
+ */
+export async function listMyCallLogs(limit = 100) {
+  const { data } = await supabase.auth.getUser();
+  const uid = data?.user?.id;
+  if (!uid) return [];
+  const { data: rows, error } = await supabase
+    .from("call_logs")
+    .select("*")
+    .eq("user_id", uid)
+    .order("started_at", { ascending: false })
+    .limit(limit);
+  if (error) throw error;
+  return rows || [];
+}
