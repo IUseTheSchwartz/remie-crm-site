@@ -4,7 +4,7 @@
 // Writes/updates (your columns):
 // user_id, contact_id, direction, to_number, from_number, agent_number,
 // telnyx_leg_a_id, telnyx_leg_b_id, status, started_at, answered_at, ended_at,
-// duration_seconds, recording_url, error.
+// duration_seconds, recording_url, error, billed_cents (if column exists)
 
 const crypto = require("crypto");
 const fetch = require("node-fetch");
@@ -132,37 +132,74 @@ async function markBridged({ legA, maybeLegB }) {
   if (error) log("markBridged err", error.message);
 }
 
+// --- $0.01 per started minute billing added here
 async function markEnded({ legA, ended_at, hangup_cause }) {
   if (!supa || !legA) return;
 
-  // Calculate duration = ended_at - started_at (if started_at exists)
-  let duration_seconds = null;
+  const endedISO = ended_at || new Date().toISOString();
+
+  // 1) get started_at so we can compute duration
+  let startedAt = null;
   try {
     const { data: row } = await supa
       .from("call_logs")
       .select("started_at")
       .eq("telnyx_leg_a_id", legA)
       .maybeSingle();
-    if (row?.started_at) {
-      const t0 = new Date(row.started_at).getTime();
-      const t1 = new Date(ended_at || Date.now()).getTime();
-      duration_seconds = Math.max(0, Math.round((t1 - t0) / 1000));
-    }
+    startedAt = row?.started_at || null;
   } catch {}
 
-  const failed = hangup_cause && hangup_cause !== "normal_clearing";
-  const updates = {
-    status: failed ? "failed" : "completed",
-    ended_at: ended_at || new Date().toISOString(),
-  };
-  if (duration_seconds !== null) updates.duration_seconds = duration_seconds;
-  if (failed) updates.error = hangup_cause;
+  // 2) compute duration
+  let duration_seconds = null;
+  if (startedAt) {
+    const t0 = new Date(startedAt).getTime();
+    const t1 = new Date(endedISO).getTime();
+    duration_seconds = Math.max(0, Math.round((t1 - t0) / 1000));
+  }
 
-  const { error } = await supa
-    .from("call_logs")
-    .update(updates)
-    .eq("telnyx_leg_a_id", legA);
-  if (error) log("markEnded err", error.message);
+  // 3) BUSINESS RULE: $0.01 per started minute, minimum $0.01
+  //    10s -> 1¢, 50s -> 1¢, 60s -> 1¢, 61s -> 2¢, etc.
+  let billed_cents = null;
+  if (duration_seconds !== null) {
+    const minsStarted = Math.max(1, Math.ceil(duration_seconds / 60));
+    billed_cents = minsStarted * 1; // 1 cent per started minute
+  }
+
+  // 4) status + optional error
+  const failed = hangup_cause && hangup_cause !== "normal_clearing";
+  const baseUpdates = {
+    status: failed ? "failed" : "completed",
+    ended_at: endedISO,
+  };
+  if (duration_seconds !== null) baseUpdates.duration_seconds = duration_seconds;
+  if (failed) baseUpdates.error = hangup_cause;
+
+  // 5) Try to include billed_cents if your column exists; otherwise fallback
+  try {
+    const updates = (billed_cents !== null)
+      ? { ...baseUpdates, billed_cents }
+      : baseUpdates;
+
+    const { error } = await supa
+      .from("call_logs")
+      .update(updates)
+      .eq("telnyx_leg_a_id", legA);
+
+    if (error) {
+      // Column doesn't exist? Fallback without billed_cents.
+      if (error.code === "42703" || /billed_cents/i.test(error.message || "")) {
+        const { error: err2 } = await supa
+          .from("call_logs")
+          .update(baseUpdates)
+          .eq("telnyx_leg_a_id", legA);
+        if (err2) log("markEnded fallback err", err2.message);
+      } else {
+        log("markEnded err", error.message);
+      }
+    }
+  } catch (e) {
+    log("markEnded try-catch err", e?.message);
+  }
 }
 
 /* ---------------- Handler ---------------- */
