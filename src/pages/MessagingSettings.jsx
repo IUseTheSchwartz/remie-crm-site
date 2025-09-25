@@ -29,7 +29,7 @@ const DEFAULT_ENABLED = Object.fromEntries(TEMPLATE_DEFS.map((t) => [t.key, fals
 -------------------------------------------------------- */
 const DEFAULTS = {
   new_lead:
-    "Hi {{first_name}}, it’s {{agent_name}} in {{state}}. I received your request listing {{beneficiary}} as beneficiary. Can I text you here to help?",
+    "Hi {{first_name}}, it’s {{agent_name}} in {{state}}. I received your request listing {{beneficiary}} as beneficiary.Text Or Call me anytime at {{agent_phone}}.",
 
   // Direct to a phone call instead of texting back
   new_lead_military:
