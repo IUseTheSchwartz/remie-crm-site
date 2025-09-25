@@ -3,18 +3,30 @@
 // Accepts: { to?, contact_id?, lead_id?, body?, templateKey?/template_key?/template?, requesterId?, provider_message_id? }
 
 const { getServiceClient } = require("./_supabase");
-const fetch = require("node-fetch"); // <- ensure fetch exists in function runtime
+const fetch = require("node-fetch"); // ensure fetch exists in function runtime
 
 const TELNYX_API_KEY = process.env.TELNYX_API_KEY;
-const DEFAULT_FROM_NUMBER = process.env.DEFAULT_FROM_NUMBER || process.env.TELNYX_FROM || null; // E.164 or blank
+
+// Accept a few env names; you said you’re using TELNYX_FROM, so we honor that first.
+const ENV_FROM_RAW =
+  process.env.TELNYX_FROM ||
+  process.env.TELNYX_FROM_NUMBER ||
+  process.env.DEFAULT_FROM_NUMBER ||
+  null;
+
 const MESSAGING_PROFILE_ID = process.env.TELNYX_MESSAGING_PROFILE_ID || null;
 
 function json(obj, statusCode = 200) {
-  return { statusCode, headers: { "Content-Type": "application/json" }, body: JSON.stringify(obj) };
+  return {
+    statusCode,
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(obj),
+  };
 }
 const S = (x) => (x == null ? "" : String(x));
 const onlyDigits = (s) => String(s || "").replace(/\D/g, "");
 const norm10 = (p) => onlyDigits(p).slice(-10);
+
 function toE164(p) {
   const d = onlyDigits(p);
   if (!d) return null;
@@ -27,16 +39,20 @@ function toE164(p) {
 // tiny mustache: {{ token }}
 function renderTemplate(tpl, ctx) {
   if (!tpl) return "";
-  return String(tpl).replace(/\{\{\s*([\w.]+)\s*\}\}/g, (_, k) => {
-    const v = ctx && Object.prototype.hasOwnProperty.call(ctx, k) ? ctx[k] : "";
-    return v == null ? "" : String(v);
-  }).trim();
+  return String(tpl)
+    .replace(/\{\{\s*([\w.]+)\s*\}\}/g, (_, k) => {
+      const v = ctx && Object.prototype.hasOwnProperty.call(ctx, k) ? ctx[k] : "";
+      return v == null ? "" : String(v);
+    })
+    .trim();
 }
 
 async function getLead(db, lead_id) {
   const { data, error } = await db
     .from("leads")
-    .select("id, user_id, name, phone, email, state, beneficiary, beneficiary_name, military_branch")
+    .select(
+      "id, user_id, name, phone, email, state, beneficiary, beneficiary_name, military_branch"
+    )
     .eq("id", lead_id)
     .maybeSingle();
   if (error) throw error;
@@ -64,7 +80,7 @@ async function findContactByPhone(db, user_id, phoneLike) {
   return (data || []).find((c) => norm10(c.phone) === d10) || null;
 }
 
-// EDIT 2: make this schema-agnostic by selecting *
+// Select * so schema differences (full_name vs name, calendly_url vs calendly_link) don't break sends
 async function getAgentProfile(db, user_id) {
   const { data, error } = await db
     .from("agent_profiles")
@@ -85,11 +101,12 @@ async function getTemplatesRow(db, user_id) {
   return data || null;
 }
 
+// Prefer ENV_FROM first (your TELNYX_FROM), then last-used, then agent profile,
+// and finally let the profile route (omit "from").
 async function pickFromNumber(db, user_id) {
-  // 1) agent profile
-  const ap = await getAgentProfile(db, user_id);
-  if (ap?.phone) {
-    const e = toE164(ap.phone);
+  // 1) explicit env (TELNYX_FROM, TELNYX_FROM_NUMBER, DEFAULT_FROM_NUMBER)
+  if (ENV_FROM_RAW) {
+    const e = toE164(ENV_FROM_RAW);
     if (e) return e;
   }
 
@@ -109,13 +126,14 @@ async function pickFromNumber(db, user_id) {
     }
   } catch {}
 
-  // 3) env default
-  if (DEFAULT_FROM_NUMBER) {
-    const e = toE164(DEFAULT_FROM_NUMBER);
+  // 3) agent profile phone (often a personal cell; may fail with Telnyx if not hosted there)
+  const ap = await getAgentProfile(db, user_id);
+  if (ap?.phone) {
+    const e = toE164(ap.phone);
     if (e) return e;
   }
 
-  // 4) fallback: let Telnyx pick from profile by omitting "from"
+  // 4) fallback: omit "from" and rely on messaging profile routing
   return null;
 }
 
@@ -159,20 +177,23 @@ exports.handler = async (event) => {
 
   try {
     let body;
-    try { body = JSON.parse(event.body || "{}"); }
-    catch { return json({ error: "invalid_json" }, 400); }
+    try {
+      body = JSON.parse(event.body || "{}");
+    } catch {
+      return json({ error: "invalid_json" }, 400);
+    }
 
     let {
       to,
       contact_id,
       lead_id,
       body: rawBody,
-      templateKey,            // camelCase (UI/older callers)
+      templateKey, // camelCase (UI/older callers)
       requesterId,
       provider_message_id,
     } = body || {};
 
-    // >>> Accept snake_case too <<<
+    // Accept snake_case too
     templateKey = body.template_key || body.template || templateKey;
 
     // -------- Resolve user_id, contact, destination phone --------
@@ -207,7 +228,14 @@ exports.handler = async (event) => {
     }
 
     if (!user_id) {
-      return json({ error: "missing_user_context", hint: "provide lead_id, contact_id, or requesterId", trace }, 400);
+      return json(
+        {
+          error: "missing_user_context",
+          hint: "provide lead_id, contact_id, or requesterId",
+          trace,
+        },
+        400
+      );
     }
 
     const toE = toE164(to);
@@ -242,27 +270,36 @@ exports.handler = async (event) => {
 
       // enabled flag(s) – permissive: if not explicitly false, we treat as enabled
       const enabledGlobal = typeof mt.enabled === "boolean" ? mt.enabled : true;
-      const enabledByKey   = (mt.enabled && typeof mt.enabled === "object") ? mt.enabled[templateKey] : undefined;
-      const isEnabled = enabledGlobal && (enabledByKey !== false);
+      const enabledByKey =
+        mt.enabled && typeof mt.enabled === "object" ? mt.enabled[templateKey] : undefined;
+      const isEnabled = enabledGlobal && enabledByKey !== false;
       if (!isEnabled) return json({ status: "skipped_disabled", templateKey, trace });
 
       const tags = Array.isArray(contact?.tags) ? contact.tags.map(String) : [];
       const isMilitary = S(lead?.military_branch) || tags.includes("military");
 
       const keyToUse = chooseFallbackKey(templateKey, { isMilitary: !!isMilitary });
-      const T = (k) => (mt.templates?.[k] ?? mt[k] ?? "");
+      const T = (k) => mt.templates?.[k] ?? mt[k] ?? "";
       let tpl = String(T(keyToUse) || "").trim();
 
       // extra fallback: if asked for military and it's missing, try new_lead; vice-versa
       if (!tpl && keyToUse === "new_lead_military") tpl = String(T("new_lead") || "").trim();
       if (!tpl && keyToUse === "new_lead") tpl = String(T("new_lead_military") || "").trim();
 
-      if (!tpl) return json({ error: "template_not_found", requested: templateKey, tried: keyToUse, trace }, 404);
+      if (!tpl)
+        return json(
+          { error: "template_not_found", requested: templateKey, tried: keyToUse, trace },
+          404
+        );
 
       const ap = await getAgentProfile(db, user_id);
       const ctx = {
-        first_name: "", last_name: "", full_name: "",
-        state: "", beneficiary: "", military_branch: "",
+        first_name: "",
+        last_name: "",
+        full_name: "",
+        state: "",
+        beneficiary: "",
+        military_branch: "",
         agent_name: ap?.name || ap?.full_name || "",
         company: ap?.company || "",
         agent_phone: ap?.phone || "",
@@ -270,12 +307,12 @@ exports.handler = async (event) => {
         calendly_link: ap?.calendly_link || ap?.calendly_url || "",
       };
 
-      const fullName = (lead?.name) || (contact?.full_name) || "";
+      const fullName = lead?.name || contact?.full_name || "";
       if (fullName) {
         ctx.full_name = fullName;
         const parts = fullName.split(/\s+/).filter(Boolean);
         ctx.first_name = parts[0] || "";
-        ctx.last_name  = parts.slice(1).join(" ");
+        ctx.last_name = parts.slice(1).join(" ");
       }
       ctx.state = lead?.state || "";
       ctx.beneficiary = lead?.beneficiary || lead?.beneficiary_name || "";
@@ -289,7 +326,7 @@ exports.handler = async (event) => {
 
     // -------- Determine FROM number (robust) --------
     const fromE164 = await pickFromNumber(db, user_id); // may be null (we'll omit "from")
-    if (!fromE164 && !MESSAGING_PROFILE_ID && !DEFAULT_FROM_NUMBER) {
+    if (!fromE164 && !MESSAGING_PROFILE_ID && !ENV_FROM_RAW) {
       // Absolutely no way to route – fail fast with a clear error
       return json({ error: "no_from_number_configured", trace }, 400);
     }
@@ -305,10 +342,17 @@ exports.handler = async (event) => {
         text: bodyText,
         profileId: MESSAGING_PROFILE_ID,
       });
-      trace.push({ step: "telnyx.sent", id: telnyxResp?.data?.id, used_from: fromE164 || "(profile-routed)" });
+      trace.push({
+        step: "telnyx.sent",
+        id: telnyxResp?.data?.id,
+        used_from: fromE164 || "(profile-routed)",
+      });
     } catch (e) {
       trace.push({ step: "telnyx.error", detail: e?.message || String(e) });
-      return json({ error: "send_failed", detail: e?.message || String(e), telnyx_response: e?.telnyx_response, trace }, 502);
+      return json(
+        { error: "send_failed", detail: e?.message || String(e), telnyx_response: e?.telnyx_response, trace },
+        502
+      );
     }
 
     const provider_sid = telnyxResp?.data?.id || null;
@@ -326,7 +370,7 @@ exports.handler = async (event) => {
       provider_sid,
       provider_message_id: provider_message_id || null,
       price_cents: 0,
-      meta: { templateKey: templateKey || null, lead_id: lead?.id || (lead_id || null) },
+      meta: { templateKey: templateKey || null, lead_id: lead?.id || lead_id || null },
     };
 
     const ins = await db.from("messages").insert([row]).select("id, contact_id").maybeSingle();
@@ -348,7 +392,7 @@ exports.handler = async (event) => {
       trace,
     });
   } catch (e) {
-    console.error("[messages-send] unhandled:", e); // <- extra visibility
+    console.error("[messages-send] unhandled:", e);
     return json({ error: "unhandled", detail: String(e?.message || e) });
   }
 };
