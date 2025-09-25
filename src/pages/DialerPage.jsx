@@ -38,7 +38,7 @@ export default function DialerPage() {
   const [busy, setBusy] = useState(false);
 
   // buy modal
-  const [openBuy, setOpenBuy] = useState(false);
+  the const [openBuy, setOpenBuy] = useState(false);
   const [npa, setNpa] = useState("");
   const [results, setResults] = useState([]);
   const [searching, setSearching] = useState(false);
@@ -141,8 +141,7 @@ export default function DialerPage() {
       await startCall({ agentNumber: normUS(agentCell), leadNumber: normUS(toNumber) });
       // Allow webhook time to log (and compute billed_cents on short calls)
       setTimeout(refreshLogs, 4000);
-      // If/when you start debiting wallets on call end, also re-pull balance here:
-      // setTimeout(refreshBalance, 4500);
+      setTimeout(refreshBalance, 4500); // refresh wallet after webhook debit
     } catch (e) {
       alert(e.message || "Failed to start call");
     } finally {
@@ -213,7 +212,7 @@ export default function DialerPage() {
             <p className="text-sm text-white/60">Local-presence calling with your owned numbers.</p>
           </div>
 
-          {/* NEW: balance + rate */}
+          {/* balance + rate */}
           <div className="ml-auto flex items-center gap-2 text-xs sm:text-sm">
             <span className="rounded-lg border border-white/10 bg-white/10 px-2 py-1 font-mono">
               Balance: {formatUSD(balanceCents)} ({balanceCents}¢)
@@ -352,7 +351,7 @@ export default function DialerPage() {
                   <Th>Status</Th>
                   <Th>Started</Th>
                   <Th>Duration</Th>
-                  <Th>Charge</Th> {/* NEW */}
+                  <Th>Charge</Th>
                   <Th>Recording</Th>
                 </tr>
               </thead>
@@ -364,7 +363,7 @@ export default function DialerPage() {
                     <Td><StatusBadge status={c.status} /></Td>
                     <Td>{fmt(c.started_at)}</Td>
                     <Td>{c.duration_seconds ? `${c.duration_seconds}s` : "-"}</Td>
-                    <Td>{typeof c.billed_cents === "number" ? formatUSD(c.billed_cents) : "-"}</Td> {/* NEW */}
+                    <Td>{typeof c.billed_cents === "number" ? formatUSD(c.billed_cents) : "-"}</Td>
                     <Td>
                       {c.recording_url ? (
                         <a className="underline" href={c.recording_url} target="_blank" rel="noreferrer">
@@ -492,7 +491,7 @@ function StatusBadge({ status }) {
     queued: "bg-sky-500/15 text-sky-300",
     ringing: "bg-amber-500/15 text-amber-300",
     answered: "bg-emerald-500/15 text-emerald-300",
-    bridged: "bg-emerald-500/15 text-emerald-300", // NEW (treat as active)
+    bridged: "bg-emerald-500/15 text-emerald-300",
     completed: "bg-indigo-500/15 text-indigo-300",
     failed: "bg-rose-500/15 text-rose-300",
   };
