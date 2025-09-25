@@ -23,6 +23,9 @@ import GoogleSheetsConnector from "../components/GoogleSheetsConnector.jsx";
 // Phone normalizer (E.164)
 import { toE164 } from "../lib/phone.js";
 
+/* ✅ Click-to-call */
+import ClickToCall, { PhoneLink } from "../components/ClickToCall.jsx";
+
 /* ---------------- Functions base (Netlify) ---------------- */
 const FN_BASE = import.meta.env?.VITE_FUNCTIONS_BASE || "/.netlify/functions";
 
@@ -1326,7 +1329,17 @@ export default function LeadsPage() {
                     />
                   </Td>
                   <Td>{p.name || "—"}</Td>
-                  <Td>{p.phone || "—"}</Td>
+
+                  {/* ✅ Click-to-call: phone text is clickable + icon button */}
+                  <Td>
+                    {p.phone ? (
+                      <div className="flex items-center gap-2">
+                        <PhoneLink number={p.phone} contactId={p.id} className="font-mono" />
+                        <ClickToCall number={p.phone} contactId={p.id} />
+                      </div>
+                    ) : "—"}
+                  </Td>
+
                   <Td>{p.email || "—"}</Td>
                   <Td>{p.dob || "—"}</Td>
                   <Td>{p.state || "—"}</Td>
@@ -1492,7 +1505,7 @@ function SoldDrawer({ initial, allClients, onClose, onSave }) {
     <div className="fixed inset-0 z-50 grid bg-black/60 p-3">
       <div className="relative m-auto w-full max-w-xl rounded-2xl border border-white/15 bg-neutral-950 p-4">
         <div className="mb-2 flex items-center justify-between">
-          <div className="text-base font-semibold">Mark as SOLD</div>
+          <div className="text.base font-semibold text-base font-semibold">Mark as SOLD</div>
           <button onClick={onClose} className="rounded-lg px-2 py-1 text-sm hover:bg-white/10">Close</button>
         </div>
 
@@ -1559,7 +1572,7 @@ function SoldDrawer({ initial, allClients, onClose, onSave }) {
           </div>
 
           {/* Options */}
-          <div className="rounded-2xl border border-white/15 bg-white/[0.03] p-3">
+          <div className="rounded-2xl border border-white/15 bg.white/[0.03] p-3 bg-white/[0.03] p-3">
             <div className="mb-2 text-sm font-semibold text-white/90">Post-sale options</div>
             <div className="grid gap-2">
               <label className="flex items-start gap-3 rounded-xl border border-white/10 bg-black/30 p-3 hover:bg-white/[0.06]">
