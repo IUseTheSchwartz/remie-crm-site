@@ -321,12 +321,12 @@ async function trySendNewLeadText({ userId, leadId, contactId, lead }) {
     lead_id: leadId || null,
     provider: "telnyx",
     direction: "outgoing",
-    from_number: FROM_NUMBER_ANY || null,
+    from_number: getFromNumber() || null,
     to_number: to,
     body: text,
     status: "queued",
     segments: 1,
-    price_cents: COST_CENTS,
+    price_cents: 1, // keep in sync with wallet debit trigger
     channel: "sms",
     provider_message_id: dedupeKey,
   };
@@ -345,7 +345,7 @@ async function trySendNewLeadText({ userId, leadId, contactId, lead }) {
   }
   const messageId = inserted.id;
 
-  // PHASE 2: Send via Telnyx
+  // ---------------- PHASE 2: Send via Telnyx (strengthened) ----------------
   const clientRef = `c=${contactId || "n/a"}|lead=${leadId || "n/a"}|tpl=${template_key}|ts=${Date.now()}`;
   try {
     const telnyxBody = { to, text, client_ref: clientRef };
@@ -359,6 +359,17 @@ async function trySendNewLeadText({ userId, leadId, contactId, lead }) {
     });
     const json = await resp.json().catch(() => ({}));
 
+    // Explicit log so you can trace what Telnyx returned for this webhook call
+    console.log("[gsheet-webhook] Telnyx response", {
+      ok: resp.ok,
+      status: resp.status,
+      id: json?.data?.id || null,                  // <-- the REAL provider_sid
+      errors: json?.errors || null,
+      to,
+      from: getFromNumber() || "(profile)",
+      provider_message_id: dedupeKey,
+    });
+
     if (!resp.ok) {
       await supabase
         .from("messages")
@@ -369,13 +380,13 @@ async function trySendNewLeadText({ userId, leadId, contactId, lead }) {
 
     const providerId = json?.data?.id || null;
 
-    // PHASE 3: Mark sent
+    // PHASE 3: Mark sent ONLY if we got a real Telnyx id
     await supabase
       .from("messages")
-      .update({ status: "sent", provider_sid: providerId })
+      .update({ status: providerId ? "sent" : "error", provider_sid: providerId })
       .eq("id", messageId);
 
-    return { ok: true, provider_message_id: dedupeKey, message_id: messageId };
+    return { ok: true, telnyx_ok: true, provider_message_id: dedupeKey, provider_sid: providerId, message_id: messageId };
   } catch (e) {
     await supabase
       .from("messages")
@@ -490,24 +501,23 @@ exports.handler = async (event) => {
           }
         } catch (err) { console.error("contact tag/meta sync (dedup) failed:", err); }
 
-        // Send only if not sent recently (prevents duplicate text)
-        let sendRes = null;
-        try {
-          sendRes = await trySendNewLeadText({
-            userId: wh.user_id,
-            leadId: dupId,
-            contactId,
-            lead,
-          });
-        } catch (e) { console.error("send (dedup) failed:", e); }
-
+        // <<< IMPORTANT: Do NOT send on the dedupe path (avoid parallel multi-send)
         await supabase
           .from("user_inbound_webhooks")
           .update({ last_used_at: new Date().toISOString() })
           .eq("id", webhookId);
 
-        console.log("[gsheet-webhook] sendRes (dedupe path):", JSON.stringify(sendRes));
-        return { statusCode: 200, body: JSON.stringify({ ok: true, id: dupId, deduped: true, send: sendRes }) };
+        console.log("[gsheet-webhook] dedupe path hit: skipping send to prevent duplicates");
+        return {
+          statusCode: 200,
+          body: JSON.stringify({
+            ok: true,
+            id: dupId,
+            deduped: true,
+            skipped: true,
+            reason: "duplicate_lead_no_send",
+          }),
+        };
       }
     }
 
@@ -515,6 +525,15 @@ exports.handler = async (event) => {
     const { data, error: insErr } = await supabase.from("leads").insert([lead]).select("id");
     if (insErr) {
       console.error("Insert error:", insErr);
+
+      // Gracefully handle unique violation (no send)
+      if (insErr.code === "23505") {
+        return {
+          statusCode: 200,
+          body: JSON.stringify({ ok: true, skipped: true, reason: "duplicate_lead_insert" }),
+        };
+      }
+
       return { statusCode: 500, body: JSON.stringify({ ok: false, error: insErr }) };
     }
     const insertedId = data?.[0]?.id || null;
