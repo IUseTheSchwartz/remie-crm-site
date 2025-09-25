@@ -60,33 +60,67 @@ function mergeRows(base, patch) {
   return out;
 }
 
-/** Find candidates by phone/email for this user (email is case-insensitive) */
+/* ---------------- Phone/email candidate helpers ---------------- */
+
+function onlyDigits(s) {
+  return String(s || "").replace(/\D+/g, "");
+}
+
+function phoneVariants(raw) {
+  const e164 = toE164(raw);
+  const d = onlyDigits(raw);
+  if (!d && !e164) return [];
+  // last 10
+  const ten = d?.length === 11 && d.startsWith("1") ? d.slice(1) : (d || "").slice(-10);
+  const set = new Set();
+  if (e164) set.add(e164);
+  if (ten) {
+    set.add(ten);
+    set.add(`1${ten}`);
+    set.add(`+1${ten}`);
+  }
+  return Array.from(set).filter(Boolean);
+}
+
+function uniqById(arr) {
+  const m = new Map();
+  for (const r of arr || []) m.set(r.id, r);
+  return Array.from(m.values());
+}
+
+/** Find candidates by phone/email for this user (case-insensitive email + phone variants) */
 async function findLeadCandidates({ userId, phoneE164, email }) {
-  if (!phoneE164 && !email) return [];
+  if (!userId) return [];
+  const results = [];
 
-  let query = supabase
-    .from("leads")
-    .select("*")
-    .eq("user_id", userId)
-    .order("created_at", { ascending: false });
-
-  if (phoneE164 && email) {
-    // phone exact OR email case-insensitive
-    query = query.or(
-      `phone.eq.${encodeURIComponent(phoneE164)},email.ilike.${encodeURIComponent(
-        email
-      )}`
-    );
-  } else if (phoneE164) {
-    query = query.eq("phone", phoneE164);
-  } else if (email) {
-    // case-insensitive email match
-    query = query.ilike("email", email);
+  // Try phone matches (exact & common variants)
+  const variants = phoneVariants(phoneE164);
+  if (variants.length) {
+    const { data, error } = await supabase
+      .from("leads")
+      .select("*")
+      .eq("user_id", userId)
+      .in("phone", variants)
+      .order("created_at", { ascending: false });
+    if (error) throw error;
+    if (data?.length) results.push(...data);
   }
 
-  const { data, error } = await query;
-  if (error) throw error;
-  return data || [];
+  // Try case-insensitive email match
+  const em = email ? normEmail(email) : null;
+  if (em) {
+    const { data, error } = await supabase
+      .from("leads")
+      .select("*")
+      .eq("user_id", userId)
+      // ilike without % works for case-insensitive exact match
+      .ilike("email", em)
+      .order("created_at", { ascending: false });
+    if (error) throw error;
+    if (data?.length) results.push(...data);
+  }
+
+  return uniqById(results);
 }
 
 /** Smart merge write: insert | update | merge-then-delete-extras */
@@ -95,10 +129,11 @@ async function smartWriteLead(normalizedRow, { preferId } = {}) {
   const phoneE164 = normalizedRow.phone || null;
   const email = normalizedRow.email || null;
 
-  const candidates = await findLeadCandidates({ userId, phoneE164, email });
+  // 1) Find possible existing rows
+  let candidates = await findLeadCandidates({ userId, phoneE164, email });
 
+  // 2) If nothing found, try insert; on unique-email collision, re-query by email and merge
   if (candidates.length === 0) {
-    // INSERT new — recover gracefully on unique-constraint collisions
     try {
       const { data, error } = await supabase
         .from("leads")
@@ -107,45 +142,36 @@ async function smartWriteLead(normalizedRow, { preferId } = {}) {
         .single();
       if (error) throw error;
       return data.id;
-    } catch (err) {
-      // If unique violation (23505), re-fetch and UPDATE instead of failing
-      const code = err?.code || err?.status || "";
-      const msg = String(err?.message || "");
-      const isUnique =
-        code === "23505" ||
-        msg.includes("duplicate key value") ||
-        msg.includes("unique constraint");
-
-      if (isUnique) {
-        const retry = await findLeadCandidates({ userId, phoneE164, email });
-        if (retry[0]) {
-          const merged = mergeRows(retry[0], normalizedRow);
-          const { data: upd, error: uErr } = await supabase
-            .from("leads")
-            .update(merged)
-            .eq("user_id", userId)
-            .eq("id", retry[0].id)
-            .select("id")
-            .single();
-          if (uErr) throw uErr;
-          return upd.id;
-        }
+    } catch (e) {
+      // Unique email violation: fetch the conflicting row and merge instead
+      const code = e?.code || e?.details?.code || e?.hint;
+      const isUnique = e?.message?.includes("duplicate key value") || code === "23505";
+      if (isUnique && email) {
+        const { data, error } = await supabase
+          .from("leads")
+          .select("*")
+          .eq("user_id", userId)
+          .ilike("email", email)
+          .order("created_at", { ascending: false });
+        if (error) throw error;
+        candidates = data || [];
+      } else {
+        throw e;
       }
-      throw err;
     }
   }
 
-  // Choose a target row to keep
+  // 3) Choose a target row to keep
   let target = candidates[0];
   if (preferId) {
     const chosen = candidates.find((c) => c.id === preferId);
     if (chosen) target = chosen;
   }
 
-  // Merge fields into target
+  // 4) Merge fields into target
   const merged = mergeRows(target, normalizedRow);
 
-  // UPDATE target
+  // 5) UPDATE target
   const { data: upd, error: uErr } = await supabase
     .from("leads")
     .update(merged)
@@ -155,7 +181,7 @@ async function smartWriteLead(normalizedRow, { preferId } = {}) {
     .single();
   if (uErr) throw uErr;
 
-  // If there are extras (split-brain), delete them now
+  // 6) If there are extras (split-brain), delete them now
   const extras = candidates.filter((c) => c.id !== target.id);
   if (extras.length) {
     const extraIds = extras.map((x) => x.id);
@@ -201,11 +227,7 @@ export async function upsertManyLeadsServer(leads = []) {
       await smartWriteLead(row, { preferId: p.id });
       wrote++;
     } catch (e) {
-      console.error(
-        "[leads] batch write failed for",
-        p?.name || p?.email || p?.phone,
-        e
-      );
+      console.error("[leads] batch write failed for", p?.name || p?.email || p?.phone, e);
       // continue with next row
     }
   }
@@ -219,7 +241,6 @@ export async function updatePipelineServer(lead) {
 
   const phoneE164 = lead.phone ? toE164(lead.phone) : null;
   const email = lead.email ? normEmail(lead.email) : null;
-
   const candidates = await findLeadCandidates({ userId, phoneE164, email });
   const target = candidates[0];
   if (!target) throw new Error("No matching server lead found for user");
