@@ -1,141 +1,145 @@
+// File: src/components/ClickToCall.jsx
 import { useEffect, useState } from "react";
-import { Phone, Loader2 } from "lucide-react";
-import { startCall } from "../lib/calls";
-import { getMyBalanceCents } from "../lib/wallet";
-import { supabase } from "../lib/supabaseClient";
+import { supabase } from "../lib/supabaseClient.js";
+import { toE164 } from "../lib/phone.js";
+import { startCall } from "../lib/calls.js";
 
-// Normalize US numbers to +1XXXXXXXXXX if possible
-function normUS(s) {
-  const d = String(s || "").replace(/\D+/g, "");
-  if (/^1\d{10}$/.test(d)) return `+${d}`;
-  if (/^\d{10}$/.test(d)) return `+1${d}`;
-  return s || "";
-}
-
-/**
- * Internal hook: load agent's phone from agent_profiles once.
- */
-function useAgentPhone() {
-  const [agentPhone, setAgentPhone] = useState("");
-  useEffect(() => {
-    (async () => {
-      const { data: auth } = await supabase.auth.getUser();
-      const uid = auth?.user?.id;
-      if (!uid) return;
-      const { data: row } = await supabase
-        .from("agent_profiles")
-        .select("phone")
-        .eq("user_id", uid)
-        .maybeSingle();
-      setAgentPhone(row?.phone || "");
-    })();
-  }, []);
-  return [agentPhone, setAgentPhone];
-}
-
-/**
- * Core call action shared by both UI variants.
- */
-async function placeCall({ agentPhone, leadNumber, contactId }) {
-  if (!agentPhone) {
-    alert("Add your phone on the Dialer page first.");
-    throw new Error("missing agent phone");
-  }
-  const balance = await getMyBalanceCents().catch(() => 0);
-  if ((balance || 0) < 1) {
-    alert("You need at least $0.01 in your wallet to place a call.");
-    throw new Error("insufficient funds");
-  }
-  const agent = normUS(agentPhone);
-  const lead = normUS(leadNumber);
-  if (!lead) {
-    alert("Lead has no valid phone number.");
-    throw new Error("invalid lead phone");
-  }
-  return startCall({ agentNumber: agent, leadNumber: lead, contactId });
-}
-
-/**
- * Inline clickable phone text: looks like a link, calls on click.
- */
-export function PhoneLink({ number, contactId = null, className = "", children, onStarted }) {
-  const [agentPhone] = useAgentPhone();
-  const [busy, setBusy] = useState(false);
-
-  const handle = async () => {
-    if (busy) return;
-    setBusy(true);
-    try {
-      await placeCall({ agentPhone, leadNumber: number, contactId });
-      onStarted?.();
-      // Optional: you can trigger a toast here
-      // setTimeout to allow webhook to log:
-      // setTimeout(() => onStarted?.(), 4000);
-    } catch (e) {
-      // errors already alerted above
-    } finally {
-      setBusy(false);
+/* Share a couple of localStorage keys as a soft fallback */
+const LOCAL_KEYS = ["dialer_my_phone", "my_phone", "remie.myPhone"];
+const getLS = () => {
+  try {
+    for (const k of LOCAL_KEYS) {
+      const v = localStorage.getItem(k);
+      if (v && v.trim()) return v.trim();
     }
-  };
+  } catch {}
+  return "";
+};
+const setLS = (val) => {
+  try {
+    for (const k of LOCAL_KEYS) localStorage.setItem(k, val || "");
+  } catch {}
+};
 
+/** A tiny tel: link for displaying the number inline (optional) */
+export function PhoneLink({ number, className }) {
+  const n = String(number || "");
+  if (!n) return null;
+  const href = "tel:" + n.replace(/[^\d+]/g, "");
   return (
-    <button
-      type="button"
-      onClick={handle}
-      className={[
-        "inline-flex items-center gap-1 underline underline-offset-2 hover:opacity-90",
-        "disabled:opacity-60 disabled:cursor-not-allowed",
-        className,
-      ].join(" ")}
-      disabled={busy}
-      title="Click to call"
-    >
-      {busy ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : null}
-      <span>{children || number}</span>
-    </button>
+    <a href={href} className={className} title="Call using device dialer">
+      {n}
+    </a>
   );
 }
 
-/**
- * Small rounded icon button. Good to place next to a phone number cell.
- */
-export default function ClickToCall({ number, contactId = null, size = "sm", className = "", onStarted }) {
-  const [agentPhone] = useAgentPhone();
+/** Click-to-call button that pulls the agent phone from agent_profiles.phone */
+export default function ClickToCall({ number, contactId, className }) {
   const [busy, setBusy] = useState(false);
+  const [myPhone, setMyPhone] = useState("");
 
-  const sizes = {
-    xs: "h-7 w-7",
-    sm: "h-8 w-8",
-    md: "h-9 w-9",
-  };
+  // 1) Load agent phone from agent_profiles on mount
+  useEffect(() => {
+    (async () => {
+      try {
+        const { data: auth } = await supabase.auth.getUser();
+        const uid = auth?.user?.id;
+        if (!uid) return;
 
-  const handle = async () => {
-    if (busy) return;
+        const { data: row } = await supabase
+          .from("agent_profiles")
+          .select("phone")
+          .eq("user_id", uid)
+          .maybeSingle();
+
+        const p = row?.phone || getLS() || "";
+        if (p) {
+          setMyPhone(p);
+          setLS(p); // keep LS in sync for other pages/components
+        }
+      } catch {
+        // ignore — we’ll still fall back to LS or prompt on click
+      }
+    })();
+  }, []);
+
+  // Save/Upsert agent phone back to agent_profiles for future
+  async function persistAgentPhone(e164) {
+    try {
+      const { data: auth } = await supabase.auth.getUser();
+      const uid = auth?.user?.id;
+      if (!uid) return;
+
+      // try update first
+      const { data: updated, error: upErr } = await supabase
+        .from("agent_profiles")
+        .update({ phone: e164 })
+        .eq("user_id", uid)
+        .select("user_id");
+
+      if (upErr) throw upErr;
+
+      // if no row existed, insert
+      if (!updated || updated.length === 0) {
+        const { error: insErr } = await supabase
+          .from("agent_profiles")
+          .insert({ user_id: uid, phone: e164 });
+        if (insErr) throw insErr;
+      }
+    } catch {
+      // if this fails we still proceed with the call; it just won't save
+    }
+  }
+
+  async function onClick() {
+    const lead = toE164(String(number || "").trim());
+    if (!lead) {
+      alert("This lead’s phone number isn’t valid.");
+      return;
+    }
+
+    // Prefer agent_profiles.phone; if missing, prompt once and save
+    let mine = toE164(myPhone || getLS());
+    if (!mine) {
+      const entered = prompt(
+        "Enter the phone number we should call you at first (your cell):",
+        ""
+      );
+      const n = toE164(entered || "");
+      if (!n) {
+        alert("That didn’t look like a valid number.");
+        return;
+      }
+      mine = n;
+      setMyPhone(n);
+      setLS(n);
+      // attempt to persist in agent_profiles for next time
+      persistAgentPhone(n);
+    }
+
     setBusy(true);
     try {
-      await placeCall({ agentPhone, leadNumber: number, contactId });
-      onStarted?.();
+      await startCall({
+        agentNumber: mine,
+        leadNumber: lead,
+        contactId: contactId || null,
+      });
+      // success → nothing else to do (webhook will create a call_log row)
     } catch (e) {
-      // errors already alerted above
+      alert(e?.message || "Couldn’t start the call.");
     } finally {
       setBusy(false);
     }
-  };
+  }
 
   return (
     <button
-      type="button"
-      onClick={handle}
+      onClick={onClick}
       disabled={busy}
-      className={[
-        "inline-grid place-items-center rounded-full border border-white/15 bg-white/10",
-        "hover:bg-white/15 transition disabled:opacity-60 disabled:cursor-not-allowed",
-        sizes[size] || sizes.sm,
-        className,
-      ].join(" ")}
-      title="Call"
+      className={`inline-flex items-center rounded-md border border-white/15 bg-white/5 px-2 py-1 text-xs hover:bg-white/10 ${className || ""}`}
+      title="Click to call (we'll ring your phone first)"
     >
-      {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Phone className="h-4 w-4" />}
+      {busy ? "Calling…" : "Call"}
     </button>
   );
 }
