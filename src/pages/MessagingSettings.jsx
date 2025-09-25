@@ -32,8 +32,9 @@ const DEFAULTS = {
   new_lead:
     "Hi {{first_name}}, it’s {{agent_name}} in {{state}}. I received your request listing {{beneficiary}} as beneficiary. Can I text you here to help? Reply STOP to opt out.",
 
+  // CHANGED: direct to a phone call instead of texting back
   new_lead_military:
-    "Hi {{first_name}}, it’s {{agent_name}}. I see your {{military_branch}} background and your request listing {{beneficiary}}. I can help review options—can I text you here? Reply STOP to opt out.",
+    "Hi {{first_name}}, it’s {{agent_name}}. I see your {{military_branch}} background and your request listing {{beneficiary}}. For options, please call me at {{agent_phone}}. Reply STOP to opt out.",
 
   appointment:
     "Hi {{first_name}}, it’s {{agent_name}}. Reminder for our appointment at {{appt_time}}. Reply YES to confirm or NO to reschedule. Reply STOP to opt out.",
@@ -495,7 +496,7 @@ export default function MessagingSettings() {
           <div className="min-w-0">
             <h3 className="text-sm font-semibold">Message Templates</h3>
             <p className="text-xs text-white/60 truncate">
-              Customize what’s sent for each event. Variables like <code className="px-1 rounded bg-white/10">{{'{first_name}'}}</code> are replaced automatically.
+              Customize what’s sent for each event. Variables like <code className="px-1 rounded bg-white/10">{"{{first_name}}"}</code> are replaced automatically.
             </p>
           </div>
 
