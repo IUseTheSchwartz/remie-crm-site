@@ -1,145 +1,224 @@
 // File: src/components/ClickToCall.jsx
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState, useCallback } from "react";
+import { Phone, PhoneOff, Mic, MicOff, Volume2, VolumeX } from "lucide-react";
 import { supabase } from "../lib/supabaseClient.js";
-import { toE164 } from "../lib/phone.js";
-import { startCall } from "../lib/calls.js";
 
-/* Share a couple of localStorage keys as a soft fallback */
-const LOCAL_KEYS = ["dialer_my_phone", "my_phone", "remie.myPhone"];
-const getLS = () => {
-  try {
-    for (const k of LOCAL_KEYS) {
-      const v = localStorage.getItem(k);
-      if (v && v.trim()) return v.trim();
-    }
-  } catch {}
-  return "";
-};
-const setLS = (val) => {
-  try {
-    for (const k of LOCAL_KEYS) localStorage.setItem(k, val || "");
-  } catch {}
-};
+// If your Dialer page already bundles @telnyx/webrtc, this will reuse it.
+// If not, we import here (tree-shakes fine in Vite).
+import { TelnyxRTC } from "@telnyx/webrtc";
 
-/** A tiny tel: link for displaying the number inline (optional) */
-export function PhoneLink({ number, className }) {
-  const n = String(number || "");
-  if (!n) return null;
-  const href = "tel:" + n.replace(/[^\d+]/g, "");
-  return (
-    <a href={href} className={className} title="Call using device dialer">
-      {n}
-    </a>
-  );
+/**
+ * ✅ How this works
+ * - If Dialer page has already created a Telnyx client, we reuse window.__telnyxClient.
+ * - If not, we create it once and stash it globally so both pages share it.
+ * - This ensures the Leads page behaves exactly like the Dialer page wrt audio.
+ */
+
+async function fetchSipCreds() {
+  // Reuse signed-in user
+  const { data: { user } } = await supabase.auth.getUser();
+  if (!user) throw new Error("Not signed in");
+
+  // Same tiny server function the Dialer page would use.
+  // If yours is named differently, just change this URL.
+  const resp = await fetch("/.netlify/functions/get-sip-creds", {
+    headers: { "x-user-id": user.id },
+  });
+  const json = await resp.json();
+  if (!json.ok) throw new Error(json.error || "Failed to load SIP creds");
+  return json; // { sip_username, sip_password, caller_id }
 }
 
-/** Click-to-call button that pulls the agent phone from agent_profiles.phone */
-export default function ClickToCall({ number, contactId, className }) {
-  const [busy, setBusy] = useState(false);
-  const [myPhone, setMyPhone] = useState("");
+async function ensureSharedClient() {
+  if (window.__telnyxClient && window.__telnyxReady) return window.__telnyxClient;
 
-  // 1) Load agent phone from agent_profiles on mount
+  const { sip_username, sip_password } = await fetchSipCreds();
+
+  // pre-warm mic (helps autoplay permissions)
+  await navigator.mediaDevices.getUserMedia({ audio: true });
+
+  const client = new TelnyxRTC({
+    login: sip_username,
+    password: sip_password,
+    // debug: true,
+  });
+
+  await new Promise((resolve, reject) => {
+    const onReady = () => {
+      window.__telnyxClient = client;
+      window.__telnyxReady = true;
+      client.off("telnyx.ready", onReady);
+      client.off("telnyx.error", onError);
+      resolve();
+    };
+    const onError = (e) => {
+      client.off("telnyx.ready", onReady);
+      client.off("telnyx.error", onError);
+      reject(new Error(e?.cause || "TelnyxRTC register failed"));
+    };
+    client.on("telnyx.ready", onReady);
+    client.on("telnyx.error", onError);
+    client.connect();
+  });
+
+  return client;
+}
+
+export default function ClickToCall({ toNumber, callerIdOverride, className }) {
+  const [status, setStatus] = useState("idle"); // idle | dialing | active | ended | error
+  const [muted, setMuted] = useState(false);
+  const [deaf, setDeaf] = useState(false);
+  const [err, setErr] = useState("");
+  const remoteAudioRef = useRef(null);
+  const localAudioRef = useRef(null);
+  const currentCallRef = useRef(null);
+  const [callerId, setCallerId] = useState(null);
+
+  // load default caller ID once
   useEffect(() => {
     (async () => {
       try {
-        const { data: auth } = await supabase.auth.getUser();
-        const uid = auth?.user?.id;
-        if (!uid) return;
-
-        const { data: row } = await supabase
-          .from("agent_profiles")
-          .select("phone")
-          .eq("user_id", uid)
-          .maybeSingle();
-
-        const p = row?.phone || getLS() || "";
-        if (p) {
-          setMyPhone(p);
-          setLS(p); // keep LS in sync for other pages/components
-        }
-      } catch {
-        // ignore — we’ll still fall back to LS or prompt on click
+        const creds = await fetchSipCreds();
+        setCallerId(callerIdOverride || creds.caller_id || null);
+      } catch (e) {
+        // don't block; we can still dial without explicit caller ID
+        console.warn("SIP creds fetch warning:", e);
       }
     })();
+  }, [callerIdOverride]);
+
+  const startCall = useCallback(async () => {
+    try {
+      setErr("");
+      setStatus("dialing");
+
+      // ✅ Reuse existing Telnyx client from Dialer page if present
+      const client =
+        (window.__telnyxClient && window.__telnyxReady && window.__telnyxClient) ||
+        (await ensureSharedClient());
+
+      // ensure audio elements are ready
+      if (remoteAudioRef.current) {
+        remoteAudioRef.current.autoplay = true;
+        remoteAudioRef.current.playsInline = true;
+        remoteAudioRef.current.muted = false;
+      }
+      if (localAudioRef.current) {
+        localAudioRef.current.autoplay = true;
+        localAudioRef.current.playsInline = true;
+        localAudioRef.current.muted = true; // avoid echo
+      }
+
+      const call = client.newCall({
+        destinationNumber: toNumber,           // E.164
+        callerNumber: callerId || undefined,   // your Telnyx DID
+        audio: { micId: null, speakerId: null }
+      });
+      currentCallRef.current = call;
+
+      call.on("stateChanged", (state) => {
+        if (state === "ringing") setStatus("dialing");
+        if (state === "active") setStatus("active");
+        if (state === "hangup" || state === "destroy") setStatus("ended");
+        if (state === "error") {
+          setErr("Call failed");
+          setStatus("error");
+        }
+      });
+
+      call.on("remoteStreamAdded", (ev) => {
+        if (remoteAudioRef.current) {
+          remoteAudioRef.current.srcObject = ev.stream;
+          remoteAudioRef.current.play().catch(() => {});
+        }
+      });
+      call.on("localStreamAdded", (ev) => {
+        if (localAudioRef.current) {
+          localAudioRef.current.srcObject = ev.stream;
+          localAudioRef.current.play().catch(() => {});
+        }
+      });
+
+      // Outbound flow transitions to active on answer
+      await call.answer();
+
+    } catch (e) {
+      console.error(e);
+      setErr(e.message || "Dial error");
+      setStatus("error");
+    }
+  }, [toNumber, callerId]);
+
+  const hangup = useCallback(() => {
+    try { currentCallRef.current?.hangup(); } catch {}
+    setStatus("ended");
   }, []);
 
-  // Save/Upsert agent phone back to agent_profiles for future
-  async function persistAgentPhone(e164) {
-    try {
-      const { data: auth } = await supabase.auth.getUser();
-      const uid = auth?.user?.id;
-      if (!uid) return;
+  const toggleMute = useCallback(() => {
+    const call = currentCallRef.current;
+    if (!call) return;
+    if (muted) { call.unmuteAudio(); } else { call.muteAudio(); }
+    setMuted(!muted);
+  }, [muted]);
 
-      // try update first
-      const { data: updated, error: upErr } = await supabase
-        .from("agent_profiles")
-        .update({ phone: e164 })
-        .eq("user_id", uid)
-        .select("user_id");
-
-      if (upErr) throw upErr;
-
-      // if no row existed, insert
-      if (!updated || updated.length === 0) {
-        const { error: insErr } = await supabase
-          .from("agent_profiles")
-          .insert({ user_id: uid, phone: e164 });
-        if (insErr) throw insErr;
-      }
-    } catch {
-      // if this fails we still proceed with the call; it just won't save
-    }
-  }
-
-  async function onClick() {
-    const lead = toE164(String(number || "").trim());
-    if (!lead) {
-      alert("This lead’s phone number isn’t valid.");
-      return;
-    }
-
-    // Prefer agent_profiles.phone; if missing, prompt once and save
-    let mine = toE164(myPhone || getLS());
-    if (!mine) {
-      const entered = prompt(
-        "Enter the phone number we should call you at first (your cell):",
-        ""
-      );
-      const n = toE164(entered || "");
-      if (!n) {
-        alert("That didn’t look like a valid number.");
-        return;
-      }
-      mine = n;
-      setMyPhone(n);
-      setLS(n);
-      // attempt to persist in agent_profiles for next time
-      persistAgentPhone(n);
-    }
-
-    setBusy(true);
-    try {
-      await startCall({
-        agentNumber: mine,
-        leadNumber: lead,
-        contactId: contactId || null,
-      });
-      // success → nothing else to do (webhook will create a call_log row)
-    } catch (e) {
-      alert(e?.message || "Couldn’t start the call.");
-    } finally {
-      setBusy(false);
-    }
-  }
+  const toggleDeaf = useCallback(() => {
+    if (!remoteAudioRef.current) return;
+    remoteAudioRef.current.muted = !deaf;
+    setDeaf(!deaf);
+  }, [deaf]);
 
   return (
-    <button
-      onClick={onClick}
-      disabled={busy}
-      className={`inline-flex items-center rounded-md border border-white/15 bg-white/5 px-2 py-1 text-xs hover:bg-white/10 ${className || ""}`}
-      title="Click to call (we'll ring your phone first)"
-    >
-      {busy ? "Calling…" : "Call"}
-    </button>
+    <div className={className || ""}>
+      {/* hidden audio elements that actually carry the media */}
+      <audio ref={remoteAudioRef} style={{ display: "none" }} />
+      <audio ref={localAudioRef} style={{ display: "none" }} />
+
+      {(status === "idle" || status === "ended" || status === "error") && (
+        <button
+          onClick={startCall}
+          className="inline-flex items-center gap-2 rounded-xl px-3 py-2 bg-emerald-600 text-white hover:bg-emerald-700"
+          title="Call"
+        >
+          <Phone size={16} /> Call
+        </button>
+      )}
+
+      {status === "dialing" && (
+        <div className="inline-flex items-center gap-2 text-amber-600">Dialing…</div>
+      )}
+
+      {status === "active" && (
+        <div className="inline-flex items-center gap-2">
+          <button
+            onClick={toggleMute}
+            className="inline-flex items-center gap-2 rounded-xl px-3 py-2 bg-slate-200 hover:bg-slate-300"
+            title={muted ? "Unmute" : "Mute"}
+          >
+            {muted ? <MicOff size={16} /> : <Mic size={16} />}
+          </button>
+          <button
+            onClick={toggleDeaf}
+            className="inline-flex items-center gap-2 rounded-xl px-3 py-2 bg-slate-200 hover:bg-slate-300"
+            title={deaf ? "Enable speaker" : "Mute speaker"}
+          >
+            {deaf ? <VolumeX size={16} /> : <Volume2 size={16} />}
+          </button>
+          <button
+            onClick={hangup}
+            className="inline-flex items-center gap-2 rounded-xl px-3 py-2 bg-rose-600 text-white hover:bg-rose-700"
+            title="Hang up"
+          >
+            <PhoneOff size={16} /> Hang up
+          </button>
+        </div>
+      )}
+
+      {err ? <div className="mt-1 text-xs text-rose-600">{err}</div> : null}
+    </div>
   );
+}
+
+/** Convenience wrapper you’re already using on LeadsPage */
+export function PhoneLink({ number, callerId }) {
+  return <ClickToCall toNumber={number} callerIdOverride={callerId} />;
 }
