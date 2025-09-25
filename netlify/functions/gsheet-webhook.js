@@ -290,6 +290,8 @@ async function trySendNewLeadText({ userId, leadId, contactId, lead }) {
     state: S(lead.state),
     beneficiary: beneficiary_name,
     beneficiary_name,
+
+    // >>> added so {{military_branch}}, {{branch}}, or {{service_branch}} work
     military_branch: S(lead.military_branch) || "",
     branch: S(lead.military_branch) || "",
     service_branch: S(lead.military_branch) || "",
@@ -319,7 +321,7 @@ async function trySendNewLeadText({ userId, leadId, contactId, lead }) {
     lead_id: leadId || null,
     provider: "telnyx",
     direction: "outgoing",
-    from_number: getFromNumber() || null,
+    from_number: FROM_NUMBER_ANY || null,
     to_number: to,
     body: text,
     status: "queued",
@@ -488,23 +490,24 @@ exports.handler = async (event) => {
           }
         } catch (err) { console.error("contact tag/meta sync (dedup) failed:", err); }
 
-        // <<< CHANGED: Do NOT send on the dedupe path (avoid parallel multi-send)
+        // Send only if not sent recently (prevents duplicate text)
+        let sendRes = null;
+        try {
+          sendRes = await trySendNewLeadText({
+            userId: wh.user_id,
+            leadId: dupId,
+            contactId,
+            lead,
+          });
+        } catch (e) { console.error("send (dedup) failed:", e); }
+
         await supabase
           .from("user_inbound_webhooks")
           .update({ last_used_at: new Date().toISOString() })
           .eq("id", webhookId);
 
-        console.log("[gsheet-webhook] dedupe path hit: skipping send to prevent duplicates");
-        return {
-          statusCode: 200,
-          body: JSON.stringify({
-            ok: true,
-            id: dupId,
-            deduped: true,
-            skipped: true,
-            reason: "duplicate_lead_no_send",
-          }),
-        };
+        console.log("[gsheet-webhook] sendRes (dedupe path):", JSON.stringify(sendRes));
+        return { statusCode: 200, body: JSON.stringify({ ok: true, id: dupId, deduped: true, send: sendRes }) };
       }
     }
 
@@ -512,15 +515,6 @@ exports.handler = async (event) => {
     const { data, error: insErr } = await supabase.from("leads").insert([lead]).select("id");
     if (insErr) {
       console.error("Insert error:", insErr);
-
-      // <<< CHANGED: Gracefully handle unique violation (no send)
-      if (insErr.code === "23505") {
-        return {
-          statusCode: 200,
-          body: JSON.stringify({ ok: true, skipped: true, reason: "duplicate_lead_insert" }),
-        };
-      }
-
       return { statusCode: 500, body: JSON.stringify({ ok: false, error: insErr }) };
     }
     const insertedId = data?.[0]?.id || null;
