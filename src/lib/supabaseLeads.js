@@ -60,20 +60,32 @@ function mergeRows(base, patch) {
   return out;
 }
 
-/** Find candidates by phone/email for this user (handles nulls safely) */
+/** Find candidates by phone/email for this user (handles nulls safely).
+ *  Email match is case-insensitive to align with unique index on lower(email).
+ */
 async function findLeadCandidates({ userId, phoneE164, email }) {
-  const ors = [];
-  if (phoneE164) ors.push(`phone.eq.${encodeURIComponent(phoneE164)}`);
-  if (email) ors.push(`email.eq.${encodeURIComponent(email)}`);
-  if (!ors.length) return [];
+  if (!phoneE164 && !email) return [];
 
-  const { data, error } = await supabase
+  let query = supabase
     .from("leads")
     .select("*")
     .eq("user_id", userId)
-    .or(ors.join(","))
     .order("created_at", { ascending: false });
 
+  if (phoneE164 && email) {
+    // phone exact OR email case-insensitive
+    query = query.or(
+      `phone.eq.${encodeURIComponent(phoneE164)},email.ilike.${encodeURIComponent(
+        email
+      )}`
+    );
+  } else if (phoneE164) {
+    query = query.eq("phone", phoneE164);
+  } else if (email) {
+    query = query.ilike("email", email);
+  }
+
+  const { data, error } = await query;
   if (error) throw error;
   return data || [];
 }
@@ -84,17 +96,40 @@ async function smartWriteLead(normalizedRow, { preferId } = {}) {
   const phoneE164 = normalizedRow.phone || null;
   const email = normalizedRow.email || null;
 
-  const candidates = await findLeadCandidates({ userId, phoneE164, email });
+  let candidates = await findLeadCandidates({ userId, phoneE164, email });
 
   if (candidates.length === 0) {
-    // INSERT new
-    const { data, error } = await supabase
-      .from("leads")
-      .insert([normalizedRow])
-      .select("id")
-      .single();
-    if (error) throw error;
-    return data.id;
+    // INSERT new; if duplicate-key occurs (due to unique (user_id, lower(email))),
+    // recover by re-fetching case-insensitively and then UPDATE instead.
+    try {
+      const { data, error } = await supabase
+        .from("leads")
+        .insert([normalizedRow])
+        .select("id")
+        .single();
+      if (error) throw error;
+      return data.id;
+    } catch (err) {
+      const msg = String(err?.message || err);
+      if (msg.includes("duplicate key value")) {
+        // Re-fetch candidates now that we know a conflict exists
+        candidates = await findLeadCandidates({ userId, phoneE164, email });
+        if (candidates.length) {
+          const target = candidates[0];
+          const merged = mergeRows(target, normalizedRow);
+          const { data: upd, error: uErr } = await supabase
+            .from("leads")
+            .update(merged)
+            .eq("user_id", userId)
+            .eq("id", target.id)
+            .select("id")
+            .single();
+          if (uErr) throw uErr;
+          return upd.id;
+        }
+      }
+      throw err;
+    }
   }
 
   // Choose a target row to keep
@@ -197,7 +232,7 @@ export async function updatePipelineServer(lead) {
     .update(patch)
     .eq("user_id", userId)
     .eq("id", target.id)
-    .select("id")
+    .select("id");
   if (error) throw error;
   return data?.[0]?.id || target.id;
 }
