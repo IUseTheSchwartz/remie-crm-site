@@ -1,4 +1,5 @@
-import { useEffect, useMemo, useState } from "react";
+// File: src/pages/DialerPage.jsx
+import { useEffect, useState, useRef } from "react";
 import {
   Phone,
   PhoneCall,
@@ -10,12 +11,13 @@ import {
   Sparkles,
   Shield,
   BadgeCheck,
+  CheckCircle2,
 } from "lucide-react";
 import { listMyNumbers, searchNumbersByAreaCode, purchaseNumber } from "../lib/numbers";
 import { startCall, listMyCallLogs } from "../lib/calls";
 import { supabase } from "../lib/supabaseClient";
 
-/** Small helpers */
+/* ------- small helpers ------- */
 const fmt = (s) => { try { return new Date(s).toLocaleString(); } catch { return s || ""; } };
 const normUS = (s) => {
   const d = String(s || "").replace(/\D+/g, "");
@@ -38,25 +40,77 @@ export default function DialerPage() {
   const [results, setResults] = useState([]);
   const [searching, setSearching] = useState(false);
 
+  // profile phone save state
+  const [savingPhone, setSavingPhone] = useState(false);
+  const [phoneSavedAt, setPhoneSavedAt] = useState(0);
+  const lastLoadedPhoneRef = useRef("");
+
   /* ---------- effects ---------- */
   useEffect(() => {
     refreshNumbers();
     refreshLogs();
-    primeAgentCell();
+    loadAgentPhone();
   }, []);
 
-  async function primeAgentCell() {
-    const { data } = await supabase.auth.getUser();
-    // adjust if you store the cell on your profile table
-    const phone = data?.user?.user_metadata?.phone || "";
+  async function loadAgentPhone() {
+    // Load from agent_profiles.phone
+    const { data: auth } = await supabase.auth.getUser();
+    const uid = auth?.user?.id;
+    if (!uid) return;
+
+    const { data: row } = await supabase
+      .from("agent_profiles")
+      .select("phone")
+      .eq("user_id", uid)
+      .maybeSingle();
+
+    const phone = row?.phone || "";
+    lastLoadedPhoneRef.current = phone;
     setAgentCell(phone);
   }
 
+  async function saveAgentPhoneIfChanged() {
+    const next = agentCell?.trim();
+    const prev = lastLoadedPhoneRef.current?.trim();
+    if (next === prev) return; // no change
+
+    const { data: auth } = await supabase.auth.getUser();
+    const uid = auth?.user?.id;
+    if (!uid) return;
+
+    setSavingPhone(true);
+    try {
+      // Try update first
+      const { data: updated, error: upErr } = await supabase
+        .from("agent_profiles")
+        .update({ phone: next || null })
+        .eq("user_id", uid)
+        .select("user_id");
+
+      if (upErr) throw upErr;
+
+      // If no row existed, insert one
+      if (!updated || updated.length === 0) {
+        const { error: insErr } = await supabase
+          .from("agent_profiles")
+          .insert({ user_id: uid, phone: next || null });
+        if (insErr) throw insErr;
+      }
+
+      lastLoadedPhoneRef.current = next || "";
+      setPhoneSavedAt(Date.now());
+    } catch (e) {
+      console.error("Failed to save phone", e);
+    } finally {
+      setSavingPhone(false);
+    }
+  }
+
   async function refreshNumbers() {
-    try { setMyNumbers(await listMyNumbers()); } catch { /* ignore */ }
+    try { setMyNumbers(await listMyNumbers()); } catch {}
   }
   async function refreshLogs() {
-    try { setLogs(await listMyCallLogs(100)); } catch { /* ignore */ }
+    try { setLogs(await listMyCallLogs(100)); } catch {}
   }
 
   /* ---------- actions ---------- */
@@ -67,8 +121,7 @@ export default function DialerPage() {
     setBusy(true);
     try {
       await startCall({ agentNumber: normUS(agentCell), leadNumber: normUS(toNumber) });
-      // give the webhook a moment to write logs
-      setTimeout(refreshLogs, 2000);
+      setTimeout(refreshLogs, 2000); // allow webhook to log
     } catch (e) {
       alert(e.message || "Failed to start call");
     } finally {
@@ -104,7 +157,6 @@ export default function DialerPage() {
     }
   }
 
-  /* ---------- computed ---------- */
   const hasNumber = myNumbers.length > 0;
 
   /* ---------- UI ---------- */
@@ -112,9 +164,12 @@ export default function DialerPage() {
     <div className="relative">
       {/* subtle hero gradient */}
       <div className="pointer-events-none absolute inset-0 -z-10">
-        <div className="absolute -top-24 left-1/2 h-72 w-[48rem] -translate-x-1/2 rounded-full blur-3xl opacity-40"
-             style={{ background:
-               "radial-gradient(40rem 20rem at 30% 30%, rgba(99,102,241,.35), transparent), radial-gradient(40rem 20rem at 70% 40%, rgba(217,70,239,.25), transparent)"}}
+        <div
+          className="absolute -top-24 left-1/2 h-72 w-[48rem] -translate-x-1/2 rounded-full blur-3xl opacity-40"
+          style={{
+            background:
+              "radial-gradient(40rem 20rem at 30% 30%, rgba(99,102,241,.35), transparent), radial-gradient(40rem 20rem at 70% 40%, rgba(217,70,239,.25), transparent)",
+          }}
         />
       </div>
 
@@ -144,16 +199,33 @@ export default function DialerPage() {
 
           <div className="grid gap-4 sm:grid-cols-5">
             <div className="sm:col-span-5">
-              <Label> Your phone (we call you first) </Label>
-              <Input
-                placeholder="+1 615 555 1234"
-                value={agentCell}
-                onChange={(e) => setAgentCell(e.target.value)}
-              />
+              <div className="flex items-end gap-2">
+                <div className="flex-1">
+                  <Label>Your phone (we call you first)</Label>
+                  <Input
+                    placeholder="+1 615 555 1234"
+                    value={agentCell}
+                    onChange={(e) => setAgentCell(e.target.value)}
+                    onBlur={saveAgentPhoneIfChanged} // auto-save on blur
+                  />
+                </div>
+                {/* save state */}
+                <div className="pb-1 text-xs min-w-[110px] text-right">
+                  {savingPhone ? (
+                    <span className="inline-flex items-center gap-1 text-white/70">
+                      <Loader2 className="h-3.5 w-3.5 animate-spin" /> Saving…
+                    </span>
+                  ) : phoneSavedAt ? (
+                    <span className="inline-flex items-center gap-1 text-emerald-300/80">
+                      <CheckCircle2 className="h-4 w-4" /> Saved
+                    </span>
+                  ) : null}
+                </div>
+              </div>
             </div>
 
             <div className="sm:col-span-4">
-              <Label> Number to call </Label>
+              <Label>Number to call</Label>
               <Input
                 placeholder="+1 615 555 9876"
                 value={toNumber}
@@ -173,7 +245,6 @@ export default function DialerPage() {
             </div>
           </div>
 
-          {/* quick tips */}
           {!hasNumber && (
             <div className="mt-4 flex items-center gap-2 rounded-xl border border-amber-300/20 bg-amber-100/10 px-3 py-2 text-amber-200">
               <Sparkles className="h-4 w-4" />
@@ -182,7 +253,7 @@ export default function DialerPage() {
           )}
         </section>
 
-        {/* right: my numbers card */}
+        {/* right: my numbers */}
         <section className="rounded-2xl border border-white/10 bg-white/5 backdrop-blur-xl p-5 shadow-[0_8px_30px_rgba(0,0,0,0.12)]">
           <div className="mb-3 flex items-center justify-between">
             <h2 className="text-lg font-medium">My numbers</h2>
@@ -196,9 +267,7 @@ export default function DialerPage() {
           </div>
 
           <div className="space-y-2">
-            {myNumbers.length === 0 && (
-              <EmptyCard text="No numbers yet." />
-            )}
+            {myNumbers.length === 0 && <EmptyCard text="No numbers yet." />}
 
             {myNumbers.map((n) => (
               <div
@@ -252,9 +321,7 @@ export default function DialerPage() {
                   <tr key={c.id} className="hover:bg-white/5">
                     <Td mono>{c.to_number}</Td>
                     <Td mono>{c.from_number}</Td>
-                    <Td>
-                      <StatusBadge status={c.status} />
-                    </Td>
+                    <Td><StatusBadge status={c.status} /></Td>
                     <Td>{fmt(c.started_at)}</Td>
                     <Td>{c.duration_seconds ? `${c.duration_seconds}s` : "-"}</Td>
                     <Td>
@@ -262,9 +329,7 @@ export default function DialerPage() {
                         <a className="underline" href={c.recording_url} target="_blank" rel="noreferrer">
                           Listen
                         </a>
-                      ) : (
-                        "-"
-                      )}
+                      ) : "-"}
                     </Td>
                   </tr>
                 ))}
@@ -295,14 +360,9 @@ export default function DialerPage() {
 
             <div className="grid gap-2 sm:grid-cols-2">
               {results.map((num) => (
-                <div
-                  key={num}
-                  className="flex items-center justify-between rounded-xl border border-white/10 bg-black/30 px-3 py-2"
-                >
+                <div key={num} className="flex items-center justify-between rounded-xl border border-white/10 bg-black/30 px-3 py-2">
                   <div className="font-mono">{num}</div>
-                  <Button onClick={() => buyNumber(num)} intent="secondary" size="sm">
-                    Buy
-                  </Button>
+                  <Button onClick={() => buyNumber(num)} intent="secondary" size="sm">Buy</Button>
                 </div>
               ))}
               {results.length === 0 && !searching && (
@@ -317,11 +377,9 @@ export default function DialerPage() {
 }
 
 /* ---------- tiny UI primitives (tailwind-only) ---------- */
-
 function Label({ children }) {
   return <label className="mb-1 block text-xs font-medium tracking-wide text-white/70">{children}</label>;
 }
-
 function Input(props) {
   return (
     <input
@@ -335,15 +393,10 @@ function Input(props) {
     />
   );
 }
-
 function Button({ children, intent = "primary", size = "md", className = "", ...rest }) {
   const base =
     "inline-flex items-center justify-center gap-2 rounded-xl transition disabled:opacity-60 disabled:cursor-not-allowed";
-  const sizes = {
-    sm: "px-3 py-1.5 text-sm",
-    md: "px-4 py-2",
-    lg: "px-5 py-3 text-base",
-  };
+  const sizes = { sm: "px-3 py-1.5 text-sm", md: "px-4 py-2", lg: "px-5 py-3 text-base" };
   const intents = {
     primary:
       "text-white bg-gradient-to-br from-indigo-500/90 to-fuchsia-500/90 hover:from-indigo-500 hover:to-fuchsia-500 shadow-lg shadow-fuchsia-500/10",
@@ -356,18 +409,8 @@ function Button({ children, intent = "primary", size = "md", className = "", ...
     </button>
   );
 }
-
-function Th({ children }) {
-  return <th className="px-3 py-2 text-left font-medium">{children}</th>;
-}
-function Td({ children, mono = false }) {
-  return (
-    <td className={`px-3 py-2 ${mono ? "font-mono" : ""}`}>
-      {children}
-    </td>
-  );
-}
-
+function Th({ children }) { return <th className="px-3 py-2 text-left font-medium">{children}</th>; }
+function Td({ children, mono = false }) { return <td className={`px-3 py-2 ${mono ? "font-mono" : ""}`}>{children}</td>; }
 function StatusBadge({ status }) {
   const s = (status || "").toLowerCase();
   const styles = {
@@ -380,8 +423,6 @@ function StatusBadge({ status }) {
   const cls = styles[s] || "bg-white/10 text-white/70";
   return <span className={`rounded-md px-2 py-0.5 text-xs ${cls}`}>{status || "-"}</span>;
 }
-
-/* very light-weight modal */
 function Modal({ title, children, onClose }) {
   return (
     <div className="fixed inset-0 z-50 grid place-items-center p-4">
@@ -398,14 +439,9 @@ function Modal({ title, children, onClose }) {
     </div>
   );
 }
-
 function EmptyCard({ text, compact = false }) {
   return (
-    <div
-      className={`rounded-xl border border-white/10 bg-black/20 text-sm text-white/60 ${
-        compact ? "px-3 py-2" : "px-4 py-3"
-      }`}
-    >
+    <div className={`rounded-xl border border-white/10 bg-black/20 text-sm text-white/60 ${compact ? "px-3 py-2" : "px-4 py-3"}`}>
       {text}
     </div>
   );
