@@ -22,40 +22,33 @@ const LOCKED_KEYS = new Set(["payment_reminder", "birthday_text", "holiday_text"
 /* Default enabled map: ALL OFF by default */
 const DEFAULT_ENABLED = Object.fromEntries(TEMPLATE_DEFS.map((t) => [t.key, false]));
 
-/* ---------------- Suggested defaults ---------------- */
+/* ---------------- Carrier-safe defaults ----------------
+   Notes:
+   - First-touch messages (new_lead / new_lead_military) have NO LINKS.
+   - Every template ends with “Reply STOP to opt out.”
+   - Keep messages short and conversational to reduce filtering.
+-------------------------------------------------------- */
 const DEFAULTS = {
   new_lead:
-    "Hi {{first_name}}, this is {{agent_name}}, a licensed life insurance broker in {{state}}. I just received the form you sent in to my office where you listed {{beneficiary}} as the beneficiary. If I’m unable to reach you or there’s a better time to get back to you, feel free to book an appointment with me here: {{calendly_link}} " +
-    "You can text me anytime at {{agent_phone}} (this business text line doesn’t accept calls).",
+    "Hi {{first_name}}, it’s {{agent_name}} in {{state}}. I received your request listing {{beneficiary}} as beneficiary. Can I text you here to help? Reply STOP to opt out.",
 
   new_lead_military:
-    "Hello {{first_name}}, this is {{agent_name}}, a licensed life insurance broker. I see you noted {{beneficiary}} as your beneficiary and your background with the {{military_branch}}. " +
-    "I handle coverage for service members and veterans directly. Let’s connect today to review your options and make sure everything is squared away. " +
-    "You can also set a time here: {{calendly_link}}. Text me at {{agent_phone}} (this business text line doesn’t accept calls).",
+    "Hi {{first_name}}, it’s {{agent_name}}. I see your {{military_branch}} background and your request listing {{beneficiary}}. I can help review options—can I text you here? Reply STOP to opt out.",
 
   appointment:
-    "Hi {{first_name}}, this is {{agent_name}}, a licensed life insurance broker. I’m just reminding you about our scheduled appointment at {{appt_time}}. Please reply YES to confirm or let me know if another time works better. You can also reschedule here: {{calendly_link}} " +
-    "You can text me at {{agent_phone}} (this business text line doesn’t accept calls).",
+    "Hi {{first_name}}, it’s {{agent_name}}. Reminder for our appointment at {{appt_time}}. Reply YES to confirm or NO to reschedule. Reply STOP to opt out.",
 
   sold:
-    "Hi {{first_name}}, this is {{agent_name}}. Congratulations on getting approved! 🎉 Here are the details of your new policy:\n" +
-    "• Carrier: {{carrier}}\n" +
-    "• Policy #: {{policy_number}}\n" +
-    "• Premium: ${{premium}}/mo\n" +
-    "If you have any questions or need assistance, feel free to reach out by text. " +
-    "You can text me at {{agent_phone}} (this business text line doesn’t accept calls).",
+    "Hi {{first_name}}, it’s {{agent_name}}. Your policy is active:\n• Carrier: {{carrier}}\n• Policy #: {{policy_number}}\n• Premium: ${{premium}}/mo\nQuestions? Text me here. Reply STOP to opt out.",
 
   payment_reminder:
-    "Hi {{first_name}}, this is {{agent_name}}. I’m reaching out to remind you that your policy payment is coming up soon. If your billing details have changed or you need assistance, please let me know so we can avoid any interruptions. " +
-    "Text me at {{agent_phone}} (this business text line doesn’t accept calls).",
+    "Hi {{first_name}}, it’s {{agent_name}}. Friendly reminder: your policy payment is coming up. Need anything updated? Text me here. Reply STOP to opt out.",
 
   birthday_text:
-    "Hi {{first_name}}, this is {{agent_name}}. I just wanted to wish you a very Happy Birthday! 🥳 Wishing you a wonderful year ahead. If you need anything related to your coverage, I’m always here to help. " +
-    "You can text me at {{agent_phone}} (this business text line doesn’t accept calls).",
+    "Hi {{first_name}}, it’s {{agent_name}}. Happy birthday! If you need anything with your coverage, text me here. Reply STOP to opt out.",
 
   holiday_text:
-    "Hi {{first_name}}, this is {{agent_name}}. I wanted to wish you and your family a happy holiday season. Thank you for trusting me as your agent — I’m always here if you need assistance. " +
-    "Text me anytime at {{agent_phone}} (this business text line doesn’t accept calls).",
+    "Hi {{first_name}}, it’s {{agent_name}}. Wishing you a happy holiday season. I’m here if you need anything for your coverage. Reply STOP to opt out.",
 };
 
 /* Small toggle (now supports disabled) */
@@ -502,7 +495,7 @@ export default function MessagingSettings() {
           <div className="min-w-0">
             <h3 className="text-sm font-semibold">Message Templates</h3>
             <p className="text-xs text-white/60 truncate">
-              Customize what’s sent for each event. Variables like <code className="px-1 rounded bg-white/10">{'{{first_name}}'}</code> are replaced automatically.
+              Customize what’s sent for each event. Variables like <code className="px-1 rounded bg-white/10">{{'{first_name}'}}</code> are replaced automatically.
             </p>
           </div>
 
@@ -762,6 +755,7 @@ export default function MessagingSettings() {
         <ul className="mt-2 list-disc space-y-1 pl-5 text-xs text-white/70">
           <li>Only text clients who have opted in or have an existing relationship.</li>
           <li>Include any disclosures your brand requires.</li>
+          <li>First-touch texts should avoid links; send links only after a reply.</li>
         </ul>
       </section>
     </div>
