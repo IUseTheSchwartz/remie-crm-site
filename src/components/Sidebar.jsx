@@ -17,6 +17,7 @@ import {
   LifeBuoy,
   Megaphone,
   Bot,
+  Phone,        // ← NEW for Dialer
   PhoneCall,
   BarChart3,
   Wrench,
@@ -49,19 +50,32 @@ const ICONS = {
   Pipeline: PipelineIcon,
   Messages: MessageSquare,
   Calendar: CalendarIcon,
+
+  // Productivity & Communication
+  Dialer: Phone,                 // ← NEW
   "Messaging Settings": SettingsIcon,
   Mailing: Megaphone,
   "AI Rebuttal Helper": Bot,
   "Call Recorder": PhoneCall,
-  Reports: BarChart3,
-  "Agent Tools": Wrench,
-  "View My Agent Site": Globe2,
-  "Edit Agent Site": Pencil,
-  "My Teams": Users,
   Contacts: Users,
   "Lead Rescue": LifeBuoy,
+
+  // Insights & Tools
+  Reports: BarChart3,
+  "Agent Tools": Wrench,
+
+  // Agent site
+  "View My Agent Site": Globe2,
+  "Edit Agent Site": Pencil,
+
+  // Teams
+  "My Teams": Users,
+
+  // Bottom
   Settings: SettingsIcon,
   Support: LifeBuoy,
+
+  // Admin
   "Admin Console": Shield, // ← NEW
 };
 
@@ -75,18 +89,12 @@ function ItemLink({ r, onNavigate }) {
       className={({ isActive }) =>
         [
           "group flex items-center gap-2 px-3 py-2 rounded-md transition",
-          isActive
-            ? "bg-white/10 text-white"
-            : "text-white/80 hover:bg-white/10 hover:text-white",
+          isActive ? "bg-white/10 text-white" : "text-white/80 hover:bg-white/10 hover:text-white",
         ].join(" ")
       }
     >
       {Icon ? (
-        <GradientStrokeIcon
-          Icon={Icon}
-          id={gradId}
-          className="w-4 h-4 shrink-0 transition group-hover:scale-105"
-        />
+        <GradientStrokeIcon Icon={Icon} id={gradId} className="w-4 h-4 shrink-0 transition group-hover:scale-105" />
       ) : (
         <span className="w-4" />
       )}
@@ -145,16 +153,16 @@ function ViewAgentSiteLink() {
         )
         .subscribe();
 
-      const onStorage = (e) => {
-        if (e.key === "agent_profile_refresh") fetchProfile();
-      };
-      window.addEventListener("storage", onStorage);
+    const onStorage = (e) => {
+      if (e.key === "agent_profile_refresh") fetchProfile();
+    };
+    window.addEventListener("storage", onStorage);
 
-      return () => {
-        isMounted = false;
-        try { supabase.removeChannel?.(channel); } catch {}
-        window.removeEventListener("storage", onStorage);
-      };
+    return () => {
+      isMounted = false;
+      try { supabase.removeChannel?.(channel); } catch {}
+      window.removeEventListener("storage", onStorage);
+    };
     })();
   }, []);
 
@@ -259,10 +267,7 @@ function SidebarContent({ onNavigate }) {
 
   // Inject Admin Console into bottom section only for admins
   const bottomItems = isAdmin
-    ? [
-        { key: "admin-console", path: "/app/admin", label: "Admin Console" },
-        ...sections.bottom,
-      ]
+    ? [{ key: "admin-console", path: "/app/admin", label: "Admin Console" }, ...sections.bottom]
     : sections.bottom;
 
   return (
