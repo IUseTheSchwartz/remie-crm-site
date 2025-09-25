@@ -13,18 +13,24 @@ function normUS(s) {
   return s || "";
 }
 
-export default function ClickToCall({ toNumber, className }) {
+/**
+ * Props:
+ * - toNumber (E.164 or US 10/11-digit)
+ * - variant: "icon" | "button" (default "button")
+ * - className: optional extra classes for wrapper
+ * - ariaLabel: optional for accessibility (defaults to "Call")
+ */
+export default function ClickToCall({ toNumber, variant = "button", className, ariaLabel }) {
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
   const [hasNumber, setHasNumber] = useState(false);
   const [agentCell, setAgentCell] = useState("");
   const lastLoadedPhoneRef = useRef("");
 
-  // Load agent phone & check ownership like DialerPage does
+  // Prefetch agent phone & owned numbers like DialerPage
   useEffect(() => {
     (async () => {
       try {
-        // agent phone
         const { data: auth } = await supabase.auth.getUser();
         const uid = auth?.user?.id;
         if (!uid) return;
@@ -39,11 +45,9 @@ export default function ClickToCall({ toNumber, className }) {
         lastLoadedPhoneRef.current = phone;
         setAgentCell(phone);
 
-        // numbers owned
         const mine = await listMyNumbers();
         setHasNumber((mine?.length || 0) > 0);
       } catch (e) {
-        // non-fatal; we'll surface specific errors on click
         console.warn("ClickToCall init warning:", e);
       }
     })();
@@ -61,7 +65,7 @@ export default function ClickToCall({ toNumber, className }) {
         agentNumber: normUS(agentCell),
         leadNumber: normUS(toNumber),
       });
-      // Optional: you could fire a toast here or refresh a small local log if you want.
+      // Let your webhook update logs; no UI change needed here.
     } catch (e) {
       setErr(e?.message || "Failed to start call");
     } finally {
@@ -69,23 +73,33 @@ export default function ClickToCall({ toNumber, className }) {
     }
   }, [agentCell, toNumber, hasNumber]);
 
+  const label = ariaLabel || "Call";
+
+  // Styles
+  const iconBtn =
+    "inline-grid place-items-center rounded-full border border-white/15 bg-white/10 hover:bg-white/15 " +
+    "h-8 w-8 text-white/90 disabled:opacity-60";
+  const fullBtn =
+    "inline-flex items-center gap-2 rounded-xl px-3 py-2 bg-emerald-600 text-white hover:bg-emerald-700 disabled:opacity-60";
+
   return (
     <div className={className || ""}>
       <button
         onClick={onClick}
         disabled={busy}
-        className="inline-flex items-center gap-2 rounded-xl px-3 py-2 bg-emerald-600 text-white hover:bg-emerald-700 disabled:opacity-60"
-        title="Call"
+        className={variant === "icon" ? iconBtn : fullBtn}
+        title={label}
+        aria-label={label}
       >
         {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Phone size={16} />}
-        <span>Call</span>
+        {variant === "button" ? <span>{label}</span> : null}
       </button>
       {err ? <div className="mt-1 text-xs text-rose-500">{err}</div> : null}
     </div>
   );
 }
 
-/** Compatibility wrapper you already use on LeadsPage */
-export function PhoneLink({ number }) {
-  return <ClickToCall toNumber={number} />;
+/** Compatibility wrapper used on LeadsPage */
+export function PhoneLink({ number, variant = "icon" }) {
+  return <ClickToCall toNumber={number} variant={variant} />;
 }
