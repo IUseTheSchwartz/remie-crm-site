@@ -134,10 +134,15 @@ export default function DialerPage() {
     if (!agentCell) return alert("Add your phone first (we call you there).");
     if (!toNumber) return alert("Enter a number to call.");
     if (myNumbers.length === 0) return alert("You don’t own any numbers yet. Buy one to place calls.");
+    if ((balanceCents || 0) < 1) return alert("You need at least $0.01 to place a call.");
+
     setBusy(true);
     try {
       await startCall({ agentNumber: normUS(agentCell), leadNumber: normUS(toNumber) });
-      setTimeout(refreshLogs, 2000); // allow webhook to log
+      // Allow webhook time to log (and compute billed_cents on short calls)
+      setTimeout(refreshLogs, 4000);
+      // If/when you start debiting wallets on call end, also re-pull balance here:
+      // setTimeout(refreshBalance, 4500);
     } catch (e) {
       alert(e.message || "Failed to start call");
     } finally {
@@ -207,6 +212,16 @@ export default function DialerPage() {
             <h1 className="text-2xl font-semibold tracking-tight">Dialer</h1>
             <p className="text-sm text-white/60">Local-presence calling with your owned numbers.</p>
           </div>
+
+          {/* NEW: balance + rate */}
+          <div className="ml-auto flex items-center gap-2 text-xs sm:text-sm">
+            <span className="rounded-lg border border-white/10 bg-white/10 px-2 py-1 font-mono">
+              Balance: {formatUSD(balanceCents)} ({balanceCents}¢)
+            </span>
+            <span className="rounded-lg border border-white/10 bg-white/10 px-2 py-1">
+              Rate: $0.01/min (per started min)
+            </span>
+          </div>
         </div>
       </header>
 
@@ -260,7 +275,7 @@ export default function DialerPage() {
             <div className="sm:col-span-1 flex items-end">
               <Button
                 onClick={onCall}
-                disabled={busy || !agentCell || !toNumber || !hasNumber}
+                disabled={busy || !agentCell || !toNumber || !hasNumber || (balanceCents || 0) < 1}
                 className="w-full"
               >
                 {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Phone className="h-4 w-4" />}
@@ -337,6 +352,7 @@ export default function DialerPage() {
                   <Th>Status</Th>
                   <Th>Started</Th>
                   <Th>Duration</Th>
+                  <Th>Charge</Th> {/* NEW */}
                   <Th>Recording</Th>
                 </tr>
               </thead>
@@ -348,6 +364,7 @@ export default function DialerPage() {
                     <Td><StatusBadge status={c.status} /></Td>
                     <Td>{fmt(c.started_at)}</Td>
                     <Td>{c.duration_seconds ? `${c.duration_seconds}s` : "-"}</Td>
+                    <Td>{typeof c.billed_cents === "number" ? formatUSD(c.billed_cents) : "-"}</Td> {/* NEW */}
                     <Td>
                       {c.recording_url ? (
                         <a className="underline" href={c.recording_url} target="_blank" rel="noreferrer">
@@ -475,6 +492,7 @@ function StatusBadge({ status }) {
     queued: "bg-sky-500/15 text-sky-300",
     ringing: "bg-amber-500/15 text-amber-300",
     answered: "bg-emerald-500/15 text-emerald-300",
+    bridged: "bg-emerald-500/15 text-emerald-300", // NEW (treat as active)
     completed: "bg-indigo-500/15 text-indigo-300",
     failed: "bg-rose-500/15 text-rose-300",
   };
