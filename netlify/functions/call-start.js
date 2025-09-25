@@ -1,12 +1,12 @@
-// netlify/functions/call-start-v2.js
+// netlify/functions/call-start.js
 // Dials the AGENT first from one of THEIR Telnyx DIDs (local presence).
-// Uses Telnyx Call Control Application *numeric* ID via `connection_id`.
+// Uses Telnyx Call Control Application ID via `connection_id`.
 
 const fetch = require("node-fetch");
 const { createClient } = require("@supabase/supabase-js");
 
 const TELNYX_API_KEY = process.env.TELNYX_API_KEY;
-const CALL_CONTROL_APP_ID = process.env.TELNYX_CALL_CONTROL_APP_ID; // e.g. 2791847680...
+const CALL_CONTROL_APP_ID = process.env.TELNYX_CALL_CONTROL_APP_ID; // numeric ID
 
 const SUPABASE_URL = process.env.SUPABASE_URL;
 const SUPABASE_SERVICE_ROLE_KEY =
@@ -39,7 +39,7 @@ exports.handler = async (event) => {
 
   const agent_id = String(body.agent_id || body.user_id || "").trim();
   const agent_number = String(body.agent_number || "").trim(); // user's cell
-  const lead_number = String(body.lead_number || "").trim(); // target
+  const lead_number = String(body.lead_number || "").trim();   // target
   const contact_id = body.contact_id || null;
 
   if (!agent_id) return bad(422, "agent_id required");
@@ -75,10 +75,10 @@ exports.handler = async (event) => {
     from_number: callerId,
   });
 
-  // IMPORTANT CHANGE: use `connection_id` (not call_control_app_id)
+  // ✅ IMPORTANT CHANGE: use connection_id (not call_control_app_id)
   const createPayload = {
     to: agent_number,
-    from: callerId, // MUST be their DID
+    from: callerId,
     connection_id: String(CALL_CONTROL_APP_ID),
     client_state,
     timeout_secs: 45,
@@ -95,7 +95,6 @@ exports.handler = async (event) => {
     });
     const j = await r.json().catch(() => ({}));
     if (!r.ok) {
-      // Return what we sent (minus secrets) so we can see it in the browser
       return bad(
         r.status,
         j?.errors?.[0]?.detail || j?.error || "Telnyx error",
