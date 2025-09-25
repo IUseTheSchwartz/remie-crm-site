@@ -19,6 +19,9 @@ const APPOINTMENT_KEY = "appointment";
 // Templates locked until those flows are ready
 const LOCKED_KEYS = new Set(["payment_reminder", "birthday_text", "holiday_text"]);
 
+/* Default enabled map: ALL OFF by default */
+const DEFAULT_ENABLED = Object.fromEntries(TEMPLATE_DEFS.map((t) => [t.key, false]));
+
 /* ---------------- Carrier-safe defaults ----------------
    Notes:
    - First-touch messages (new_lead / new_lead_military) have NO LINKS.
@@ -28,7 +31,7 @@ const DEFAULTS = {
   new_lead:
     "Hi {{first_name}}, it’s {{agent_name}} in {{state}}. I received your request listing {{beneficiary}} as beneficiary. Can I text you here to help?",
 
-  // CHANGED: direct to a phone call instead of texting back
+  // Direct to a phone call instead of texting back
   new_lead_military:
     "Hi {{first_name}}, it’s {{agent_name}}. I see your {{military_branch}} background and your request listing {{beneficiary}}. For options, please call me at {{agent_phone}}.",
 
@@ -134,7 +137,7 @@ export default function MessagingSettings() {
   const [saveState, setSaveState] = useState("idle");
   const saveTimer = useRef(null);
 
-  // Enabled map (per-template)
+  // Enabled map (per-template) — ensure DEFAULT_ENABLED exists before this
   const [enabledMap, setEnabledMap] = useState({ ...DEFAULT_ENABLED });
   const [enabledSaveState, setEnabledSaveState] = useState("idle");
   const enabledTimer = useRef(null);
@@ -358,7 +361,7 @@ export default function MessagingSettings() {
     enabledTimer.current = setTimeout(() => persistEnabled(next), 500);
   }
 
-  /* -------- Stripe top-up (replaces PayPal) -------- */
+  /* -------- Stripe top-up -------- */
   async function startStripeTopUp({ userId, netTopUpCents, clientRef, coverFees = true, returnTo }) {
     const res = await fetch("/.netlify/functions/create-checkout-session", {
       method: "POST",
