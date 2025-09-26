@@ -22,13 +22,11 @@ function toE164(s) {
 
 // ---- auth helper ----
 async function resolveUserId(event, parsedBody) {
-  // 1) Normal Authorization: Bearer <jwt>
   try {
     const u = await getUserFromRequest(event);
     if (u?.id) return { user_id: u.id, via: "auth_header" };
   } catch {}
 
-  // 2) x-supabase-auth (fallback we send from the client)
   try {
     const token =
       event.headers["x-supabase-auth"] ||
@@ -43,11 +41,9 @@ async function resolveUserId(event, parsedBody) {
     }
   } catch {}
 
-  // 3) last resort
   if (parsedBody?.user_id) {
     return { user_id: String(parsedBody.user_id), via: "body_user_id" };
   }
-
   return { user_id: null, via: "none" };
 }
 
@@ -69,8 +65,19 @@ async function telnyxOrder({ apiKey, phone_id, e164 }) {
   return { ok: res.ok, status: res.status, data };
 }
 
+async function telnyxGetAvailById({ apiKey, avail_id }) {
+  const res = await fetch(
+    `https://api.telnyx.com/v2/available_phone_numbers/${encodeURIComponent(
+      avail_id
+    )}`,
+    { method: "GET", headers: { Authorization: `Bearer ${apiKey}` } }
+  );
+  const data = await res.json().catch(() => ({}));
+  return { ok: res.ok, status: res.status, data };
+}
+
 // Poll the inventory until the newly purchased number shows up with an ID
-async function telnyxFindIdByNumber({ apiKey, e164, tries = 8, delayMs = 800 }) {
+async function telnyxFindIdByNumber({ apiKey, e164, tries = 10, delayMs = 900 }) {
   for (let i = 0; i < tries; i++) {
     const url = new URL("https://api.telnyx.com/v2/phone_numbers");
     url.searchParams.set("filter[phone_number]", e164);
@@ -81,13 +88,12 @@ async function telnyxFindIdByNumber({ apiKey, e164, tries = 8, delayMs = 800 }) 
     });
     const data = await res.json().catch(() => ({}));
 
-    const id = data?.data?.[0]?.id;
-    if (id) return id;
+    const row = data?.data?.[0];
+    if (row?.id) return { id: row.id, phone_number: row.phone_number };
 
-    // slight backoff
     await new Promise((r) => setTimeout(r, delayMs));
   }
-  return null;
+  return { id: null, phone_number: null };
 }
 
 async function telnyxAssignProfile({ apiKey, phone_id, messaging_profile_id }) {
@@ -125,29 +131,35 @@ exports.handler = async (event) => {
     if (!TELNYX_API_KEY) return json({ error: "TELNYX_API_KEY missing" }, 500);
     if (!MESSAGING_PROFILE_ID) return json({ error: "TELNYX_MESSAGING_PROFILE_ID missing" }, 500);
 
-    // Accept either id or phone_number
-    const telnyx_phone_id = String(
+    // Accept either available-number id OR a phone_number (E.164)
+    const avail_id = String(
       body.telnyx_phone_id || body.phone_number_id || body.id || ""
     ).trim();
 
     const raw = String(body.e164 || body.phone_number || body.number || "").trim();
-    const e164 = toE164(raw);
+    let e164 = toE164(raw);
 
-    if (!telnyx_phone_id && !e164) {
+    if (!avail_id && !e164) {
       return json(
         {
           error: "missing_params",
-          detail: "Provide telnyx_phone_id (or id) OR e164 (or phone_number).",
+          detail: "Provide available-number id (telnyx_phone_id/id) OR e164 (phone_number).",
           received_keys: Object.keys(body || {}),
         },
         400
       );
     }
 
-    // 1) Order the number
+    // If we only received the available-number id, try to fetch its phone_number pre-order.
+    if (!e164 && avail_id) {
+      const avail = await telnyxGetAvailById({ apiKey: TELNYX_API_KEY, avail_id });
+      e164 = toE164(avail?.data?.data?.phone_number || "");
+    }
+
+    // 1) Order the number (by id if present, else by e164)
     const order = await telnyxOrder({
       apiKey: TELNYX_API_KEY,
-      phone_id: telnyx_phone_id || null,
+      phone_id: avail_id || null,
       e164: e164 || null,
     });
     if (!order.ok) {
@@ -156,43 +168,48 @@ exports.handler = async (event) => {
 
     // Work out the final phone id + number
     let finalPhoneId =
-      telnyx_phone_id ||
-      order.data?.data?.phone_numbers?.[0]?.id ||
-      null;
+      order.data?.data?.phone_numbers?.[0]?.id || null;
     let finalE164 =
       e164 ||
       order.data?.data?.phone_numbers?.[0]?.phone_number ||
       null;
 
-    // If id missing, poll inventory by phone number
+    // If we still don't have the E.164 (Telnyx sometimes omits it), try the available-number lookup again.
+    if (!finalE164 && avail_id) {
+      const avail2 = await telnyxGetAvailById({ apiKey: TELNYX_API_KEY, avail_id });
+      finalE164 = toE164(avail2?.data?.data?.phone_number || "");
+    }
+
+    // If id missing, poll inventory using the number we ordered
     if (!finalPhoneId) {
       if (!finalE164) {
         return json(
           {
             error: "missing_phone_id_after_order",
             detail:
-              "Order succeeded but no id returned; also couldn't infer phone number to look up.",
+              "Order succeeded but number not returned, and could not infer E.164 for lookup.",
             telnyx_response_snippet: JSON.stringify(order.data).slice(0, 400),
           },
           502
         );
       }
-      const lookedUpId = await telnyxFindIdByNumber({
+      const looked = await telnyxFindIdByNumber({
         apiKey: TELNYX_API_KEY,
         e164: finalE164,
       });
-      if (!lookedUpId) {
+      if (!looked.id) {
         return json(
           {
             error: "missing_phone_id_after_order",
             detail:
               "Could not resolve phone_number_id after ordering (poll timed out).",
-            telnyx_response_snippet: JSON.stringify(order.data).slice(0, 400),
+            lookup_for: finalE164,
           },
           502
         );
       }
-      finalPhoneId = lookedUpId;
+      finalPhoneId = looked.id;
+      finalE164 = finalE164 || looked.phone_number;
     }
 
     // 2) Assign the messaging profile
@@ -204,9 +221,7 @@ exports.handler = async (event) => {
     if (!assign.ok) {
       return json({ error: "telnyx_assign_profile_failed", detail: assign.data }, 502);
     }
-    if (!finalE164) {
-      finalE164 = assign.data?.data?.phone_number || finalE164;
-    }
+    if (!finalE164) finalE164 = assign.data?.data?.phone_number || finalE164;
 
     // 3) Save to DB
     const db = getServiceClient();
