@@ -24,6 +24,8 @@ const FREE_NUMBERS = 5;                  // first 5 numbers are free
 const COST_PER_SEGMENT_CENTS =
   Number(import.meta.env?.VITE_COST_PER_SEGMENT_CENTS ?? 1); // default 1¢ per started min
 
+const rateLabel = `$${(COST_PER_SEGMENT_CENTS / 100).toFixed(2)}/min (per started min)`;
+
 const fmt = (s) => { try { return new Date(s).toLocaleString(); } catch { return s || ""; } };
 const normUS = (s) => {
   const d = String(s || "").replace(/\D+/g, "");
@@ -57,18 +59,13 @@ export default function DialerPage() {
   const [phoneSavedAt, setPhoneSavedAt] = useState(0);
   const lastLoadedPhoneRef = useRef("");
 
-  // 🔴 New: global recording toggle (persisted)
-  const [recordEnabled, setRecordEnabled] = useState(
-    JSON.parse(localStorage.getItem("recordEnabled") || "false")
-  );
+  // 🔊 recording preference (from call_recording_settings)
+  const [recordEnabled, setRecordEnabled] = useState(false);
+  const [savingRecordPref, setSavingRecordPref] = useState(false);
 
   /* ---------- computed ---------- */
   const freebiesLeft = Math.max(0, FREE_NUMBERS - (myNumbers?.length || 0));
   const hasNumber = (myNumbers?.length || 0) > 0;
-
-  // Rate pill reflects current toggle (UI only)
-  const ratePerMinLabelCents = recordEnabled ? COST_PER_SEGMENT_CENTS * 2 : COST_PER_SEGMENT_CENTS;
-  const rateLabel = `$${(ratePerMinLabelCents / 100).toFixed(2)}/min (per started min)`;
 
   /* ---------- effects ---------- */
   useEffect(() => {
@@ -76,12 +73,8 @@ export default function DialerPage() {
     refreshLogs();
     loadAgentPhone();
     refreshBalance();
+    loadRecordingPref();
   }, []);
-
-  // persist recording toggle
-  useEffect(() => {
-    localStorage.setItem("recordEnabled", JSON.stringify(!!recordEnabled));
-  }, [recordEnabled]);
 
   async function refreshBalance() {
     try {
@@ -140,6 +133,40 @@ export default function DialerPage() {
     }
   }
 
+  async function loadRecordingPref() {
+    try {
+      const { data: auth } = await supabase.auth.getUser();
+      const uid = auth?.user?.id;
+      if (!uid) return;
+      const { data } = await supabase
+        .from("call_recording_settings")
+        .select("record_outbound_enabled")
+        .eq("user_id", uid)
+        .maybeSingle();
+      setRecordEnabled(!!data?.record_outbound_enabled);
+    } catch (e) {
+      console.error("load record pref failed:", e);
+    }
+  }
+
+  async function saveRecordingPref(checked) {
+    try {
+      setSavingRecordPref(true);
+      const { data: auth } = await supabase.auth.getUser();
+      const uid = auth?.user?.id;
+      if (!uid) return;
+      await supabase
+        .from("call_recording_settings")
+        .upsert({ user_id: uid, record_outbound_enabled: !!checked });
+      setRecordEnabled(!!checked);
+    } catch (e) {
+      console.error("save record pref failed:", e);
+      // revert optimistic UI if needed
+    } finally {
+      setSavingRecordPref(false);
+    }
+  }
+
   async function refreshNumbers() {
     try { setMyNumbers(await listMyNumbers()); } catch {}
   }
@@ -154,11 +181,7 @@ export default function DialerPage() {
     if (!hasNumber) return alert("You don’t own any numbers yet. Buy one to place calls.");
     setBusy(true);
     try {
-      await startCall({
-        agentNumber: normUS(agentCell),
-        leadNumber: normUS(toNumber),
-        record: !!recordEnabled, // 🔴 pass recording flag so Leads-page clicks follow this too
-      });
+      await startCall({ agentNumber: normUS(agentCell), leadNumber: normUS(toNumber) });
       setTimeout(refreshLogs, 2000); // allow webhook to log
     } catch (e) {
       alert(e.message || "Failed to start call");
@@ -227,14 +250,27 @@ export default function DialerPage() {
         />
       </div>
 
-      {/* top pills: Balance + Rate */}
-      <div className="mb-3 flex items-center justify-end gap-2 text-xs">
+      {/* top pills: Balance + Rate + Recording toggle */}
+      <div className="mb-3 flex flex-wrap items-center justify-end gap-2 text-xs">
         <span className="rounded-md border border-white/10 bg-white/10 px-2 py-1">
           Balance: {formatUSD(balanceCents)} ({balanceCents}¢)
         </span>
         <span className="rounded-md border border-white/10 bg-white/10 px-2 py-1">
           Rate: {rateLabel}
         </span>
+
+        <label className="inline-flex items-center gap-2 rounded-md border border-white/10 bg-white/10 px-2 py-1 cursor-pointer">
+          <input
+            type="checkbox"
+            checked={recordEnabled}
+            onChange={(e) => saveRecordingPref(e.target.checked)}
+            disabled={savingRecordPref}
+          />
+          <span>
+            Record calls {recordEnabled ? "(2¢/min)" : "(1¢/min)"}
+          </span>
+          {savingRecordPref ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : null}
+        </label>
       </div>
 
       {/* header */}
@@ -306,21 +342,6 @@ export default function DialerPage() {
                 {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Phone className="h-4 w-4" />}
                 <span>Call</span>
               </Button>
-            </div>
-
-            {/* 🔴 Recording toggle applies globally (saved to localStorage) */}
-            <div className="sm:col-span-5 -mt-2">
-              <label className="inline-flex items-center gap-2 text-sm">
-                <input
-                  type="checkbox"
-                  checked={recordEnabled}
-                  onChange={(e) => setRecordEnabled(e.target.checked)}
-                />
-                <span>
-                  Record calls (applies to Dialer & Leads). Rate becomes{" "}
-                  {`$${((COST_PER_SEGMENT_CENTS * 2) / 100).toFixed(2)}`}/min when enabled.
-                </span>
-              </label>
             </div>
           </div>
 
@@ -410,14 +431,8 @@ export default function DialerPage() {
                 {logs.map((c) => {
                   const status = (c.status || "").toLowerCase();
                   const billable = status === "completed" || status === "answered" || status === "bridged";
-                  const segments = billable && c.duration_seconds > 0
-                    ? startedMinuteSegments(c.duration_seconds)
-                    : 0;
-
-                  // If a recording_url exists for this call, assume recording was ON → double rate for that row
-                  const factor = c.recording_url ? 2 : 1;
-                  const cents = billable && segments > 0
-                    ? segments * COST_PER_SEGMENT_CENTS * factor
+                  const cents = billable && c.duration_seconds > 0
+                    ? startedMinuteSegments(c.duration_seconds) * COST_PER_SEGMENT_CENTS
                     : null;
 
                   return (
@@ -430,7 +445,7 @@ export default function DialerPage() {
                       <Td>{cents != null ? formatUSD(cents) : "-"}</Td>
                       <Td>
                         {c.recording_url ? (
-                          <a className="underline" href={c.recording_url} target="_blank" rel="noreferrer">
+                          <a className="underline" href={c.recording_url} target="_blank" rel="noreferrer" download={`call-${c.id || "recording"}.mp3`}>
                             Listen
                           </a>
                         ) : "-"}
