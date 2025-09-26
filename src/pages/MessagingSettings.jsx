@@ -87,6 +87,15 @@ function fillTemplate(text, data) {
   });
 }
 
+/* Format +1AAA BBB CCCC nicely for display (very small helper, no deps) */
+function prettyE164(e164) {
+  const s = String(e164 || "");
+  const m = s.match(/^\+1?(\d{10})$/);
+  if (!m) return s || "";
+  const d = m[1];
+  return `+1 (${d.slice(0,3)}) ${d.slice(3,6)}-${d.slice(6)}`;
+}
+
 /* Default test values shown in the preview form */
 const DEFAULT_TEST_DATA = {
   first_name: "Jacob",
@@ -148,7 +157,7 @@ export default function MessagingSettings() {
     calendly_link: "",
   });
 
-  // --- NEW: Toll-Free Number UI state ---
+  // --- Toll-Free Number UI state ---
   const [tfnModalOpen, setTfnModalOpen] = useState(false);
   const [myTFN, setMyTFN] = useState(null);
 
@@ -443,7 +452,7 @@ export default function MessagingSettings() {
       {/* Header */}
       <header className="rounded-2xl border border-white/10 bg-white/[0.03] p-4">
         <h1 className="text-lg font-semibold">Messaging Settings</h1>
-        <p className="mt-1 text-sm text-white/70">Manage your text balance and message templates.</p>
+        <p className="mt-1 text-sm text-white/70">Manage your text balance, toll-free number, and message templates.</p>
       </header>
 
       {/* Wallet block */}
@@ -490,7 +499,7 @@ export default function MessagingSettings() {
         </div>
       </section>
 
-      {/* NEW: Toll-Free Number (per-agent) */}
+      {/* Toll-Free Number (per-agent) */}
       <section className="rounded-2xl border border-white/10 bg-white/[0.03] p-4">
         <div className="mb-2 flex items-center justify-between">
           <div>
@@ -511,9 +520,25 @@ export default function MessagingSettings() {
         </div>
 
         <div className="rounded-lg border border-white/10 bg-white/[0.02] p-3 text-sm">
-          <div className="text-white/70">
-            Current: <span className="font-semibold">{myTFN || "None selected (using shared line)"}</span>
-          </div>
+          {myTFN ? (
+            <div className="flex items-center justify-between">
+              <div className="text-white/80">
+                Current: <span className="font-semibold">{prettyE164(myTFN)}</span>
+              </div>
+              <span className="rounded-md border border-emerald-400/30 bg-emerald-400/10 px-2 py-0.5 text-[11px] text-emerald-300">
+                Active
+              </span>
+            </div>
+          ) : (
+            <div className="space-y-1">
+              <div className="text-white/80">
+                Current: <span className="font-semibold">None selected</span>
+              </div>
+              <div className="text-[12px] text-amber-300">
+                Messaging is <b>disabled</b> until you choose a toll-free number.
+              </div>
+            </div>
+          )}
         </div>
       </section>
 
@@ -694,7 +719,7 @@ export default function MessagingSettings() {
           </aside>
         )}
 
-        {/* NEW: Test Preview Panel */}
+        {/* Test Preview Panel */}
         {testOpen && (
           <aside
             className="fixed bottom-0 left-0 right-0 z-50 mx-auto w-full max-w-5xl rounded-t-2xl border border-white/10 bg-[#0b0b12] p-4 shadow-2xl"
