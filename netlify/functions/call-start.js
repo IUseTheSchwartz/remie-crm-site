@@ -237,6 +237,7 @@ exports.handler = async (event) => {
   const agent_number = String(body.agent_number || "").trim(); // agent cell
   const lead_number = String(body.lead_number || "").trim();   // target
   const contact_id = body.contact_id || null;
+  const record = !!body.record; // ⬅️ optional recording flag from UI
 
   if (!agent_id) return bad(422, "agent_id required");
   if (!isE164(agent_number)) return bad(422, "agent_number must be E.164");
@@ -262,7 +263,7 @@ exports.handler = async (event) => {
   const callerId = pickBestCallerId({ leadNPA, owned: nums });
   if (!callerId) return bad(400, "Could not choose a caller ID");
 
-  // Client state tells the webhook what to do next, including ringback + B timeout
+  // Client state tells the webhook what to do next (ringback, B-leg timeout, and recording)
   const client_state = b64({
     kind: "crm_outbound",
     user_id: agent_id,
@@ -272,8 +273,9 @@ exports.handler = async (event) => {
     from_number: callerId,
     lead_npa: leadNPA,
     lead_state: stateFromAreaCode(leadNPA),
-    ringback_url: RINGBACK_URL || null,   // optional; webhook will skip if null/empty
-    b_timeout_secs: 25                    // dial B-leg for up to ~25s, then bail
+    ringback_url: RINGBACK_URL || null,   // optional; webhook can skip if null/empty
+    b_timeout_secs: 25,                   // dial B-leg for up to ~25s, then bail
+    record,                               // ⬅️ webhook will start recording if true
   });
 
   const createPayload = {
@@ -282,6 +284,8 @@ exports.handler = async (event) => {
     connection_id: String(CALL_CONTROL_APP_ID),
     client_state,
     timeout_secs: 45,
+    // NOTE: Telnyx recording is typically started via /actions/record_start after answer.
+    // We do NOT set any non-standard 'recording' property here to avoid API errors.
   };
 
   try {
