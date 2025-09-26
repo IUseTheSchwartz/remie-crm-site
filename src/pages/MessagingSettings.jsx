@@ -4,6 +4,27 @@ import { supabase } from "../lib/supabaseClient";
 import { CreditCard, Check, Loader2, MessageSquare, Info, RotateCcw, Lock } from "lucide-react";
 import TFNPickerModal from "../components/NumberPicker/TFNPickerModal.jsx";
 
+/** ------------- NEW: call backend function and surface full errors in browser ------------- */
+async function tfnSelect(userId, payload) {
+  const res = await fetch("/.netlify/functions/tfn-select", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ user_id: userId, ...payload }),
+  });
+
+  const text = await res.text();
+  let json;
+  try { json = JSON.parse(text); } catch { json = { parse_error: true, raw: text }; }
+
+  if (!res.ok || json?.error) {
+    console.error("[tfn-select error]", { status: res.status, json });
+    throw new Error(json?.error || `HTTP_${res.status}`);
+  }
+  console.log("[tfn-select ok]", json);
+  return json;
+}
+/** ----------------------------------------------------------------------------------------- */
+
 /* ---------------- Template Catalog (appointment removed) ---------------- */
 const TEMPLATE_DEFS = [
   { key: "new_lead", label: "New Lead (instant)" },
@@ -813,7 +834,37 @@ export default function MessagingSettings() {
         <TFNPickerModal
           userId={userId}
           onClose={() => setTfnModalOpen(false)}
-          onPicked={(num) => setMyTFN(num)}
+          /** ------------- CHANGED: actually assigns via backend then updates UI ------------- */
+          onPicked={async (picked) => {
+            try {
+              if (!userId) throw new Error("Not signed in");
+
+              // Support a few shapes coming from the modal:
+              // string => phone number; object may include e164/phone_number or telnyx_phone_id/id
+              let payload = {};
+              if (typeof picked === "string") {
+                payload = { phone_number: picked };
+              } else if (picked && typeof picked === "object") {
+                if (picked.e164 || picked.phone_number) {
+                  payload = { phone_number: picked.e164 || picked.phone_number };
+                } else if (picked.telnyx_phone_id || picked.id) {
+                  payload = { telnyx_phone_id: picked.telnyx_phone_id || picked.id };
+                }
+              }
+
+              if (!payload.phone_number && !payload.telnyx_phone_id) {
+                throw new Error("No number selected.");
+              }
+
+              const resp = await tfnSelect(userId, payload);
+              setMyTFN(resp?.e164 || payload.phone_number || null);
+              setTfnModalOpen(false);
+            } catch (err) {
+              console.error("TFN select failed", err);
+              alert(err.message || "Failed to select number. Check Console → Network for details.");
+            }
+          }}
+          /** ------------------------------------------------------------------------------- */
         />
       )}
     </div>
