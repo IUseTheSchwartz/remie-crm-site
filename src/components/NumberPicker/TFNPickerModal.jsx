@@ -1,182 +1,151 @@
 // File: src/components/NumberPicker/TFNPickerModal.jsx
 import { useEffect, useMemo, useState } from "react";
 import { supabase } from "../../lib/supabaseClient";
-import { X, ChevronLeft, ChevronRight, AlertTriangle, Check, Loader2 } from "lucide-react";
+import { Loader2, X } from "lucide-react";
 
-const TFN_PREFIXES = ["833", "844", "855", "866", "877", "888"]; // 800 removed
+const PREFIXES = ["833","844","855","866","877","888"]; // 🚫 no 800
 
-function cls(...xs) { return xs.filter(Boolean).join(" "); }
-
-export default function TFNPickerModal({ userId, onPicked, onClose }) {
-  const [prefix, setPrefix] = useState(TFN_PREFIXES[0]);
-  const [page, setPage] = useState(1);
-  const [limit] = useState(30);
-  const [items, setItems] = useState([]);
-  const [meta, setMeta] = useState(null);
+export default function TFNPickerModal({ userId, onClose, onPicked }) {
+  const [prefix, setPrefix] = useState("833");
   const [loading, setLoading] = useState(false);
-  const [selecting, setSelecting] = useState(null);
-  const [error, setError] = useState(null);
+  const [items, setItems] = useState([]);
+  const [page, setPage] = useState(1);
+  const [err, setErr] = useState("");
 
-  async function fetchPage({ pfx = prefix, pg = page }) {
+  const title = useMemo(() => `Choose a Toll-Free Number (${prefix})`, [prefix]);
+
+  async function load() {
+    setErr("");
     setLoading(true);
-    setError(null);
     try {
-      const qs = new URLSearchParams({ prefix: pfx, page: String(pg), limit: String(limit) });
-      const res = await fetch(`/.netlify/functions/tfn-search?` + qs.toString(), { method: "GET" });
+      const res = await fetch(`/.netlify/functions/tfn-search?prefix=${encodeURIComponent(prefix)}&limit=30&page=${page}`);
       const data = await res.json();
-      if (!res.ok || data.error) {
-        setError(data.error || `Search failed (${res.status})`);
-        setItems([]);
-        setMeta(null);
-        return;
-      }
-
-      // Client-side guard too: only +1{prefix} and never +1800
-      const cleaned = (Array.isArray(data.items) ? data.items : []).filter((n) => {
-        const pn = String(n.phone_number || "");
-        if (!pn.startsWith(`+1${pfx}`)) return false;
-        if (pn.startsWith("+1800")) return false;
-        return true;
-      });
-
-      setItems(cleaned);
-      setMeta(data.meta || null);
+      if (!res.ok || data?.error) throw new Error(data?.error || "Search failed");
+      setItems(data.items || []);
     } catch (e) {
-      setError(e.message || "Search failed");
+      setErr(e.message || "Failed to load numbers");
       setItems([]);
-      setMeta(null);
     } finally {
       setLoading(false);
     }
   }
 
-  useEffect(() => { setPage(1); fetchPage({ pfx: prefix, pg: 1 }); }, [prefix]);
-  useEffect(() => { fetchPage({ pfx: prefix, pg: page }); }, [page]); // page change for same prefix
-
-  const canPrev = page > 1;
-  const canNext = useMemo(() => {
-    if (!meta || !meta.total_pages) return true;
-    return page < (meta.total_pages || 9999);
-  }, [meta, page]);
+  useEffect(() => { load(); /* eslint-disable-next-line */ }, [prefix, page]);
 
   async function selectNumber(n) {
+    setErr("");
     try {
-      setError(null);
-      setSelecting(n.phone_number);
-
+      // Get current session token for backend auth
       const { data: sessionData } = await supabase.auth.getSession();
-      const jwt = sessionData?.session?.access_token || null;
+      const token = sessionData?.session?.access_token || null;
 
-      const res = await fetch("/.netlify/functions/tfn-select", {
+      const res = await fetch("/.netlify/functions/tfn-order", {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          ...(jwt ? { Authorization: `Bearer ${jwt}`, "X-Supabase-Auth": jwt } : {}),
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
         },
         body: JSON.stringify({
-          e164: n.phone_number,
-          telnyx_phone_id: n.id,
-          user_id: userId || undefined,
+          user_id: userId,                 // also include explicitly
+          telnyx_phone_id: n.id,           // the Telnyx phone id from search
+          e164: n.phone_number,            // E.164
         }),
       });
 
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok || data.error) {
-        setError(data.error || `Could not assign number (${res.status})`);
-        return;
+      const out = await res.json();
+      if (!res.ok || out?.error) {
+        // surface Telnyx assign/order issues but keep user informed
+        const msg = out?.error || out?.note || "Purchase failed";
+        throw new Error(msg);
       }
 
-      if (typeof onPicked === "function") onPicked(data.e164 || n.phone_number);
+      // If order succeeded or number already owned, we still inserted into DB.
+      if (typeof onPicked === "function") onPicked(n.phone_number);
       if (typeof onClose === "function") onClose();
+
+      // Optional: toast the assignment note if needed
+      // e.g., if (!out.assign?.ok) showToast("Number saved. Please attach profile in Telnyx.");
     } catch (e) {
-      setError(e.message || "Selection failed");
-    } finally {
-      setSelecting(null);
+      setErr(e.message || "Could not purchase number");
     }
   }
 
   return (
     <div className="fixed inset-0 z-50 grid place-items-center bg-black/60 p-4">
-      <div className="w-full max-w-3xl overflow-hidden rounded-2xl border border-white/10 bg-[#0b0b12] shadow-2xl">
-        {/* Header */}
-        <div className="flex items-center justify-between border-b border-white/10 p-3">
-          <div>
-            <div className="text-sm font-semibold">Choose a Toll-Free Number</div>
-            <div className="text-xs text-white/60">Numbers are provided by Telnyx. Selecting will assign it to your messaging.</div>
-          </div>
-          <button onClick={onClose} className="rounded-lg border border-white/15 bg-white/5 p-1.5 hover:bg-white/10">
+      <div className="w-full max-w-3xl rounded-2xl border border-white/10 bg-[#0b0b12] p-4">
+        <div className="mb-3 flex items-center justify-between">
+          <h2 className="text-sm font-semibold">{title}</h2>
+          <button onClick={onClose} className="rounded-md border border-white/15 bg-white/5 p-1 hover:bg-white/10">
             <X className="h-4 w-4" />
           </button>
         </div>
 
-        {/* Prefix tabs (no 800) */}
-        <div className="flex flex-wrap gap-2 border-b border-white/10 p-2">
-          {TFN_PREFIXES.map((p) => (
+        {/* Prefix chips */}
+        <div className="mb-3 flex flex-wrap gap-2">
+          {PREFIXES.map((p) => (
             <button
               key={p}
-              onClick={() => setPrefix(p)}
-              className={cls(
-                "rounded-md px-2 py-1 text-xs",
-                prefix === p ? "bg-white/15 text-white" : "bg-white/5 text-white/70 hover:bg-white/10"
-              )}
+              onClick={() => { setPage(1); setPrefix(p); }}
+              className={[
+                "rounded-md border px-3 py-1 text-sm",
+                p === prefix
+                  ? "border-emerald-400/40 bg-emerald-400/10"
+                  : "border-white/15 bg-white/5 hover:bg-white/10",
+              ].join(" ")}
             >
               {p}
             </button>
           ))}
         </div>
 
-        {/* Results */}
-        <div className="max-h-[60vh] overflow-auto p-3">
+        <div className="rounded-lg border border-white/10 bg-white/[0.02] p-3">
           {loading ? (
-            <div className="flex items-center gap-2 text-white/70"><Loader2 className="h-4 w-4 animate-spin" /> Searching…</div>
-          ) : error ? (
-            <div className="inline-flex items-center gap-2 rounded-lg border border-amber-400/30 bg-amber-400/10 px-2 py-1 text-amber-200 text-xs">
-              <AlertTriangle className="h-4 w-4" /> {error}
+            <div className="flex items-center gap-2 text-white/70">
+              <Loader2 className="h-4 w-4 animate-spin" />
+              Loading numbers…
             </div>
+          ) : err ? (
+            <div className="text-rose-300 text-sm">{err}</div>
           ) : items.length === 0 ? (
-            <div className="text-sm text-white/60">No numbers available for {prefix} right now. Try another prefix or page.</div>
+            <div className="text-white/70 text-sm">No numbers available for {prefix} right now. Try another prefix.</div>
           ) : (
-            <div className="grid grid-cols-1 gap-2 md:grid-cols-2">
+            <ul className="grid grid-cols-1 gap-2 md:grid-cols-2">
               {items.map((n) => (
-                <div key={n.id} className="flex items-center justify-between rounded-lg border border-white/10 bg-white/[0.02] p-2">
-                  <div>
-                    <div className="font-mono text-sm">{n.phone_number}</div>
-                    <div className="text-[11px] text-white/60">{n.country || "US"} {n.region ? `• ${n.region}` : ""}</div>
-                  </div>
+                <li key={n.id} className="flex items-center justify-between rounded-md border border-white/10 bg-white/[0.02] p-2">
+                  <div className="text-sm font-mono">{n.phone_number}</div>
                   <button
-                    disabled={!!selecting}
+                    className="rounded-md border border-white/15 bg-white/5 px-3 py-1 text-sm hover:bg-white/10"
                     onClick={() => selectNumber(n)}
-                    className={cls(
-                      "inline-flex items-center gap-1 rounded-md border border-white/15 px-2 py-1 text-[12px]",
-                      selecting === n.phone_number ? "bg-white/10" : "bg-white/5 hover:bg-white/10"
-                    )}
                   >
-                    {selecting === n.phone_number ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Check className="h-3.5 w-3.5" />}
                     Select
                   </button>
-                </div>
+                </li>
               ))}
-            </div>
+            </ul>
           )}
+
+          {/* Simple paging (optional; Telnyx rotates inventory) */}
+          <div className="mt-3 flex items-center justify-between text-xs text-white/70">
+            <button
+              className="rounded-md border border-white/15 bg-white/5 px-2 py-1 hover:bg-white/10 disabled:opacity-40"
+              disabled={page <= 1 || loading}
+              onClick={() => setPage((p) => Math.max(1, p - 1))}
+            >
+              Prev
+            </button>
+            <div>Page {page}</div>
+            <button
+              className="rounded-md border border-white/15 bg-white/5 px-2 py-1 hover:bg-white/10 disabled:opacity-40"
+              disabled={loading}
+              onClick={() => setPage((p) => p + 1)}
+            >
+              Next
+            </button>
+          </div>
         </div>
 
-        {/* Footer pagination */}
-        <div className="flex items-center justify-between border-t border-white/10 p-2">
-          <button
-            disabled={!canPrev || loading}
-            onClick={() => setPage((p) => Math.max(1, p - 1))}
-            className="inline-flex items-center gap-1 rounded-md border border-white/15 bg-white/5 px-2 py-1 text-xs hover:bg-white/10 disabled:opacity-40"
-          >
-            <ChevronLeft className="h-3.5 w-3.5" /> Prev
-          </button>
-          <div className="text-xs text-white/60">Page {page}{meta?.total_pages ? ` of ${meta.total_pages}` : ""}</div>
-          <button
-            disabled={!canNext || loading}
-            onClick={() => setPage((p) => p + 1)}
-            className="inline-flex items-center gap-1 rounded-md border border-white/15 bg-white/5 px-2 py-1 text-xs hover:bg-white/10 disabled:opacity-40"
-          >
-            Next <ChevronRight className="h-3.5 w-3.5" />
-          </button>
+        <div className="mt-2 text-[11px] text-white/50">
+          Numbers are provisioned via Telnyx. 800-prefix is excluded for cost reasons.
         </div>
       </div>
     </div>
