@@ -18,7 +18,8 @@ export default function TFNPickerModal({ userId, onPicked, onClose }) {
       setLoading(true);
       setError("");
       try {
-        const r = await fetch("/.netlify/functions/telnyx-list-my-numbers");
+        // default: include_mine=0 (don’t show the caller’s current number)
+        const r = await fetch(`/.netlify/functions/telnyx-list-my-numbers?user_id=${encodeURIComponent(userId)}&include_mine=0`);
         if (!r.ok) {
           const t = await r.text();
           throw new Error(t || `HTTP ${r.status}`);
@@ -34,20 +35,15 @@ export default function TFNPickerModal({ userId, onPicked, onClose }) {
       }
     })();
     return () => { mounted = false; };
-  }, []);
+  }, [userId]);
 
   const filtered = useMemo(() => {
     const term = q.trim();
     return numbers.filter((n) => {
-      const e = (n.e164 || "").replace(/\D/g, ""); // digits only for matching
-      // prefix filter
+      const e = (n.e164 || "").replace(/\D/g, "");
       if (prefix !== "All") {
-        // Toll-free start is +1 8xx..., so we check after country code
-        // Accept both with or without plus
-        const starts = e.startsWith("1" + prefix); // e.g., 1888...
-        if (!starts) return false;
+        if (!e.startsWith("1" + prefix)) return false; // e.g., 1888...
       }
-      // query filter
       if (!term) return true;
       return (n.e164 || "").toLowerCase().includes(term.toLowerCase());
     });
@@ -73,7 +69,6 @@ export default function TFNPickerModal({ userId, onPicked, onClose }) {
       }
       const j = await res.json().catch(() => ({}));
       if (!j.ok) throw new Error("Failed to assign number");
-      // notify parent so UI updates immediately
       onPicked?.(n.e164);
       onClose?.();
     } catch (e) {
@@ -84,29 +79,18 @@ export default function TFNPickerModal({ userId, onPicked, onClose }) {
   }
 
   return (
-    <div
-      className="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm flex items-end md:items-center justify-center p-3"
-      role="dialog"
-      aria-modal="true"
-      aria-label="Choose Toll-Free Number"
-    >
+    <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm flex items-end md:items-center justify-center p-3" role="dialog" aria-modal="true" aria-label="Choose Toll-Free Number">
       <div className="w-full max-w-2xl rounded-2xl border border-white/10 bg-[#0b0b12] shadow-2xl">
-        {/* Header */}
         <div className="flex items-center justify-between p-4 border-b border-white/10">
           <div className="flex items-center gap-2">
             <Phone className="h-5 w-5" />
             <h2 className="text-sm font-semibold">Choose Toll-Free Number</h2>
           </div>
-          <button
-            onClick={onClose}
-            className="rounded-md border border-white/15 bg-white/5 p-1 hover:bg-white/10"
-            title="Close"
-          >
+          <button onClick={onClose} className="rounded-md border border-white/15 bg-white/5 p-1 hover:bg-white/10" title="Close">
             <X className="h-4 w-4" />
           </button>
         </div>
 
-        {/* Filters */}
         <div className="p-3 border-b border-white/10">
           <div className="flex flex-wrap items-center gap-2">
             {PREFIXES.map((p) => (
@@ -136,26 +120,26 @@ export default function TFNPickerModal({ userId, onPicked, onClose }) {
           </div>
         </div>
 
-        {/* Body */}
         <div className="max-h-[60vh] overflow-auto p-3">
           {loading && (
             <div className="flex items-center gap-2 text-white/70 text-sm p-3">
               <Loader2 className="h-4 w-4 animate-spin" /> Loading your numbers…
             </div>
           )}
-          {error && (
-            <div className="text-rose-300 text-sm p-3">{error}</div>
-          )}
+          {error && <div className="text-rose-300 text-sm p-3">{error}</div>}
+
           {!loading && !error && filtered.length === 0 && (
-            <div className="text-white/60 text-sm p-3">No numbers match your filter.</div>
+            <div className="text-white/70 text-sm p-3">
+              No unassigned toll-free numbers are available right now.
+              <div className="text-white/50 text-xs mt-1">
+                (If you expect to see options, make sure you’ve purchased additional TFNs in Telnyx and that none are already assigned in <code>agent_messaging_numbers</code>.)
+              </div>
+            </div>
           )}
 
           <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
             {filtered.map((n) => (
-              <div
-                key={n.id}
-                className="rounded-lg border border-white/10 bg-white/[0.02] p-3 flex items-center justify-between"
-              >
+              <div key={n.id} className="rounded-lg border border-white/10 bg-white/[0.02] p-3 flex items-center justify-between">
                 <div className="min-w-0">
                   <div className="font-medium text-sm">{n.e164}</div>
                   <div className="text-[11px] text-white/60">
@@ -185,12 +169,8 @@ export default function TFNPickerModal({ userId, onPicked, onClose }) {
           </div>
         </div>
 
-        {/* Footer */}
         <div className="flex items-center justify-end gap-2 p-3 border-t border-white/10">
-          <button
-            onClick={onClose}
-            className="rounded-md border border-white/15 bg-white/5 px-3 py-2 text-sm hover:bg-white/10"
-          >
+          <button onClick={onClose} className="rounded-md border border-white/15 bg-white/5 px-3 py-2 text-sm hover:bg-white/10">
             Close
           </button>
         </div>
