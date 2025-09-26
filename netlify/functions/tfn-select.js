@@ -43,7 +43,7 @@ exports.handler = async (event) => {
 
     // Quick existence check to avoid duplicate purchases
     const { data: exists } = await db
-      .from("agent_numbers")
+      .from("agent_messaging_numbers")
       .select("id")
       .eq("e164", wanted)
       .maybeSingle();
@@ -85,7 +85,7 @@ exports.handler = async (event) => {
 
     // 3) Persist ownership in agent_numbers (status active)
     const ins = await db
-      .from("agent_numbers")
+      .from("agent_messaging_numbers")
       .insert({
         user_id: userId,
         e164: phone.phone_number,
