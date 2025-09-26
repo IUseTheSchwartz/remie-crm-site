@@ -78,62 +78,38 @@ const H = {
 const norm = (s) => (s || "").toString().trim().toLowerCase();
 
 /**
- * buildHeaderIndex(headers)
- * Matching rules prefer exact/branch-aware matches; avoids mapping "military" to "military status".
+ * Minimal header matcher: we only try to match name/phone/email with common variants.
+ * Everything else will be ignored during CSV import.
  */
 function buildHeaderIndex(headers) {
   const normalized = headers.map(norm);
 
-  const matchesCandidate = (normalizedHeader, candidate) => {
-    const c = candidate.toLowerCase();
-    if (normalizedHeader === c) return true;
-    if (normalizedHeader === c.replace(/_/g, " ")) return true;
-    if (c.includes("branch") && normalizedHeader.includes("branch")) return true;
-    if (c === "military") {
-      return normalizedHeader === "military" || normalizedHeader.includes("branch");
-    }
-    if (normalizedHeader.includes(c) && c.length > 3) return true;
-    return false;
-  };
-
   const find = (candidates) => {
-    // Exact pass
     for (let i = 0; i < normalized.length; i++) {
       for (const cand of candidates) {
         if (normalized[i] === cand) return headers[i];
-      }
-    }
-    // Prefer headers containing "branch" for military_branch
-    for (let i = 0; i < normalized.length; i++) {
-      if (normalized[i].includes("branch")) {
-        for (const cand of candidates) {
-          if (matchesCandidate(normalized[i], cand)) return headers[i];
-        }
-      }
-    }
-    // Fallback loose pass
-    for (let i = 0; i < normalized.length; i++) {
-      for (const cand of candidates) {
-        if (matchesCandidate(normalized[i], cand)) return headers[i];
+        // allow underscores vs spaces
+        if (normalized[i] === cand.replace(/_/g, " ")) return headers[i];
       }
     }
     return null;
   };
 
   return {
-    first:  find(H.first),
-    last:   find(H.last),
-    full:   find(H.full),
-    email:  find(H.email),
-    phone:  find(H.phone),
-    notes:  find(H.notes),
-    company:find(H.company),
-    dob:    find(H.dob),
-    state:  find(H.state),
-    beneficiary: find(H.beneficiary),
-    beneficiary_name: find(H.beneficiary_name),
-    gender: find(H.gender),
-    military_branch: find(H.military_branch),
+    // Keep only the minimal three keys wired up
+    full:  find(["name","full name","fullname","full_name"]),
+    first: null,
+    last:  null,
+    email: find(["email","e-mail","email address","email_address"]),
+    phone: find(["phone","phone number","phone_number","mobile","cell","tel","telephone","number"]),
+    notes: null,
+    company:null,
+    dob:   null,
+    state: null,
+    beneficiary: null,
+    beneficiary_name: null,
+    gender: null,
+    military_branch: null,
   };
 }
 
@@ -820,7 +796,7 @@ export default function LeadsPage() {
       : src;
   }, [tab, allClients, onlySold, filter]);
 
-  // CSV import with duplicate skipping (email OR phone)
+  // CSV import with duplicate skipping (email OR phone) — MINIMAL fields only
   async function handleImportCsv(file) {
     Papa.parse(file, {
       header: true,
@@ -853,20 +829,11 @@ export default function LeadsPage() {
           const name  = r.name || r.Name || buildName(r, map);
           const phone = buildPhone(r, map);
           const email = buildEmail(r, map);
-          const notes = buildNotes(r, map);
 
-          // NEW fields
-          const dob  = buildDob(r, map);
-          const state = buildState(r, map);
-          const beneficiary = buildBeneficiary(r, map);
-          const beneficiary_name = buildBeneficiaryName(r, map);
-          const gender = buildGender(r, map);
-          const military_branch = buildMilitaryBranch(r, map);
-
+          // MINIMAL: do not pull notes/dob/state/etc from CSV
           const person = normalizePerson({
-            name, phone, email, notes,
+            name, phone, email,
             stage: "no_pickup",
-            dob, state, beneficiary, beneficiary_name, gender, military_branch,
           });
 
           if (!(person.name || person.phone || person.email)) continue;
@@ -908,7 +875,7 @@ export default function LeadsPage() {
           setServerMsg(`⚠️ CSV sync failed: ${e.message || e}`);
         }
 
-        // Reflect to contacts for each + trigger auto text
+        // Reflect to contacts for each + trigger auto text (phone/name only is fine)
         try {
           const { data: authData } = await supabase.auth.getUser();
           const userId = authData?.user?.id;
@@ -1622,7 +1589,7 @@ function SoldDrawer({ initial, allClients, onClose, onSave }) {
                    className="inp" placeholder="jane@example.com" />
           </Field>
 
-          {/* Policy core */}
+        {/* Policy core */}
           <div className="grid gap-3 sm:grid-cols-2">
             <Field label="Carrier sold">
               <input value={form.carrier} onChange={(e)=>setForm({...form, carrier:e.target.value})}
@@ -1643,7 +1610,7 @@ function SoldDrawer({ initial, allClients, onClose, onSave }) {
             <Field label="Policy number">
               <input value={form.policyNumber} onChange={(e)=>setForm({...form, policyNumber:e.target.value})}
                      className="inp" placeholder="ABC123456789" />
-            </Field>
+            </Field }
             <Field label="Policy start date">
               <input type="date" value={form.startDate} onChange={(e)=>setForm({...form, startDate:e.target.value})}
                      className="inp" />
