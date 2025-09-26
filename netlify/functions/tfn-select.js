@@ -3,11 +3,15 @@ const fetch = require("node-fetch");
 const { getServiceClient, getUserFromRequest } = require("./_supabase");
 
 function json(body, status = 200) {
-  return { statusCode: status, headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) };
+  return {
+    statusCode: status,
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  };
 }
 
-// normalize to E.164-ish if user pasted a formatted version
-function onlyDigits(s) { return String(s || "").replace(/\D/g, ""); }
+// ---- phone helpers ----
+const onlyDigits = (s) => String(s || "").replace(/\D/g, "");
 function toE164(s) {
   const d = onlyDigits(s);
   if (!d) return null;
@@ -16,14 +20,15 @@ function toE164(s) {
   return String(s || "").startsWith("+") ? String(s) : null;
 }
 
+// ---- auth helper ----
 async function resolveUserId(event, parsedBody) {
-  // 1) Try standard Authorization header
+  // 1) Normal Authorization: Bearer <jwt>
   try {
     const u = await getUserFromRequest(event);
     if (u?.id) return { user_id: u.id, via: "auth_header" };
   } catch {}
 
-  // 2) Try alternate header we added from the client
+  // 2) x-supabase-auth (fallback we send from the client)
   try {
     const token =
       event.headers["x-supabase-auth"] ||
@@ -31,12 +36,14 @@ async function resolveUserId(event, parsedBody) {
       event.headers["x-supabasejwt"] ||
       "";
     if (token) {
-      const u = await getUserFromRequest({ headers: { authorization: `Bearer ${token}` } });
+      const u = await getUserFromRequest({
+        headers: { authorization: `Bearer ${token}` },
+      });
       if (u?.id) return { user_id: u.id, via: "x-supabase-auth" };
     }
   } catch {}
 
-  // 3) Fallback: accept a user_id in the JSON body
+  // 3) last resort
   if (parsedBody?.user_id) {
     return { user_id: String(parsedBody.user_id), via: "body_user_id" };
   }
@@ -44,13 +51,71 @@ async function resolveUserId(event, parsedBody) {
   return { user_id: null, via: "none" };
 }
 
+// ---- Telnyx helpers ----
+async function telnyxOrder({ apiKey, phone_id, e164 }) {
+  const payload = phone_id
+    ? { phone_numbers: [{ phone_number_id: phone_id }] }
+    : { phone_numbers: [{ phone_number: e164 }] };
+
+  const res = await fetch("https://api.telnyx.com/v2/number_orders", {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${apiKey}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(payload),
+  });
+  const data = await res.json().catch(() => ({}));
+  return { ok: res.ok, status: res.status, data };
+}
+
+// Poll the inventory until the newly purchased number shows up with an ID
+async function telnyxFindIdByNumber({ apiKey, e164, tries = 8, delayMs = 800 }) {
+  for (let i = 0; i < tries; i++) {
+    const url = new URL("https://api.telnyx.com/v2/phone_numbers");
+    url.searchParams.set("filter[phone_number]", e164);
+
+    const res = await fetch(url.toString(), {
+      method: "GET",
+      headers: { Authorization: `Bearer ${apiKey}` },
+    });
+    const data = await res.json().catch(() => ({}));
+
+    const id = data?.data?.[0]?.id;
+    if (id) return id;
+
+    // slight backoff
+    await new Promise((r) => setTimeout(r, delayMs));
+  }
+  return null;
+}
+
+async function telnyxAssignProfile({ apiKey, phone_id, messaging_profile_id }) {
+  const res = await fetch(
+    `https://api.telnyx.com/v2/phone_numbers/${encodeURIComponent(phone_id)}`,
+    {
+      method: "PATCH",
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ messaging_profile_id }),
+    }
+  );
+  const data = await res.json().catch(() => ({}));
+  return { ok: res.ok, status: res.status, data };
+}
+
 exports.handler = async (event) => {
   try {
     if (event.httpMethod !== "POST") return json({ error: "method_not_allowed" }, 405);
 
     let body;
-    try { body = JSON.parse(event.body || "{}"); }
-    catch { return json({ error: "invalid_json" }, 400); }
+    try {
+      body = JSON.parse(event.body || "{}");
+    } catch {
+      return json({ error: "invalid_json" }, 400);
+    }
 
     const { user_id, via } = await resolveUserId(event, body);
     if (!user_id) return json({ error: "auth_required" }, 401);
@@ -60,87 +125,104 @@ exports.handler = async (event) => {
     if (!TELNYX_API_KEY) return json({ error: "TELNYX_API_KEY missing" }, 500);
     if (!MESSAGING_PROFILE_ID) return json({ error: "TELNYX_MESSAGING_PROFILE_ID missing" }, 500);
 
-    // Accept multiple aliases for safety
-    const telnyx_phone_id =
-      String(body.telnyx_phone_id || body.phone_number_id || body.id || "").trim();
+    // Accept either id or phone_number
+    const telnyx_phone_id = String(
+      body.telnyx_phone_id || body.phone_number_id || body.id || ""
+    ).trim();
 
-    const rawNumber =
-      String(body.e164 || body.phone_number || body.number || "").trim();
-    const e164 = toE164(rawNumber);
+    const raw = String(body.e164 || body.phone_number || body.number || "").trim();
+    const e164 = toE164(raw);
 
-    // We can order by either phone_number_id OR phone_number, so don’t fail yet.
     if (!telnyx_phone_id && !e164) {
-      return json({
-        error: "missing_params",
-        detail: "Provide telnyx_phone_id (or id) and/or e164 (or phone_number).",
-        received_keys: Object.keys(body || {}),
-      }, 400);
+      return json(
+        {
+          error: "missing_params",
+          detail: "Provide telnyx_phone_id (or id) OR e164 (or phone_number).",
+          received_keys: Object.keys(body || {}),
+        },
+        400
+      );
     }
 
-    // 1) Order number (prefer id; fallback to phone_number)
-    let orderPayload;
-    if (telnyx_phone_id) {
-      orderPayload = { phone_numbers: [{ phone_number_id: telnyx_phone_id }] };
-    } else {
-      orderPayload = { phone_numbers: [{ phone_number: e164 }] };
-    }
-
-    const orderRes = await fetch("https://api.telnyx.com/v2/number_orders", {
-      method: "POST",
-      headers: { Authorization: `Bearer ${TELNYX_API_KEY}`, "Content-Type": "application/json" },
-      body: JSON.stringify(orderPayload),
+    // 1) Order the number
+    const order = await telnyxOrder({
+      apiKey: TELNYX_API_KEY,
+      phone_id: telnyx_phone_id || null,
+      e164: e164 || null,
     });
-    const orderJson = await orderRes.json().catch(() => ({}));
-    if (!orderRes.ok) return json({ error: "telnyx_order_failed", detail: orderJson }, 502);
+    if (!order.ok) {
+      return json({ error: "telnyx_order_failed", detail: order.data }, 502);
+    }
 
-    // Determine the final phone id to patch. If we ordered by phone_number,
-    // Telnyx’s response includes the id in the order items.
-    let finalPhoneId = telnyx_phone_id;
-    try {
-      if (!finalPhoneId) {
-        const items = orderJson?.data?.phone_numbers || [];
-        if (items.length && items[0].id) finalPhoneId = items[0].id;
-      }
-    } catch {}
+    // Work out the final phone id + number
+    let finalPhoneId =
+      telnyx_phone_id ||
+      order.data?.data?.phone_numbers?.[0]?.id ||
+      null;
+    let finalE164 =
+      e164 ||
+      order.data?.data?.phone_numbers?.[0]?.phone_number ||
+      null;
 
-    // 2) Assign messaging profile (requires the phone_number_id)
+    // If id missing, poll inventory by phone number
     if (!finalPhoneId) {
-      return json({
-        error: "missing_phone_id_after_order",
-        detail: "Could not determine phone_number_id from Telnyx order response.",
-        telnyx_response_snippet: JSON.stringify(orderJson).slice(0, 400),
-      }, 502);
+      if (!finalE164) {
+        return json(
+          {
+            error: "missing_phone_id_after_order",
+            detail:
+              "Order succeeded but no id returned; also couldn't infer phone number to look up.",
+            telnyx_response_snippet: JSON.stringify(order.data).slice(0, 400),
+          },
+          502
+        );
+      }
+      const lookedUpId = await telnyxFindIdByNumber({
+        apiKey: TELNYX_API_KEY,
+        e164: finalE164,
+      });
+      if (!lookedUpId) {
+        return json(
+          {
+            error: "missing_phone_id_after_order",
+            detail:
+              "Could not resolve phone_number_id after ordering (poll timed out).",
+            telnyx_response_snippet: JSON.stringify(order.data).slice(0, 400),
+          },
+          502
+        );
+      }
+      finalPhoneId = lookedUpId;
     }
 
-    const patchRes = await fetch(`https://api.telnyx.com/v2/phone_numbers/${encodeURIComponent(finalPhoneId)}`, {
-      method: "PATCH",
-      headers: { Authorization: `Bearer ${TELNYX_API_KEY}`, "Content-Type": "application/json" },
-      body: JSON.stringify({ messaging_profile_id: MESSAGING_PROFILE_ID }),
+    // 2) Assign the messaging profile
+    const assign = await telnyxAssignProfile({
+      apiKey: TELNYX_API_KEY,
+      phone_id: finalPhoneId,
+      messaging_profile_id: MESSAGING_PROFILE_ID,
     });
-    const patchJson = await patchRes.json().catch(() => ({}));
-    if (!patchRes.ok) return json({ error: "telnyx_assign_profile_failed", detail: patchJson }, 502);
-
-    // 3) Save to your DB
-    const db = getServiceClient();
-    const numberToStore = e164 || patchJson?.data?.phone_number || body.e164 || body.phone_number || null;
-    if (!numberToStore) {
-      return json({
-        error: "missing_e164_to_store",
-        detail: "Could not resolve a phone number to store after purchase.",
-        telnyx_response_snippet: JSON.stringify(patchJson).slice(0, 400),
-      }, 500);
+    if (!assign.ok) {
+      return json({ error: "telnyx_assign_profile_failed", detail: assign.data }, 502);
+    }
+    if (!finalE164) {
+      finalE164 = assign.data?.data?.phone_number || finalE164;
     }
 
+    // 3) Save to DB
+    const db = getServiceClient();
     const { data, error } = await db
       .from("agent_messaging_numbers")
-      .upsert({
-        user_id,
-        e164: numberToStore,
-        telnyx_phone_id: finalPhoneId,
-        telnyx_messaging_profile_id: MESSAGING_PROFILE_ID,
-        status: "active",
-        verified_at: new Date().toISOString(),
-      }, { onConflict: "e164" })
+      .upsert(
+        {
+          user_id,
+          e164: finalE164,
+          telnyx_phone_id: finalPhoneId,
+          telnyx_messaging_profile_id: MESSAGING_PROFILE_ID,
+          status: "active",
+          verified_at: new Date().toISOString(),
+        },
+        { onConflict: "e164" }
+      )
       .select("id")
       .maybeSingle();
     if (error) return json({ error: "db_upsert_failed", detail: error.message }, 500);
@@ -148,7 +230,7 @@ exports.handler = async (event) => {
     return json({
       ok: true,
       id: data?.id || null,
-      e164: numberToStore,
+      e164: finalE164,
       telnyx_phone_id: finalPhoneId,
       auth_via: via,
     });
