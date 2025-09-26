@@ -22,8 +22,17 @@ function toE164(p) {
   return null;
 }
 
+/* ===== CHANGED: deterministic To→agent via agent_numbers first, then your existing fallback ===== */
 async function resolveUserId(db, telnyxToE164) {
-  // A) Most recent outgoing message that used this Telnyx number as "from"
+  // A) Direct ownership via per-agent TFN
+  const { data: owner } = await db
+    .from("agent_numbers")
+    .select("user_id")
+    .eq("e164", telnyxToE164)
+    .maybeSingle();
+  if (owner?.user_id) return owner.user_id;
+
+  // B) Most recent outgoing message that used this number as "from"
   const { data: m } = await db
     .from("messages")
     .select("user_id")
@@ -32,17 +41,20 @@ async function resolveUserId(db, telnyxToE164) {
     .limit(1);
   if (m && m[0]?.user_id) return m[0].user_id;
 
-  // B) Agent profile with matching phone
-  const ap = await db
-    .from("agent_profiles")
-    .select("user_id")
-    .eq("phone", telnyxToE164)
-    .maybeSingle();
-  if (ap?.data?.user_id) return ap.data.user_id;
+  // C) If this is the shared env number, you can keep any special shared routing here if desired
+  const SHARED =
+    process.env.TELNYX_FROM ||
+    process.env.TELNYX_FROM_NUMBER ||
+    process.env.DEFAULT_FROM_NUMBER ||
+    null;
+  if (SHARED && SHARED === telnyxToE164) {
+    // (Optional) custom shared-number behavior can go here
+  }
 
-  // C) Fallback env (optional)
+  // D) Final fallback
   return process.env.INBOUND_FALLBACK_USER_ID || process.env.DEFAULT_USER_ID || null;
 }
+/* ===== /CHANGED ===== */
 
 async function findOrCreateContact(db, user_id, fromE164) {
   const last10 = norm10(fromE164);
