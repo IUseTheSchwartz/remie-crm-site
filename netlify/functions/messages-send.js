@@ -109,7 +109,7 @@ async function pickFromNumber(db, user_id) {
   // 0) Per-agent TFN from agent_numbers (first active)
   try {
     const { data: num } = await db
-      .from("agent_numbers")
+      .from("agent_messaging_numbers")
       .select("e164, status")
       .eq("user_id", user_id)
       .eq("status", "active")
