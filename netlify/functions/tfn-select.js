@@ -6,6 +6,16 @@ function json(body, status = 200) {
   return { statusCode: status, headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) };
 }
 
+// normalize to E.164-ish if user pasted a formatted version
+function onlyDigits(s) { return String(s || "").replace(/\D/g, ""); }
+function toE164(s) {
+  const d = onlyDigits(s);
+  if (!d) return null;
+  if (d.length === 11 && d.startsWith("1")) return `+${d}`;
+  if (d.length === 10) return `+1${d}`;
+  return String(s || "").startsWith("+") ? String(s) : null;
+}
+
 async function resolveUserId(event, parsedBody) {
   // 1) Try standard Authorization header
   try {
@@ -50,21 +60,59 @@ exports.handler = async (event) => {
     if (!TELNYX_API_KEY) return json({ error: "TELNYX_API_KEY missing" }, 500);
     if (!MESSAGING_PROFILE_ID) return json({ error: "TELNYX_MESSAGING_PROFILE_ID missing" }, 500);
 
-    const telnyx_phone_id = String(body.telnyx_phone_id || "").trim();
-    const e164 = String(body.e164 || "").trim();
-    if (!telnyx_phone_id || !e164) return json({ error: "missing_params" }, 400);
+    // Accept multiple aliases for safety
+    const telnyx_phone_id =
+      String(body.telnyx_phone_id || body.phone_number_id || body.id || "").trim();
 
-    // 1) Order number
+    const rawNumber =
+      String(body.e164 || body.phone_number || body.number || "").trim();
+    const e164 = toE164(rawNumber);
+
+    // We can order by either phone_number_id OR phone_number, so don’t fail yet.
+    if (!telnyx_phone_id && !e164) {
+      return json({
+        error: "missing_params",
+        detail: "Provide telnyx_phone_id (or id) and/or e164 (or phone_number).",
+        received_keys: Object.keys(body || {}),
+      }, 400);
+    }
+
+    // 1) Order number (prefer id; fallback to phone_number)
+    let orderPayload;
+    if (telnyx_phone_id) {
+      orderPayload = { phone_numbers: [{ phone_number_id: telnyx_phone_id }] };
+    } else {
+      orderPayload = { phone_numbers: [{ phone_number: e164 }] };
+    }
+
     const orderRes = await fetch("https://api.telnyx.com/v2/number_orders", {
       method: "POST",
       headers: { Authorization: `Bearer ${TELNYX_API_KEY}`, "Content-Type": "application/json" },
-      body: JSON.stringify({ phone_numbers: [{ phone_number_id: telnyx_phone_id }] }),
+      body: JSON.stringify(orderPayload),
     });
     const orderJson = await orderRes.json().catch(() => ({}));
     if (!orderRes.ok) return json({ error: "telnyx_order_failed", detail: orderJson }, 502);
 
-    // 2) Assign messaging profile
-    const patchRes = await fetch(`https://api.telnyx.com/v2/phone_numbers/${encodeURIComponent(telnyx_phone_id)}`, {
+    // Determine the final phone id to patch. If we ordered by phone_number,
+    // Telnyx’s response includes the id in the order items.
+    let finalPhoneId = telnyx_phone_id;
+    try {
+      if (!finalPhoneId) {
+        const items = orderJson?.data?.phone_numbers || [];
+        if (items.length && items[0].id) finalPhoneId = items[0].id;
+      }
+    } catch {}
+
+    // 2) Assign messaging profile (requires the phone_number_id)
+    if (!finalPhoneId) {
+      return json({
+        error: "missing_phone_id_after_order",
+        detail: "Could not determine phone_number_id from Telnyx order response.",
+        telnyx_response_snippet: JSON.stringify(orderJson).slice(0, 400),
+      }, 502);
+    }
+
+    const patchRes = await fetch(`https://api.telnyx.com/v2/phone_numbers/${encodeURIComponent(finalPhoneId)}`, {
       method: "PATCH",
       headers: { Authorization: `Bearer ${TELNYX_API_KEY}`, "Content-Type": "application/json" },
       body: JSON.stringify({ messaging_profile_id: MESSAGING_PROFILE_ID }),
@@ -74,12 +122,21 @@ exports.handler = async (event) => {
 
     // 3) Save to your DB
     const db = getServiceClient();
+    const numberToStore = e164 || patchJson?.data?.phone_number || body.e164 || body.phone_number || null;
+    if (!numberToStore) {
+      return json({
+        error: "missing_e164_to_store",
+        detail: "Could not resolve a phone number to store after purchase.",
+        telnyx_response_snippet: JSON.stringify(patchJson).slice(0, 400),
+      }, 500);
+    }
+
     const { data, error } = await db
       .from("agent_messaging_numbers")
       .upsert({
         user_id,
-        e164,
-        telnyx_phone_id,
+        e164: numberToStore,
+        telnyx_phone_id: finalPhoneId,
         telnyx_messaging_profile_id: MESSAGING_PROFILE_ID,
         status: "active",
         verified_at: new Date().toISOString(),
@@ -88,7 +145,13 @@ exports.handler = async (event) => {
       .maybeSingle();
     if (error) return json({ error: "db_upsert_failed", detail: error.message }, 500);
 
-    return json({ ok: true, id: data?.id || null, e164, telnyx_phone_id, auth_via: via });
+    return json({
+      ok: true,
+      id: data?.id || null,
+      e164: numberToStore,
+      telnyx_phone_id: finalPhoneId,
+      auth_via: via,
+    });
   } catch (e) {
     return json({ error: "unhandled", detail: String(e?.message || e) }, 500);
   }
