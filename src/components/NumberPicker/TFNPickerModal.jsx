@@ -33,23 +33,40 @@ export default function TFNPickerModal({ userId, onClose, onPicked }) {
       const { data: sess } = await supabase.auth.getSession();
       const access = sess?.session?.access_token || "";
 
-      // Always send phone_number; id is optional
+      // Build payload the function expects (BODY-FIRST auth via user_id)
       const payload = {
-        phone_number: item.phone_number,
-        id: item.available_id || item.id || undefined,
+        user_id: userId,                                  // 👈 REQUIRED to avoid auth_required
+        phone_number: item.phone_number,                  // prefer ordering by number
+        telnyx_phone_id: item.available_id || item.id,    // optional: helps if you want to order by id
       };
 
       const res = await fetch("/.netlify/functions/tfn-select", {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
+          // token headers are fine to keep, but body user_id is what the function uses first:
           Authorization: access ? `Bearer ${access}` : "",
           "x-supabase-auth": access || "",
         },
         body: JSON.stringify(payload),
       });
-      const json = await res.json();
-      if (!res.ok || json?.error) throw new Error(json?.error || "Purchase failed");
+
+      // Read text first so we can show raw body if JSON parse fails
+      const text = await res.text();
+      let json;
+      try { json = JSON.parse(text); } catch { json = { parse_error: true, raw: text }; }
+
+      if (!res.ok || json?.error) {
+        // Surface Telnyx details if present
+        const telnyxMsg =
+          json?.telnyx?.data?.errors?.[0]?.detail ||
+          json?.telnyx?.data?.errors?.[0]?.title ||
+          json?.detail ||
+          json?.error ||
+          `HTTP_${res.status}`;
+        console.error("[tfn-select error]", { status: res.status, json });
+        throw new Error(telnyxMsg);
+      }
 
       onPicked?.(json.e164 || item.phone_number);
       onClose?.();
