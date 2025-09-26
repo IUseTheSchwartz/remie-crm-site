@@ -1,175 +1,123 @@
-// File: src/components/NumberPicker/TFNPickerModal.jsx
 import { useEffect, useState } from "react";
 import { supabase } from "../../lib/supabaseClient";
 
-const PREFIXES = ["833", "844", "855", "866", "877", "888"]; // no 800
-
 export default function TFNPickerModal({ userId, onClose, onPicked }) {
-  const [prefix, setPrefix] = useState(PREFIXES[0]);
+  const [prefix, setPrefix] = useState("833"); // 800 excluded
   const [loading, setLoading] = useState(false);
-  const [orderingId, setOrderingId] = useState(null);
   const [items, setItems] = useState([]);
   const [err, setErr] = useState("");
 
-  async function fetchNumbers(pfx) {
-    setLoading(true);
+  const prefixes = ["833", "844", "855", "866", "877", "888"]; // no 800
+
+  async function fetchNumbers(p = prefix) {
     setErr("");
+    setLoading(true);
     try {
-      const url = new URL("/.netlify/functions/tfn-search", window.location.origin);
-      url.searchParams.set("prefix", pfx);
-      url.searchParams.set("limit", "30");
-      const res = await fetch(url.toString(), { method: "GET" });
+      const res = await fetch(`/.netlify/functions/tfn-search?prefix=${encodeURIComponent(p)}&limit=30`);
       const json = await res.json();
-      if (!res.ok || !json?.ok) {
-        throw new Error(json?.error || "Search failed");
-      }
+      if (!res.ok || !json?.ok) throw new Error(json?.error || "Search failed");
       setItems(json.items || []);
     } catch (e) {
-      setErr(e.message || String(e));
+      setErr(e.message || "Search failed");
       setItems([]);
     } finally {
       setLoading(false);
     }
   }
 
-  useEffect(() => {
-    fetchNumbers(prefix);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [prefix]);
+  useEffect(() => { fetchNumbers(prefix); /* eslint-disable-next-line */ }, []);
 
-  async function handleSelect(item) {
-    if (!item?.id) {
-      setErr("Missing phone_id from search result.");
-      return;
-    }
-    if (orderingId) return; // prevent double clicks
-    setOrderingId(item.id);
+  async function selectNumber(item) {
     setErr("");
-
     try {
-      // get the current access token for Authorization
-      const { data } = await supabase.auth.getSession();
-      const token = data?.session?.access_token;
-      if (!token) throw new Error("Not signed in.");
+      const { data: sess } = await supabase.auth.getSession();
+      const access = sess?.session?.access_token || "";
 
-      const res = await fetch("/.netlify/functions/tfn-order", {
+      // Always send phone_number; id is optional
+      const payload = {
+        phone_number: item.phone_number,
+        id: item.available_id || item.id || undefined,
+      };
+
+      const res = await fetch("/.netlify/functions/tfn-select", {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          Authorization: `Bearer ${token}`,
+          Authorization: access ? `Bearer ${access}` : "",
+          "x-supabase-auth": access || "",
         },
-        body: JSON.stringify({ phone_id: item.id }), // <-- IMPORTANT
+        body: JSON.stringify(payload),
       });
+      const json = await res.json();
+      if (!res.ok || json?.error) throw new Error(json?.error || "Purchase failed");
 
-      const json = await res.json().catch(() => ({}));
-      if (!res.ok || !json?.ok) {
-        const msg =
-          json?.error === "telnyx_order_failed"
-            ? "Telnyx refused the order for this number."
-            : json?.error || "Order failed";
-        throw new Error(msg);
-      }
-
-      // success: update parent with the E.164 so the page shows it immediately
-      const e164 = json?.number?.phone_number || item.phone_number || null;
-      if (onPicked && e164) onPicked(e164);
+      onPicked?.(json.e164 || item.phone_number);
       onClose?.();
     } catch (e) {
-      setErr(e.message || String(e));
-    } finally {
-      setOrderingId(null);
+      setErr(e.message || "Could not select number");
     }
   }
 
   return (
-    <div
-      role="dialog"
-      aria-modal="true"
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/60"
-    >
-      <div className="w-full max-w-2xl rounded-xl border border-white/10 bg-[#0b0b12] p-4 shadow-2xl">
+    <div className="fixed inset-0 z-50 grid place-items-center bg-black/50 p-4">
+      <div className="w-full max-w-2xl rounded-2xl border border-white/10 bg-[#0b0b12] p-4">
         <div className="mb-3 flex items-center justify-between">
           <h2 className="text-sm font-semibold">Choose a Toll-Free Number</h2>
-          <button
-            type="button"
-            onClick={onClose}
-            className="rounded-md border border-white/15 bg-white/5 px-2 py-1 text-xs hover:bg-white/10"
-          >
-            Close
-          </button>
+          <button onClick={onClose} className="rounded-md border border-white/15 bg-white/5 px-2 py-1 text-xs hover:bg-white/10">Close</button>
         </div>
 
         <div className="mb-3 flex items-center gap-2">
-          <label className="text-xs text-white/70">Prefix</label>
-          <div className="flex flex-wrap gap-2">
-            {PREFIXES.map((p) => (
-              <button
-                key={p}
-                type="button"
-                onClick={() => setPrefix(p)}
+          <div className="text-xs">Prefix</div>
+          <div className="flex gap-1">
+            {prefixes.map((p) => (
+              <button key={p}
+                onClick={() => { setPrefix(p); fetchNumbers(p); }}
                 className={[
                   "rounded-md border px-2 py-1 text-xs",
-                  prefix === p
-                    ? "border-emerald-400/40 bg-emerald-400/10"
-                    : "border-white/15 bg-white/5 hover:bg-white/10",
+                  p === prefix ? "border-emerald-400/40 bg-emerald-400/10" : "border-white/15 bg-white/5 hover:bg-white/10",
                 ].join(" ")}
-              >
-                {p}
-              </button>
+              >{p}</button>
             ))}
           </div>
-          <button
-            type="button"
-            onClick={() => fetchNumbers(prefix)}
-            className="ml-auto rounded-md border border-white/15 bg-white/5 px-2 py-1 text-xs hover:bg-white/10"
-          >
-            Refresh
-          </button>
+          <button onClick={() => fetchNumbers(prefix)} className="ml-auto rounded-md border border-white/15 bg-white/5 px-2 py-1 text-xs hover:bg-white/10">Refresh</button>
         </div>
 
         {err && (
-          <div className="mb-3 rounded-md border border-rose-400/30 bg-rose-400/10 p-2 text-xs text-rose-200">
+          <div className="mb-2 rounded-md border border-rose-400/30 bg-rose-400/10 p-2 text-xs text-rose-200">
             {err}
           </div>
         )}
 
-        <div className="max-h-[50vh] overflow-auto rounded-md border border-white/10">
-          {loading ? (
-            <div className="grid place-items-center p-6 text-sm text-white/70">Loading…</div>
-          ) : items.length === 0 ? (
-            <div className="grid place-items-center p-6 text-sm text-white/60">
-              No numbers available for {prefix} right now.
-            </div>
-          ) : (
-            <table className="w-full text-left text-sm">
-              <thead>
-                <tr className="border-b border-white/10 text-xs text-white/60">
-                  <th className="px-3 py-2">Number</th>
-                  <th className="px-3 py-2">Country</th>
-                  <th className="px-3 py-2">Action</th>
+        <div className="max-h-[360px] overflow-auto rounded-md border border-white/10">
+          <table className="w-full text-sm">
+            <thead className="bg-white/5 text-xs">
+              <tr>
+                <th className="px-3 py-2 text-left">Number</th>
+                <th className="px-3 py-2 text-left">Country</th>
+                <th className="px-3 py-2 text-left">Region</th>
+                <th className="px-3 py-2 text-left">Action</th>
+              </tr>
+            </thead>
+            <tbody>
+              {!loading && items.length === 0 && (
+                <tr><td className="px-3 py-3 text-white/60" colSpan={4}>No numbers found for {prefix}. Try another prefix.</td></tr>
+              )}
+              {loading && <tr><td className="px-3 py-3 text-white/60" colSpan={4}>Loading…</td></tr>}
+              {items.map((it) => (
+                <tr key={`${it.available_id || it.id || it.phone_number}`}>
+                  <td className="px-3 py-2 font-mono">{it.phone_number}</td>
+                  <td className="px-3 py-2">{it.country || "US"}</td>
+                  <td className="px-3 py-2">{it.region || "-"}</td>
+                  <td className="px-3 py-2">
+                    <button onClick={() => selectNumber(it)}
+                      className="rounded-md border border-white/15 bg-white/5 px-2 py-1 text-xs hover:bg-white/10">
+                      Select
+                    </button>
+                  </td>
                 </tr>
-              </thead>
-              <tbody>
-                {items.map((it) => (
-                  <tr key={it.id} className="border-b border-white/10">
-                    <td className="px-3 py-2">{it.phone_number}</td>
-                    <td className="px-3 py-2">{it.country || "US"}</td>
-                    <td className="px-3 py-2">
-                      <button
-                        type="button"
-                        disabled={orderingId === it.id}
-                        onClick={() => handleSelect(it)}
-                        className="rounded-md border border-white/15 bg-white/5 px-2 py-1 text-xs hover:bg-white/10 disabled:opacity-60"
-                        title="Purchase & assign to your messaging profile"
-                      >
-                        {orderingId === it.id ? "Selecting…" : "Select"}
-                      </button>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          )}
+              ))}
+            </tbody>
+          </table>
         </div>
 
         <div className="mt-2 text-[11px] text-white/50">
