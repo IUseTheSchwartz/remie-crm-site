@@ -1610,7 +1610,7 @@ function SoldDrawer({ initial, allClients, onClose, onSave }) {
             <Field label="Policy number">
               <input value={form.policyNumber} onChange={(e)=>setForm({...form, policyNumber:e.target.value})}
                      className="inp" placeholder="ABC123456789" />
-            </Field }
+            </Field>
             <Field label="Policy start date">
               <input type="date" value={form.startDate} onChange={(e)=>setForm({...form, startDate:e.target.value})}
                      className="inp" />
