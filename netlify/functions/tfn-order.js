@@ -5,54 +5,56 @@ const { getServiceClient } = require("./_supabase");
 function json(body, status = 200) {
   return {
     statusCode: status,
-    headers: { "Content-Type": "application/json" },
+    headers: {
+      "Content-Type": "application/json",
+      // CORS
+      "Access-Control-Allow-Origin": "*",
+      "Access-Control-Allow-Headers": "Content-Type, Authorization, X-Supabase-Auth",
+      "Access-Control-Allow-Methods": "OPTIONS, POST",
+    },
     body: JSON.stringify(body),
   };
 }
 
-/** Robustly extract a Supabase access token from headers/cookies */
+// --- CORS preflight
+function isOptions(event) {
+  return String(event.httpMethod || "").toUpperCase() === "OPTIONS";
+}
+
+/** Extract a Supabase access token from headers/cookies */
 function readAccessToken(event) {
-  // 1) Standard Authorization: Bearer <token>
-  const auth =
-    event.headers["authorization"] ||
-    event.headers["Authorization"] ||
-    "";
+  const h = event.headers || {};
+  const auth = h.authorization || h.Authorization || "";
   if (auth.startsWith("Bearer ")) return auth.slice(7).trim();
 
-  // 2) Common custom header (fallback)
-  const xauth =
-    event.headers["x-supabase-auth"] ||
-    event.headers["X-Supabase-Auth"] ||
-    "";
+  const xauth = h["x-supabase-auth"] || h["X-Supabase-Auth"] || "";
   if (xauth.startsWith("Bearer ")) return xauth.slice(7).trim();
   if (xauth) return xauth.trim();
 
-  // 3) Cookie-based tokens if using @supabase/auth-helpers
-  const cookie = event.headers["cookie"] || event.headers["Cookie"] || "";
+  const cookie = h.cookie || h.Cookie || "";
   if (cookie) {
-    const parts = cookie.split(";").map((p) => p.trim());
-    for (const p of parts) {
-      // Try common cookie names
-      if (p.startsWith("sb-access-token=")) return decodeURIComponent(p.split("=")[1] || "");
-      if (p.startsWith("sb:token=")) return decodeURIComponent(p.split("=")[1] || "");
+    for (const part of cookie.split(";").map((p) => p.trim())) {
+      if (part.startsWith("sb-access-token=")) return decodeURIComponent(part.split("=")[1] || "");
+      if (part.startsWith("sb:token=")) return decodeURIComponent(part.split("=")[1] || "");
     }
   }
-
   return null;
 }
 
-/** Validate token by calling Supabase Auth API */
+/** Validate token via Supabase Auth REST; use ANON if present, else SERVICE_ROLE */
 async function getUserFromAccessToken(token) {
   const SUPABASE_URL = process.env.SUPABASE_URL;
-  const SUPABASE_ANON_KEY = process.env.SUPABASE_ANON_KEY;
-  if (!SUPABASE_URL || !SUPABASE_ANON_KEY) return null;
+  const API_KEY =
+    process.env.SUPABASE_ANON_KEY ||
+    process.env.SUPABASE_SERVICE_ROLE ||
+    process.env.SUPABASE_SERVICE_ROLE_KEY ||
+    null;
+
+  if (!SUPABASE_URL || !API_KEY || !token) return null;
 
   try {
     const resp = await fetch(`${SUPABASE_URL}/auth/v1/user`, {
-      headers: {
-        Authorization: `Bearer ${token}`,
-        apikey: SUPABASE_ANON_KEY,
-      },
+      headers: { Authorization: `Bearer ${token}`, apikey: API_KEY },
     });
     if (!resp.ok) return null;
     const user = await resp.json();
@@ -64,13 +66,14 @@ async function getUserFromAccessToken(token) {
 
 exports.handler = async (event) => {
   try {
+    // CORS preflight
+    if (isOptions(event)) return json({ ok: true });
+
     if (event.httpMethod !== "POST") return json({ error: "method_not_allowed" }, 405);
 
     const token = readAccessToken(event);
-    const user = token ? await getUserFromAccessToken(token) : null;
-    if (!user?.id) {
-      return json({ error: "auth_required" }, 401);
-    }
+    const user = await getUserFromAccessToken(token);
+    if (!user?.id) return json({ error: "auth_required" }, 401);
 
     const TELNYX_API_KEY = process.env.TELNYX_API_KEY;
     const MESSAGING_PROFILE_ID = process.env.TELNYX_MESSAGING_PROFILE_ID;
@@ -92,9 +95,7 @@ exports.handler = async (event) => {
       body: JSON.stringify({ phone_numbers: [{ phone_number_id: phone_id }] }),
     });
     const orderJson = await orderRes.json().catch(() => ({}));
-    if (!orderRes.ok) {
-      return json({ error: "telnyx_order_failed", detail: orderJson }, 502);
-    }
+    if (!orderRes.ok) return json({ error: "telnyx_order_failed", detail: orderJson }, 502);
 
     // 2) Fetch the phone record for E.164
     const pnRes = await fetch(`https://api.telnyx.com/v2/phone_numbers/${encodeURIComponent(phone_id)}`, {
@@ -117,17 +118,15 @@ exports.handler = async (event) => {
       body: JSON.stringify({ messaging_profile_id: MESSAGING_PROFILE_ID }),
     });
     const assignJson = await assignRes.json().catch(() => ({}));
-    if (!assignRes.ok) {
-      return json({ error: "telnyx_assign_profile_failed", detail: assignJson }, 502);
-    }
+    if (!assignRes.ok) return json({ error: "telnyx_assign_profile_failed", detail: assignJson }, 502);
 
-    // 4) Upsert to agent_messaging_numbers
+    // 4) Upsert into agent_messaging_numbers
     const db = getServiceClient();
     const now = new Date().toISOString();
 
     const existing = await db
       .from("agent_messaging_numbers")
-      .select("id, user_id")
+      .select("id")
       .eq("e164", e164)
       .maybeSingle();
 
@@ -158,11 +157,7 @@ exports.handler = async (event) => {
       if (ins?.error) return json({ error: "db_insert_failed", detail: ins.error }, 500);
     }
 
-    return json({
-      ok: true,
-      number: { phone_number: e164, phone_id },
-      order: orderJson?.data || null,
-    });
+    return json({ ok: true, number: { phone_number: e164, phone_id }, order: orderJson?.data || null });
   } catch (e) {
     return json({ error: "unhandled", detail: String(e?.message || e) }, 500);
   }
