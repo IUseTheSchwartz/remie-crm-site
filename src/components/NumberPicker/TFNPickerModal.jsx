@@ -14,7 +14,7 @@ export default function TFNPickerModal({ userId, onPicked, onClose }) {
   const [items, setItems] = useState([]);
   const [meta, setMeta] = useState(null);
   const [loading, setLoading] = useState(false);
-  const [selecting, setSelecting] = useState(null); // e164 being ordered
+  const [selecting, setSelecting] = useState(null);
   const [error, setError] = useState(null);
 
   async function fetchPage({ pfx = prefix, pg = page }) {
@@ -30,7 +30,16 @@ export default function TFNPickerModal({ userId, onPicked, onClose }) {
         setMeta(null);
         return;
       }
-      setItems(Array.isArray(data.items) ? data.items : []);
+
+      // Client-side guard too: only +1{prefix} and never +1800
+      const cleaned = (Array.isArray(data.items) ? data.items : []).filter((n) => {
+        const pn = String(n.phone_number || "");
+        if (!pn.startsWith(`+1${pfx}`)) return false;
+        if (pn.startsWith("+1800")) return false;
+        return true;
+      });
+
+      setItems(cleaned);
       setMeta(data.meta || null);
     } catch (e) {
       setError(e.message || "Search failed");
@@ -41,8 +50,8 @@ export default function TFNPickerModal({ userId, onPicked, onClose }) {
     }
   }
 
-  useEffect(() => { fetchPage({ pfx: prefix, pg: 1 }); setPage(1); }, [prefix]);
-  useEffect(() => { fetchPage({ pfx: prefix, pg: page }); }, [page]);
+  useEffect(() => { setPage(1); fetchPage({ pfx: prefix, pg: 1 }); }, [prefix]);
+  useEffect(() => { fetchPage({ pfx: prefix, pg: page }); }, [page]); // page change for same prefix
 
   const canPrev = page > 1;
   const canNext = useMemo(() => {
@@ -100,7 +109,7 @@ export default function TFNPickerModal({ userId, onPicked, onClose }) {
           </button>
         </div>
 
-        {/* Prefix tabs (800 removed) */}
+        {/* Prefix tabs (no 800) */}
         <div className="flex flex-wrap gap-2 border-b border-white/10 p-2">
           {TFN_PREFIXES.map((p) => (
             <button
