@@ -4,18 +4,15 @@ import { supabase } from "../lib/supabaseClient";
 import { CreditCard, Check, Loader2, MessageSquare, Info, RotateCcw, Lock } from "lucide-react";
 import TFNPickerModal from "../components/NumberPicker/TFNPickerModal.jsx";
 
-/* ---------------- Template Catalog ---------------- */
+/* ---------------- Template Catalog (appointment removed) ---------------- */
 const TEMPLATE_DEFS = [
   { key: "new_lead", label: "New Lead (instant)" },
   { key: "new_lead_military", label: "New Lead (military)" },
-  { key: "appointment", label: "Appointment Reminder" },
   { key: "sold", label: "Sold - Policy Info" },
   { key: "payment_reminder", label: "Payment Reminder (coming soon)" },
   { key: "birthday_text", label: "Birthday Text (coming soon)" },
   { key: "holiday_text", label: "Holiday Text (coming soon)" },
 ];
-
-const APPOINTMENT_KEY = "appointment";
 
 // Templates locked until those flows are ready
 const LOCKED_KEYS = new Set(["payment_reminder", "birthday_text", "holiday_text"]);
@@ -23,14 +20,12 @@ const LOCKED_KEYS = new Set(["payment_reminder", "birthday_text", "holiday_text"
 /* Default enabled map: ALL OFF by default */
 const DEFAULT_ENABLED = Object.fromEntries(TEMPLATE_DEFS.map((t) => [t.key, false]));
 
-/* ---------------- Carrier-safe defaults ---------------- */
+/* ---------------- Carrier-safe defaults (appointment removed) ---------------- */
 const DEFAULTS = {
   new_lead:
     "Hi {{first_name}}, it’s {{agent_name}} in {{state}}. I received your request listing {{beneficiary}} as beneficiary.Text Or Call me anytime at {{agent_phone}}.",
   new_lead_military:
     "Hi {{first_name}}, it’s {{agent_name}}. I see your {{military_branch}} background and your request listing {{beneficiary}}. For options, please call me at {{agent_phone}}.",
-  appointment:
-    "Hi {{first_name}}, it’s {{agent_name}}. Reminder for our appointment at {{appt_time}}. Reply YES to confirm or NO to reschedule.",
   sold:
     "Hi {{first_name}}, it’s {{agent_name}}. Your policy is active:\n• Carrier: {{carrier}}\n• Policy #: {{policy_number}}\n• Premium: ${{premium}}/mo\nQuestions? Text me here.",
   payment_reminder:
@@ -41,7 +36,7 @@ const DEFAULTS = {
     "Hi {{first_name}}, it’s {{agent_name}}. Wishing you a happy holiday season. I’m here if you need anything for your coverage.",
 };
 
-/* Small toggle (now supports disabled) */
+/* Small toggle */
 function Toggle({ checked, onChange, label, disabled = false }) {
   const base = "inline-flex items-center rounded-full border px-2 py-1 text-[11px] select-none";
   const state = checked ? "bg-emerald-500/15 text-emerald-300 border-white/15" : "bg-white/5 text-white/70 border-white/15";
@@ -87,7 +82,7 @@ function fillTemplate(text, data) {
   });
 }
 
-/* Format +1AAA BBB CCCC nicely for display (very small helper, no deps) */
+/* Display helper for E.164 */
 function prettyE164(e164) {
   const s = String(e164 || "");
   const m = s.match(/^\+1?(\d{10})$/);
@@ -104,7 +99,6 @@ const DEFAULT_TEST_DATA = {
   company: "Prieto Insurance Solutions LLC",
   agent_phone: "",
   agent_email: "",
-  appt_time: "Tue 3:30 PM",
   carrier: "Americo",
   policy_number: "A1B2C3D4",
   premium: "84.12",
@@ -258,7 +252,7 @@ export default function MessagingSettings() {
         calendly_link: d.calendly_link || nextAgentVars.calendly_link,
       }));
 
-      // NEW: load first active TFN from agent_messaging_numbers
+      // load first active TFN from agent_messaging_numbers
       const { data: myNum } = await supabase
         .from("agent_messaging_numbers")
         .select("e164, status")
@@ -706,7 +700,6 @@ export default function MessagingSettings() {
               <VarRow token="company" desc="Your agency/company" />
               <VarRow token="agent_phone" desc="Your phone number" />
               <VarRow token="agent_email" desc="Your email address" />
-              <VarRow token="appt_time" desc="Formatted appointment time" />
               <VarRow token="carrier" desc="Policy carrier (e.g., Americo)" />
               <VarRow token="policy_number" desc="Issued policy number" />
               <VarRow token="premium" desc="Monthly premium amount" />
