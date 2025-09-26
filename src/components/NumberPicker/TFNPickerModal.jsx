@@ -18,7 +18,7 @@ export default function TFNPickerModal({ userId, onClose, onPicked }) {
 
   const prefixes = useMemo(() => ["800", "833", "844", "855", "866", "877", "888"], []);
 
-  async function getAuthHeader() {
+  async function authHeaders() {
     const { data } = await supabase.auth.getSession();
     const token = data?.session?.access_token || "";
     return token ? { Authorization: `Bearer ${token}` } : {};
@@ -29,38 +29,23 @@ export default function TFNPickerModal({ userId, onClose, onPicked }) {
     setLoading(true);
     setRows([]);
     try {
-      // Try GET ?prefix first; fall back to POST body if your function expects it.
-      const headers = { "Content-Type": "application/json", ...(await getAuthHeader()) };
-
-      let res = await fetch(
-        `/.netlify/functions/telnyx-search-numbers?prefix=${encodeURIComponent(prefix)}`,
-        { method: "GET", headers }
-      );
-
-      // If the function is POST-only, retry as POST.
-      if (res.status === 404 || res.status === 405) {
-        res = await fetch("/.netlify/functions/telnyx-search-numbers", {
-          method: "POST",
-          headers,
-          body: JSON.stringify({ prefix }),
-        });
-      }
-
+      // Your TFN-only Netlify function
+      const res = await fetch("/.netlify/functions/tfn-search", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          ...(await authHeaders()),
+        },
+        body: JSON.stringify({ prefix }), // e.g. "800", "888", etc.
+      });
       if (!res.ok) {
         const t = await res.text().catch(() => "");
         throw new Error(t || `search failed (${res.status})`);
       }
       const data = await res.json().catch(() => ({}));
 
-      // Normalize a few possible shapes:
-      //  - { numbers: [{ phone_number, country, region }...] }
-      //  - [{ phone_number, country, region }...]
-      const list = Array.isArray(data)
-        ? data
-        : Array.isArray(data?.numbers)
-        ? data.numbers
-        : [];
-
+      // Normalize typical shapes: { numbers: [...] } or just [...]
+      const list = Array.isArray(data) ? data : Array.isArray(data?.numbers) ? data.numbers : [];
       const normalized = list
         .map((n) => ({
           phone_number: n.phone_number || n.e164 || n.number || "",
@@ -81,21 +66,19 @@ export default function TFNPickerModal({ userId, onClose, onPicked }) {
     setWorking(true);
     setError("");
     try {
-      const headers = { "Content-Type": "application/json", ...(await getAuthHeader()) };
-
-      // Your existing function that both purchases and wires the messaging profile.
-      const res = await fetch("/.netlify/functions/telnyx-order-number", {
+      // Purchases + assigns via your TFN-select function
+      const res = await fetch("/.netlify/functions/tfn-select", {
         method: "POST",
-        headers,
+        headers: {
+          "Content-Type": "application/json",
+          ...(await authHeaders()),
+        },
         body: JSON.stringify({ phone_number: e164 }),
       });
-
       if (!res.ok) {
         const t = await res.text().catch(() => "");
         throw new Error(t || `order failed (${res.status})`);
       }
-
-      // Success → tell parent and close
       onPicked?.(e164);
       onClose?.();
     } catch (e) {
@@ -105,27 +88,17 @@ export default function TFNPickerModal({ userId, onClose, onPicked }) {
     }
   }
 
-  // load once on open
   useEffect(() => {
     search();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   return (
-    <div
-      className="fixed inset-0 z-50 grid place-items-center bg-black/50 p-4"
-      role="dialog"
-      aria-modal="true"
-      aria-label="Choose a Toll-Free Number"
-    >
+    <div className="fixed inset-0 z-50 grid place-items-center bg-black/50 p-4" role="dialog" aria-modal="true" aria-label="Choose a Toll-Free Number">
       <div className="w-full max-w-3xl rounded-2xl border border-white/10 bg-[#0b0b12] p-4 shadow-2xl">
         <div className="mb-3 flex items-center justify-between">
           <h2 className="text-sm font-semibold">Choose a Toll-Free Number</h2>
-          <button
-            type="button"
-            onClick={onClose}
-            className="rounded-md border border-white/15 bg-white/5 px-3 py-1 text-xs hover:bg-white/10"
-          >
+          <button type="button" onClick={onClose} className="rounded-md border border-white/15 bg-white/5 px-3 py-1 text-xs hover:bg-white/10">
             Close
           </button>
         </div>
@@ -155,9 +128,7 @@ export default function TFNPickerModal({ userId, onClose, onPicked }) {
         </div>
 
         {error && (
-          <div className="mb-3 rounded-md border border-rose-400/30 bg-rose-400/10 p-2 text-xs text-rose-200">
-            {error}
-          </div>
+          <div className="mb-3 rounded-md border border-rose-400/30 bg-rose-400/10 p-2 text-xs text-rose-200">{error}</div>
         )}
 
         <div className="max-h-[420px] overflow-auto rounded-lg border border-white/10">
@@ -201,7 +172,7 @@ export default function TFNPickerModal({ userId, onClose, onPicked }) {
         </div>
 
         <div className="mt-2 text-[11px] text-white/50">
-          Selecting a number will purchase it via Telnyx, assign your messaging profile, and link it to your account.
+          Selecting a number will purchase it via Telnyx, assign the messaging profile, and link it to your account.
         </div>
       </div>
     </div>
