@@ -3,7 +3,6 @@ import { useEffect, useMemo, useState } from "react";
 import { supabase } from "../../lib/supabaseClient";
 import { Loader2, X, Search } from "lucide-react";
 
-// Allowed toll-free (NO 800)
 const ALLOWED_PREFIXES = ["833", "844", "855", "866", "877", "888"];
 
 export default function TFNPickerModal({ userId, onClose, onPicked }) {
@@ -42,17 +41,15 @@ export default function TFNPickerModal({ userId, onClose, onPicked }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [prefix, page]);
 
-  async function getAccessToken() {
-    // Try current session
-    let { data } = await supabase.auth.getSession();
-    let token = data?.session?.access_token;
-
-    // If missing/expired, refresh once
-    if (!token) {
+  async function getFreshAccessToken() {
+    // Always try to refresh, then fall back to current
+    try {
       const { data: refreshed } = await supabase.auth.refreshSession();
-      token = refreshed?.session?.access_token || null;
-    }
-    return token;
+      const token = refreshed?.session?.access_token;
+      if (token) return token;
+    } catch {}
+    const { data } = await supabase.auth.getSession();
+    return data?.session?.access_token || null;
   }
 
   async function handleSelect(phoneId) {
@@ -61,7 +58,7 @@ export default function TFNPickerModal({ userId, onClose, onPicked }) {
       setError("");
       setSuccessMsg("");
 
-      const accessToken = await getAccessToken();
+      const accessToken = await getFreshAccessToken();
       if (!accessToken) {
         setError("You must be signed in.");
         setOrderingId(null);
@@ -72,6 +69,7 @@ export default function TFNPickerModal({ userId, onClose, onPicked }) {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
+          // Send token in Authorization header (server reads Bearer or cookie)
           Authorization: `Bearer ${accessToken}`,
         },
         body: JSON.stringify({ phone_id: phoneId }),
@@ -80,7 +78,7 @@ export default function TFNPickerModal({ userId, onClose, onPicked }) {
       const data = await res.json().catch(() => ({}));
       if (!res.ok || !data?.ok) {
         const detail = data?.detail || data?.error || "Order failed";
-        setError(`Order failed: ${detail}`);
+        setError(typeof detail === "string" ? detail : "Order failed");
         setOrderingId(null);
         return;
       }
@@ -102,7 +100,13 @@ export default function TFNPickerModal({ userId, onClose, onPicked }) {
       <div className="w-full max-w-3xl rounded-2xl border border-white/10 bg-[#0b0b12] p-4 shadow-2xl">
         <div className="mb-3 flex items-center justify-between">
           <h2 className="text-sm font-semibold">{title}</h2>
-          <button type="button" onClick={() => onClose?.()} className="rounded-md border border-white/15 bg-white/5 p-1 hover:bg-white/10" aria-label="Close" title="Close">
+          <button
+            type="button"
+            onClick={() => onClose?.()}
+            className="rounded-md border border-white/15 bg-white/5 p-1 hover:bg-white/10"
+            aria-label="Close"
+            title="Close"
+          >
             <X className="h-4 w-4" />
           </button>
         </div>
@@ -118,8 +122,9 @@ export default function TFNPickerModal({ userId, onClose, onPicked }) {
                 onClick={() => { setPrefix(p); setPage(1); }}
                 className={[
                   "rounded-lg border px-3 py-1.5 text-sm",
-                  active ? "border-emerald-400/40 bg-emerald-400/10 text-emerald-200"
-                         : "border-white/15 bg-white/5 text-white/80 hover:bg-white/10",
+                  active
+                    ? "border-emerald-400/40 bg-emerald-400/10 text-emerald-200"
+                    : "border-white/15 bg-white/5 text-white/80 hover:bg-white/10",
                 ].join(" ")}
               >
                 {p}
