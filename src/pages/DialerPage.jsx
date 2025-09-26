@@ -24,8 +24,6 @@ const FREE_NUMBERS = 5;                  // first 5 numbers are free
 const COST_PER_SEGMENT_CENTS =
   Number(import.meta.env?.VITE_COST_PER_SEGMENT_CENTS ?? 1); // default 1¢ per started min
 
-const rateLabel = `$${(COST_PER_SEGMENT_CENTS / 100).toFixed(2)}/min (per started min)`;
-
 const fmt = (s) => { try { return new Date(s).toLocaleString(); } catch { return s || ""; } };
 const normUS = (s) => {
   const d = String(s || "").replace(/\D+/g, "");
@@ -59,9 +57,18 @@ export default function DialerPage() {
   const [phoneSavedAt, setPhoneSavedAt] = useState(0);
   const lastLoadedPhoneRef = useRef("");
 
+  // 🔴 New: global recording toggle (persisted)
+  const [recordEnabled, setRecordEnabled] = useState(
+    JSON.parse(localStorage.getItem("recordEnabled") || "false")
+  );
+
   /* ---------- computed ---------- */
   const freebiesLeft = Math.max(0, FREE_NUMBERS - (myNumbers?.length || 0));
   const hasNumber = (myNumbers?.length || 0) > 0;
+
+  // Rate pill reflects current toggle (UI only)
+  const ratePerMinLabelCents = recordEnabled ? COST_PER_SEGMENT_CENTS * 2 : COST_PER_SEGMENT_CENTS;
+  const rateLabel = `$${(ratePerMinLabelCents / 100).toFixed(2)}/min (per started min)`;
 
   /* ---------- effects ---------- */
   useEffect(() => {
@@ -70,6 +77,11 @@ export default function DialerPage() {
     loadAgentPhone();
     refreshBalance();
   }, []);
+
+  // persist recording toggle
+  useEffect(() => {
+    localStorage.setItem("recordEnabled", JSON.stringify(!!recordEnabled));
+  }, [recordEnabled]);
 
   async function refreshBalance() {
     try {
@@ -142,7 +154,11 @@ export default function DialerPage() {
     if (!hasNumber) return alert("You don’t own any numbers yet. Buy one to place calls.");
     setBusy(true);
     try {
-      await startCall({ agentNumber: normUS(agentCell), leadNumber: normUS(toNumber) });
+      await startCall({
+        agentNumber: normUS(agentCell),
+        leadNumber: normUS(toNumber),
+        record: !!recordEnabled, // 🔴 pass recording flag so Leads-page clicks follow this too
+      });
       setTimeout(refreshLogs, 2000); // allow webhook to log
     } catch (e) {
       alert(e.message || "Failed to start call");
@@ -291,6 +307,21 @@ export default function DialerPage() {
                 <span>Call</span>
               </Button>
             </div>
+
+            {/* 🔴 Recording toggle applies globally (saved to localStorage) */}
+            <div className="sm:col-span-5 -mt-2">
+              <label className="inline-flex items-center gap-2 text-sm">
+                <input
+                  type="checkbox"
+                  checked={recordEnabled}
+                  onChange={(e) => setRecordEnabled(e.target.checked)}
+                />
+                <span>
+                  Record calls (applies to Dialer & Leads). Rate becomes{" "}
+                  {`$${((COST_PER_SEGMENT_CENTS * 2) / 100).toFixed(2)}`}/min when enabled.
+                </span>
+              </label>
+            </div>
           </div>
 
           {!hasNumber && (
@@ -379,8 +410,14 @@ export default function DialerPage() {
                 {logs.map((c) => {
                   const status = (c.status || "").toLowerCase();
                   const billable = status === "completed" || status === "answered" || status === "bridged";
-                  const cents = billable && c.duration_seconds > 0
-                    ? startedMinuteSegments(c.duration_seconds) * COST_PER_SEGMENT_CENTS
+                  const segments = billable && c.duration_seconds > 0
+                    ? startedMinuteSegments(c.duration_seconds)
+                    : 0;
+
+                  // If a recording_url exists for this call, assume recording was ON → double rate for that row
+                  const factor = c.recording_url ? 2 : 1;
+                  const cents = billable && segments > 0
+                    ? segments * COST_PER_SEGMENT_CENTS * factor
                     : null;
 
                   return (
