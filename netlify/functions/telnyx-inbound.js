@@ -26,7 +26,7 @@ function toE164(p) {
 async function resolveUserId(db, telnyxToE164) {
   // A) Direct ownership via per-agent TFN
   const { data: owner } = await db
-    .from("agent_numbers")
+    .from("agent_messaging_numbers")
     .select("user_id")
     .eq("e164", telnyxToE164)
     .maybeSingle();
