@@ -1,27 +1,25 @@
 // File: src/components/NumberPicker/TFNPickerModal.jsx
 import { useEffect, useMemo, useState } from "react";
 import { supabase } from "../../lib/supabaseClient";
-import { X, Search, ChevronLeft, ChevronRight, AlertTriangle, Check, Loader2 } from "lucide-react";
+import { X, ChevronLeft, ChevronRight, AlertTriangle, Check, Loader2 } from "lucide-react";
 
-const TFN_PREFIXES = ["800", "833", "844", "855", "866", "877", "888"];
+const TFN_PREFIXES = ["833", "844", "855", "866", "877", "888"]; // 800 removed
 
 function cls(...xs) { return xs.filter(Boolean).join(" "); }
 
 export default function TFNPickerModal({ userId, onPicked, onClose }) {
-  const [prefix, setPrefix] = useState("800");
+  const [prefix, setPrefix] = useState(TFN_PREFIXES[0]);
   const [page, setPage] = useState(1);
   const [limit] = useState(30);
   const [items, setItems] = useState([]);
   const [meta, setMeta] = useState(null);
   const [loading, setLoading] = useState(false);
-  const [selecting, setSelecting] = useState(null); // e164 currently ordering
-  const [error, setError] = useState(null); // string
-  const [errorDetail, setErrorDetail] = useState(null); // telnyx json if any
+  const [selecting, setSelecting] = useState(null); // e164 being ordered
+  const [error, setError] = useState(null);
 
   async function fetchPage({ pfx = prefix, pg = page }) {
     setLoading(true);
     setError(null);
-    setErrorDetail(null);
     try {
       const qs = new URLSearchParams({ prefix: pfx, page: String(pg), limit: String(limit) });
       const res = await fetch(`/.netlify/functions/tfn-search?` + qs.toString(), { method: "GET" });
@@ -43,12 +41,11 @@ export default function TFNPickerModal({ userId, onPicked, onClose }) {
     }
   }
 
-  useEffect(() => { fetchPage({ pfx: prefix, pg: 1 }); setPage(1); /* reset page on prefix change */ }, [prefix]);
+  useEffect(() => { fetchPage({ pfx: prefix, pg: 1 }); setPage(1); }, [prefix]);
   useEffect(() => { fetchPage({ pfx: prefix, pg: page }); }, [page]);
 
   const canPrev = page > 1;
   const canNext = useMemo(() => {
-    // Telnyx meta may include pagination; if not, just allow next
     if (!meta || !meta.total_pages) return true;
     return page < (meta.total_pages || 9999);
   }, [meta, page]);
@@ -56,10 +53,8 @@ export default function TFNPickerModal({ userId, onPicked, onClose }) {
   async function selectNumber(n) {
     try {
       setError(null);
-      setErrorDetail(null);
       setSelecting(n.phone_number);
 
-      // Get a fresh auth token (so function can resolve the user)
       const { data: sessionData } = await supabase.auth.getSession();
       const jwt = sessionData?.session?.access_token || null;
 
@@ -67,27 +62,21 @@ export default function TFNPickerModal({ userId, onPicked, onClose }) {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          // The function accepts the bearer auth in Authorization or X-Supabase-Auth
           ...(jwt ? { Authorization: `Bearer ${jwt}`, "X-Supabase-Auth": jwt } : {}),
         },
         body: JSON.stringify({
-          // Always send the E.164; include the Telnyx available-number id as a hint
           e164: n.phone_number,
           telnyx_phone_id: n.id,
-          // also pass user_id as a backup if the function wants it
           user_id: userId || undefined,
         }),
       });
 
       const data = await res.json().catch(() => ({}));
       if (!res.ok || data.error) {
-        setError(data.error || `Select failed (${res.status})`);
-        // If the function surfaced the Telnyx error JSON, show it for debugging
-        setErrorDetail(data.telnyx || data.detail || null);
+        setError(data.error || `Could not assign number (${res.status})`);
         return;
       }
 
-      // Success: tell parent page and close
       if (typeof onPicked === "function") onPicked(data.e164 || n.phone_number);
       if (typeof onClose === "function") onClose();
     } catch (e) {
@@ -111,7 +100,7 @@ export default function TFNPickerModal({ userId, onPicked, onClose }) {
           </button>
         </div>
 
-        {/* Prefix tabs */}
+        {/* Prefix tabs (800 removed) */}
         <div className="flex flex-wrap gap-2 border-b border-white/10 p-2">
           {TFN_PREFIXES.map((p) => (
             <button
@@ -132,15 +121,8 @@ export default function TFNPickerModal({ userId, onPicked, onClose }) {
           {loading ? (
             <div className="flex items-center gap-2 text-white/70"><Loader2 className="h-4 w-4 animate-spin" /> Searching…</div>
           ) : error ? (
-            <div className="space-y-2">
-              <div className="inline-flex items-center gap-2 rounded-lg border border-amber-400/30 bg-amber-400/10 px-2 py-1 text-amber-200 text-xs">
-                <AlertTriangle className="h-4 w-4" /> {error}
-              </div>
-              {errorDetail && (
-                <pre className="max-h-48 overflow-auto rounded-lg border border-white/10 bg-black/40 p-2 text-[11px] text-white/80">
-                  {JSON.stringify(errorDetail, null, 2)}
-                </pre>
-              )}
+            <div className="inline-flex items-center gap-2 rounded-lg border border-amber-400/30 bg-amber-400/10 px-2 py-1 text-amber-200 text-xs">
+              <AlertTriangle className="h-4 w-4" /> {error}
             </div>
           ) : items.length === 0 ? (
             <div className="text-sm text-white/60">No numbers available for {prefix} right now. Try another prefix or page.</div>
