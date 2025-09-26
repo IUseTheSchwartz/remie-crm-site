@@ -50,7 +50,7 @@ async function resolveUserId(event, parsedBody) {
   return { user_id: null, via: "none" };
 }
 
-// Always returns { ok, status, url, method, headers, data, raw }
+/* --- Telnyx fetch wrapper: always returns full details --- */
 async function telnyxFetch(url, opts = {}) {
   const method = (opts.method || "GET").toUpperCase();
   const res = await fetch(url, opts);
@@ -70,6 +70,7 @@ async function telnyxFetch(url, opts = {}) {
   return shaped;
 }
 
+/* --- Telnyx helpers --- */
 async function telnyxOrder({ apiKey, phone_id, e164 }) {
   const payload = phone_id
     ? { phone_numbers: [{ phone_number_id: phone_id }] }
@@ -92,6 +93,7 @@ async function telnyxGetAvailById({ apiKey, avail_id }) {
   );
 }
 
+// Poll inventory by number to get real phone_numbers ID
 async function telnyxFindIdByNumber({ apiKey, e164, tries = 10, delayMs = 900 }) {
   let last = null;
   for (let i = 0; i < tries; i++) {
@@ -111,20 +113,6 @@ async function telnyxFindIdByNumber({ apiKey, e164, tries = 10, delayMs = 900 })
   return { id: null, phone_number: null, last };
 }
 
-async function telnyxAssignProfile({ apiKey, phone_id, messaging_profile_id }) {
-  return telnyxFetch(
-    `https://api.telnyx.com/v2/phone_numbers/${encodeURIComponent(phone_id)}`,
-    {
-      method: "PATCH",
-      headers: {
-        Authorization: `Bearer ${apiKey}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({ messaging_profile_id }),
-    }
-  );
-}
-
 exports.handler = async (event) => {
   try {
     if (event.httpMethod !== "POST") return json({ error: "method_not_allowed" }, 405);
@@ -142,10 +130,10 @@ exports.handler = async (event) => {
     }
 
     const TELNYX_API_KEY = process.env.TELNYX_API_KEY;
-    const MESSAGING_PROFILE_ID = process.env.TELNYX_MESSAGING_PROFILE_ID || null;
+    const MESSAGING_PROFILE_ID = process.env.TELNYX_MESSAGING_PROFILE_ID || null; // not used now
     if (!TELNYX_API_KEY) return json({ error: "TELNYX_API_KEY missing" }, 500);
-    if (!MESSAGING_PROFILE_ID) return json({ error: "TELNYX_MESSAGING_PROFILE_ID missing" }, 500);
 
+    // Accept either available-number id OR a phone_number (E.164)
     const avail_id = String(body.telnyx_phone_id || body.phone_number_id || body.id || "").trim();
     const rawNumber = String(body.e164 || body.phone_number || body.number || "").trim();
     let e164 = toE164(rawNumber);
@@ -158,6 +146,7 @@ exports.handler = async (event) => {
       }, 400);
     }
 
+    // If we only received the available-number id, fetch its phone_number first
     if (!e164 && avail_id) {
       const avail = await telnyxGetAvailById({ apiKey: TELNYX_API_KEY, avail_id });
       if (!avail.ok && avail.status !== 404) {
@@ -166,15 +155,20 @@ exports.handler = async (event) => {
       e164 = toE164(avail?.data?.data?.phone_number || "");
     }
 
-    // 1) Order
+    // 1) Order the number
     const order = await telnyxOrder({ apiKey: TELNYX_API_KEY, phone_id: avail_id || null, e164: e164 || null });
     if (!order.ok) {
-      return json({ error: "telnyx_order_failed", telnyx: order, request: { used_avail_id: !!avail_id, used_e164: !!e164 } }, 502);
+      return json(
+        { error: "telnyx_order_failed", telnyx: order, request: { used_avail_id: !!avail_id, used_e164: !!e164 } },
+        502
+      );
     }
 
+    // Determine final phone id + number
     let finalPhoneId = order.data?.data?.phone_numbers?.[0]?.id || null;
     let finalE164 = e164 || order.data?.data?.phone_numbers?.[0]?.phone_number || null;
 
+    // If E.164 missing, try available-number lookup again
     if (!finalE164 && avail_id) {
       const avail2 = await telnyxGetAvailById({ apiKey: TELNYX_API_KEY, avail_id });
       if (!avail2.ok && avail2.status !== 404) {
@@ -183,50 +177,25 @@ exports.handler = async (event) => {
       finalE164 = toE164(avail2?.data?.data?.phone_number || "");
     }
 
+    // If id missing, poll inventory by number
     if (!finalPhoneId) {
       if (!finalE164) {
         return json({ error: "missing_phone_id_after_order", order_full: order }, 502);
       }
       const looked = await telnyxFindIdByNumber({ apiKey: TELNYX_API_KEY, e164: finalE164 });
       if (!looked.id) {
-        return json({ error: "missing_phone_id_after_order", lookup_for: finalE164, last_inventory_response: looked.last, order_full: order }, 502);
+        return json({
+          error: "missing_phone_id_after_order",
+          lookup_for: finalE164,
+          last_inventory_response: looked.last,
+          order_full: order
+        }, 502);
       }
       finalPhoneId = looked.id;
       finalE164 = finalE164 || looked.phone_number;
     }
 
-    // 2) Assign messaging profile (with retry if 404)
-    async function tryAssign(idToUse) {
-      return telnyxAssignProfile({
-        apiKey: TELNYX_API_KEY,
-        phone_id: idToUse,
-        messaging_profile_id: MESSAGING_PROFILE_ID,
-      });
-    }
-
-    let assign = await tryAssign(finalPhoneId);
-
-    if (!assign.ok && assign.status === 404 && finalE164) {
-      const looked = await telnyxFindIdByNumber({ apiKey: TELNYX_API_KEY, e164: finalE164, tries: 10, delayMs: 900 });
-      if (looked?.id) {
-        finalPhoneId = looked.id;
-        assign = await tryAssign(finalPhoneId);
-      } else {
-        return json({
-          error: "telnyx_assign_profile_failed",
-          telnyx: assign,
-          context: { attempted_phone_id: finalPhoneId, e164: finalE164, messaging_profile_id: MESSAGING_PROFILE_ID },
-          inventory_lookup_last: looked?.last || null,
-          hint: "Order likely succeeded but inventory not visible yet; retry later or increase poll time.",
-        }, 502);
-      }
-    }
-
-    if (!assign.ok) {
-      return json({ error: "telnyx_assign_profile_failed", telnyx: assign, context: { phone_id: finalPhoneId, e164: finalE164 } }, 502);
-    }
-
-    if (!finalE164) finalE164 = assign.data?.data?.phone_number || finalE164;
+    // 2) (SKIPPED) Assign messaging profile — you said you'll do this manually.
 
     // 3) Save to DB
     const db = getServiceClient();
@@ -237,7 +206,7 @@ exports.handler = async (event) => {
           user_id,
           e164: finalE164,
           telnyx_phone_id: finalPhoneId,
-          telnyx_messaging_profile_id: MESSAGING_PROFILE_ID,
+          // telnyx_messaging_profile_id: MESSAGING_PROFILE_ID, // omitted since you’re doing it manually
           status: "active",
           verified_at: new Date().toISOString(),
         },
@@ -248,7 +217,15 @@ exports.handler = async (event) => {
 
     if (error) return json({ error: "db_upsert_failed", detail: error.message }, 500);
 
-    return json({ ok: true, id: data?.id || null, e164: finalE164, telnyx_phone_id: finalPhoneId, auth_via: via });
+    return json({
+      ok: true,
+      id: data?.id || null,
+      e164: finalE164,
+      telnyx_phone_id: finalPhoneId,
+      auth_via: via,
+      assigned_profile: false,       // explicit: we didn’t assign automatically
+      note: "Messaging profile not attached by function (manual attach expected)."
+    });
   } catch (e) {
     console.error("[tfn-select unhandled]", e);
     return json({ error: "unhandled", detail: String(e?.message || e), stack: e?.stack }, 500);
