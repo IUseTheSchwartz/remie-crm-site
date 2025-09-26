@@ -104,15 +104,30 @@ async function getBalanceCents(db, user_id) {
   return Number(data?.balance_cents ?? 0);
 }
 
-// Prefer ENV_FROM first (TELNYX_FROM), then last-used, then agent profile, then let profile route
+/* ====== CHANGED: Prefer per-agent TFN from agent_numbers, then shared env, then existing fallbacks ====== */
 async function pickFromNumber(db, user_id) {
-  // 1) explicit env
+  // 0) Per-agent TFN from agent_numbers (first active)
+  try {
+    const { data: num } = await db
+      .from("agent_numbers")
+      .select("e164, status")
+      .eq("user_id", user_id)
+      .eq("status", "active")
+      .limit(1)
+      .maybeSingle();
+    if (num?.e164) {
+      const e = toE164(num.e164);
+      if (e) return e;
+    }
+  } catch {}
+
+  // 1) Shared env number (fallback)
   if (ENV_FROM_RAW) {
     const e = toE164(ENV_FROM_RAW);
     if (e) return e;
   }
 
-  // 2) last used from_number
+  // 2) Last used from_number by this user (convenience)
   try {
     const { data } = await db
       .from("messages")
@@ -128,16 +143,17 @@ async function pickFromNumber(db, user_id) {
     }
   } catch {}
 
-  // 3) agent profile phone (may not be Telnyx-hosted; last resort)
+  // 3) Agent profile phone (may not be Telnyx-hosted; absolute last resort)
   const ap = await getAgentProfile(db, user_id);
   if (ap?.phone) {
     const e = toE164(ap.phone);
     if (e) return e;
   }
 
-  // 4) omit "from" and rely on messaging profile routing
+  // 4) Omit "from" and rely on messaging profile routing
   return null;
 }
+/* ====== /CHANGED ====== */
 
 // ---- Telnyx send ----
 async function telnyxSend({ from, to, text, profileId }) {
