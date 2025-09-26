@@ -47,13 +47,61 @@ async function resolveUserId(event, parsedBody) {
   return { user_id: null, via: "none" };
 }
 
+/* ---------------- Telnyx fetch helper ----------------
+   Always returns:
+   {
+     ok, status, url, method,
+     headers: { ...response headers... },
+     data: parsedJSONOrNull,
+     raw: rawTextIfParseFailedOrOriginal
+   }
+------------------------------------------------------- */
+async function telnyxFetch(url, opts = {}) {
+  const method = (opts.method || "GET").toUpperCase();
+  const res = await fetch(url, opts);
+
+  const headers = {};
+  for (const [k, v] of res.headers.entries()) headers[k] = v;
+
+  let raw = null;
+  let data = null;
+  try {
+    // Try reading as text first so we can always include raw on error
+    raw = await res.text();
+    try {
+      data = raw ? JSON.parse(raw) : null;
+    } catch {
+      data = null;
+    }
+  } catch {
+    // If even reading text fails, keep data/raw null
+  }
+
+  const shaped = {
+    ok: res.ok,
+    status: res.status,
+    url,
+    method,
+    headers,
+    data,
+    raw,
+  };
+
+  if (!res.ok) {
+    // Always log full response details on failure
+    console.error(`[TELNYX ${method} ${url}] FAILED`, shaped);
+  }
+
+  return shaped;
+}
+
 // ---- Telnyx helpers ----
 async function telnyxOrder({ apiKey, phone_id, e164 }) {
   const payload = phone_id
     ? { phone_numbers: [{ phone_number_id: phone_id }] }
     : { phone_numbers: [{ phone_number: e164 }] };
 
-  const res = await fetch("https://api.telnyx.com/v2/number_orders", {
+  return telnyxFetch("https://api.telnyx.com/v2/number_orders", {
     method: "POST",
     headers: {
       Authorization: `Bearer ${apiKey}`,
@@ -61,43 +109,40 @@ async function telnyxOrder({ apiKey, phone_id, e164 }) {
     },
     body: JSON.stringify(payload),
   });
-  const data = await res.json().catch(() => ({}));
-  return { ok: res.ok, status: res.status, data };
 }
 
 async function telnyxGetAvailById({ apiKey, avail_id }) {
-  const res = await fetch(
+  return telnyxFetch(
     `https://api.telnyx.com/v2/available_phone_numbers/${encodeURIComponent(
       avail_id
     )}`,
     { method: "GET", headers: { Authorization: `Bearer ${apiKey}` } }
   );
-  const data = await res.json().catch(() => ({}));
-  return { ok: res.ok, status: res.status, data };
 }
 
 // Poll the inventory until the newly purchased number shows up with an ID
 async function telnyxFindIdByNumber({ apiKey, e164, tries = 10, delayMs = 900 }) {
+  let last = null;
   for (let i = 0; i < tries; i++) {
     const url = new URL("https://api.telnyx.com/v2/phone_numbers");
     url.searchParams.set("filter[phone_number]", e164);
 
-    const res = await fetch(url.toString(), {
+    last = await telnyxFetch(url.toString(), {
       method: "GET",
       headers: { Authorization: `Bearer ${apiKey}` },
     });
-    const data = await res.json().catch(() => ({}));
 
-    const row = data?.data?.[0];
+    const row = last?.data?.data?.[0];
     if (row?.id) return { id: row.id, phone_number: row.phone_number };
 
     await new Promise((r) => setTimeout(r, delayMs));
   }
-  return { id: null, phone_number: null };
+  // Return last response details to help debug
+  return { id: null, phone_number: null, last };
 }
 
 async function telnyxAssignProfile({ apiKey, phone_id, messaging_profile_id }) {
-  const res = await fetch(
+  return telnyxFetch(
     `https://api.telnyx.com/v2/phone_numbers/${encodeURIComponent(phone_id)}`,
     {
       method: "PATCH",
@@ -108,8 +153,6 @@ async function telnyxAssignProfile({ apiKey, phone_id, messaging_profile_id }) {
       body: JSON.stringify({ messaging_profile_id }),
     }
   );
-  const data = await res.json().catch(() => ({}));
-  return { ok: res.ok, status: res.status, data };
 }
 
 exports.handler = async (event) => {
@@ -120,11 +163,11 @@ exports.handler = async (event) => {
     try {
       body = JSON.parse(event.body || "{}");
     } catch {
-      return json({ error: "invalid_json" }, 400);
+      return json({ error: "invalid_json", received: event.body }, 400);
     }
 
     const { user_id, via } = await resolveUserId(event, body);
-    if (!user_id) return json({ error: "auth_required" }, 401);
+    if (!user_id) return json({ error: "auth_required", received_body_keys: Object.keys(body || {}) }, 401);
 
     const TELNYX_API_KEY = process.env.TELNYX_API_KEY;
     const MESSAGING_PROFILE_ID = process.env.TELNYX_MESSAGING_PROFILE_ID || null;
@@ -145,6 +188,7 @@ exports.handler = async (event) => {
           error: "missing_params",
           detail: "Provide available-number id (telnyx_phone_id/id) OR e164 (phone_number).",
           received_keys: Object.keys(body || {}),
+          received_body: body,
         },
         400
       );
@@ -153,6 +197,16 @@ exports.handler = async (event) => {
     // If we only received the available-number id, try to fetch its phone_number pre-order.
     if (!e164 && avail_id) {
       const avail = await telnyxGetAvailById({ apiKey: TELNYX_API_KEY, avail_id });
+      if (!avail.ok && avail.status !== 404) {
+        // Return full Telnyx response when this lookup itself fails
+        return json(
+          {
+            error: "telnyx_availability_lookup_failed",
+            telnyx: { status: avail.status, headers: avail.headers, data: avail.data, raw: avail.raw, url: avail.url, method: avail.method },
+          },
+          502
+        );
+      }
       e164 = toE164(avail?.data?.data?.phone_number || "");
     }
 
@@ -163,20 +217,50 @@ exports.handler = async (event) => {
       e164: e164 || null,
     });
     if (!order.ok) {
-      return json({ error: "telnyx_order_failed", detail: order.data }, 502);
+      return json(
+        {
+          error: "telnyx_order_failed",
+          telnyx: {
+            status: order.status,
+            headers: order.headers,
+            data: order.data,
+            raw: order.raw,
+            url: order.url,
+            method: order.method,
+          },
+          request: {
+            used_avail_id: !!avail_id,
+            used_e164: !!e164,
+          },
+        },
+        502
+      );
     }
 
     // Work out the final phone id + number
-    let finalPhoneId =
-      order.data?.data?.phone_numbers?.[0]?.id || null;
-    let finalE164 =
-      e164 ||
-      order.data?.data?.phone_numbers?.[0]?.phone_number ||
-      null;
+    let finalPhoneId = order.data?.data?.phone_numbers?.[0]?.id || null;
+    let finalE164 = e164 || order.data?.data?.phone_numbers?.[0]?.phone_number || null;
 
     // If we still don't have the E.164 (Telnyx sometimes omits it), try the available-number lookup again.
     if (!finalE164 && avail_id) {
       const avail2 = await telnyxGetAvailById({ apiKey: TELNYX_API_KEY, avail_id });
+      if (!avail2.ok && avail2.status !== 404) {
+        return json(
+          {
+            error: "telnyx_availability_lookup_failed_postorder",
+            telnyx: {
+              status: avail2.status,
+              headers: avail2.headers,
+              data: avail2.data,
+              raw: avail2.raw,
+              url: avail2.url,
+              method: avail2.method,
+            },
+            order_echo: order, // echo the full order for context
+          },
+          502
+        );
+      }
       finalE164 = toE164(avail2?.data?.data?.phone_number || "");
     }
 
@@ -187,8 +271,15 @@ exports.handler = async (event) => {
           {
             error: "missing_phone_id_after_order",
             detail:
-              "Order succeeded but number not returned, and could not infer E.164 for lookup.",
-            telnyx_response_snippet: JSON.stringify(order.data).slice(0, 400),
+              "Order succeeded but number id/phone_number not returned, and could not infer E.164 for lookup.",
+            order_full: {
+              status: order.status,
+              headers: order.headers,
+              data: order.data,
+              raw: order.raw,
+              url: order.url,
+              method: order.method,
+            },
           },
           502
         );
@@ -204,6 +295,24 @@ exports.handler = async (event) => {
             detail:
               "Could not resolve phone_number_id after ordering (poll timed out).",
             lookup_for: finalE164,
+            last_inventory_response: looked.last
+              ? {
+                  status: looked.last.status,
+                  headers: looked.last.headers,
+                  data: looked.last.data,
+                  raw: looked.last.raw,
+                  url: looked.last.url,
+                  method: looked.last.method,
+                }
+              : null,
+            order_full: {
+              status: order.status,
+              headers: order.headers,
+              data: order.data,
+              raw: order.raw,
+              url: order.url,
+              method: order.method,
+            },
           },
           502
         );
@@ -219,7 +328,25 @@ exports.handler = async (event) => {
       messaging_profile_id: MESSAGING_PROFILE_ID,
     });
     if (!assign.ok) {
-      return json({ error: "telnyx_assign_profile_failed", detail: assign.data }, 502);
+      return json(
+        {
+          error: "telnyx_assign_profile_failed",
+          telnyx: {
+            status: assign.status,
+            headers: assign.headers,
+            data: assign.data,
+            raw: assign.raw,
+            url: assign.url,
+            method: assign.method,
+          },
+          context: {
+            phone_id: finalPhoneId,
+            e164: finalE164,
+            messaging_profile_id: MESSAGING_PROFILE_ID,
+          },
+        },
+        502
+      );
     }
     if (!finalE164) finalE164 = assign.data?.data?.phone_number || finalE164;
 
@@ -240,7 +367,10 @@ exports.handler = async (event) => {
       )
       .select("id")
       .maybeSingle();
-    if (error) return json({ error: "db_upsert_failed", detail: error.message }, 500);
+    if (error) {
+      console.error("[DB upsert error]", error);
+      return json({ error: "db_upsert_failed", detail: error.message }, 500);
+    }
 
     return json({
       ok: true,
@@ -250,6 +380,10 @@ exports.handler = async (event) => {
       auth_via: via,
     });
   } catch (e) {
-    return json({ error: "unhandled", detail: String(e?.message || e) }, 500);
+    console.error("[tfn-select unhandled]", e);
+    return json(
+      { error: "unhandled", detail: String(e?.message || e), stack: e?.stack },
+      500
+    );
   }
 };
