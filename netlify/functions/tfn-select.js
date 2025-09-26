@@ -20,8 +20,23 @@ function toE164(s) {
   return String(s || "").startsWith("+") ? String(s) : null;
 }
 
-// ---- auth helper ----
+// ---- resolve user (NOW BODY-FIRST, NO TOKEN REQUIRED IF PRESENT) ----
 async function resolveUserId(event, parsedBody) {
+  // 1) Accept user_id straight from body (like dialer)
+  const bodyUid =
+    parsedBody?.user_id ||
+    parsedBody?.userId ||
+    parsedBody?.uid ||
+    null;
+
+  if (bodyUid) return { user_id: String(bodyUid), via: "body" };
+
+  // 2) Accept from querystring too (handy for quick tests)
+  const qs = event.queryStringParameters || {};
+  const qsUid = qs.user_id || qs.userId || qs.uid || null;
+  if (qsUid) return { user_id: String(qsUid), via: "query" };
+
+  // 3) Try standard auth headers (Authorization or x-supabase-auth)
   try {
     const u = await getUserFromRequest(event);
     if (u?.id) return { user_id: u.id, via: "auth_header" };
@@ -29,9 +44,9 @@ async function resolveUserId(event, parsedBody) {
 
   try {
     const token =
-      event.headers["x-supabase-auth"] ||
-      event.headers["X-Supabase-Auth"] ||
-      event.headers["x-supabasejwt"] ||
+      event.headers?.["x-supabase-auth"] ||
+      event.headers?.["X-Supabase-Auth"] ||
+      event.headers?.["x-supabasejwt"] ||
       "";
     if (token) {
       const u = await getUserFromRequest({
@@ -41,13 +56,17 @@ async function resolveUserId(event, parsedBody) {
     }
   } catch {}
 
-  if (parsedBody?.user_id) {
-    return { user_id: String(parsedBody.user_id), via: "body_user_id" };
+  // 4) Optional: fallback to a dev env var for local tests
+  if (process.env.DEV_FORCE_USER_ID) {
+    return { user_id: process.env.DEV_FORCE_USER_ID, via: "dev_force" };
   }
+
   return { user_id: null, via: "none" };
 }
 
-/* ---------------- Telnyx fetch helper ---------------- */
+/* ---------------- Telnyx fetch helper ----------------
+   Always returns: { ok, status, url, method, headers, data, raw }
+------------------------------------------------------- */
 async function telnyxFetch(url, opts = {}) {
   const method = (opts.method || "GET").toUpperCase();
   const res = await fetch(url, opts);
@@ -68,9 +87,7 @@ async function telnyxFetch(url, opts = {}) {
 
   const shaped = { ok: res.ok, status: res.status, url, method, headers, data, raw };
 
-  if (!res.ok) {
-    console.error(`[TELNYX ${method} ${url}] FAILED`, shaped);
-  }
+  if (!res.ok) console.error(`[TELNYX ${method} ${url}] FAILED`, shaped);
 
   return shaped;
 }
@@ -93,13 +110,12 @@ async function telnyxOrder({ apiKey, phone_id, e164 }) {
 
 async function telnyxGetAvailById({ apiKey, avail_id }) {
   return telnyxFetch(
-    `https://api.telnyx.com/v2/available_phone_numbers/${encodeURIComponent(
-      avail_id
-    )}`,
+    `https://api.telnyx.com/v2/available_phone_numbers/${encodeURIComponent(avail_id)}`,
     { method: "GET", headers: { Authorization: `Bearer ${apiKey}` } }
   );
 }
 
+// Poll the inventory until the newly purchased number shows up with an ID
 async function telnyxFindIdByNumber({ apiKey, e164, tries = 10, delayMs = 900 }) {
   let last = null;
   for (let i = 0; i < tries; i++) {
@@ -135,7 +151,9 @@ async function telnyxAssignProfile({ apiKey, phone_id, messaging_profile_id }) {
 
 exports.handler = async (event) => {
   try {
-    if (event.httpMethod !== "POST") return json({ error: "method_not_allowed" }, 405);
+    if (event.httpMethod !== "POST") {
+      return json({ error: "method_not_allowed" }, 405);
+    }
 
     let body;
     try {
@@ -144,30 +162,18 @@ exports.handler = async (event) => {
       return json({ error: "invalid_json", received: event.body }, 400);
     }
 
-    // --- Debug/health check ---
-    if (body && (body.__diag || event.queryStringParameters?.__health)) {
-      const TELNYX_API_KEY = process.env.TELNYX_API_KEY;
-      const MESSAGING_PROFILE_ID = process.env.TELNYX_MESSAGING_PROFILE_ID || null;
-
+    // ---- resolve user (BODY-FIRST like your dialer flow)
+    const { user_id, via } = await resolveUserId(event, body);
+    if (!user_id) {
       return json({
-        ok: true,
-        mode: "diag",
-        method: event.httpMethod,
-        has_token_header: !!(
-          event.headers?.authorization ||
-          event.headers?.Authorization ||
-          event.headers?.["x-supabase-auth"]
-        ),
+        error: "auth_required",
+        hint: "Pass user_id in body (user_id|userId|uid) or query, or send Authorization: Bearer <token>.",
+        saw_headers: Object.keys(event.headers || {}),
         body_keys: Object.keys(body || {}),
-        has_TELNYX_API_KEY: !!TELNYX_API_KEY,
-        has_TELNYX_MESSAGING_PROFILE_ID: !!MESSAGING_PROFILE_ID,
-        note: "If has_* are false, set Netlify env vars and redeploy. Next, test resolveUserId."
-      }, 200);
+      }, 401);
     }
 
-    const { user_id, via } = await resolveUserId(event, body);
-    if (!user_id) return json({ error: "auth_required", received_body_keys: Object.keys(body || {}) }, 401);
-
+    // ---- env
     const TELNYX_API_KEY = process.env.TELNYX_API_KEY;
     const MESSAGING_PROFILE_ID = process.env.TELNYX_MESSAGING_PROFILE_ID || null;
     if (!TELNYX_API_KEY) return json({ error: "TELNYX_API_KEY missing" }, 500);
@@ -187,6 +193,7 @@ exports.handler = async (event) => {
       }, 400);
     }
 
+    // If only available-number id was provided, fetch its E.164 before order
     if (!e164 && avail_id) {
       const avail = await telnyxGetAvailById({ apiKey: TELNYX_API_KEY, avail_id });
       if (!avail.ok && avail.status !== 404) {
@@ -198,7 +205,7 @@ exports.handler = async (event) => {
       e164 = toE164(avail?.data?.data?.phone_number || "");
     }
 
-    // 1) Order
+    // 1) Order number
     const order = await telnyxOrder({
       apiKey: TELNYX_API_KEY,
       phone_id: avail_id || null,
@@ -219,9 +226,11 @@ exports.handler = async (event) => {
       }, 502);
     }
 
+    // Derive final phone id/number
     let finalPhoneId = order.data?.data?.phone_numbers?.[0]?.id || null;
     let finalE164 = e164 || order.data?.data?.phone_numbers?.[0]?.phone_number || null;
 
+    // If E.164 missing, try available-number lookup again
     if (!finalE164 && avail_id) {
       const avail2 = await telnyxGetAvailById({ apiKey: TELNYX_API_KEY, avail_id });
       if (!avail2.ok && avail2.status !== 404) {
@@ -241,6 +250,7 @@ exports.handler = async (event) => {
       finalE164 = toE164(avail2?.data?.data?.phone_number || "");
     }
 
+    // If id missing, poll inventory by number
     if (!finalPhoneId) {
       if (!finalE164) {
         return json({
@@ -285,7 +295,7 @@ exports.handler = async (event) => {
     }
     if (!finalE164) finalE164 = assign.data?.data?.phone_number || finalE164;
 
-    // 3) Save to DB
+    // 3) Save TFN to your texting table (like dialer flow but for messaging)
     const db = getServiceClient();
     const { data, error } = await db
       .from("agent_messaging_numbers")
@@ -302,6 +312,7 @@ exports.handler = async (event) => {
       )
       .select("id")
       .maybeSingle();
+
     if (error) {
       console.error("[DB upsert error]", error);
       return json({ error: "db_upsert_failed", detail: error.message }, 500);
