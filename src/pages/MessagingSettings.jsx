@@ -2,6 +2,7 @@
 import { useEffect, useRef, useState } from "react";
 import { supabase } from "../lib/supabaseClient";
 import { CreditCard, Check, Loader2, MessageSquare, Info, RotateCcw, Lock } from "lucide-react";
+import TFNPickerModal from "../components/NumberPicker/TFNPickerModal.jsx";
 
 /* ---------------- Template Catalog ---------------- */
 const TEMPLATE_DEFS = [
@@ -22,31 +23,20 @@ const LOCKED_KEYS = new Set(["payment_reminder", "birthday_text", "holiday_text"
 /* Default enabled map: ALL OFF by default */
 const DEFAULT_ENABLED = Object.fromEntries(TEMPLATE_DEFS.map((t) => [t.key, false]));
 
-/* ---------------- Carrier-safe defaults ----------------
-   Notes:
-   - First-touch messages (new_lead / new_lead_military) have NO LINKS.
-   - Keep messages short and conversational to reduce filtering.
--------------------------------------------------------- */
+/* ---------------- Carrier-safe defaults ---------------- */
 const DEFAULTS = {
   new_lead:
     "Hi {{first_name}}, it’s {{agent_name}} in {{state}}. I received your request listing {{beneficiary}} as beneficiary.Text Or Call me anytime at {{agent_phone}}.",
-
-  // Direct to a phone call instead of texting back
   new_lead_military:
     "Hi {{first_name}}, it’s {{agent_name}}. I see your {{military_branch}} background and your request listing {{beneficiary}}. For options, please call me at {{agent_phone}}.",
-
   appointment:
     "Hi {{first_name}}, it’s {{agent_name}}. Reminder for our appointment at {{appt_time}}. Reply YES to confirm or NO to reschedule.",
-
   sold:
     "Hi {{first_name}}, it’s {{agent_name}}. Your policy is active:\n• Carrier: {{carrier}}\n• Policy #: {{policy_number}}\n• Premium: ${{premium}}/mo\nQuestions? Text me here.",
-
   payment_reminder:
     "Hi {{first_name}}, it’s {{agent_name}}. Friendly reminder: your policy payment is coming up. Need anything updated? Text me here.",
-
   birthday_text:
     "Hi {{first_name}}, it’s {{agent_name}}. Happy birthday! If you need anything with your coverage, text me here.",
-
   holiday_text:
     "Hi {{first_name}}, it’s {{agent_name}}. Wishing you a happy holiday season. I’m here if you need anything for your coverage.",
 };
@@ -137,7 +127,7 @@ export default function MessagingSettings() {
   const [saveState, setSaveState] = useState("idle");
   const saveTimer = useRef(null);
 
-  // Enabled map (per-template) — ensure DEFAULT_ENABLED exists before this
+  // Enabled map (per-template)
   const [enabledMap, setEnabledMap] = useState({ ...DEFAULT_ENABLED });
   const [enabledSaveState, setEnabledSaveState] = useState("idle");
   const enabledTimer = useRef(null);
@@ -157,6 +147,10 @@ export default function MessagingSettings() {
     agent_phone: "",
     calendly_link: "",
   });
+
+  // --- NEW: Toll-Free Number UI state ---
+  const [tfnModalOpen, setTfnModalOpen] = useState(false);
+  const [myTFN, setMyTFN] = useState(null);
 
   const balanceDollars = (balanceCents / 100).toFixed(2);
 
@@ -254,6 +248,16 @@ export default function MessagingSettings() {
         agent_phone: d.agent_phone || nextAgentVars.agent_phone,
         calendly_link: d.calendly_link || nextAgentVars.calendly_link,
       }));
+
+      // NEW: load first active TFN from agent_messaging_numbers
+      const { data: myNum } = await supabase
+        .from("agent_messaging_numbers")
+        .select("e164, status")
+        .eq("user_id", uid)
+        .eq("status", "active")
+        .limit(1)
+        .maybeSingle();
+      setMyTFN(myNum?.e164 || null);
 
       setLoading(false);
     })();
@@ -482,6 +486,33 @@ export default function MessagingSettings() {
             </div>
 
             <div className="text-[11px] text-white/40">Allowed custom range: $1–$500</div>
+          </div>
+        </div>
+      </section>
+
+      {/* NEW: Toll-Free Number (per-agent) */}
+      <section className="rounded-2xl border border-white/10 bg-white/[0.03] p-4">
+        <div className="mb-2 flex items-center justify-between">
+          <div>
+            <h3 className="text-sm font-semibold">Your Toll-Free Number</h3>
+            <p className="text-xs text-white/60">
+              Messages you send will come from this number. It’s included — no cost to you.
+            </p>
+          </div>
+          <div>
+            <button
+              type="button"
+              onClick={() => setTfnModalOpen(true)}
+              className="inline-flex items-center gap-1 rounded-lg border border-white/15 bg-white/5 px-3 py-2 text-sm hover:bg-white/10"
+            >
+              {myTFN ? "Change Number" : "Choose Number"}
+            </button>
+          </div>
+        </div>
+
+        <div className="rounded-lg border border-white/10 bg-white/[0.02] p-3 text-sm">
+          <div className="text-white/70">
+            Current: <span className="font-semibold">{myTFN || "None selected (using shared line)"}</span>
           </div>
         </div>
       </section>
@@ -758,6 +789,15 @@ export default function MessagingSettings() {
           <li>First-touch texts should avoid links; send links only after a reply.</li>
         </ul>
       </section>
+
+      {/* TFN Modal */}
+      {tfnModalOpen && (
+        <TFNPickerModal
+          userId={userId}
+          onClose={() => setTfnModalOpen(false)}
+          onPicked={(num) => setMyTFN(num)}
+        />
+      )}
     </div>
   );
 }
