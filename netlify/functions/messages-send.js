@@ -7,7 +7,7 @@ const fetch = require("node-fetch"); // ensure fetch exists in function runtime
 
 const TELNYX_API_KEY = process.env.TELNYX_API_KEY;
 
-// Accept several env names; you’re using TELNYX_FROM, so honor that first
+// Accept several env names; we will NOT use these as fallback anymore
 const ENV_FROM_RAW =
   process.env.TELNYX_FROM ||
   process.env.TELNYX_FROM_NUMBER ||
@@ -104,9 +104,8 @@ async function getBalanceCents(db, user_id) {
   return Number(data?.balance_cents ?? 0);
 }
 
-/* ====== CHANGED: Prefer per-agent TFN from agent_numbers, then shared env, then existing fallbacks ====== */
+/* ====== CHANGED: Require an active per-agent TFN from agent_messaging_numbers; NO fallbacks ====== */
 async function pickFromNumber(db, user_id) {
-  // 0) Per-agent TFN from agent_numbers (first active)
   try {
     const { data: num } = await db
       .from("agent_messaging_numbers")
@@ -120,37 +119,7 @@ async function pickFromNumber(db, user_id) {
       if (e) return e;
     }
   } catch {}
-
-  // 1) Shared env number (fallback)
-  if (ENV_FROM_RAW) {
-    const e = toE164(ENV_FROM_RAW);
-    if (e) return e;
-  }
-
-  // 2) Last used from_number by this user (convenience)
-  try {
-    const { data } = await db
-      .from("messages")
-      .select("from_number")
-      .eq("user_id", user_id)
-      .not("from_number", "is", null)
-      .order("created_at", { ascending: false })
-      .limit(1);
-    const last = data && data[0]?.from_number;
-    if (last) {
-      const e = toE164(last);
-      if (e) return e;
-    }
-  } catch {}
-
-  // 3) Agent profile phone (may not be Telnyx-hosted; absolute last resort)
-  const ap = await getAgentProfile(db, user_id);
-  if (ap?.phone) {
-    const e = toE164(ap.phone);
-    if (e) return e;
-  }
-
-  // 4) Omit "from" and rely on messaging profile routing
+  // No TFN found
   return null;
 }
 /* ====== /CHANGED ====== */
@@ -162,7 +131,7 @@ async function telnyxSend({ from, to, text, profileId }) {
     to,
     text,
     ...(profileId ? { messaging_profile_id: profileId } : {}),
-    ...(from ? { from } : {}), // omit if null to let profile route
+    ...(from ? { from } : {}), // omit if null to let profile route (we won't, since we require TFN)
   };
   const res = await fetch("https://api.telnyx.com/v2/messages", {
     method: "POST",
@@ -320,10 +289,14 @@ exports.handler = async (event) => {
       trace.push({ step: "template.rendered", key: keyToUse, body_len: bodyText.length });
     }
 
-    // -------- Determine FROM number (robust) --------
-    const fromE164 = await pickFromNumber(db, user_id); // may be null (we'll omit "from")
-    if (!fromE164 && !MESSAGING_PROFILE_ID && !ENV_FROM_RAW) {
-      return json({ error: "no_from_number_configured", trace }, 400);
+    // -------- Determine FROM number (must be agent's TFN) --------
+    const fromE164 = await pickFromNumber(db, user_id); // must exist
+    if (!fromE164) {
+      return json({
+        error: "no_agent_tfn_configured",
+        hint: "Pick a toll-free number in Messaging Settings first.",
+        trace
+      }, 400);
     }
 
     // -------- WALLET pre-flight --------
@@ -340,12 +313,12 @@ exports.handler = async (event) => {
     let telnyxResp;
     try {
       telnyxResp = await telnyxSend({
-        from: fromE164, // can be null
+        from: fromE164,
         to: toE,
         text: bodyText,
         profileId: MESSAGING_PROFILE_ID,
       });
-      trace.push({ step: "telnyx.sent", id: telnyxResp?.data?.id, used_from: fromE164 || "(profile-routed)" });
+      trace.push({ step: "telnyx.sent", id: telnyxResp?.data?.id, used_from: fromE164 });
     } catch (e) {
       trace.push({ step: "telnyx.error", detail: e?.message || String(e) });
       return json({ error: "send_failed", detail: e?.message || String(e), telnyx_response: e?.telnyx_response, trace }, 502);
@@ -359,7 +332,7 @@ exports.handler = async (event) => {
       contact_id: contact?.id || null,
       direction: "outgoing",
       provider: "telnyx",
-      from_number: fromE164 || null,
+      from_number: fromE164,
       to_number: toE,
       body: bodyText,
       status: "sent",
