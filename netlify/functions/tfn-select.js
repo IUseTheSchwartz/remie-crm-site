@@ -19,7 +19,7 @@ function toE164(s) {
   return String(s || "").startsWith("+") ? String(s) : null;
 }
 
-// BODY-FIRST user resolver (so you can pass user_id and skip tokens)
+// BODY-FIRST user resolver
 async function resolveUserId(event, parsedBody) {
   const bodyUid = parsedBody?.user_id || parsedBody?.userId || parsedBody?.uid;
   if (bodyUid) return { user_id: String(bodyUid), via: "body" };
@@ -146,7 +146,6 @@ exports.handler = async (event) => {
     if (!TELNYX_API_KEY) return json({ error: "TELNYX_API_KEY missing" }, 500);
     if (!MESSAGING_PROFILE_ID) return json({ error: "TELNYX_MESSAGING_PROFILE_ID missing" }, 500);
 
-    // Accept either available-number id OR a phone_number (E.164)
     const avail_id = String(body.telnyx_phone_id || body.phone_number_id || body.id || "").trim();
     const rawNumber = String(body.e164 || body.phone_number || body.number || "").trim();
     let e164 = toE164(rawNumber);
@@ -159,7 +158,6 @@ exports.handler = async (event) => {
       }, 400);
     }
 
-    // If we only received the available-number id, fetch its phone_number first
     if (!e164 && avail_id) {
       const avail = await telnyxGetAvailById({ apiKey: TELNYX_API_KEY, avail_id });
       if (!avail.ok && avail.status !== 404) {
@@ -174,11 +172,9 @@ exports.handler = async (event) => {
       return json({ error: "telnyx_order_failed", telnyx: order, request: { used_avail_id: !!avail_id, used_e164: !!e164 } }, 502);
     }
 
-    // Derive final phone id + number
     let finalPhoneId = order.data?.data?.phone_numbers?.[0]?.id || null;
     let finalE164 = e164 || order.data?.data?.phone_numbers?.[0]?.phone_number || null;
 
-    // If E.164 missing, try available-number lookup again
     if (!finalE164 && avail_id) {
       const avail2 = await telnyxGetAvailById({ apiKey: TELNYX_API_KEY, avail_id });
       if (!avail2.ok && avail2.status !== 404) {
@@ -187,7 +183,6 @@ exports.handler = async (event) => {
       finalE164 = toE164(avail2?.data?.data?.phone_number || "");
     }
 
-    // If id missing, poll inventory by number
     if (!finalPhoneId) {
       if (!finalE164) {
         return json({ error: "missing_phone_id_after_order", order_full: order }, 502);
@@ -200,15 +195,37 @@ exports.handler = async (event) => {
       finalE164 = finalE164 || looked.phone_number;
     }
 
-    // 2) Assign messaging profile
-    const assign = await telnyxAssignProfile({
-      apiKey: TELNYX_API_KEY,
-      phone_id: finalPhoneId,
-      messaging_profile_id: MESSAGING_PROFILE_ID,
-    });
+    // 2) Assign messaging profile (with retry if 404)
+    async function tryAssign(idToUse) {
+      return telnyxAssignProfile({
+        apiKey: TELNYX_API_KEY,
+        phone_id: idToUse,
+        messaging_profile_id: MESSAGING_PROFILE_ID,
+      });
+    }
+
+    let assign = await tryAssign(finalPhoneId);
+
+    if (!assign.ok && assign.status === 404 && finalE164) {
+      const looked = await telnyxFindIdByNumber({ apiKey: TELNYX_API_KEY, e164: finalE164, tries: 10, delayMs: 900 });
+      if (looked?.id) {
+        finalPhoneId = looked.id;
+        assign = await tryAssign(finalPhoneId);
+      } else {
+        return json({
+          error: "telnyx_assign_profile_failed",
+          telnyx: assign,
+          context: { attempted_phone_id: finalPhoneId, e164: finalE164, messaging_profile_id: MESSAGING_PROFILE_ID },
+          inventory_lookup_last: looked?.last || null,
+          hint: "Order likely succeeded but inventory not visible yet; retry later or increase poll time.",
+        }, 502);
+      }
+    }
+
     if (!assign.ok) {
       return json({ error: "telnyx_assign_profile_failed", telnyx: assign, context: { phone_id: finalPhoneId, e164: finalE164 } }, 502);
     }
+
     if (!finalE164) finalE164 = assign.data?.data?.phone_number || finalE164;
 
     // 3) Save to DB
