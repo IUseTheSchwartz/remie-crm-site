@@ -84,7 +84,7 @@ function phoneVariants(raw){
   return Array.from(variants);
 }
 
-// --- ENV fallbacks for Telnyx routing ---
+// --- ENV fallbacks for Telnyx routing (we keep profile, but NOT the env from-number) ---
 function getFromNumber() {
   return (
     process.env.TELNYX_FROM_NUMBER ||
@@ -106,12 +106,12 @@ async function computeNextContactTags({ supabase, user_id, phone, full_name, mil
     .eq("user_id", user_id);
   if (error) throw error;
 
-  const existing = (candidates || []).find((c) => normalizePhone(c.phone) === phoneNorm);
-  const current = Array.isArray(existing?.tags) ? existing.tags : [];
+  const found = (candidates || []).find((c) => normalizePhone(c.phone) === phoneNorm);
+  const current = Array.isArray(found?.tags) ? found.tags : [];
   const withoutStatus = current.filter((t) => !["lead", "military"].includes(normalizeTag(t)));
   const status = (S(military_branch) ? "military" : "lead");
   const next = uniqTags([...withoutStatus, status]);
-  return { contactId: existing?.id ?? null, tags: next };
+  return { contactId: found?.id ?? null, tags: next };
 }
 
 async function findContactByPhone(user_id, phone) {
@@ -136,7 +136,7 @@ async function upsertContactByUserPhone(supabase, { user_id, phone, full_name, t
     const { error: uErr } = await supabase
       .from("message_contacts")
       .update({
-        phone: phoneE164,   // store canonical
+        phone: phoneE164,
         full_name: full_name || existing.full_name || null,
         tags: cleanTags,
         meta: mergedMeta,
@@ -166,7 +166,7 @@ async function alreadySentRecently(userId, toNumberE164, minutes = 10) {
     .eq("to_number", toNumberE164)
     .gte("created_at", since)
     .limit(1);
-  if (error) return false; // don't hard-fail; just allow
+  if (error) return false;
   return (data && data.length > 0);
 }
 
@@ -197,17 +197,15 @@ function softenContent(text) {
   if (!text) return text;
   let out = String(text);
 
-  // Replace bare 10-digit sequences with a formatted +1 version (carriers dislike bare 10s)
+  // Replace bare 10-digit sequences with formatted +1
   out = out.replace(/\b(\d{3})(\d{3})(\d{4})\b/g, "+1 $1-$2-$3");
 
-  // Ensure opt-out hint (helps trust)
+  // Ensure opt-out hint
   if (!/stop to opt out/i.test(out)) {
     out = out.trim() + " Reply STOP to opt out.";
   }
 
-  // Keep first message reasonably short
   if (out.length > 500) out = out.slice(0, 500);
-
   return out;
 }
 
@@ -233,11 +231,23 @@ async function chooseTemplateKey({ userId, contactId, lead }) {
   return key;
 }
 
-// --- Telnyx helpers ---
-async function telnyxSendSMS({ to, text }) {
+/* ================== CHANGES START ================== */
+
+// Agent's TFN lookup (require active)
+async function getAgentTFN(userId) {
+  const { data } = await supabase
+    .from("agent_messaging_numbers")
+    .select("e164, status")
+    .eq("user_id", userId)
+    .eq("status", "active")
+    .limit(1);
+  return data?.[0]?.e164 || null;
+}
+
+// Telnyx helpers: accept explicit `from`
+async function telnyxSendSMS({ to, text, from }) {
   const body = { to, text };
   const profile = getMessagingProfileId();
-  const from = getFromNumber();
   if (profile) body.messaging_profile_id = profile;
   if (from) body.from = from;
 
@@ -249,6 +259,8 @@ async function telnyxSendSMS({ to, text }) {
   const json = await resp.json().catch(() => ({}));
   return { ok: resp.ok, status: resp.status, json };
 }
+
+/* =================== CHANGES END =================== */
 
 // Poll once for latest Telnyx status (no webhook required)
 async function telnyxGetMessage(messageId) {
@@ -280,18 +292,18 @@ async function trySendNewLeadText({ userId, leadId, contactId, lead }) {
   const to = toE164(lead.phone);
   if (!to) return { ok: false, reason: "invalid_phone", detail: lead.phone };
 
-  // 2) Telnyx env
+  // 2) Telnyx env + agent TFN (required)
   const TELNYX_API_KEY = process.env.TELNYX_API_KEY;
   const TELNYX_MESSAGING_PROFILE_ID = getMessagingProfileId();
-  const FROM_NUMBER_ANY = getFromNumber();
-  if (!TELNYX_API_KEY || (!TELNYX_MESSAGING_PROFILE_ID && !FROM_NUMBER_ANY)) {
+  const fromTFN = await getAgentTFN(userId);
+  if (!TELNYX_API_KEY || !TELNYX_MESSAGING_PROFILE_ID || !fromTFN) {
     return {
       ok: false,
-      reason: "telnyx_env_missing",
+      reason: "no_agent_tfn_configured",
       detail: {
         have_api_key: !!TELNYX_API_KEY,
         have_profile: !!TELNYX_MESSAGING_PROFILE_ID,
-        have_from_number: !!FROM_NUMBER_ANY,
+        have_from_number: !!fromTFN,
       },
     };
   }
@@ -369,7 +381,7 @@ async function trySendNewLeadText({ userId, leadId, contactId, lead }) {
     lead_id: leadId || null,
     provider: "telnyx",
     direction: "outgoing",
-    from_number: getFromNumber() || null,
+    from_number: fromTFN,        // <<<< CHANGED: use agent's TFN
     to_number: to,
     body: text,
     status: "queued",
@@ -395,14 +407,14 @@ async function trySendNewLeadText({ userId, leadId, contactId, lead }) {
 
   // ---------------- PHASE 2: Send via Telnyx ----------------
   try {
-    const send = await telnyxSendSMS({ to, text });
+    const send = await telnyxSendSMS({ to, text, from: fromTFN }); // <<<< CHANGED
     console.log("[gsheet-webhook] Telnyx response", {
       ok: send.ok,
       status: send.status,
       id: send.json?.data?.id || null,
       errors: send.json?.errors || null,
       to,
-      from: getFromNumber() || "(profile)",
+      from: fromTFN, // <<<< CHANGED
       provider_message_id: dedupeKey,
     });
 
@@ -478,7 +490,6 @@ async function trySendNewLeadText({ userId, leadId, contactId, lead }) {
           errors: (payload?.to?.[0]?.errors || payload?.errors || null),
         };
 
-        // If carrier already says failed/rejected/undeliverable, flip to error now.
         const updates = { error_detail: JSON.stringify(detail).slice(0, 1000) };
         if (mapped === "error") updates.status = "error";
         if (mapped === "delivered") updates.status = "delivered";
@@ -547,7 +558,6 @@ exports.handler = async (event) => {
       call_attempts: 0,
       last_outcome: "",
       pipeline: {},
-      // military_branch comes straight from payload if present
       military_branch: U(p.military_branch) ?? null,
     };
 
@@ -606,7 +616,6 @@ exports.handler = async (event) => {
           }
         } catch (err) { console.error("contact tag/meta sync (dedup) failed:", err); }
 
-        // <<< IMPORTANT: Do NOT send on the dedupe path (avoid parallel multi-send)
         await supabase
           .from("user_inbound_webhooks")
           .update({ last_used_at: new Date().toISOString() })
@@ -630,20 +639,17 @@ exports.handler = async (event) => {
     const { data, error: insErr } = await supabase.from("leads").insert([lead]).select("id");
     if (insErr) {
       console.error("Insert error:", insErr);
-
-      // Gracefully handle unique violation (no send)
       if (insErr.code === "23505") {
         return {
           statusCode: 200,
           body: JSON.stringify({ ok: true, skipped: true, reason: "duplicate_lead_insert" }),
         };
       }
-
       return { statusCode: 500, body: JSON.stringify({ ok: false, error: insErr }) };
     }
     const insertedId = data?.[0]?.id || null;
 
-    // Upsert contact BEFORE sending → capture contactId for logging/threading
+    // Upsert contact before sending
     let contactId = null;
     try {
       if (lead.phone) {
