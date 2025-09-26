@@ -1,51 +1,50 @@
-// /.netlify/functions/tfn-search.js
+// File: netlify/functions/tfn-search.js
 const fetch = require("node-fetch");
 
-const TELNYX_API_KEY = process.env.TELNYX_API_KEY;
-const DEFAULT_PREFIX = process.env.TELNYX_TFN_DEFAULT_PREFIX || "888";
-
-function json(body, statusCode = 200) {
-  return { statusCode, headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) };
+function json(body, status = 200) {
+  return { statusCode: status, headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) };
 }
 
 exports.handler = async (event) => {
   try {
     if (event.httpMethod !== "GET") return json({ error: "Method Not Allowed" }, 405);
-    if (!TELNYX_API_KEY) return json({ error: "Missing TELNYX_API_KEY" }, 500);
 
-    const url = new URL(event.rawUrl || `http://x/?${event.rawQueryString || ""}`);
-    const prefix = url.searchParams.get("prefix") || DEFAULT_PREFIX; // 833/844/855/866/877/888
-    const page = Number(url.searchParams.get("page") || "1");
-    const size = Math.min(50, Math.max(1, Number(url.searchParams.get("size") || "25")));
+    const API_KEY = process.env.TELNYX_API_KEY;
+    if (!API_KEY) return json({ error: "TELNYX_API_KEY missing" }, 500);
 
-    const qs = new URLSearchParams({
-      type: "toll_free",
-      national_destination_code: prefix,
-      "page[number]": String(page),
-      "page[size]": String(size),
+    const qs = event.queryStringParameters || {};
+    const prefix = String(qs.prefix || "").trim();
+    if (!/^(800|833|844|855|866|877|888)$/.test(prefix)) {
+      return json({ error: "prefix must be one of 800,833,844,855,866,877,888" }, 400);
+    }
+    const limit = Math.min(Math.max(parseInt(qs.limit || "30", 10), 1), 100);
+    const page = Math.max(parseInt(qs.page || "1", 10), 1);
+
+    // Telnyx search: filter toll_free + starts_with
+    const url = new URL("https://api.telnyx.com/v2/available_phone_numbers");
+    url.searchParams.set("phone_number_type", "toll_free");
+    url.searchParams.set("starts_with", prefix);
+    url.searchParams.set("limit", String(limit));
+    url.searchParams.set("page[number]", String(page));
+
+    const res = await fetch(url.toString(), {
+      method: "GET",
+      headers: { Authorization: `Bearer ${API_KEY}` },
     });
-
-    const res = await fetch(`https://api.telnyx.com/v2/available_phone_numbers?${qs.toString()}`, {
-      headers: { Authorization: `Bearer ${TELNYX_API_KEY}` },
-    });
-
-    const out = await res.json().catch(() => ({}));
+    const data = await res.json().catch(() => ({}));
     if (!res.ok) {
-      const msg = out?.errors?.[0]?.detail || JSON.stringify(out);
-      return json({ error: "telnyx_search_failed", detail: msg }, res.status);
+      return json({ error: "telnyx_search_failed", detail: data }, 502);
     }
 
-    // Normalize list
-    const numbers = (out.data || []).map((d) => ({
-      phone_number: d.phone_number,
-      region: d.region || null,
-      billing_methods: d.billing_methods || null,
+    // Normalize a minimal shape for the UI
+    const items = (data.data || []).map((r) => ({
+      id: r.id,                          // Telnyx phone id for ordering
+      phone_number: r.phone_number,      // E.164
+      country: r.country_code || "US",
+      region: r.region || null,
     }));
 
-    // Telnyx includes meta with pagination sometimes
-    const meta = out.meta || {};
-
-    return json({ ok: true, numbers, meta, page, size, prefix });
+    return json({ ok: true, items, meta: data.meta || null });
   } catch (e) {
     return json({ error: "unhandled", detail: String(e?.message || e) }, 500);
   }
