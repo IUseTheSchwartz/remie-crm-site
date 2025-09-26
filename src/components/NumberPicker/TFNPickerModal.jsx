@@ -30,27 +30,27 @@ export default function TFNPickerModal({ userId, onPicked, onClose }) {
     }
   }
 
-  useEffect(() => { search(); /* on open */ }, []);
+  useEffect(() => { search(); }, []);
 
   async function select(item) {
     setErr("");
     setSelectingId(item.id);
     try {
+      // Try to get the access token (nice-to-have)
       const { data: s } = await supabase.auth.getSession();
       const token = s?.session?.access_token || "";
-      if (!token) throw new Error("You need to sign in again.");
 
       const res = await fetch("/.netlify/functions/tfn-select", {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          Authorization: `Bearer ${token}`,
-          // NEW: second header so the function can fall back if Authorization is stripped
-          "x-supabase-auth": token,
+          ...(token ? { Authorization: `Bearer ${token}`, "x-supabase-auth": token } : {}),
         },
         body: JSON.stringify({
           telnyx_phone_id: item.id,
           e164: item.phone_number,
+          // NEW: send user_id as a fallback so server can continue if headers are stripped
+          user_id: userId || s?.session?.user?.id || null,
         }),
       });
 
@@ -101,8 +101,8 @@ export default function TFNPickerModal({ userId, onPicked, onClose }) {
                   <td className="px-3 py-2">{it.country || "-"}</td>
                   <td className="px-3 py-2">{it.region || "-"}</td>
                   <td className="px-3 py-2 text-right">
-                    <button type="button" onClick={() => select(it)} disabled={!!selectingId} className="rounded-md border border-white/15 bg-white/5 px-3 py-1.5 text-xs hover:bg-white/10 disabled:opacity-50">
-                      {selectingId === it.id ? "Selecting…" : "Select"}
+                    <button type="button" onClick={() => select(it)} className="rounded-md border border-white/15 bg-white/5 px-3 py-1.5 text-xs hover:bg-white/10">
+                      Select
                     </button>
                   </td>
                 </tr>
