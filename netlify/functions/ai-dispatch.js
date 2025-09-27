@@ -1,97 +1,56 @@
 // File: netlify/functions/ai-dispatch.js
-// Purpose: Receive minimal context from telnyx-inbound and send a single AI-style reply
-// using your existing messages-send function. Logs are noisy on purpose for debugging.
+// Receives { user_id, contact_id, from, to, text } from telnyx-inbound.
+// Classifies the text and sends one reply through messages-send.
+// Adds meta.sent_by_ai=true so the UI shows the AI badge.
 
 const { getServiceClient } = require("./_supabase");
 const fetch = require("node-fetch");
 
 /* ---------------- HTTP helpers ---------------- */
-function json(body, statusCode = 200) {
-  return {
-    statusCode,
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(body),
-  };
+function ok(body) {
+  return { statusCode: 200, headers: { "Content-Type": "application/json" }, body: JSON.stringify(body || { ok: true }) };
+}
+function bad(msg, code = 400) {
+  return { statusCode: code, headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ok: false, error: msg }) };
 }
 
-/* ---------------- Utilities ---------------- */
-function baseFromEvent(ev) {
-  try {
-    const proto =
-      ev.headers?.["x-forwarded-proto"] ||
-      ev.headers?.["X-Forwarded-Proto"] ||
-      "https";
-    const host =
-      ev.headers?.host ||
-      ev.headers?.Host ||
-      process.env.URL ||
-      process.env.DEPLOY_PRIME_URL ||
-      "";
-    return host ? `${proto}://${host}` : null;
-  } catch {
-    return null;
-  }
-}
-
-function deriveMessagesSendUrl(event) {
-  // You can hardcode with OUTBOUND_SEND_URL=https://your-domain (no trailing slash)
-  const base =
-    process.env.OUTBOUND_SEND_URL ||
-    process.env.SITE_URL ||
-    baseFromEvent(event);
-  if (!base) return null;
-  return `${String(base).replace(/\/$/, "")}/.netlify/functions/messages-send`;
-}
-
-/* ---------------- Minimal “AI” helpers ---------------- */
+/* ---------------- Classifiers & helpers ---------------- */
 function detectSpanish(text) {
   const t = String(text || "").toLowerCase();
   if (/[ñáéíóú¿¡]/.test(t)) return true;
-  const hits = [
-    "cuánto","precio","costo","seguro","vida",
-    "mañana","tarde","quién","numero","equivocado",
-    "esposo","esposa","hola"
-  ];
-  let score = 0; hits.forEach(w => { if (t.includes(w)) score++; });
+  const hits = ["cuánto","precio","costo","seguro","vida","mañana","tarde","quién","numero","equivocado","esposo","esposa"];
+  let score = 0; hits.forEach((w)=>{ if (t.includes(w)) score += 1; });
   return score >= 2;
 }
-
 function classifyIntent(txt) {
   const t = String(txt || "").trim().toLowerCase();
   if (!t) return "general";
-  if (/\b(stop|unsubscribe|quit)\b/.test(t)) return "stop";             // handled in inbound already
-  if (/\b(hi|hello|hola|hey)\b/.test(t)) return "greeting";
+  if (/\b(stop|unsubscribe|quit)\b/.test(t)) return "stop";
+  if (/\b(call me|ll[aá]mame)\b/.test(t)) return "callme";
   if (/\b(price|how much|cost|monthly|cu[aá]nto|precio|costo)\b/.test(t)) return "price";
   if (/\b(who is this|who dis|qui[eé]n|how did you get|c[oó]mo obtuvo)\b/.test(t)) return "who";
   if (/\b(already have|covered|ya tengo|tengo seguro)\b/.test(t)) return "covered";
   if (/\b(not interested|no me interesa|busy|ocupad[oa])\b/.test(t)) return "brushoff";
   if (/\b(wrong number|n[uú]mero equivocado)\b/.test(t)) return "wrong";
   if (/\b(spouse|wife|husband|espos[ao])\b/.test(t)) return "spouse";
-  if (/\b(call me|ll[aá]mame|ll[aá]mame)\b/.test(t)) return "callme";
+  if (/\b(hi|hello|hola|hey)\b/.test(t)) return "greeting";
   if (/\b(tom|tomorrow|ma[ñn]ana|today|hoy|evening|afternoon|morning)\b/.test(t)) return "time_window";
-  if (/\b(1?\d\s*(?::\d{2})?\s*(am|pm))\b/.test(t)) return "time_specific"; // "10" alone won't match — intentional
+  if (/\b(1?\d\s*(?::\d{2})?\s*(am|pm))\b/.test(t)) return "time_specific";
   if (/^(ok|okay|sounds good|vale|bien|si|sí)\b/.test(t)) return "agree";
   return "general";
 }
 
-/** Synthesize three next-day slots within 09:00–21:00 local */
+/** Next-day three options within 09:00–21:00 local. */
 function synthesizeThreeSlots(agentTZ) {
   const tz = agentTZ || "America/Chicago";
   const next = new Date(); next.setDate(next.getDate() + 1);
 
-  function mk(h, m = 0) {
-    const d = new Date(next);
-    d.setHours(h, m, 0, 0);
-    return d;
-  }
-  const picks = [mk(9), mk(13), mk(18)].map((d) => ({
-    label: d.toLocaleTimeString("en-US", {
-      hour: "numeric", minute: "2-digit", hour12: true, timeZone: tz
-    }),
+  function mk(h, m = 0) { const d = new Date(next); d.setHours(h, m, 0, 0); return d; }
+  const picks = [mk(9,0), mk(13,0), mk(18,0)].map((d) => ({
+    label: d.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit", hour12: true, timeZone: tz }),
     hours: d.getHours(),
     iso: d.toISOString(),
   }));
-
   const clamped = picks.filter(p => p.hours >= 9 && p.hours <= 21);
   const dayName = next.toLocaleDateString("en-US", { weekday: "long", timeZone: tz });
   return { dayName, slots: clamped };
@@ -108,7 +67,7 @@ async function getAgentProfile(db, user_id) {
   return data || {};
 }
 
-/* ---------------- Copy templates ---------------- */
+/* ---------------- Templates ---------------- */
 function t_offer(dayName, slots) {
   const labels = slots.map(s => s.label);
   if (labels.length === 3) return `tomorrow (${dayName}) at ${labels[0]}, ${labels[1]}, or ${labels[2]}`;
@@ -126,13 +85,13 @@ function t_price(isEs, offer) {
 }
 function t_covered(isEs, offer) {
   return isEs
-    ? `Excelente. Aun así, muchas familias hacen una revisión rápida para no pagar de más ni perder beneficios. Tengo ${offer}. ¿Cuál le conviene?`
+    ? `Excelente. Aun así, muchas familias hacen una revisión rápida para no pagar de más ni perder beneficios. Toma solo unos minutos. Tengo ${offer}. ¿Cuál le conviene?`
     : `Good to hear—you’re ahead of most folks. Many families still do a quick review to make sure they’re not overpaying or missing benefits. I have ${offer}. Which works better for you?`;
 }
 function t_who(isEs, agentName, offer) {
   return isEs
-    ? `Hola, soy ${agentName}. Usted pidió información de seguro de vida y soy el corredor autorizado que da seguimiento. ¿Le funciona ${offer}?`
-    : `Hey, it’s ${agentName}. You requested life insurance info recently where you listed your beneficiary, and I’m the licensed broker assigned to follow up. Would ${offer} work?`;
+    ? `Hola, soy ${agentName}. Usted solicitó información sobre seguros de vida y soy el corredor autorizado asignado para ayudarle. ¿Le funciona ${offer}?`
+    : `Hey, it’s ${agentName}. You requested info about life insurance recently where you listed your beneficiary, and I’m the licensed broker assigned to follow up. Would ${offer} work?`;
 }
 function t_brushoff(isEs, offer) {
   return isEs
@@ -170,155 +129,113 @@ function t_link(isEs, link) {
     : `Here’s a quick link to confirm so you’ll get reminders (and can reschedule if needed): ${link}`;
 }
 
-/* ---------------- Main handler ---------------- */
+/* ---------------- URL helper ---------------- */
+function deriveSendUrl(event) {
+  const env = process.env.OUTBOUND_SEND_URL || process.env.SITE_URL || process.env.URL || process.env.DEPLOY_PRIME_URL;
+  if (env) return String(env).endsWith("/messages-send") ? env : `${String(env).replace(/\/$/, "")}/.netlify/functions/messages-send`;
+  const proto = (event.headers && (event.headers["x-forwarded-proto"] || event.headers["X-Forwarded-Proto"])) || "https";
+  const host  = (event.headers && (event.headers.host || event.headers.Host)) || "";
+  return host ? `${proto}://${host}/.netlify/functions/messages-send` : null;
+}
+
+/* ---------------- Handler ---------------- */
 exports.handler = async (event) => {
   const db = getServiceClient();
 
-  // Body must be: { user_id, contact_id, from, to, text }
   let body = {};
   try { body = JSON.parse(event.body || "{}"); } catch {}
   const { user_id, contact_id, from, to, text } = body || {};
 
-  console.log("[ai-dispatch] start", { user_id, contact_id, from, to, text });
-
-  if (!user_id || !contact_id || !from || !to || !text) {
-    console.warn("[ai-dispatch] missing required fields");
-    return json({ ok: false, error: "missing_fields" }, 400);
+  console.log("[ai-dispatch] payload:", { user_id, contact_id, from, to, text });
+  if (!user_id || !contact_id || !from || !to) {
+    console.error("[ai-dispatch] missing fields");
+    return bad("missing_fields", 400);
   }
 
-  // Respect unsubscribed / booked here as well (defensive)
+  // If contact unsubscribed or already booked, stay silent
   try {
-    const { data: contactRow } = await db
-      .from("message_contacts")
-      .select("id, subscribed, ai_booked")
-      .eq("id", contact_id)
-      .maybeSingle();
-    if (contactRow?.subscribed === false) {
-      console.log("[ai-dispatch] contact unsubscribed; silent");
-      return json({ ok: true, skipped: "unsubscribed" });
-    }
-    if (contactRow?.ai_booked === true) {
-      console.log("[ai-dispatch] already booked; silent");
-      return json({ ok: true, skipped: "booked" });
-    }
+    const { data: contact } = await db.from("message_contacts")
+      .select("id, subscribed, ai_booked").eq("id", contact_id).maybeSingle();
+    if (contact?.subscribed === false) return ok({ ok: true, note: "contact_unsubscribed" });
+    if (contact?.ai_booked === true)  return ok({ ok: true, note: "ai_silent_booked" });
   } catch {}
 
-  // Classify & build reply
-  const isEs = detectSpanish(text);
+  const isEs  = detectSpanish(text);
   const intent = classifyIntent(text);
-  const agent = await getAgentProfile(db, user_id);
+  const agent  = await getAgentProfile(db, user_id);
   const calendlyLink = agent?.calendly_url || "";
+
   const { dayName, slots } = synthesizeThreeSlots(process.env.AGENT_DEFAULT_TZ || "America/Chicago");
   const offerText = t_offer(dayName, slots);
 
-  let bodyText;
-  let aiIntentTag;
+  const sendUrl = deriveSendUrl(event);
+  console.log("[ai-dispatch] OUTBOUND_SEND_URL:", sendUrl);
 
+  async function send(bodyText, meta) {
+    if (!sendUrl) {
+      console.error("[ai-dispatch] no OUTBOUND_SEND_URL; skipping send");
+      return { ok: false, skipped: true };
+    }
+    const res = await fetch(sendUrl, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ to: from, body: bodyText, requesterId: user_id }),
+    });
+    const out = await res.json().catch(() => ({}));
+    console.log("[ai-dispatch] messages-send status:", res.status, out);
+
+    if (!res.ok || out?.error) return { ok: false, error: out?.error || `status_${res.status}` };
+
+    // Tag the message so UI shows AI badge
+    try {
+      if (out?.id) await db.from("messages").update({ meta: { sent_by_ai: true, ...(meta || {}) } }).eq("id", out.id);
+    } catch {}
+    return { ok: true, id: out?.id };
+  }
+
+  // Specific time like "10am" → confirm + link → mark booked
   if (intent === "time_specific") {
     const m = text.match(/(1?\d\s*(?::\d{2})?\s*(am|pm))/i);
     const tsLabel = m ? m[1].toUpperCase().replace(/\s+/g, " ") : slots[1]?.label || "the time we discussed";
-    bodyText = t_confirm(isEs, tsLabel);
-    aiIntentTag = "confirm_time";
-  } else {
-    switch (intent) {
-      case "greeting":
-        bodyText = t_greeting(isEs, agent?.full_name || "your licensed broker", offerText);
-        aiIntentTag = "greeting"; break;
-      case "price":
-        bodyText = t_price(isEs, offerText);
-        aiIntentTag = "price"; break;
-      case "who":
-        bodyText = t_who(isEs, agent?.full_name || "your licensed broker", offerText);
-        aiIntentTag = "who"; break;
-      case "covered":
-        bodyText = t_covered(isEs, offerText);
-        aiIntentTag = "covered"; break;
-      case "brushoff":
-        bodyText = t_brushoff(isEs, offerText);
-        aiIntentTag = "brushoff"; break;
-      case "callme":
-        bodyText = t_callme(isEs);
-        aiIntentTag = "callme"; break;
-      case "spouse":
-        bodyText = t_spouse(isEs, offerText);
-        aiIntentTag = "spouse"; break;
-      case "wrong":
-        bodyText = t_wrong(isEs);
-        aiIntentTag = "wrong"; break;
-      case "time_window":
-      case "agree":
-      case "general":
-      default:
-        bodyText = t_agree(isEs, offerText);
-        aiIntentTag = "offer_slots"; break;
-    }
+    await send(t_confirm(isEs, tsLabel), { ai_intent: "confirm_time" });
+    if (calendlyLink) await send(t_link(isEs, calendlyLink), { ai_intent: "link" });
+    try { await db.from("message_contacts").update({ ai_booked: true }).eq("id", contact_id); } catch {}
+    return ok({ ok: true, ai: "confirmed_and_linked" });
   }
 
-  // Send via messages-send
-  const sendUrl = deriveMessagesSendUrl(event);
-  console.log("[ai-dispatch] messages-send URL:", sendUrl);
-
-  if (!sendUrl) {
-    console.error("[ai-dispatch] no messages-send URL derived");
-    return json({ ok: false, error: "no_messages_send_url" }, 500);
+  // Default routing
+  switch (intent) {
+    case "greeting":
+      await send(t_greeting(isEs, agent?.full_name || "your licensed broker", offerText), { ai_intent: "greeting" });
+      break;
+    case "price":
+      await send(t_price(isEs, offerText), { ai_intent: "price" });
+      break;
+    case "who":
+      await send(t_who(isEs, agent?.full_name || "your licensed broker", offerText), { ai_intent: "who" });
+      break;
+    case "covered":
+      await send(t_covered(isEs, offerText), { ai_intent: "covered" });
+      break;
+    case "brushoff":
+      await send(t_brushoff(isEs, offerText), { ai_intent: "brushoff" });
+      break;
+    case "callme":
+      await send(t_callme(isEs), { ai_intent: "callme" });
+      break;
+    case "spouse":
+      await send(t_spouse(isEs, offerText), { ai_intent: "spouse" });
+      break;
+    case "wrong":
+      await send(t_wrong(isEs), { ai_intent: "wrong" });
+      break;
+    case "time_window":
+    case "agree":
+    case "general":
+    default:
+      await send(t_agree(isEs, offerText), { ai_intent: "offer_slots" });
+      break;
   }
 
-  let sendOut = {};
-  try {
-    const resp = await fetch(sendUrl, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        to: from,           // reply back to the lead
-        body: bodyText,
-        requesterId: user_id,
-      }),
-    });
-    sendOut = await resp.json().catch(() => ({}));
-    console.log("[ai-dispatch] messages-send response:", resp.status, sendOut);
-    if (!resp.ok || sendOut?.error) {
-      throw new Error(sendOut?.error || `send_status_${resp.status}`);
-    }
-  } catch (e) {
-    console.error("[ai-dispatch] send failed:", e?.message || e);
-    return json({ ok: false, error: "send_failed" }, 502);
-  }
-
-  // Tag the new message row so your UI shows the tiny "AI" badge
-  try {
-    if (sendOut?.id) {
-      await getServiceClient()
-        .from("messages")
-        .update({ meta: { sent_by_ai: true, ai_intent: aiIntentTag } })
-        .eq("id", sendOut.id);
-    }
-  } catch (e) {
-    console.warn("[ai-dispatch] tagging meta failed (non-fatal):", e?.message || e);
-  }
-
-  // If specific time, mark booked to keep AI silent after booking
-  if (intent === "time_specific") {
-    try {
-      await getServiceClient().from("message_contacts").update({ ai_booked: true }).eq("id", contact_id);
-      if (calendlyLink) {
-        // send a follow-up with the link
-        const resp2 = await fetch(sendUrl, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            to: from,
-            body: (isEs
-              ? `Aquí tiene un enlace para confirmar y recibir recordatorios (y reprogramar si hace falta): ${calendlyLink}`
-              : `Here’s a quick link to confirm so you’ll get reminders (and can reschedule if needed): ${calendlyLink}`),
-            requesterId: user_id,
-          }),
-        });
-        console.log("[ai-dispatch] link follow-up status:", resp2.status);
-      }
-    } catch (e) {
-      console.warn("[ai-dispatch] booked/link step non-fatal error:", e?.message || e);
-    }
-  }
-
-  return json({ ok: true, id: sendOut?.id || null, intent: aiIntentTag });
+  return ok({ ok: true, ai: "responded" });
 };
