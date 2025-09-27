@@ -195,7 +195,7 @@ function decide({ text, agentName, calendlyLink, tz, officeHours } = {}) {
   }
 
   if (intent === "greet")     return { text: T.greet(es, name, offer),    intent };
-  if (intent === "who")       return { text: T.who(es, name, offer),      intent };  // <-- now hits for "who's this?"
+  if (intent === "who")       return { text: T.who(es, name, offer),      intent };  // "who's this?"
   if (intent === "price")     return { text: T.price(es, offer),          intent };
   if (intent === "covered")   return { text: T.covered(es, offer),        intent };
   if (intent === "brushoff")  return { text: T.brushoff(es, offer),       intent };
