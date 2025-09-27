@@ -103,7 +103,7 @@ async function stopLeadRescueOnReply(db, user_id, contact_id) {
   if (error) throw error;
 }
 
-/* ===== AI Helpers ===== */
+/* ===== AI Helpers & Config ===== */
 const OUTBOUND_SEND_URL =
   process.env.OUTBOUND_SEND_URL ||
   (process.env.SITE_URL ? `${process.env.SITE_URL.replace(/\/$/, "")}/.netlify/functions/messages-send` : null);
@@ -139,7 +139,7 @@ function classifyIntent(txt) {
   return "general";
 }
 
-// next-day in agent TZ
+// next-day anchor in agent TZ
 function nextDayLocal(tz) {
   const now = new Date();
   const opts = { timeZone: tz, year: "numeric", month: "2-digit", day: "2-digit" };
@@ -149,20 +149,12 @@ function nextDayLocal(tz) {
   return d;
 }
 
-function withinWindow(dt) {
-  const h = dt.getUTCHours();
-  // Convert desired local window (WORK_START..WORK_END) to UTC is messy without tz math;
-  // Easier: construct times directly at desired local hours using toLocaleString with TZ.
-  return true; // we validate by *constructing* only 9–21 times; custom parse will clamp.
-}
-
 // 3 suggested slots: 9:00, 1:00, 6:00 (next day, agent TZ)
 function synthesizeThreeSlots(agentTZ) {
   const tz = agentTZ || AGENT_TZ;
   const base = nextDayLocal(tz); // midnight next day (UTC ref)
   const hours = [9, 13, 18]; // 9a, 1p, 6p local
   const picks = hours.map((h) => {
-    // format directly in TZ for label
     const label = new Intl.DateTimeFormat("en-US", {
       timeZone: tz, hour: "numeric", minute: "2-digit", hour12: true
     }).format(new Date(new Date(base).setUTCHours(h, 0, 0, 0)));
@@ -173,12 +165,12 @@ function synthesizeThreeSlots(agentTZ) {
   return { dayName, slots: picks };
 }
 
-// Try to parse "1pm", "1:30 pm", "noon", and whether they said "tomorrow"
+// Parse "1pm", "1:30 pm", "noon", and coarse windows (morning/afternoon/evening/tonight).
+// Clamp to your working window 9–21.
 function parseRequestedTimeLabel(txt, agentTZ) {
   const t = String(txt || "").toLowerCase();
   const tz = agentTZ || AGENT_TZ;
 
-  // quick labels
   if (/\bnoon\b/.test(t)) return "12:00 PM";
 
   const m = t.match(/\b(\d{1,2})(?::(\d{2}))?\s*(am|pm)\b/);
@@ -266,7 +258,18 @@ function t_confirm(isEs, tsLabel, calendly) {
   return core + link;
 }
 
-/* ====== Outbound via messages-send (with AI badge) ====== */
+/* ===== DB Helper: Agent profile (the missing piece in your logs) ===== */
+async function getAgentProfile(db, user_id) {
+  const { data, error } = await db
+    .from("agent_profiles")
+    .select("full_name, calendly_url, email, phone")
+    .eq("user_id", user_id)
+    .maybeSingle();
+  if (error) throw error;
+  return data || {};
+}
+
+/* ===== Outbound via messages-send (with AI badge) ===== */
 async function sendAI(db, { user_id, toE164, body, meta }) {
   if (!OUTBOUND_SEND_URL) {
     await db.from("messages").insert([{
@@ -301,6 +304,7 @@ async function sendAI(db, { user_id, toE164, body, meta }) {
   return { ok: true, ...out };
 }
 
+/* ===== Handler ===== */
 exports.handler = async (event) => {
   const db = getServiceClient();
 
@@ -394,8 +398,8 @@ exports.handler = async (event) => {
     return ok({ ok: true, ai: "offered_slots" });
   }
 
-  // Natural greeting (don’t jump straight to “who I am” paragraph every time)
-  if (intent === "greeting") {
+  // Natural greeting (don’t jump straight to long intro)
+  if (intent === "greeting")) {
     const name = agent?.full_name || "your licensed broker";
     const msg = isEs
       ? `¡Hola! Soy ${name}. Podemos revisar sus opciones en unos minutos — ¿le funciona ${offerText}?`
