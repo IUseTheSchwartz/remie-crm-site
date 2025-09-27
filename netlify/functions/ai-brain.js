@@ -1,155 +1,90 @@
 // Pure response logic: language, intent, slots (9am–9pm), copy.
-// Drop-in replacement for your current module.
 // Exports: decide({ text, agentName, calendlyLink, tz, officeHours }) -> { text, intent }
 
 const DEFAULT_TZ = "America/Chicago";
-const DEFAULT_HOURS = { start: 9, end: 21 }; // inclusive window in local time
+const DEFAULT_HOURS = { start: 9, end: 21 }; // inclusive local window
 
 /* ---------------- Language detection ---------------- */
 function detectSpanish(t = "") {
   const s = String(t).toLowerCase();
   if (/[ñáéíóúü¿¡]/.test(s)) return true;
   const esHints = [
-    "cuánto", "cuanto", "precio", "costo", "seguro", "vida", "mañana", "manana",
-    "tarde", "noche", "quien", "quién", "numero", "número", "equivocado", "esposo", "esposa",
-    "si", "sí", "vale", "claro", "buenas", "hola",
+    "cuánto","cuanto","precio","costo","seguro","vida","mañana","manana",
+    "tarde","noche","quien","quién","numero","número","equivocado","esposo","esposa",
+    "si","sí","vale","claro","buenas","hola",
   ];
-  let score = 0;
-  for (const w of esHints) if (s.includes(w)) score++;
+  let score = 0; for (const w of esHints) if (s.includes(w)) score++;
   return score >= 2;
 }
 
 /* ---------------- Intent classification (robust) ---------------- */
-function normalize(t = "") {
-  return String(t).trim().toLowerCase().replace(/\s+/g, " ");
-}
+function normalize(t = "") { return String(t).trim().toLowerCase().replace(/\s+/g, " "); }
 function classify(t = "") {
   const x = normalize(t);
-
   if (!x) return "general";
-  // extreme short agrees / acks
   if (/^(k|kk|kay|ok(ay)?|y+|ya|ye+a?h?|si|sí|dale|va|vale|bet|sounds good|cool|alr|alright)\b/.test(x)) return "agree";
   if (/^(nah|nope|no)\b/.test(x)) return "brushoff";
-
-  // unsubscribe handled upstream, but keep as signal
   if (/\b(stop|unsubscribe|quit|cancel)\b/.test(x)) return "stop";
-
-  // price
-  if (/\b(price|how much|cost|monthly|payment|premium|quote|rates?)\b/.test(x)) return "price";
-  if (/\b(cu[áa]nto|precio|costo|pago|mensual|cuota|prima)\b/.test(x)) return "price";
-
-  // who / provenance
-  if (/\b(who( is|’s|'s)? (this|dis)|how did you get|why (are|r) you texting|identify|name)\b/.test(x)) return "who";
-  if (/\bqui[eé]n (eres|habla|manda|me escribe)\b/.test(x)) return "who";
-
-  // covered already
-  if (/\b(already have|i have insurance|covered|i'm covered|policy already)\b/.test(x)) return "covered";
-  if (/\b(ya tengo|tengo seguro|ya estoy cubiert[oa])\b/.test(x)) return "covered";
-
-  // busy / brush-off
-  if (/\b(not interested|stop texting|leave me alone|busy|working|at work|later|another time)\b/.test(x)) return "brushoff";
-  if (/\b(no me interesa|ocupad[oa]|luego|m[aá]s tarde|otro d[ií]a)\b/.test(x)) return "brushoff";
-
-  // wrong number
-  if (/\bwrong number|not (me|my number)\b/.test(x)) return "wrong";
-  if (/\bn[uú]mero equivocado\b/.test(x)) return "wrong";
-
-  // spouse / both on call
-  if (/\b(spouse|wife|husband|partner)\b/.test(x)) return "spouse";
-  if (/\bespos[ao]\b/.test(x)) return "spouse";
-
-  // explicit call me / phone
+  if (/\b(price|how much|cost|monthly|payment|premium|quote|rates?)\b/.test(x) || /\b(cu[áa]nto|precio|costo|pago|mensual|cuota|prima)\b/.test(x)) return "price";
+  if (/\b(who( is|’s|'s)? (this|dis)|how did you get|why (are|r) you texting|identify|name)\b/.test(x) || /\bqui[eé]n (eres|habla|manda|me escribe)\b/.test(x)) return "who";
+  if (/\b(already have|i have insurance|covered|i'm covered|policy already)\b/.test(x) || /\b(ya tengo|tengo seguro|ya estoy cubiert[oa])\b/.test(x)) return "covered";
+  if (/\b(not interested|stop texting|leave me alone|busy|working|at work|later|another time)\b/.test(x) || /\b(no me interesa|ocupad[oa]|luego|m[aá]s tarde|otro d[ií]a)\b/.test(x)) return "brushoff";
+  if (/\bwrong number|not (me|my number)\b/.test(x) || /\bn[uú]mero equivocado\b/.test(x)) return "wrong";
+  if (/\b(spouse|wife|husband|partner)\b/.test(x) || /\bespos[ao]\b/.test(x)) return "spouse";
   if (/\b(call|ring|phone me|give me a call|ll[aá]mame|llamar)\b/.test(x)) return "callme";
-
-  // reschedule / different time
-  if (/\b(resched|re[- ]?schedule|different time|change (the )?time|move (it|appt)|new time)\b/.test(x)) return "reschedule";
-  if (/\b(reprogramar|cambiar hora|otra hora|mover la cita)\b/.test(x)) return "reschedule";
-
-  // time windows (“tomorrow morning”, etc.)
-  if (/\b(tom(orrow)?|today|evening|afternoon|morning|tonight|this (afternoon|evening|morning))\b/.test(x)) return "time_window";
-  if (/\b(ma[ñn]ana|hoy|tarde|noche|ma[ñn]ana en la ma[ñn]ana)\b/.test(x)) return "time_window";
-
-  // explicit time like “10”, “10am”, “10:30 pm”
-  if (/\b(1?\d(?::\d{2})?\s?(a\.?m\.?|p\.?m\.?|am|pm))\b/.test(x)) return "time_specific";
-  if (/\b(1?\d:\d{2})\b/.test(x)) return "time_specific";
-
-  // greetings
+  if (/\b(resched|re[- ]?schedule|different time|change (the )?time|move (it|appt)|new time)\b/i.test(x) ||
+      /\b(reprogramar|cambiar hora|otra hora|mover la cita)\b/.test(x)) return "reschedule";
+  if (/\b(tom(orrow)?|today|evening|afternoon|morning|tonight|this (afternoon|evening|morning))\b/.test(x) ||
+      /\b(ma[ñn]ana|hoy|tarde|noche)\b/.test(x)) return "time_window";
+  // explicit time like "10", "10am", "10:30 pm", "10:30"
+  if (/\b(1?\d(?::\d{2})?\s?(a\.?m\.?|p\.?m\.?|am|pm))\b/.test(x) || /\b(1?\d:\d{2})\b/.test(x)) return "time_specific";
   if (/^(hi|hey|hello|hola|buenas)\b/.test(x)) return "greet";
-
   return "general";
 }
 
-/* ---------------- Slot synthesis ---------------- */
-/**
- * Returns (bestEffort): same-day slots if now < (end-2h), else tomorrow.
- * Ensures slots within [start, end].
- * pickHours: default anchors, can shift inside window.
- */
-function synthesizeSlots({ tz = DEFAULT_TZ, hours = DEFAULT_HOURS, pickHours = [9, 13, 18] } = {}) {
-  const now = new Date();
-  const localNow = toLocal(now, tz);
-  const sameDayPossible = localNow.hour <= (hours.end - 2); // need 2h buffer
-
-  const base = sameDayPossible ? startOfDay(now, tz) : addDays(startOfDay(now, tz), 1, tz);
-
-  const slots = pickHours
-    .map((h) => clampHour(h, hours))
-    .filter((h, i, arr) => i === arr.findIndex((x) => x === h)) // unique
-    .map((h) => dateAtHour(base, h, tz))
-    .filter((d) => {
-      const lh = toLocal(d, tz).hour;
-      return lh >= hours.start && lh <= hours.end;
-    })
-    .map((d) => ({
-      label: d.toLocaleTimeString("en-US", {
-        hour: "numeric", minute: "2-digit", hour12: true, timeZone: tz,
-      }),
-      iso: d.toISOString(),
-      hour: toLocal(d, tz).hour,
-    }));
-
-  const dayName = base.toLocaleDateString("en-US", { weekday: "long", timeZone: tz });
-  const dayWord = sameDayPossible ? "" : ` (${dayName})`;
-  return { dayName, sameDayPossible, dayWord, slots };
+/* ---------------- Time helpers (no Date math for labels) ---------------- */
+function getLocalHour24(tz = DEFAULT_TZ) {
+  const parts = new Intl.DateTimeFormat("en-US", {
+    timeZone: tz, hour: "numeric", minute: "numeric", hour12: true
+  }).formatToParts(new Date()).reduce((a, p) => (a[p.type] = p.value, a), {});
+  let h = parseInt(parts.hour, 10);
+  const period = (parts.dayPeriod || parts.dayperiod || "").toLowerCase();
+  if (period === "pm" && h < 12) h += 12;
+  if (period === "am" && h === 12) h = 0;
+  return h; // 0–23
 }
-function toLocal(date, tz) {
-  const fmt = new Intl.DateTimeFormat("en-US", { timeZone: tz, hour: "numeric", minute: "numeric", hour12: true });
-  const parts = fmt.formatToParts(date).reduce((acc, p) => (acc[p.type] = p.value, acc), {});
-  // crude: rebuild hour in 24h range
-  let hour = parseInt(parts.hour, 10);
-  const dayPeriod = parts.dayPeriod || parts.dayperiod || "";
-  if (/pm/i.test(dayPeriod) && hour < 12) hour += 12;
-  if (/am/i.test(dayPeriod) && hour === 12) hour = 0;
-  return { hour, minute: parseInt(parts.minute || "0", 10) };
+function clampSlotHours(baseHours, window) {
+  const uniq = [...new Set(baseHours.map(h => Math.round(h)))];
+  return uniq
+    .map(h => Math.min(Math.max(h, window.start), window.end))
+    .filter(h => h >= window.start && h <= window.end);
 }
-function startOfDay(date, tz) {
-  const d = new Date(date);
-  const { hour, minute } = toLocal(d, tz);
-  // subtract local time to hit 00:00 local, approximate (good enough for slot calc)
-  d.setHours(d.getHours() - hour, d.getMinutes() - minute, 0, 0);
-  return d;
+function fmtHour12(h, min = 0) {
+  const hour12 = ((h + 11) % 12) + 1;
+  const ampm = h < 12 ? "AM" : "PM";
+  const mm = String(min).padStart(2, "0");
+  return `${hour12}:${mm} ${ampm}`;
 }
-function addDays(date, days, _tz) {
-  const d = new Date(date);
-  d.setDate(d.getDate() + days);
-  return d;
+/** Build slot strings without constructing Date objects */
+function synthesizeSlots({ tz = DEFAULT_TZ, hours = DEFAULT_HOURS, basePicks = [10, 14, 18] } = {}) {
+  const nowH = getLocalHour24(tz);
+  const sameDay = nowH <= (hours.end - 2); // need 2h buffer
+  // basePicks are hours; clamp to window and dedupe
+  let picks = clampSlotHours(basePicks, hours);
+  if (!picks.length) {
+    picks = clampSlotHours([hours.start, hours.start + 2, Math.min(hours.end, hours.start + 8)], hours);
+  }
+  const labels = picks.slice(0, 3).map(h => fmtHour12(h, 0));
+  // If not same-day, append weekday for clarity
+  const weekday = new Intl.DateTimeFormat("en-US", { weekday: "long", timeZone: tz }).format(new Date());
+  const dayWord = sameDay ? "" : ` (${weekday})`;
+  return { sameDay, dayWord, slots: labels };
 }
-function clampHour(h, { start, end }) {
-  return Math.min(Math.max(Math.round(h), start), end);
-}
-function dateAtHour(baseLocalMidnight, hour, tz) {
-  const d = new Date(baseLocalMidnight);
-  // set hour in that local day
-  d.setHours(hour, 0, 0, 0);
-  return d;
-}
-
 function offerTxt(dayWord, slots) {
-  const labels = slots.map((s) => s.label);
-  if (labels.length === 0) return "a quick time that works for you";
-  if (labels.length === 1) return `${labels[0]}${dayWord}`;
-  if (labels.length === 2) return `${labels[0]} or ${labels[1]}${dayWord}`;
-  return `${labels[0]}, ${labels[1]}, or ${labels[2]}${dayWord}`;
+  if (!slots.length) return "a quick time that works for you";
+  if (slots.length === 1) return `${slots[0]}${dayWord}`;
+  if (slots.length === 2) return `${slots[0]} or ${slots[1]}${dayWord}`;
+  return `${slots[0]}, ${slots[1]}, or ${slots[2]}${dayWord}`;
 }
 
 /* ---------------- Copy templates ---------------- */
@@ -164,13 +99,13 @@ const T = {
     es ? `Buena pregunta—el precio depende de edad, salud y cobertura. Lo vemos en una llamada corta. Tengo ${offer}. ¿Cuál prefiere?`
        : `Great question—price depends on age, health, and coverage. We’ll nail it on a quick call. I have ${offer}. Which works best?`,
   covered: (es, offer) =>
-    es ? `Excelente. Aun así, muchas familias hacen una revisión rápida para no pagar de más ni perder beneficios. Toma pocos minutos. Tengo ${offer}. ¿Cuál le conviene?`
+    es ? `Excelente. Muchas familias hacen una revisión rápida para no pagar de más ni perder beneficios. Toma pocos minutos. Tengo ${offer}. ¿Cuál le conviene?`
        : `Good to hear—many families still do a quick review to make sure they’re not overpaying or missing benefits. I have ${offer}. Which works better for you?`,
   brushoff: (es, offer) =>
-    es ? `Entiendo. Dejarlo claro toma pocos minutos. Tengo ${offer}. ¿Cuál prefiere?`
+    es ? `Entiendo. Mantengámoslo simple; toma pocos minutos. Tengo ${offer}. ¿Cuál prefiere?`
        : `Totally understand—let’s keep it simple. It only takes a few minutes. I have ${offer}. Which works better for you?`,
   spouse: (es, offer) =>
-    es ? `Perfecto—mejor cuando est[eé]n ambos. Tengo ${offer}. ¿Cu[aá]l funciona mejor para ustedes?`
+    es ? `Perfecto—mejor cuando estén ambos. Tengo ${offer}. ¿Cuál funciona mejor para ustedes?`
        : `Makes sense—let’s set a quick time when you can both be on. I have ${offer}. Which works best for you two?`,
   wrong: (es) =>
     es ? `¡Disculpe la molestia! Ya que estamos—¿tiene su seguro de vida al día?`
@@ -197,33 +132,27 @@ function decide({ text, agentName, calendlyLink, tz, officeHours } = {}) {
   const es = detectSpanish(text);
   const intent = classify(text);
 
-  const { dayWord, slots } = synthesizeSlots({
-    tz,
-    hours,
-    // small nudge to “human” anchors; can tweak or pass via params later
-    pickHours: [10, 14, 18], // 10:00a, 2:00p, 6:00p local
-  });
-
+  const { dayWord, slots } = synthesizeSlots({ tz, hours, basePicks: [10, 14, 18] });
   const offer = offerTxt(dayWord, slots);
   const name = agentName || (es ? "su corredor autorizado" : "your licensed broker");
 
-  // explicit time → confirm + optional link
+  // explicit time → confirm + optional link (use the user-provided label)
   if (intent === "time_specific") {
-    const m = String(text).match(/\b(1?\d(?::\d{2})?\s?(a\.?m\.?|p\.?m\.?|am|pm))\b/i) || String(text).match(/\b(1?\d:\d{2})\b/);
-    const label = m ? m[1].toUpperCase().replace(/\s+/g, " ") : (slots[1]?.label || slots[0]?.label || "the time we discussed");
+    const m =
+      String(text).match(/\b(1?\d(?::\d{2})?\s?(a\.?m\.?|p\.?m\.?|am|pm))\b/i) ||
+      String(text).match(/\b(1?\d:\d{2})\b/);
+    const label = m ? m[1].toUpperCase().replace(/\s+/g, " ") : (slots[1] || slots[0] || "the time we discussed");
     let out = T.timeConfirm(es, label);
     if (calendlyLink) out += T.link(es, calendlyLink);
     return { text: out, intent: "confirm_time" };
   }
 
-  // reschedule (even if already booked)
   if (intent === "reschedule") {
     let out = T.reschedule(es, offer);
     if (calendlyLink) out += T.link(es, calendlyLink);
     return { text: out, intent: "reschedule" };
   }
 
-  // other mapped intents
   if (intent === "greet")     return { text: T.greet(es, name, offer),    intent };
   if (intent === "who")       return { text: T.who(es, name, offer),      intent };
   if (intent === "price")     return { text: T.price(es, offer),          intent };
@@ -232,15 +161,12 @@ function decide({ text, agentName, calendlyLink, tz, officeHours } = {}) {
   if (intent === "spouse")    return { text: T.spouse(es, offer),         intent };
   if (intent === "wrong")     return { text: T.wrong(es),                  intent };
   if (intent === "agree")     return { text: T.agree(es, offer),           intent };
-  if (intent === "time_window"|| intent === "general") {
+  if (intent === "time_window" || intent === "general") {
     return { text: T.agree(es, offer), intent: "offer_slots" };
   }
-
-  // stop: upstream usually handles, but be safe: return no text
   if (intent === "stop") {
-    return { text: "", intent: "stop" };
+    return { text: "", intent: "stop" }; // upstream STOP logic handles it
   }
-
   return { text: T.agree(es, offer), intent: "offer_slots" };
 }
 
