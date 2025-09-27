@@ -91,14 +91,23 @@ function prettyE164(e164) {
 }
 
 /* ------------------ TFN helpers (auto-assign flow) ------------------ */
+/* NEW: send the Supabase JWT so Netlify functions can authenticate the request */
+async function withAuthHeaders() {
+  const { data } = await supabase.auth.getSession();
+  const token = data?.session?.access_token;
+  return token ? { Authorization: `Bearer ${token}` } : {};
+}
+
 async function apiGetTFNStatus() {
-  const res = await fetch("/.netlify/functions/tfn-status");
+  const headers = await withAuthHeaders();
+  const res = await fetch("/.netlify/functions/tfn-status", { headers });
   const j = await res.json().catch(() => ({}));
   if (!res.ok) throw new Error(j?.error || `HTTP_${res.status}`);
   return j; // { ok, phone_number, verified }
 }
 async function apiAssignTFN() {
-  const res = await fetch("/.netlify/functions/tfn-assign", { method: "POST" });
+  const headers = await withAuthHeaders();
+  const res = await fetch("/.netlify/functions/tfn-assign", { method: "POST", headers });
   const j = await res.json().catch(() => ({}));
   if (!res.ok) throw new Error(j?.error || `HTTP_${res.status}`);
   return j; // { ok, phone_number, verified }
@@ -650,7 +659,7 @@ export default function MessagingSettings() {
             </button>
           </div>
 
-          <div className="text-xs text-white/60">
+        <div className="text-xs text-white/60">
             {saveState === "saving" && (
               <span className="ml-3 inline-flex items-center gap-1">
                 <Loader2 className="h-3 w-3 animate-spin" /> Saving…
