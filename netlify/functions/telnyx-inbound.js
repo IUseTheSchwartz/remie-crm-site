@@ -1,13 +1,20 @@
+// File: netlify/functions/telnyx-inbound.js
 // Minimal inbound: store inbound SMS, handle STOP/START, pause sequences,
-// then fire-and-forget to ai-dispatch for the reply logic.
+// then fire-and-forget to ai-dispatch for the reply logic (with robust URL + logging).
 
 const { getServiceClient } = require("./_supabase");
 const fetch = require("node-fetch");
 
+/* ---------------- HTTP helpers ---------------- */
 function ok(body) {
-  return { statusCode: 200, headers: { "Content-Type": "application/json" }, body: JSON.stringify(body || { ok: true }) };
+  return {
+    statusCode: 200,
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body || { ok: true }),
+  };
 }
 
+/* ---------------- Phone helpers ---------------- */
 const norm10 = (s) => String(s || "").replace(/\D/g, "").slice(-10);
 function toE164(p) {
   const d = String(p || "").replace(/\D/g, "");
@@ -18,11 +25,17 @@ function toE164(p) {
   return null;
 }
 
-// Resolve agent by the Telnyx "to" number
+/* ---------------- Agent resolution ---------------- */
 async function resolveUserId(db, telnyxToE164) {
-  const { data: owner } = await db.from("agent_messaging_numbers").select("user_id").eq("e164", telnyxToE164).maybeSingle();
+  // A) direct match in per-agent number table
+  const { data: owner } = await db
+    .from("agent_messaging_numbers")
+    .select("user_id")
+    .eq("e164", telnyxToE164)
+    .maybeSingle();
   if (owner?.user_id) return owner.user_id;
 
+  // B) most recent outgoing using this number
   const { data: m } = await db
     .from("messages")
     .select("user_id")
@@ -31,19 +44,29 @@ async function resolveUserId(db, telnyxToE164) {
     .limit(1);
   if (m && m[0]?.user_id) return m[0].user_id;
 
+  // C) shared number optional behavior
   const SHARED =
-    process.env.TELNYX_FROM || process.env.TELNYX_FROM_NUMBER || process.env.DEFAULT_FROM_NUMBER || null;
-  if (SHARED && SHARED === telnyxToE164) { /* optional shared routing */ }
+    process.env.TELNYX_FROM ||
+    process.env.TELNYX_FROM_NUMBER ||
+    process.env.DEFAULT_FROM_NUMBER ||
+    null;
+  if (SHARED && SHARED === telnyxToE164) {
+    // optional: custom shared routing could go here
+  }
 
+  // D) final fallback
   return process.env.INBOUND_FALLBACK_USER_ID || process.env.DEFAULT_USER_ID || null;
 }
 
+/* ---------------- Contacts ---------------- */
 async function findOrCreateContact(db, user_id, fromE164) {
   const last10 = norm10(fromE164);
-  const { data } = await db
+  const { data, error } = await db
     .from("message_contacts")
     .select("id, phone, subscribed, ai_booked, full_name")
     .eq("user_id", user_id);
+  if (error) throw error;
+
   const found = (data || []).find((c) => norm10(c.phone) === last10);
   if (found) return found;
 
@@ -56,11 +79,13 @@ async function findOrCreateContact(db, user_id, fromE164) {
   return ins.data;
 }
 
+/* ---------------- STOP/START ---------------- */
 function parseKeyword(textIn) {
   const raw = String(textIn || "").trim();
   const normalized = raw.toUpperCase().replace(/[^A-Z]/g, "");
   const STOP_SET = new Set(["STOP", "STOPALL", "UNSUBSCRIBE", "CANCEL", "END", "QUIT"]);
   const START_SET = new Set(["START", "YES", "UNSTOP"]);
+
   const treatNo = String(process.env.INBOUND_TREAT_NO_AS_STOP || "true").toLowerCase() === "true";
   if (treatNo && normalized === "NO") return "STOP";
   if (STOP_SET.has(normalized)) return "STOP";
@@ -68,6 +93,7 @@ function parseKeyword(textIn) {
   return null;
 }
 
+/* ---------------- Lead Rescue integration ---------------- */
 async function stopLeadRescueOnReply(db, user_id, contact_id) {
   const now = new Date().toISOString();
   const { error } = await db
@@ -84,16 +110,28 @@ async function stopLeadRescueOnReply(db, user_id, contact_id) {
   if (error) throw error;
 }
 
+/* ---------------- Dispatcher URL (robust) ---------------- */
 function deriveDispatchUrl(event) {
+  // Prefer explicit env
+  if (process.env.AI_DISPATCH_URL) {
+    return String(process.env.AI_DISPATCH_URL).replace(/\/$/, "");
+  }
+
+  // Fallback to site-derived base
   const base =
     process.env.SITE_URL ||
     process.env.URL ||
     process.env.DEPLOY_PRIME_URL ||
-    (event.headers && `${(event.headers["x-forwarded-proto"] || event.headers["X-Forwarded-Proto"] || "https")}://${event.headers.host || event.headers.Host}`);
+    (event?.headers &&
+      `${(event.headers["x-forwarded-proto"] ||
+        event.headers["X-Forwarded-Proto"] ||
+        "https")}://${event.headers.host || event.headers.Host || ""}`);
+
   if (!base) return null;
   return `${String(base).replace(/\/$/, "")}/.netlify/functions/ai-dispatch`;
 }
 
+/* ---------------- Handler ---------------- */
 exports.handler = async (event) => {
   const db = getServiceClient();
 
@@ -108,7 +146,10 @@ exports.handler = async (event) => {
   const to   = toE164((Array.isArray(payload?.to) && payload.to[0]?.phone_number) || payload?.to || "");
   const text = String(payload?.text || payload?.body || "").trim();
 
-  if (!providerSid || !from || !to) return ok({ ok: true, note: "missing_fields" });
+  if (!providerSid || !from || !to) {
+    console.error("[inbound] missing fields", { providerSid, from, to });
+    return ok({ ok: true, note: "missing_fields" });
+  }
 
   // Dedupe on provider+sid
   const { data: dupe } = await db
@@ -117,10 +158,16 @@ exports.handler = async (event) => {
     .eq("provider", "telnyx")
     .eq("provider_sid", providerSid)
     .limit(1);
-  if (dupe && dupe.length) return ok({ ok: true, deduped: true });
+  if (dupe && dupe.length) {
+    console.log("[inbound] duplicate provider_sid", providerSid);
+    return ok({ ok: true, deduped: true });
+  }
 
   const user_id = await resolveUserId(db, to);
-  if (!user_id) return ok({ ok: false, error: "no_user_for_number", to });
+  if (!user_id) {
+    console.error("[inbound] no user for number", to);
+    return ok({ ok: false, error: "no_user_for_number", to });
+  }
 
   // Ensure contact & insert inbound
   const contact = await findOrCreateContact(db, user_id, from);
@@ -138,33 +185,52 @@ exports.handler = async (event) => {
     price_cents: 0,
   };
   const ins = await db.from("messages").insert([row]);
-  if (ins.error) return ok({ ok: false, error: ins.error.message });
+  if (ins.error) {
+    console.error("[inbound] insert error", ins.error);
+    return ok({ ok: false, error: ins.error.message });
+  }
 
   // Pause any sequence
-  try { await stopLeadRescueOnReply(db, user_id, contact.id); } catch {}
+  try { await stopLeadRescueOnReply(db, user_id, contact.id); } catch (e) {
+    console.warn("[inbound] stopLeadRescueOnReply warn:", e?.message || e);
+  }
 
   // STOP/START
   const action = parseKeyword(text);
   if (action === "STOP") {
     await db.from("message_contacts").update({ subscribed: false }).eq("id", contact.id);
+    console.log("[inbound] contact unsubscribed", contact.id);
     return ok({ ok: true, action: "unsubscribed" });
   }
   if (action === "START") {
     await db.from("message_contacts").update({ subscribed: true }).eq("id", contact.id);
+    console.log("[inbound] contact resubscribed", contact.id);
     return ok({ ok: true, action: "resubscribed" });
   }
 
   // Fire-and-forget AI dispatch (don’t block Telnyx response)
   try {
     const dispatchUrl = deriveDispatchUrl(event);
+    console.log("[inbound] dispatchUrl:", dispatchUrl);
+
     if (dispatchUrl) {
       fetch(dispatchUrl, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ user_id, contact_id: contact.id, from, to, text }),
-      }).catch(() => {});
+      })
+        .then(async (r) => {
+          let j = {};
+          try { j = await r.json(); } catch {}
+          console.log("[inbound] ai-dispatch status:", r.status, j);
+        })
+        .catch((e) => console.error("[inbound] ai-dispatch fetch error:", e?.message || e));
+    } else {
+      console.error("[inbound] NO dispatchUrl resolved");
     }
-  } catch {}
+  } catch (e) {
+    console.error("[inbound] ai-dispatch block error:", e?.message || e);
+  }
 
   return ok({ ok: true });
 };
