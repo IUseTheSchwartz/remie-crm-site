@@ -1,6 +1,5 @@
 // netlify/functions/calendly-events.js
-// Verbose error output (when ?debug=1), auto-resolve user if uid missing,
-// supports PAT fallback via CALENDLY_PAT (or CALENDLY_ACCESS_TOKEN/CALENDLY_TOKEN).
+// Safe session resolution, verbose debug, PAT fallback.
 
 const fetch = require("node-fetch");
 const { getServiceClient, getUserFromRequest } = require("./_supabase");
@@ -33,26 +32,31 @@ exports.handler = async (event) => {
   })();
 
   try {
-    // Basic env checks
     if (!SUPABASE_URL || !SUPABASE_SERVICE_ROLE) {
       return j(500, { error: "Missing Supabase env vars (SUPABASE_URL / SUPABASE_SERVICE_ROLE)" });
     }
     if (!CALENDLY_CLIENT_ID || !CALENDLY_CLIENT_SECRET) {
-      // Not needed if using PAT fallback, so only error if no PAT either
       if (!CALENDLY_PAT) {
-        return j(500, { error: "Missing Calendly env vars (CLIENT_ID/SECRET) and no CALENDLY_PAT fallback" });
+        return j(500, { error: "Missing Calendly CLIENT_ID/SECRET and no CALENDLY_PAT fallback" });
       }
     }
 
-    // Resolve uid from query or session
     const url = new URL(event.rawUrl);
     let uid = url.searchParams.get("uid");
     const count = Math.max(1, Math.min(100, Number(url.searchParams.get("count") || 50)));
 
+    // SAFE session resolution (no destructuring on null)
     if (!uid) {
-      const { user, error } = await getUserFromRequest(event, supabase);
-      if (error || !user) return j(401, { error: "Not signed in and no uid provided" });
-      uid = user.id;
+      let resolved = null;
+      try {
+        resolved = await getUserFromRequest(event, supabase);
+      } catch (e) {
+        if (debug) console.error("[calendly-events] getUserFromRequest threw:", e);
+      }
+      if (!resolved || resolved.error || !resolved.user) {
+        return j(401, { error: "Not signed in and no uid provided" });
+      }
+      uid = resolved.user.id;
     }
 
     // ===== Acquire Calendly access token =====
@@ -61,10 +65,8 @@ exports.handler = async (event) => {
     let expires_at = null;
 
     if (CALENDLY_PAT) {
-      // Easy path: site-wide PAT
       access_token = CALENDLY_PAT;
     } else {
-      // DB path
       const tokenUrl =
         `${SUPABASE_URL}/rest/v1/calendly_tokens?user_id=eq.` +
         encodeURIComponent(uid) +
@@ -79,7 +81,7 @@ exports.handler = async (event) => {
 
       if (!tRes.ok) {
         const body = await tRes.text().catch(() => "");
-        console.error("[calendly-events] token lookup failed:", tRes.status, body);
+        if (debug) console.error("[calendly-events] token lookup failed:", tRes.status, body);
         return j(500, { error: "Token lookup failed", detail: debug ? body : undefined });
       }
 
@@ -88,7 +90,7 @@ exports.handler = async (event) => {
         const arr = await tRes.json();
         row = Array.isArray(arr) ? arr[0] : null;
       } catch (e) {
-        console.error("[calendly-events] token JSON parse error:", e);
+        if (debug) console.error("[calendly-events] token JSON parse error:", e);
         return j(500, { error: "Token JSON parse error", detail: debug ? String(e) : undefined });
       }
 
@@ -103,7 +105,7 @@ exports.handler = async (event) => {
       if (!Number.isNaN(expMs) && expMs < Date.now() + 30_000) {
         const refreshed = await refresh(refresh_token);
         if (!refreshed.ok) {
-          console.error("[calendly-events] refresh failed:", refreshed.error);
+          if (debug) console.error("[calendly-events] refresh failed:", refreshed.error);
           return j(401, { error: "Calendly token refresh failed", detail: debug ? refreshed.error : undefined });
         }
         access_token = refreshed.access_token;
@@ -121,10 +123,9 @@ exports.handler = async (event) => {
           },
           body: JSON.stringify([{ user_id: uid, access_token, refresh_token, expires_at }]),
         });
-        if (!upRes.ok) {
+        if (!upRes.ok && debug) {
           const body = await upRes.text().catch(() => "");
           console.error("[calendly-events] upsert failed:", upRes.status, body);
-          if (debug) return j(500, { error: "Upsert tokens failed", detail: body });
         }
       }
     }
@@ -137,7 +138,7 @@ exports.handler = async (event) => {
     let meJson = {};
     try { meJson = meTxt ? JSON.parse(meTxt) : {}; } catch {}
     if (!meRes.ok) {
-      console.error("[calendly-events] /users/me failed:", meRes.status, meTxt);
+      if (debug) console.error("[calendly-events] /users/me failed:", meRes.status, meTxt);
       return j(meRes.status, { error: "users/me failed", detail: debug ? meJson || meTxt : undefined });
     }
     const userUri = meJson?.resource?.uri;
@@ -145,8 +146,7 @@ exports.handler = async (event) => {
 
     // ===== Pull events (now → +30 days) =====
     const now = new Date();
-    const max = new Date(now);
-    max.setDate(max.getDate() + 30);
+    const max = new Date(now); max.setDate(max.getDate() + 30);
 
     const qs = new URLSearchParams({
       user: userUri,
@@ -164,13 +164,13 @@ exports.handler = async (event) => {
     let evJson = {};
     try { evJson = evTxt ? JSON.parse(evTxt) : {}; } catch {}
     if (!evRes.ok) {
-      console.error("[calendly-events] /scheduled_events failed:", evRes.status, evTxt);
+      if (debug) console.error("[calendly-events] /scheduled_events failed:", evRes.status, evTxt);
       return j(evRes.status, { error: "scheduled_events failed", detail: debug ? evJson || evTxt : undefined });
     }
 
     return j(200, evJson);
   } catch (err) {
-    console.error("[calendly-events] unhandled:", err);
+    if (debug) console.error("[calendly-events] unhandled:", err);
     return j(500, { error: err?.message || String(err) });
   }
 };
