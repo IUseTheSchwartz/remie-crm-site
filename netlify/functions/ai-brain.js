@@ -9,6 +9,10 @@ const DEFAULT_HOURS = { start: 9, end: 21 }; // inclusive local window
 const LLM_ENABLED = String(process.env.AI_BRAIN_USE_LLM || "true").toLowerCase() === "true";
 const LLM_MIN_CONF = Number(process.env.AI_BRAIN_LLM_CONFIDENCE || 0.55);
 
+/* ---------------- Small helpers ---------------- */
+const pick = (arr) => arr[Math.floor(Math.random() * arr.length)];
+const safe = (s) => (s ? String(s).trim() : "");
+
 /* ---------------- Language detection ---------------- */
 function detectSpanish(t = "") {
   const s = String(t).toLowerCase();
@@ -25,20 +29,45 @@ function classify(t = "") {
   const x = normalize(t);
   if (!x) return "general";
 
+  if (/\b(how are you|how’s it going|how's it going|hru|how are u|how r you)\b/.test(x)) return "courtesy_greet";
+
   if (/^(k|kk|kay|ok(ay)?|sure|sounds good|works|perfect|great|cool|yep|yeah|si|sí|vale|dale|va)\b/.test(x)) return "agree";
   if (/^(nah|nope|not now|no)\b/.test(x)) return "brushoff";
+
   if (/\b(stop|unsubscribe|quit|cancel)\b/.test(x)) return "stop";
-  if (/\b(price|how much|cost|monthly|payment|premium|quote|rate|rates)\b/.test(x) || /\b(cu[áa]nto|precio|costo|pago|mensual|cuota|prima)\b/.test(x)) return "price";
-  if (/\b(who('?|’)?s|whos)\s+this\??\b/.test(x) || /\bwho\s+is\s+this\??\b/.test(x) || /\bwho are you\??\b/.test(x) || /\bhow did you get (my|this) (number|#)\b/.test(x) || /\bwhy (are|r) you texting\b/.test(x) || /\bqui[eé]n (eres|habla|manda|me escribe)\b/.test(x)) return "who";
-  if (/\b(already have|i have insurance|covered|i'?m covered|policy already)\b/.test(x) || /\b(ya tengo|tengo seguro|ya estoy cubiert[oa])\b/.test(x)) return "covered";
-  if (/\b(not interested|stop texting|leave me alone|busy|working|at work|later|another time|no thanks)\b/.test(x) || /\b(no me interesa|ocupad[oa]|luego|m[aá]s tarde|otro d[ií]a)\b/.test(x)) return "brushoff";
+
+  if (/\b(price|how much|cost|monthly|payment|premium|quote|rate|rates?)\b/.test(x) ||
+      /\b(cu[áa]nto|precio|costo|pago|mensual|cuota|prima)\b/.test(x)) return "price";
+
+  if (/\b(who('?|’)?s|whos)\s+this\??\b/.test(x) ||
+      /\bwho\s+is\s+this\??\b/.test(x) ||
+      /\bwho are you\??\b/.test(x) ||
+      /\bhow did you get (my|this) (number|#)\b/.test(x) ||
+      /\bwhy (are|r) you texting\b/.test(x) ||
+      /\bqui[eé]n (eres|habla|manda|me escribe)\b/.test(x)) return "who";
+
+  if (/\b(already have|i have insurance|covered|i'?m covered|policy already)\b/.test(x) ||
+      /\b(ya tengo|tengo seguro|ya estoy cubiert[oa])\b/.test(x)) return "covered";
+
+  if (/\b(not interested|stop texting|leave me alone|busy|working|at work|later|another time|no thanks)\b/.test(x) ||
+      /\b(no me interesa|ocupad[oa]|luego|m[aá]s tarde|otro d[ií]a)\b/.test(x)) return "brushoff";
+
   if (/\bwrong number|not (me|my number)\b/.test(x) || /\bn[uú]mero equivocado\b/.test(x)) return "wrong";
+
   if (/\b(spouse|wife|husband|partner)\b/.test(x) || /\bespos[ao]\b/.test(x)) return "spouse";
+
   if (/\b(call|ring|phone me|give me a call|ll[aá]mame|llamar)\b/.test(x)) return "callme";
-  if (/\b(resched|re[- ]?schedule|different time|change (the )?time|move (it|appt)|new time)\b/i.test(x) || /\b(reprogramar|cambiar hora|otra hora|mover la cita)\b/.test(x)) return "reschedule";
-  if (/\b(tom(orrow)?|today|evening|afternoon|morning|tonight|this (afternoon|evening|morning))\b/.test(x) || /\b(ma[ñn]ana|hoy|tarde|noche)\b/.test(x)) return "time_window";
+
+  if (/\b(resched|re[- ]?schedule|different time|change (the )?time|move (it|appt)|new time)\b/i.test(x) ||
+      /\b(reprogramar|cambiar hora|otra hora|mover la cita)\b/.test(x)) return "reschedule";
+
+  if (/\b(tom(orrow)?|today|evening|afternoon|morning|tonight|this (afternoon|evening|morning))\b/.test(x) ||
+      /\b(ma[ñn]ana|hoy|tarde|noche)\b/.test(x)) return "time_window";
+
   if (/\b(1?\d(?::\d{2})?\s?(a\.?m\.?|p\.?m\.?|am|pm))\b/.test(x) || /\b(1?\d:\d{2})\b/.test(x)) return "time_specific";
+
   if (/^(hi|hey|hello|hola|buenas)\b/.test(x)) return "greet";
+
   return "general";
 }
 
@@ -60,7 +89,7 @@ function fmtHour12(h, min = 0) {
   const hour12 = ((h + 11) % 12) + 1;
   const ampm = h < 12 ? "AM" : "PM";
   const mm = String(min).padStart(2, "0");
-  return `${hour12}:${mm} ${ampm}`;
+  return mm === "00" ? `${hour12} ${ampm}` : `${hour12}:${mm} ${ampm}`;
 }
 function synthesizeSlots({ tz = DEFAULT_TZ, hours = DEFAULT_HOURS, basePicks = [8, 13, 18] } = {}) {
   const nowH = getLocalHour24(tz);
@@ -96,57 +125,114 @@ function pickByWindow(slotLabels, slotHours, windowWord) {
   return slotLabels;
 }
 function hasAmbiguousBareHour(t) {
-  // e.g., "7", "10 works", "let's do 5?" (no am/pm, no ':')
   const x = normalize(t);
   const m = x.match(/\b([1-9]|1[0-2])\b/);
   if (!m) return false;
-  // if next token has am/pm, or contains ":" then it's not ambiguous
   if (/\b(am|pm)\b/.test(x) || /\d:\d{2}/.test(x)) return false;
-  if (/\bafter\s+[1-9]|1[0-2]\b/.test(x)) return false; // handled as window
+  if (/\bafter\s+[1-9]|1[0-2]\b/.test(x)) return false;
   return true;
 }
 
-/* ---------------- Copy templates ---------------- */
+/* ---------------- Copy templates (more natural, small variations) ---------------- */
 const T = {
-  greet: (es, n, offer, ctx) =>
-    es ? `Hola${ctx?.firstName ? ` ${ctx.firstName}` : ""}, soy ${n}. ¿Le funciona ${offer}?`
-       : `Hey${ctx?.firstName ? ` ${ctx.firstName}` : ""}, it’s ${n}. Would ${offer} work?`,
-  who: (es, n, offer, ctx) => {
-    const bit = ctx?.beneficiary && ctx?.state
-      ? (es ? `recibí su solicitud en ${ctx.state} donde puso a ${ctx.beneficiary} como beneficiario`
-             : `I got your request in ${ctx.state} where you listed ${ctx.beneficiary} as beneficiary`)
-      : (es ? `recibí su solicitud sobre seguro de vida` : `I got your life insurance request`);
-    return es
-      ? `Hola, soy ${n}. ${bit}. Podemos verlo en unos minutos—¿le funciona ${offer}?`
-      : `Hey, this is ${n}. ${bit}. We can go over it in a few minutes—would ${offer} work?`;
+  greetFirst: (es, n, offer, ctx) => {
+    const first = safe(ctx?.firstName);
+    const state = safe(ctx?.state);
+    const bene  = safe(ctx?.beneficiary);
+    if (es) {
+      const intro = first ? `Hola ${first}, soy ${n}.` : `Hola—soy ${n}.`;
+      const bit = (state || bene)
+        ? `Vi el formulario que envió${state ? ` en ${state}` : ""}${bene ? ` (donde puso a ${bene} como beneficiario)` : ""}.`
+        : `Vi el formulario que envió.`;
+      const close = pick([`¿Le funciona ${offer}?`,`Tengo ${offer}. ¿Cuál prefiere?`,`Podemos verlo en 5 minutos—${offer} le queda bien?`]);
+      return `${intro} ${bit} ${close}`;
+    }
+    const intro = first ? `Hey ${first}, it’s ${n}.` : `Hey—it’s ${n}.`;
+    const bit = (state || bene)
+      ? `Saw the form you sent${state ? ` in ${state}` : ""}${bene ? ` (the one listing ${bene})` : ""}.`
+      : `Saw the form you sent in.`;
+    const close = pick([`Does ${offer} work?`,`I can do ${offer}. What works best?`,`We can keep it to ~5 mins—would ${offer} work?`]);
+    return `${intro} ${bit} ${close}`;
   },
+
+  greet: (es, n, offer, ctx) => {
+    const first = safe(ctx?.firstName);
+    if (es) {
+      const open = pick([
+        first ? `Hola ${first},` : `Hola,`,
+        `¡Buenas!`,
+      ]);
+      const tail = pick([`¿Le funciona ${offer}?`, `Puedo ${offer}. ¿Cuál prefiere?`]);
+      return `${open} soy ${n}. ${tail}`;
+    }
+    const open = pick([
+      first ? `Hey ${first},` : `Hey,`,
+      `Hi there,`,
+    ]);
+    const tail = pick([`Would ${offer} work?`, `I can do ${offer}. Which is better for you?`]);
+    return `${open} it’s ${n}. ${tail}`;
+  },
+
+  courtesy: (es, n, offer) =>
+    es ? pick([`¡Bien, gracias!`,`Todo bien, gracias.`]) + ` Tengo ${offer}. ¿Cuál le conviene?`
+       : pick([`Doing well, thanks!`,`All good, thanks for asking.`]) + ` I can do ${offer}. Which works for you?`,
+
+  who: (es, n, offer, ctx) => {
+    const first = safe(ctx?.firstName);
+    const state = safe(ctx?.state);
+    const bene  = safe(ctx?.beneficiary);
+    if (es) {
+      const intro = first ? `Hola ${first}, soy ${n}.` : `Hola, soy ${n}.`;
+      const bit = (state || bene)
+        ? `Usted envió una solicitud${state ? ` en ${state}` : ""}${bene ? ` donde puso a ${bene} como beneficiario` : ""}.`
+        : `Usted envió una solicitud de seguro de vida.`;
+      const close = pick([`¿Le funciona ${offer}?`,`Lo vemos en 5 minutos—${offer} está bien?`]);
+      return `${intro} ${bit}. ${close}`;
+    }
+    const intro = first ? `Hey ${first}, this is ${n}.` : `Hey, this is ${n}.`;
+    const bit = (state || bene)
+      ? `You sent a request${state ? ` in ${state}` : ""}${bene ? ` and listed ${bene} as the beneficiary` : ""}.`
+      : `You sent in a request for life insurance.`;
+    const close = pick([`Does ${offer} work?`,`We can do a quick 5-min review—would ${offer} work?`]);
+    return `${intro} ${bit}. ${close}`;
+  },
+
   price: (es, offer) =>
-    es ? `Buena pregunta: el precio depende de edad, salud y cobertura. Lo vemos en una llamada corta. Tengo ${offer}. ¿Cuál prefiere?`
-       : `Great question—price depends on age, health, and coverage. We can pin it down on a quick call. I have ${offer}. Which works best?`,
+    es ? `Buena pregunta—depende de edad, salud y cobertura. Lo vemos rápido por teléfono. Tengo ${offer}. ¿Cuál prefiere?`
+       : `Good question—it depends on age, health, and coverage. Easiest is a quick call. I can do ${offer}. Which works?`,
+
   covered: (es, offer) =>
-    es ? `Perfecto. Muchas familias hacen una revisión rápida para no pagar de más ni perder beneficios. Toma pocos minutos. Tengo ${offer}. ¿Cuál le conviene?`
-       : `Good to hear—many families still do a quick review to make sure they’re not overpaying or missing benefits. I have ${offer}. Which is better for you?`,
+    es ? `Genial. Aun así, muchos hacen una revisión corta para no pagar de más ni perder beneficios. Tengo ${offer}. ¿Cuál le conviene?`
+       : `Nice. Folks still do a quick review to make sure they’re not overpaying or missing benefits. I can do ${offer}. Which is better?`,
+
   brushoff: (es, offer) =>
-    es ? `Entiendo. Lo mantenemos simple y corto. Tengo ${offer}. ¿Cuál prefiere?`
-       : `Totally understand—we’ll keep it quick and simple. I have ${offer}. Which works better?`,
+    es ? `Entiendo. Lo dejamos simple y corto. Tengo ${offer}. ¿Cuál prefiere?`
+       : `Totally get it—let’s keep it quick. I can do ${offer}. Which works better?`,
+
   spouse: (es, offer) =>
-    es ? `Perfecto—mejor cuando estén ambos. Tengo ${offer}. ¿Cuál funciona mejor para ustedes?`
-       : `Makes sense—let’s set a quick time when you can both be on. I have ${offer}. Which works best for you two?`,
+    es ? `Perfecto—mejor cuando estén ambos. Tengo ${offer}. ¿Qué hora les conviene?`
+       : `Makes sense—best when you’re both on. I can do ${offer}. What works for you two?`,
+
   wrong: (es) =>
-    es ? `¡Sin problema! Si necesita cotizar más adelante, avíseme.`
-       : `No worries! If you ever want to look at options later, just let me know.`,
+    es ? `Sin problema. Si necesita opciones más adelante, avíseme.`
+       : `No worries. If you ever want to look at options later, just text me.`,
+
   agree: (es, offer) =>
-    es ? `Genial—agendemos unos minutos. Tengo ${offer}. ¿Cuál prefiere?`
-       : `Great—let’s set aside a few minutes. I have ${offer}. Which works for you?`,
+    es ? `Perfecto—agendemos unos minutos. Tengo ${offer}. ¿Cuál prefiere?`
+       : `Great—let’s set a few minutes. I can do ${offer}. Which works for you?`,
+
   timeConfirm: (es, label) =>
     es ? `Perfecto, le llamo a las ${label}. Lo mantengo breve.`
        : `Perfect, I’ll call you at ${label}. I’ll keep it quick.`,
+
   link: (es, link) =>
     es ? ` Aquí tiene un enlace para confirmar y recibir recordatorios (puede reprogramar si hace falta): ${link}`
        : ` Here’s a quick link to confirm so you’ll get reminders (and can reschedule if needed): ${link}`,
+
   reschedule: (es, offer) =>
     es ? `Claro, reprogramemos. Tengo ${offer}. ¿Cuál le funciona?`
-       : `Absolutely—let’s reschedule. I have ${offer}. Which works for you?`,
+       : `Absolutely—let’s reschedule. I can do ${offer}. Which works for you?`,
+
   clarifyTime: (es, h) =>
     es ? `¿Le queda mejor ${h} AM o ${h} PM? Puedo acomodarme.`
        : `Does ${h} work better AM or PM? I can make either work.`,
@@ -163,10 +249,19 @@ async function decide({ text, agentName, calendlyLink, tz, officeHours, context,
 
   const intentDet = classify(text);
 
-  // STOP → silence (upstream unsub should handle)
   if (intentDet === "stop") return { text: "", intent: "stop", meta: { route: "deterministic" } };
 
-  // Time-specific (deterministic)
+  // Special: "how are you?"
+  if (intentDet === "courtesy_greet") {
+    return { text: T.courtesy(es, name, offer), intent: "courtesy_greet", meta: { route: "deterministic" } };
+  }
+
+  // Time-specific (deterministic) — also catch "noon"
+  if (/\bnoon\b/i.test(text)) {
+    let out = T.timeConfirm(es, "12 PM");
+    if (calendlyLink) out += T.link(es, calendlyLink);
+    return { text: out, intent: "confirm_time", meta: { route: "deterministic" } };
+  }
   if (intentDet === "time_specific") {
     const m = String(text).match(/\b(1?\d(?::\d{2})?\s?(a\.?m\.?|p\.?m\.?|am|pm))\b/i) || String(text).match(/\b(1?\d:\d{2})\b/);
     const label = m ? m[1].toUpperCase().replace(/\s+/g, " ") : (slots[1] || slots[0] || "the time we discussed");
@@ -175,26 +270,28 @@ async function decide({ text, agentName, calendlyLink, tz, officeHours, context,
     return { text: out, intent: "confirm_time", meta: { route: "deterministic" } };
   }
 
-  // Bare hour like "7" → clarify deterministically
+  // Bare hour like "7" → clarify
   if (hasAmbiguousBareHour(text)) {
     const h = String(text).match(/\b([1-9]|1[0-2])\b/)[1];
     return { text: T.clarifyTime(es, h), intent: "clarify_time", meta: { route: "deterministic" } };
   }
 
-  // Time window (deterministic)
+  // Time window
   if (intentDet === "time_window") {
     const winSlots = pickByWindow(slots, slotHours, text);
     const winOffer = offerTxt(dayWord, winSlots);
     return { text: T.agree(es, winOffer), intent: "offer_slots_windowed", meta: { route: "deterministic" } };
   }
 
-  // Direct mappings (deterministic)
+  // Direct mappings
   if (intentDet === "reschedule") return { text: T.reschedule(es, offer), intent: "reschedule", meta: { route: "deterministic" } };
+
   if (intentDet === "greet") {
     const firstTurn = context?.firstTurn === true;
-    if (firstTurn) return { text: T.who(es, name, offer, context), intent: "greet_first_turn", meta: { route: "deterministic" } };
+    if (firstTurn) return { text: T.greetFirst(es, name, offer, context), intent: "greet_first_turn", meta: { route: "deterministic" } };
     return { text: T.greet(es, name, offer, context), intent: "greet", meta: { route: "deterministic" } };
   }
+
   if (intentDet === "who")      return { text: T.who(es, name, offer, context), intent: "who", meta: { route: "deterministic" } };
   if (intentDet === "price")    return { text: T.price(es, offer), intent: "price", meta: { route: "deterministic" } };
   if (intentDet === "covered")  return { text: T.covered(es, offer), intent: "covered", meta: { route: "deterministic" } };
@@ -213,7 +310,6 @@ async function decide({ text, agentName, calendlyLink, tz, officeHours, context,
     if (llm.confidence >= minConf) {
       const intent = llm.intent;
 
-      // Time via LLM
       if (intent === "time_specific" && llm.time?.type === "specific" && llm.time.value) {
         let out = T.timeConfirm(es, llm.time.value);
         if (calendlyLink) out += T.link(es, calendlyLink);
@@ -225,21 +321,25 @@ async function decide({ text, agentName, calendlyLink, tz, officeHours, context,
         return { text: T.agree(es, winOffer), intent: "offer_slots_windowed", meta: { route: "llm", conf: llm.confidence } };
       }
 
-      // Map other intents to templates (still preset copy)
-      if (intent === "greet")     return { text: T.greet(es, name, offer, context), intent, meta: { route: "llm", conf: llm.confidence } };
-      if (intent === "who")       return { text: T.who(es, name, offer, context),   intent, meta: { route: "llm", conf: llm.confidence } };
-      if (intent === "price")     return { text: T.price(es, offer),                intent, meta: { route: "llm", conf: llm.confidence } };
-      if (intent === "covered")   return { text: T.covered(es, offer),              intent, meta: { route: "llm", conf: llm.confidence } };
-      if (intent === "brushoff")  return { text: T.brushoff(es, offer),             intent, meta: { route: "llm", conf: llm.confidence } };
-      if (intent === "spouse")    return { text: T.spouse(es, offer),               intent, meta: { route: "llm", conf: llm.confidence } };
-      if (intent === "wrong")     return { text: T.wrong(es),                       intent, meta: { route: "llm", conf: llm.confidence } };
-      if (intent === "callme")    return { text: T.greet(es, name, offer, context), intent, meta: { route: "llm", conf: llm.confidence } };
-      if (intent === "agree")     return { text: T.agree(es, offer),                intent, meta: { route: "llm", conf: llm.confidence } };
+      if (intent === "courtesy_greet") return { text: T.courtesy(es, name, offer), intent, meta: { route: "llm", conf: llm.confidence } };
+      if (intent === "greet")          return { text: T.greet(es, name, offer, context), intent, meta: { route: "llm", conf: llm.confidence } };
+      if (intent === "who")            return { text: T.who(es, name, offer, context),   intent, meta: { route: "llm", conf: llm.confidence } };
+      if (intent === "price")          return { text: T.price(es, offer),                intent, meta: { route: "llm", conf: llm.confidence } };
+      if (intent === "covered")        return { text: T.covered(es, offer),              intent, meta: { route: "llm", conf: llm.confidence } };
+      if (intent === "brushoff")       return { text: T.brushoff(es, offer),             intent, meta: { route: "llm", conf: llm.confidence } };
+      if (intent === "spouse")         return { text: T.spouse(es, offer),               intent, meta: { route: "llm", conf: llm.confidence } };
+      if (intent === "wrong")          return { text: T.wrong(es),                       intent, meta: { route: "llm", conf: llm.confidence } };
+      if (intent === "callme")         return { text: T.greet(es, name, offer, context), intent, meta: { route: "llm", conf: llm.confidence } };
+      if (intent === "agree")          return { text: T.agree(es, offer),                intent, meta: { route: "llm", conf: llm.confidence } };
     }
   }
 
   // Fallback general
-  return { text: T.agree(es, offer), intent: "offer_slots", meta: { route: "fallback" } };
+  const firstTurn = context?.firstTurn === true;
+  if (firstTurn) {
+    return { text: T.greetFirst(es, name, offer, context), intent: "greet_first_turn", meta: { route: "fallback" } };
+  }
+  return { text: T.greet(es, name, offer, context), intent: "offer_slots", meta: { route: "fallback" } };
 }
 
 module.exports = { decide };
