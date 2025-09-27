@@ -114,7 +114,7 @@ export default function MessagesPage() {
     if (!user?.id) return;
     const { data } = await supabase
       .from("messages")
-      .select("id, direction, to_number, from_number, body, status, created_at")
+      .select("id, direction, to_number, from_number, body, status, created_at, sent_by_ai")
       .eq("user_id", user.id)
       .order("created_at", { ascending: false })
       .limit(200);
@@ -132,6 +132,7 @@ export default function MessagesPage() {
         partnerNumber: partner,
         lastMessage: m.body,
         lastAt: m.created_at,
+        // (optional) you could keep m.sent_by_ai here if you want to tag thread preview
       });
     }
     setThreads(grouped);
@@ -142,7 +143,7 @@ export default function MessagesPage() {
     if (!user?.id || !numberE164) return;
     const { data } = await supabase
       .from("messages")
-      .select("id, direction, to_number, from_number, body, status, created_at")
+      .select("id, direction, to_number, from_number, body, status, created_at, sent_by_ai")
       .eq("user_id", user.id)
       .or(`to_number.eq.${numberE164},from_number.eq.${numberE164}`)
       .order("created_at", { ascending: true })
@@ -512,7 +513,14 @@ export default function MessagesPage() {
                       >
                         <div>{m.body}</div>
                         {isOut && (
-                          <div className="mt-1 text-[10px] uppercase tracking-wide text-white/50">{m.status}</div>
+                          <div className="mt-1 text-[10px] uppercase tracking-wide text-white/50">
+                            <span>{m.status}</span>
+                            {m.sent_by_ai && (
+                              <span className="ml-2 rounded-sm border border-white/20 bg-white/10 px-1 py-[1px] text-[9px] tracking-widest text-white/70">
+                                AI
+                              </span>
+                            )}
+                          </div>
                         )}
                       </div>
                     </div>
@@ -716,7 +724,14 @@ function MobileChat({
                 >
                   <div>{m.body}</div>
                   {isOut && (
-                    <div className="mt-1 text-[10px] uppercase tracking-wide text-white/50">{m.status}</div>
+                    <div className="mt-1 text-[10px] uppercase tracking-wide text-white/50">
+                      <span>{m.status}</span>
+                      {m.sent_by_ai && (
+                        <span className="ml-2 rounded-sm border border-white/20 bg-white/10 px-1 py-[1px] text-[9px] tracking-widest text-white/70">
+                          AI
+                        </span>
+                      )}
+                    </div>
                   )}
                 </div>
               </div>
