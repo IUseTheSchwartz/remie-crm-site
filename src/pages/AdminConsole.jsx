@@ -6,6 +6,9 @@ import useIsAdminAllowlist from "../hooks/useIsAdminAllowlist.js";
 // ✅ Partners admin section
 import PartnersAdminSection from "../components/admin/PartnersAdminSection.jsx";
 
+// ✅ NEW: Toll-Free Number pool admin section
+import TFNPoolAdminSection from "../components/admin/TFNPoolAdminSection.jsx";
+
 /* ------------------------ small helpers ------------------------ */
 function centsToUsd(cents) {
   if (cents == null || Number.isNaN(cents)) return "0.00";
@@ -474,6 +477,11 @@ export default function AdminConsole() {
         Locked = all templates disabled. We keep the prior state in{" "}
         <code>message_templates_backup</code> so unlocking restores exactly what they had.
       </p>
+
+      {/* ---------- NEW: TFN Pool Admin Section ---------- */}
+      <div className="pt-6 border-t border-white/10">
+        <TFNPoolAdminSection />
+      </div>
 
       {/* ---------- NEW: Partners Admin Section ---------- */}
       <div className="pt-6 border-t border-white/10">
