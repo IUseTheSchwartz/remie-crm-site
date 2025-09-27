@@ -515,47 +515,55 @@ export default function MessagingSettings() {
       </section>
 
       {/* Toll-Free Number (per-agent) */}
-      <section className="rounded-2xl border border-white/10 bg-white/[0.03] p-4">
-        <div className="mb-2 flex items-center justify-between">
-          <div>
-            <h3 className="text-sm font-semibold">Your Toll-Free Number</h3>
-            <p className="text-xs text-white/60">
-              Messages you send will come from this number. It’s included — no cost to you.
-            </p>
-          </div>
-          <div>
-            <button
-              type="button"
-              onClick={() => setTfnModalOpen(true)}
-              className="inline-flex items-center gap-1 rounded-lg border border-white/15 bg-white/5 px-3 py-2 text-sm hover:bg-white/10"
-            >
-              {myTFN ? "Change Number" : "Choose Number"}
-            </button>
-          </div>
-        </div>
+<section className="rounded-2xl border border-white/10 bg-white/[0.03] p-4">
+  <div className="mb-2 flex items-center justify-between">
+    <div>
+      <h3 className="text-sm font-semibold">Your Toll-Free Number</h3>
+      <p className="text-xs text-white/60">
+        Messages you send will come from this number. It’s included — no cost to you.
+      </p>
+    </div>
 
-        <div className="rounded-lg border border-white/10 bg-white/[0.02] p-3 text-sm">
-          {myTFN ? (
-            <div className="flex items-center justify-between">
-              <div className="text-white/80">
-                Current: <span className="font-semibold">{prettyE164(myTFN)}</span>
-              </div>
-              <span className="rounded-md border border-emerald-400/30 bg-emerald-400/10 px-2 py-0.5 text-[11px] text-emerald-300">
-                Active
-              </span>
-            </div>
-          ) : (
-            <div className="space-y-1">
-              <div className="text-white/80">
-                Current: <span className="font-semibold">None selected</span>
-              </div>
-              <div className="text-[12px] text-amber-300">
-                Messaging is <b>disabled</b> until you choose a toll-free number.
-              </div>
-            </div>
-          )}
+    {/* lock after first selection */}
+    {!myTFN ? (
+      <div>
+        <button
+          type="button"
+          onClick={() => setTfnModalOpen(true)}
+          className="inline-flex items-center gap-1 rounded-lg border border-white/15 bg-white/5 px-3 py-2 text-sm hover:bg-white/10"
+        >
+          Choose Number
+        </button>
+      </div>
+    ) : (
+      <div className="text-[11px] text-white/50">
+        Number locked. Contact support to change.
+      </div>
+    )}
+  </div>
+
+  <div className="rounded-lg border border-white/10 bg-white/[0.02] p-3 text-sm">
+    {myTFN ? (
+      <div className="flex items-center justify-between">
+        <div className="text-white/80">
+          Current: <span className="font-semibold">{prettyE164(myTFN)}</span>
         </div>
-      </section>
+        <span className="rounded-md border border-emerald-400/30 bg-emerald-400/10 px-2 py-0.5 text-[11px] text-emerald-300">
+          Active
+        </span>
+      </div>
+    ) : (
+      <div className="space-y-1">
+        <div className="text-white/80">
+          Current: <span className="font-semibold">None selected</span>
+        </div>
+        <div className="text-[12px] text-amber-300">
+          Messaging is <b>disabled</b> until you choose a toll-free number.
+        </div>
+      </div>
+    )}
+  </div>
+</section>
 
       {/* Templates editor */}
       <section className="rounded-2xl border border-white/10 bg-white/[0.03] p-4">
