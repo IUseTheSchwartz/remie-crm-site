@@ -1,6 +1,7 @@
 // File: netlify/functions/telnyx-inbound.js
-// Inserts incoming SMS and handles STOP/START style opt-out/opt-in.
-// Adds AI auto-reply: warm-up + 3 next-day slots (9a–9p); confirm + Calendly link; stop after booking.
+// Inbound SMS → log message, honor STOP/START, pause sequences,
+// lightweight AI reply: greet/identify, price pivot, spouse, wrong #,
+// always push to quick call; confirm explicit times; 3 next-day slots (9a,1p,6p).
 
 const { getServiceClient } = require("./_supabase");
 const fetch = require("node-fetch");
@@ -23,7 +24,7 @@ function toE164(p) {
   return null;
 }
 
-/* ===== Agent resolution: per-agent TFN, then fallback ===== */
+/* ===== Agent resolution (per-agent TFN → last sender → fallback) ===== */
 async function resolveUserId(db, telnyxToE164) {
   const { data: owner } = await db
     .from("agent_messaging_numbers")
@@ -46,7 +47,7 @@ async function resolveUserId(db, telnyxToE164) {
     process.env.DEFAULT_FROM_NUMBER ||
     null;
   if (SHARED && SHARED === telnyxToE164) {
-    // optional shared-number behavior
+    // keep if you want special routing
   }
   return process.env.INBOUND_FALLBACK_USER_ID || process.env.DEFAULT_USER_ID || null;
 }
@@ -103,14 +104,14 @@ async function stopLeadRescueOnReply(db, user_id, contact_id) {
   if (error) throw error;
 }
 
-/* ===== AI Helpers & Config ===== */
+/* ===== AI helpers & config ===== */
 const OUTBOUND_SEND_URL =
   process.env.OUTBOUND_SEND_URL ||
   (process.env.SITE_URL ? `${process.env.SITE_URL.replace(/\/$/, "")}/.netlify/functions/messages-send` : null);
 
 const AGENT_TZ = process.env.AGENT_DEFAULT_TZ || "America/Chicago";
 const WORK_START = 9;  // 9am
-const WORK_END = 21;   // 9pm
+const WORK_END   = 21; // 9pm
 
 function detectSpanish(text) {
   const t = String(text || "").toLowerCase();
@@ -123,82 +124,76 @@ function detectSpanish(text) {
 
 function classifyIntent(txt) {
   const t = String(txt || "").trim().toLowerCase();
+
   if (!t) return "general";
   if (/\b(stop|unsubscribe|quit)\b/.test(t)) return "stop";
+
+  // handle “who’s this” variants (contraction included) BEFORE anything else
+  if (/\b(who\s*'?s\s*this|who is this|who dis)\b/.test(t) || /\bquién\b/.test(t)) return "who";
+
   if (/\b(^hi$|^hey$|^hello$|hola|buenas)\b/.test(t)) return "greeting";
   if (/\b(call me|llámame|llamame)\b/.test(t)) return "callme";
   if (/\b(price|how much|cost|monthly|cuánto|precio|costo)\b/.test(t)) return "price";
-  if (/\b(who is this|who dis|quién|how did you get|cómo obtuvo)\b/.test(t)) return "who";
   if (/\b(already have|covered|ya tengo|tengo seguro)\b/.test(t)) return "covered";
   if (/\b(not interested|no me interesa|busy|ocupad[oa])\b/.test(t)) return "brushoff";
   if (/\b(wrong number|número equivocado)\b/.test(t)) return "wrong";
   if (/\b(spouse|wife|husband|espos[ao])\b/.test(t)) return "spouse";
-  if (/\b(tom|tomorrow|mañana|today|hoy|evening|afternoon|morning|tonight)\b/.test(t)) return "time_window";
+
+  // time
   if (/\b(\d{1,2})(?::(\d{2}))?\s*(am|pm)\b/.test(t) || /\bnoon\b/.test(t)) return "time_specific";
+  if (/\b(tom|tomorrow|mañana|today|hoy|evening|afternoon|morning|tonight)\b/.test(t)) return "time_window";
+
   if (/^(ok|okay|sounds good|vale|bien|si|sí)\b/.test(t)) return "agree";
   return "general";
 }
 
-// next-day anchor in agent TZ
-function nextDayLocal(tz) {
+/** Day name (tomorrow) in TZ */
+function nextDayName(tz) {
   const now = new Date();
-  const opts = { timeZone: tz, year: "numeric", month: "2-digit", day: "2-digit" };
-  const parts = new Intl.DateTimeFormat("en-US", opts).formatToParts(now).reduce((a,p)=>(a[p.type]=p.value,a),{});
-  const d = new Date(`${parts.year}-${parts.month}-${parts.day}T00:00:00Z`);
-  d.setUTCDate(d.getUTCDate() + 1);
-  return d;
+  const tomorrow = new Date(now);
+  tomorrow.setDate(now.getDate() + 1);
+  return new Intl.DateTimeFormat("en-US", { weekday: "long", timeZone: tz }).format(tomorrow);
 }
 
-// 3 suggested slots: 9:00, 1:00, 6:00 (next day, agent TZ)
+/** Fixed 3 next-day options (strings only; avoids TZ drift) */
 function synthesizeThreeSlots(agentTZ) {
-  const tz = agentTZ || AGENT_TZ;
-  const base = nextDayLocal(tz); // midnight next day (UTC ref)
-  const hours = [9, 13, 18]; // 9a, 1p, 6p local
-  const picks = hours.map((h) => {
-    const label = new Intl.DateTimeFormat("en-US", {
-      timeZone: tz, hour: "numeric", minute: "2-digit", hour12: true
-    }).format(new Date(new Date(base).setUTCHours(h, 0, 0, 0)));
-    return { label };
-  });
-  const dayName = new Intl.DateTimeFormat("en-US", { timeZone: tz, weekday: "long" })
-    .format(new Date(base));
-  return { dayName, slots: picks };
+  const dayName = nextDayName(agentTZ || AGENT_TZ);
+  return {
+    dayName,
+    slots: [{ label: "9:00 AM" }, { label: "1:00 PM" }, { label: "6:00 PM" }],
+  };
 }
 
-// Parse "1pm", "1:30 pm", "noon", and coarse windows (morning/afternoon/evening/tonight).
-// Clamp to your working window 9–21.
-function parseRequestedTimeLabel(txt, agentTZ) {
+/** Parse “10am”, “1:30 pm”, “noon”, or windows → return a friendly label clamped to 9–9 */
+function parseRequestedTimeLabel(txt) {
   const t = String(txt || "").toLowerCase();
-  const tz = agentTZ || AGENT_TZ;
 
   if (/\bnoon\b/.test(t)) return "12:00 PM";
 
   const m = t.match(/\b(\d{1,2})(?::(\d{2}))?\s*(am|pm)\b/);
-  if (!m) {
-    if (/\bmorning\b/.test(t)) return "10:00 AM";
-    if (/\bafternoon\b/.test(t)) return "2:00 PM";
-    if (/\bevening\b|\btonight\b/.test(t)) return "6:00 PM";
-    return null;
+  if (m) {
+    let hh = parseInt(m[1], 10);
+    const mm = m[2] ? parseInt(m[2], 10) : 0;
+    const ap = m[3];
+    if (ap === "pm" && hh !== 12) hh += 12;
+    if (ap === "am" && hh === 12) hh = 0;
+
+    if (hh < WORK_START) hh = WORK_START;
+    if (hh > WORK_END)   hh = WORK_END;
+
+    const hh12 = ((hh + 11) % 12) + 1;
+    const apOut = hh >= 12 ? "PM" : "AM";
+    const mmOut = (mm + "").padStart(2, "0");
+    return `${hh12}:${mmOut} ${apOut}`;
   }
-  let hh = parseInt(m[1], 10);
-  const mm = m[2] ? parseInt(m[2], 10) : 0;
-  const ap = m[3];
-  if (ap === "pm" && hh !== 12) hh += 12;
-  if (ap === "am" && hh === 12) hh = 0;
 
-  // clamp to 9–21
-  if (hh < WORK_START) hh = WORK_START;
-  if (hh > WORK_END) hh = WORK_END;
-
-  const d = new Date();
-  const label = new Intl.DateTimeFormat("en-US", {
-    timeZone: tz, hour: "numeric", minute: "2-digit", hour12: true
-  }).format(new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate(), hh, mm, 0)));
-
-  return label;
+  if (/\bmorning\b/.test(t))   return "10:00 AM";
+  if (/\bafternoon\b/.test(t)) return "2:00 PM";
+  if (/\bevening\b|\btonight\b/.test(t)) return "6:00 PM";
+  return null;
 }
 
-/* ====== Templates (EN & ES) ====== */
+/* ====== Templates ====== */
 function t_price(isEs, offer) {
   return isEs
     ? `Buena pregunta—el precio depende de su edad, salud y la cantidad de cobertura. Solo toma unos minutos en una llamada rápida para ver sus opciones exactas. Tengo ${offer}. ¿Cuál prefiere?`
@@ -241,10 +236,7 @@ function t_agree(isEs, offer) {
 }
 function t_offer(dayName, slots) {
   const labels = slots.map(s => s.label);
-  if (labels.length === 3) {
-    return `tomorrow (${dayName}) at ${labels[0]}, ${labels[1]}, or ${labels[2]}`;
-  }
-  return `tomorrow at ${labels.join(", ")}`;
+  return `tomorrow (${dayName}) at ${labels[0]}, ${labels[1]}, or ${labels[2]}`;
 }
 function t_confirm(isEs, tsLabel, calendly) {
   const core = isEs
@@ -258,7 +250,7 @@ function t_confirm(isEs, tsLabel, calendly) {
   return core + link;
 }
 
-/* ===== DB Helper: Agent profile ===== */
+/* ===== DB helper ===== */
 async function getAgentProfile(db, user_id) {
   const { data, error } = await db
     .from("agent_profiles")
@@ -319,9 +311,7 @@ exports.handler = async (event) => {
   const to   = toE164((Array.isArray(payload?.to) && payload.to[0]?.phone_number) || payload?.to || "");
   const text = String(payload?.text || payload?.body || "").trim();
 
-  if (!providerSid || !from || !to) {
-    return ok({ ok: true, note: "missing_fields" });
-  }
+  if (!providerSid || !from || !to) return ok({ ok: true, note: "missing_fields" });
 
   // Dedupe on provider+sid
   const { data: dupe } = await db
@@ -338,7 +328,7 @@ exports.handler = async (event) => {
   // Ensure a contact exists
   const contact = await findOrCreateContact(db, user_id, from);
 
-  // Insert the inbound message row
+  // Insert inbound
   const row = {
     user_id,
     contact_id: contact?.id || null,
@@ -354,10 +344,10 @@ exports.handler = async (event) => {
   const ins = await db.from("messages").insert([row]);
   if (ins.error) return ok({ ok: false, error: ins.error.message });
 
-  // Lead Rescue: pause on any reply
+  // Pause Lead Rescue
   try { await stopLeadRescueOnReply(db, user_id, contact.id); } catch {}
 
-  // STOP/START keywords
+  // STOP/START
   const action = parseKeyword(text);
   if (action === "STOP") {
     await db.from("message_contacts").update({ subscribed: false }).eq("id", contact.id);
@@ -370,14 +360,13 @@ exports.handler = async (event) => {
 
   // Respect unsubscribed / booked
   if (contact.subscribed === false) return ok({ ok: true, note: "contact_unsubscribed" });
-  if (contact.ai_booked === true) return ok({ ok: true, note: "ai_silent_booked" });
+  if (contact.ai_booked === true)   return ok({ ok: true, note: "ai_silent_booked" });
 
-  // Agent context & tomorrow offer (9a–9p)
+  // Context for replies
   const agent = await getAgentProfile(db, user_id);
   const calendlyLink = agent?.calendly_url || "";
   const { dayName, slots } = synthesizeThreeSlots(AGENT_TZ);
   const offerText = t_offer(dayName, slots);
-
   const isEs = detectSpanish(text);
   const intent = classifyIntent(text);
 
@@ -385,30 +374,29 @@ exports.handler = async (event) => {
     return await sendAI(db, { user_id, toE164: from, body: bodyText, meta });
   }
 
-  // If they gave or implied a specific time → accept if in-window and send Calendly; else nudge to options.
+  // Specific time or window
   if (intent === "time_specific" || intent === "time_window") {
-    const requestedLabel = parseRequestedTimeLabel(text, AGENT_TZ); // e.g., "1:00 PM"
+    const requestedLabel = parseRequestedTimeLabel(text); // e.g., "10:00 AM"
     if (requestedLabel) {
       await send(t_confirm(isEs, requestedLabel, calendlyLink), { ai_intent: "confirm_time" });
       await db.from("message_contacts").update({ ai_booked: true }).eq("id", contact.id);
       return ok({ ok: true, ai: "confirmed_and_linked" });
     }
-    // ambiguous or outside window → offer slots
     await send(t_agree(isEs, offerText), { ai_intent: "offer_slots_after_time_window" });
     return ok({ ok: true, ai: "offered_slots" });
   }
 
-  // Natural greeting (don’t jump straight to long intro)
+  // Natural greeting
   if (intent === "greeting") {
     const name = agent?.full_name || "your licensed broker";
     const msg = isEs
       ? `¡Hola! Soy ${name}. Podemos revisar sus opciones en unos minutos — ¿le funciona ${offerText}?`
-      : `Hey there—it's ${name}. We can go over your options in just a few minutes — would ${offerText} work?`;
+      : `Hey there—it’s ${name}. We can go over your options in just a few minutes — would ${offerText} work?`;
     await send(msg, { ai_intent: "greeting" });
     return ok({ ok: true, ai: "greeted" });
   }
 
-  // Direct “who is this?”
+  // Identity
   if (intent === "who") {
     await send(t_who(isEs, agent?.full_name || "your licensed broker", offerText), { ai_intent: "who" });
     return ok({ ok: true, ai: "who" });
@@ -420,7 +408,7 @@ exports.handler = async (event) => {
     return ok({ ok: true, ai: "price" });
   }
 
-  // Other standard branches
+  // Other branches
   if (intent === "covered") {
     await send(t_covered(isEs, offerText), { ai_intent: "covered" });
     return ok({ ok: true, ai: "covered" });
@@ -442,7 +430,7 @@ exports.handler = async (event) => {
     return ok({ ok: true, ai: "callme_or_agree" });
   }
 
-  // Fallback → warm push with 3 options (9/1/6)
+  // Fallback
   await send(t_agree(isEs, offerText), { ai_intent: "offer_slots_fallback" });
   return ok({ ok: true, ai: "responded" });
 };
