@@ -6,14 +6,6 @@ const { getServiceClient } = require("./_supabase");
 const fetch = require("node-fetch"); // ensure fetch exists in function runtime
 
 const TELNYX_API_KEY = process.env.TELNYX_API_KEY;
-
-// Accept several env names; we will NOT use these as fallback anymore
-const ENV_FROM_RAW =
-  process.env.TELNYX_FROM ||
-  process.env.TELNYX_FROM_NUMBER ||
-  process.env.DEFAULT_FROM_NUMBER ||
-  null;
-
 const MESSAGING_PROFILE_ID = process.env.TELNYX_MESSAGING_PROFILE_ID || null;
 
 function json(obj, statusCode = 200) {
@@ -35,10 +27,12 @@ function toE164(p) {
 // tiny mustache: {{ token }}
 function renderTemplate(tpl, ctx) {
   if (!tpl) return "";
-  return String(tpl).replace(/\{\{\s*([\w.]+)\s*\}\}/g, (_, k) => {
-    const v = ctx && Object.prototype.hasOwnProperty.call(ctx, k) ? ctx[k] : "";
-    return v == null ? "" : String(v);
-  }).trim();
+  return String(tpl)
+    .replace(/\{\{\s*([\w.]+)\s*\}\}/g, (_, k) => {
+      const v = ctx && Object.prototype.hasOwnProperty.call(ctx, k) ? ctx[k] : "";
+      return v == null ? "" : String(v);
+    })
+    .trim();
 }
 
 async function getLead(db, lead_id) {
@@ -104,25 +98,23 @@ async function getBalanceCents(db, user_id) {
   return Number(data?.balance_cents ?? 0);
 }
 
-/* ====== CHANGED: Require an active per-agent TFN from agent_messaging_numbers; NO fallbacks ====== */
+/* ====== FROM number: toll_free_numbers ONLY ====== */
 async function pickFromNumber(db, user_id) {
-  try {
-    const { data: num } = await db
-      .from("agent_messaging_numbers")
-      .select("e164, status")
-      .eq("user_id", user_id)
-      .eq("status", "active")
-      .limit(1)
-      .maybeSingle();
-    if (num?.e164) {
-      const e = toE164(num.e164);
-      if (e) return e;
-    }
-  } catch {}
-  // No TFN found
-  return null;
+  const { data: tfn, error } = await db
+    .from("toll_free_numbers")
+    .select("phone_number, verified")
+    .eq("assigned_to", user_id)
+    .eq("verified", true)
+    .limit(1)
+    .maybeSingle();
+  if (error) throw error;
+  if (tfn?.phone_number) {
+    const e = toE164(tfn.phone_number);
+    if (e) return e;
+  }
+  return null; // no verified, assigned TFN found
 }
-/* ====== /CHANGED ====== */
+/* ====== /FROM number ====== */
 
 // ---- Telnyx send ----
 async function telnyxSend({ from, to, text, profileId }) {
@@ -131,7 +123,7 @@ async function telnyxSend({ from, to, text, profileId }) {
     to,
     text,
     ...(profileId ? { messaging_profile_id: profileId } : {}),
-    ...(from ? { from } : {}), // omit if null to let profile route (we won't, since we require TFN)
+    ...(from ? { from } : {}),
   };
   const res = await fetch("https://api.telnyx.com/v2/messages", {
     method: "POST",
@@ -163,15 +155,18 @@ exports.handler = async (event) => {
 
   try {
     let body;
-    try { body = JSON.parse(event.body || "{}"); }
-    catch { return json({ error: "invalid_json" }, 400); }
+    try {
+      body = JSON.parse(event.body || "{}");
+    } catch {
+      return json({ error: "invalid_json" }, 400);
+    }
 
     let {
       to,
       contact_id,
       lead_id,
       body: rawBody,
-      templateKey,            // camelCase
+      templateKey, // camelCase
       requesterId,
       provider_message_id,
     } = body || {};
@@ -245,26 +240,35 @@ exports.handler = async (event) => {
       if (!mt) return json({ error: "template_not_configured", trace }, 400);
 
       const enabledGlobal = typeof mt.enabled === "boolean" ? mt.enabled : true;
-      const enabledByKey   = (mt.enabled && typeof mt.enabled === "object") ? mt.enabled[templateKey] : undefined;
-      const isEnabled = enabledGlobal && (enabledByKey !== false);
+      const enabledByKey =
+        mt.enabled && typeof mt.enabled === "object" ? mt.enabled[templateKey] : undefined;
+      const isEnabled = enabledGlobal && enabledByKey !== false;
       if (!isEnabled) return json({ status: "skipped_disabled", templateKey, trace });
 
       const tags = Array.isArray(contact?.tags) ? contact.tags.map(String) : [];
       const isMilitary = S(lead?.military_branch) || tags.includes("military");
 
       const keyToUse = chooseFallbackKey(templateKey, { isMilitary: !!isMilitary });
-      const T = (k) => (mt.templates?.[k] ?? mt[k] ?? "");
+      const T = (k) => mt.templates?.[k] ?? mt[k] ?? "";
       let tpl = String(T(keyToUse) || "").trim();
 
       if (!tpl && keyToUse === "new_lead_military") tpl = String(T("new_lead") || "").trim();
       if (!tpl && keyToUse === "new_lead") tpl = String(T("new_lead_military") || "").trim();
 
-      if (!tpl) return json({ error: "template_not_found", requested: templateKey, tried: keyToUse, trace }, 404);
+      if (!tpl)
+        return json(
+          { error: "template_not_found", requested: templateKey, tried: keyToUse, trace },
+          404
+        );
 
       const ap = await getAgentProfile(db, user_id);
       const ctx = {
-        first_name: "", last_name: "", full_name: "",
-        state: "", beneficiary: "", military_branch: "",
+        first_name: "",
+        last_name: "",
+        full_name: "",
+        state: "",
+        beneficiary: "",
+        military_branch: "",
         agent_name: ap?.name || ap?.full_name || "",
         company: ap?.company || "",
         agent_phone: ap?.phone || "",
@@ -272,12 +276,12 @@ exports.handler = async (event) => {
         calendly_link: ap?.calendly_link || ap?.calendly_url || "",
       };
 
-      const fullName = (lead?.name) || (contact?.full_name) || "";
+      const fullName = lead?.name || contact?.full_name || "";
       if (fullName) {
         ctx.full_name = fullName;
         const parts = fullName.split(/\s+/).filter(Boolean);
         ctx.first_name = parts[0] || "";
-        ctx.last_name  = parts.slice(1).join(" ");
+        ctx.last_name = parts.slice(1).join(" ");
       }
       ctx.state = lead?.state || "";
       ctx.beneficiary = lead?.beneficiary || lead?.beneficiary_name || "";
@@ -289,20 +293,27 @@ exports.handler = async (event) => {
       trace.push({ step: "template.rendered", key: keyToUse, body_len: bodyText.length });
     }
 
-    // -------- Determine FROM number (must be agent's TFN) --------
-    const fromE164 = await pickFromNumber(db, user_id); // must exist
+    // -------- Determine FROM number (must be agent's verified TFN) --------
+    const fromE164 = await pickFromNumber(db, user_id);
     if (!fromE164) {
-      return json({
-        error: "no_agent_tfn_configured",
-        hint: "Pick a toll-free number in Messaging Settings first.",
-        trace
-      }, 400);
+      return json(
+        {
+          error: "no_agent_tfn_configured",
+          hint: "Assign a verified toll-free number in Messaging Settings.",
+          trace,
+        },
+        400
+      );
     }
 
     // -------- WALLET pre-flight --------
-    const COST_CENTS = 1; // keep in sync with webhook + trigger expectation
+    const COST_CENTS = 1; // keep in sync with webhook/trigger
     let balance = 0;
-    try { balance = await getBalanceCents(db, user_id); } catch { balance = 0; }
+    try {
+      balance = await getBalanceCents(db, user_id);
+    } catch {
+      balance = 0;
+    }
     if (balance < COST_CENTS) {
       return json({ error: "insufficient_balance", balance_cents: balance, trace }, 402);
     }
@@ -321,7 +332,15 @@ exports.handler = async (event) => {
       trace.push({ step: "telnyx.sent", id: telnyxResp?.data?.id, used_from: fromE164 });
     } catch (e) {
       trace.push({ step: "telnyx.error", detail: e?.message || String(e) });
-      return json({ error: "send_failed", detail: e?.message || String(e), telnyx_response: e?.telnyx_response, trace }, 502);
+      return json(
+        {
+          error: "send_failed",
+          detail: e?.message || String(e),
+          telnyx_response: e?.telnyx_response,
+          trace,
+        },
+        502
+      );
     }
 
     const provider_sid = telnyxResp?.data?.id || null;
@@ -338,7 +357,7 @@ exports.handler = async (event) => {
       status: "sent",
       provider_sid,
       provider_message_id: provider_message_id || null,
-      price_cents: COST_CENTS, // debit trigger expects a cost > 0
+      price_cents: COST_CENTS,
       meta: { templateKey: templateKey || null, lead_id: lead?.id || (lead_id || null) },
     };
 
