@@ -16,6 +16,7 @@ const TFN_REGEX = /^\+18(00|88|77|66|55|44|33)\d{7}$/;
 
 export default function TFNPoolAdminSection() {
   const [rows, setRows] = useState([]);
+  const [profilesByUser, setProfilesByUser] = useState(new Map()); // user_id -> {full_name, email}
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [msg, setMsg] = useState("");
@@ -27,31 +28,56 @@ export default function TFNPoolAdminSection() {
   const [q, setQ] = useState("");
   const [filter, setFilter] = useState("all"); // all | available | assigned | unverified
 
-  const filtered = useMemo(() => {
-    let list = rows;
-    if (filter === "available") list = list.filter(r => !r.assigned_to);
-    if (filter === "assigned") list = list.filter(r => !!r.assigned_to);
-    if (filter === "unverified") list = list.filter(r => !r.verified);
-    if (q.trim()) {
-      const s = q.trim().toLowerCase();
-      list = list.filter(r =>
-        (r.phone_number||"").toLowerCase().includes(s) ||
-        (r.telnyx_number_id||"").toLowerCase().includes(s) ||
-        (r.assigned_to||"").toLowerCase().includes(s)
-      );
-    }
-    return list;
-  }, [rows, q, filter]);
+  // Assign to a user (by email or user_id uuid)
+  const [assignTarget, setAssignTarget] = useState({ id: null, emailOrId: "" });
 
   async function load() {
     setLoading(true);
     setMsg("");
+
+    // 1) Load TFNs
     const { data, error } = await supabase
       .from("toll_free_numbers")
       .select("id, phone_number, telnyx_number_id, verified, assigned_to, date_assigned, created_at")
       .order("created_at", { ascending: false });
-    if (error) setMsg(error.message);
-    setRows(data || []);
+
+    if (error) {
+      setMsg(error.message);
+      setRows([]);
+      setProfilesByUser(new Map());
+      setLoading(false);
+      return;
+    }
+
+    const list = data || [];
+    setRows(list);
+
+    // 2) Load any assigned users' profiles in one shot
+    const ids = [...new Set(list.map(r => r.assigned_to).filter(Boolean))];
+    if (ids.length === 0) {
+      setProfilesByUser(new Map());
+      setLoading(false);
+      return;
+    }
+
+    const { data: profs, error: pErr } = await supabase
+      .from("agent_profiles")
+      .select("user_id, full_name, email")
+      .in("user_id", ids);
+
+    if (pErr) {
+      setMsg(pErr.message);
+      setProfilesByUser(new Map());
+      setLoading(false);
+      return;
+    }
+
+    const map = new Map();
+    (profs || []).forEach(p => {
+      if (!p?.user_id) return;
+      map.set(p.user_id, { full_name: p.full_name || "", email: p.email || "" });
+    });
+    setProfilesByUser(map);
     setLoading(false);
   }
 
@@ -108,8 +134,6 @@ export default function TFNPoolAdminSection() {
     load();
   }
 
-  // Assign to a user (by email or user_id uuid)
-  const [assignTarget, setAssignTarget] = useState({ id: null, emailOrId: "" });
   async function assign(row) {
     const key = assignTarget.emailOrId.trim();
     if (!key) return setMsg("Enter an email or user_id (uuid).");
@@ -118,16 +142,19 @@ export default function TFNPoolAdminSection() {
     setMsg("");
 
     let userId = null;
+
     if (/^[0-9a-f-]{36}$/i.test(key)) {
-      userId = key; // looks like uuid
+      // Looks like uuid
+      userId = key;
     } else {
-      // look up by email in agent_profiles first (fast), fallback to auth via RPC if you have one
+      // Try finding by email in agent_profiles (case-insensitive)
       const { data: prof } = await supabase
         .from("agent_profiles")
-        .select("user_id")
+        .select("user_id, full_name, email")
         .ilike("email", key)
         .limit(1)
         .maybeSingle();
+
       userId = prof?.user_id || null;
     }
 
@@ -141,10 +168,50 @@ export default function TFNPoolAdminSection() {
       .from("toll_free_numbers")
       .update({ assigned_to: userId, date_assigned: new Date().toISOString() })
       .eq("id", row.id);
+
     if (error) setMsg(error.message);
+
     setSaving(false);
     setAssignTarget({ id: null, emailOrId: "" });
     load();
+  }
+
+  // Search / filter with profile data
+  const filtered = useMemo(() => {
+    let list = rows;
+    if (filter === "available") list = list.filter(r => !r.assigned_to);
+    if (filter === "assigned") list = list.filter(r => !!r.assigned_to);
+    if (filter === "unverified") list = list.filter(r => !r.verified);
+
+    const s = q.trim().toLowerCase();
+    if (!s) return list;
+
+    return list.filter(r => {
+      const prof = r.assigned_to ? profilesByUser.get(r.assigned_to) : null;
+      const targets = [
+        r.phone_number || "",
+        r.telnyx_number_id || "",
+        r.assigned_to || "",
+        prof?.full_name || "",
+        prof?.email || "",
+      ].join(" ").toLowerCase();
+      return targets.includes(s);
+    });
+  }, [rows, q, filter, profilesByUser]);
+
+  function renderAssigned(r) {
+    if (!r.assigned_to) return <span className="text-white/50">—</span>;
+    const prof = profilesByUser.get(r.assigned_to);
+    if (!prof) return <span className="text-white/70">{r.assigned_to}</span>;
+    const name = prof.full_name || "(no name)";
+    const email = prof.email || "";
+    return (
+      <div className="flex flex-col">
+        <span className="text-white/90">{name}</span>
+        <span className="text-white/60 text-[11px]">{email}</span>
+        <span className="text-white/40 text-[10px] mt-0.5">{r.assigned_to}</span>
+      </div>
+    );
   }
 
   return (
@@ -228,7 +295,7 @@ export default function TFNPoolAdminSection() {
           <input
             value={q}
             onChange={(e)=>setQ(e.target.value)}
-            placeholder="Search number, Telnyx ID, or user_id"
+            placeholder="Search number, Telnyx ID, user id, name, or email"
             className="rounded-lg border border-white/15 bg-white/5 pl-8 pr-3 py-2 text-sm outline-none focus:ring-1 focus:ring-indigo-400/40"
           />
         </div>
@@ -267,13 +334,7 @@ export default function TFNPoolAdminSection() {
                         {r.verified ? "Verified" : "Pending"}
                       </span>
                     </td>
-                    <td className="px-3 py-2">
-                      {r.assigned_to ? (
-                        <span className="text-white/80">{r.assigned_to}</span>
-                      ) : (
-                        <span className="text-white/50">—</span>
-                      )}
-                    </td>
+                    <td className="px-3 py-2">{renderAssigned(r)}</td>
                     <td className="px-3 py-2">
                       {r.date_assigned ? new Date(r.date_assigned).toLocaleString() : "—"}
                     </td>
@@ -300,7 +361,7 @@ export default function TFNPoolAdminSection() {
                               value={assignTarget.id === r.id ? assignTarget.emailOrId : ""}
                               onChange={(e)=>setAssignTarget({ id: r.id, emailOrId: e.target.value })}
                               placeholder="email or user_id"
-                              className="w-40 rounded-md border border-white/15 bg-white/5 px-2 py-1 text-[11px] outline-none focus:ring-1 focus:ring-indigo-400/40"
+                              className="w-44 rounded-md border border-white/15 bg-white/5 px-2 py-1 text-[11px] outline-none focus:ring-1 focus:ring-indigo-400/40"
                             />
                             <button
                               onClick={() => assign(r)}
