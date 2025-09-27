@@ -5,7 +5,7 @@
 const { getServiceClient } = require("./_supabase");
 const fetch = require("node-fetch");
 const { AbortController } = require("abort-controller");
-const { decide } = require("./ai-brain"); // <-- your pure logic module
+const { decide } = require("./ai-brain"); // <-- pure logic module
 
 /* ---------------- HTTP helpers ---------------- */
 function ok(body) {
@@ -45,6 +45,42 @@ async function getAgentProfile(db, user_id) {
     .maybeSingle();
   if (error) throw error;
   return data || {};
+}
+
+/** Try to enrich context from your DB; all optional. */
+async function buildContext(db, contact_id) {
+  const ctx = { firstTurn: false };
+
+  // A) Is this their first inbound? (There will already be at least 1 inbound row inserted by telnyx-inbound.)
+  try {
+    const { data: inbounds } = await db
+      .from("messages")
+      .select("id")
+      .eq("contact_id", contact_id)
+      .eq("direction", "incoming")
+      .order("created_at", { ascending: true })
+      .limit(2);
+    if (Array.isArray(inbounds) && inbounds.length === 1) {
+      ctx.firstTurn = true;
+    }
+  } catch {}
+
+  // B) Optional: pull lead fields if you have a leads table (adjust to your schema).
+  // Attempt common names; ignore if table/columns don’t exist.
+  try {
+    const { data: lead } = await db
+      .from("leads") // <-- change to your table if different (e.g., "crm_leads")
+      .select("first_name, state, beneficiary")
+      .eq("contact_id", contact_id)
+      .maybeSingle();
+    if (lead) {
+      if (lead.first_name) ctx.firstName = lead.first_name;
+      if (lead.state) ctx.state = lead.state;
+      if (lead.beneficiary) ctx.beneficiary = lead.beneficiary;
+    }
+  } catch {}
+
+  return ctx;
 }
 
 /* ---------------- Handler ---------------- */
@@ -93,7 +129,7 @@ exports.handler = async (event) => {
     if (contact?.subscribed === false) {
       return ok({ ok: true, note: "contact_unsubscribed" });
     }
-    // NOTE: If you still want to silence booked, uncomment this:
+    // If you want to silence after booking, uncomment:
     // if (contact?.ai_booked === true) {
     //   return ok({ ok: true, note: "ai_silent_booked" });
     // }
@@ -107,15 +143,25 @@ exports.handler = async (event) => {
   const calendlyLink = agent?.calendly_url || "";
   const tz = process.env.AGENT_DEFAULT_TZ || "America/Chicago";
 
+  // ---- build lead/turn context (optional enrichment)
+  const context = await buildContext(db, contact_id).catch(() => ({ firstTurn: false }));
+
+  // ---- env flags for hybrid LLM fallback
+  const useLLM = String(process.env.AI_BRAIN_USE_LLM || "true").toLowerCase() === "true";
+  const llmMinConf = Number(process.env.AI_BRAIN_LLM_CONFIDENCE || 0.55);
+
   // ---- delegate to AI brain (pure logic)
-  let decision = { text: "", intent: "general" };
+  let decision = { text: "", intent: "general", meta: null };
   try {
-    decision = decide({
+    decision = await decide({
       text,
       agentName,
       calendlyLink,
       tz,
       // officeHours: { start: 9, end: 21 }, // optional override
+      context,
+      useLLM,
+      llmMinConf,
     }) || decision;
   } catch (e) {
     console.error("[ai-dispatch] brain error:", e?.message || e);
@@ -124,12 +170,13 @@ exports.handler = async (event) => {
 
   const outText = String(decision?.text || "").trim();
   const aiIntent = decision?.intent || "general";
+  const aiMeta = decision?.meta || null;
 
-  console.log("[ai-dispatch] brain:", { intent: aiIntent, preview: outText.slice(0, 120) });
+  console.log("[ai-dispatch] brain:", { intent: aiIntent, route: aiMeta?.route, conf: aiMeta?.conf, preview: outText.slice(0, 120) });
 
   if (!outText) {
     // No text to send (e.g., STOP intent) -> exit quietly
-    return ok({ ok: true, note: "no_text_from_brain", ai_intent: aiIntent });
+    return ok({ ok: true, note: "no_text_from_brain", ai_intent: aiIntent, ai_meta: aiMeta });
   }
 
   // ---- send one reply via messages-send
@@ -138,7 +185,7 @@ exports.handler = async (event) => {
 
   if (!sendUrl) {
     console.error("[ai-dispatch] no OUTBOUND_SEND_URL; skipping send");
-    return ok({ ok: false, error: "no_outbound_url", ai_intent: aiIntent });
+    return ok({ ok: false, error: "no_outbound_url", ai_intent: aiIntent, ai_meta: aiMeta });
   }
 
   const controller = new AbortController();
@@ -161,14 +208,14 @@ exports.handler = async (event) => {
   }
 
   if (!res || !res.ok || json?.error) {
-    return ok({ ok: false, error: json?.error || `status_${res?.status}`, ai_intent: aiIntent });
+    return ok({ ok: false, error: json?.error || `status_${res?.status}`, ai_intent: aiIntent, ai_meta: aiMeta });
   }
 
-  // ---- tag sent message so UI shows AI badge + intent
+  // ---- tag sent message so UI shows AI badge + intent + route/conf
   try {
     if (json?.id) {
       await db.from("messages")
-        .update({ meta: { sent_by_ai: true, ai_intent: aiIntent } })
+        .update({ meta: { sent_by_ai: true, ai_intent: aiIntent, ai_meta: aiMeta } })
         .eq("id", json.id);
     }
   } catch {}
@@ -178,5 +225,5 @@ exports.handler = async (event) => {
     try { await db.from("message_contacts").update({ ai_booked: true }).eq("id", contact_id); } catch {}
   }
 
-  return ok({ ok: true, ai: "responded", ai_intent: aiIntent });
+  return ok({ ok: true, ai: "responded", ai_intent: aiIntent, ai_meta: aiMeta });
 };
