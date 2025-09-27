@@ -1,8 +1,12 @@
-// File: netlify/functions/tfn-status.js
+// netlify/functions/tfn-status.js
 const { getServiceClient, getUserFromRequest } = require("./_supabase");
 
 function json(body, status = 200) {
-  return { statusCode: status, headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) };
+  return {
+    statusCode: status,
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  };
 }
 
 exports.handler = async (event) => {
