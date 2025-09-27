@@ -1,4 +1,3 @@
-// File: netlify/functions/telnyx-inbound.js
 // Minimal inbound: store inbound SMS, handle STOP/START, pause sequences,
 // then fire-and-forget to ai-dispatch for the reply logic (with robust URL + logging).
 
@@ -95,6 +94,7 @@ function parseKeyword(textIn) {
 
 /* ---------------- Lead Rescue integration ---------------- */
 async function stopLeadRescueOnReply(db, user_id, contact_id) {
+  // Removed last_reply_at to avoid schema warning
   const now = new Date().toISOString();
   const { error } = await db
     .from("lead_rescue_trackers")
@@ -102,7 +102,6 @@ async function stopLeadRescueOnReply(db, user_id, contact_id) {
       responded: true,
       paused: true,
       stop_reason: "responded",
-      last_reply_at: now,
       responded_at: now,
     })
     .eq("user_id", user_id)
@@ -135,6 +134,7 @@ function deriveDispatchUrl(event) {
 exports.handler = async (event) => {
   const db = getServiceClient();
 
+  // Telnyx sends JSON
   let body = {};
   try { body = JSON.parse(event.body || "{}"); } catch {}
 
@@ -208,16 +208,41 @@ exports.handler = async (event) => {
     return ok({ ok: true, action: "resubscribed" });
   }
 
+  // Optional: skip empty texts (e.g., MMS with no body)
+  if (!text) {
+    console.log("[inbound] empty text body; skipping ai-dispatch");
+    return ok({ ok: true, note: "empty_text_skipped" });
+  }
+
   // Fire-and-forget AI dispatch (don’t block Telnyx response)
   try {
     const dispatchUrl = deriveDispatchUrl(event);
     console.log("[inbound] dispatchUrl:", dispatchUrl);
 
     if (dispatchUrl) {
+      const out = {
+        provider: "telnyx",
+        provider_message_id: providerSid,
+        user_id,
+        contact_id: contact.id,
+        from,
+        to,
+        text,
+      };
+
+      // Debug preview (no PII leaks beyond lengths)
+      console.log("[inbound] dispatch payload:", {
+        ...out,
+        text: text ? `(len=${text.length})` : "",
+      });
+
       fetch(dispatchUrl, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ user_id, contact_id: contact.id, from, to, text }),
+        headers: {
+          "Content-Type": "application/json",
+          "accept": "application/json",
+        },
+        body: JSON.stringify(out),
       })
         .then(async (r) => {
           let j = {};
