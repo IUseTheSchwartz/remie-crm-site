@@ -145,3 +145,103 @@ function dateAtHour(baseLocalMidnight, hour, tz) {
 }
 
 function offerTxt(dayWord, slots) {
+  const labels = slots.map((s) => s.label);
+  if (labels.length === 0) return "a quick time that works for you";
+  if (labels.length === 1) return `${labels[0]}${dayWord}`;
+  if (labels.length === 2) return `${labels[0]} or ${labels[1]}${dayWord}`;
+  return `${labels[0]}, ${labels[1]}, or ${labels[2]}${dayWord}`;
+}
+
+/* ---------------- Copy templates ---------------- */
+const T = {
+  greet: (es, n, offer) =>
+    es ? `Hola—soy ${n}. ¿Le funciona ${offer}?`
+       : `Hey there—it’s ${n}. Would ${offer} work?`,
+  who: (es, n, offer) =>
+    es ? `Hola, soy ${n}. Usted solicitó información de seguro de vida. Podemos verlo en unos minutos—¿le funciona ${offer}?`
+       : `Hey, it’s ${n}. You requested info about life insurance recently where you listed your beneficiary. We can go over options in just a few minutes—would ${offer} work?`,
+  price: (es, offer) =>
+    es ? `Buena pregunta—el precio depende de edad, salud y cobertura. Lo vemos en una llamada corta. Tengo ${offer}. ¿Cuál prefiere?`
+       : `Great question—price depends on age, health, and coverage. We’ll nail it on a quick call. I have ${offer}. Which works best?`,
+  covered: (es, offer) =>
+    es ? `Excelente. Aun así, muchas familias hacen una revisión rápida para no pagar de más ni perder beneficios. Toma pocos minutos. Tengo ${offer}. ¿Cuál le conviene?`
+       : `Good to hear—many families still do a quick review to make sure they’re not overpaying or missing benefits. I have ${offer}. Which works better for you?`,
+  brushoff: (es, offer) =>
+    es ? `Entiendo. Dejarlo claro toma pocos minutos. Tengo ${offer}. ¿Cuál prefiere?`
+       : `Totally understand—let’s keep it simple. It only takes a few minutes. I have ${offer}. Which works better for you?`,
+  spouse: (es, offer) =>
+    es ? `Perfecto—mejor cuando est[eé]n ambos. Tengo ${offer}. ¿Cu[aá]l funciona mejor para ustedes?`
+       : `Makes sense—let’s set a quick time when you can both be on. I have ${offer}. Which works best for you two?`,
+  wrong: (es) =>
+    es ? `¡Disculpe la molestia! Ya que estamos—¿tiene su seguro de vida al día?`
+       : `My apologies! Since I’ve got you—have you already got your life insurance taken care of?`,
+  agree: (es, offer) =>
+    es ? `Perfecto—agendemos unos minutos. Tengo ${offer}. ¿Cuál prefiere?`
+       : `Great—let’s set aside a few minutes. I have ${offer}. Which works best for you?`,
+  timeConfirm: (es, label) =>
+    es ? `Perfecto, le llamo a las ${label}. Lo mantenemos en unos minutos.`
+       : `Perfect, I’ll call you at ${label}. We’ll keep it to just a few minutes.`,
+  link: (es, link) =>
+    es ? ` Aquí está el enlace para confirmar y recibir recordatorios (puede reprogramar si hace falta): ${link}`
+       : ` Here’s a quick link to confirm so you’ll get reminders (and can reschedule if needed): ${link}`,
+  reschedule: (es, offer) =>
+    es ? `Claro, reprogramemos. Tengo ${offer}. ¿Cuál le funciona?`
+       : `Absolutely—let’s reschedule. I have ${offer}. Which works for you?`,
+};
+
+/* ---------------- Decide ---------------- */
+function decide({ text, agentName, calendlyLink, tz, officeHours } = {}) {
+  tz = tz || DEFAULT_TZ;
+  const hours = officeHours || DEFAULT_HOURS;
+
+  const es = detectSpanish(text);
+  const intent = classify(text);
+
+  const { dayWord, slots } = synthesizeSlots({
+    tz,
+    hours,
+    // small nudge to “human” anchors; can tweak or pass via params later
+    pickHours: [10, 14, 18], // 10:00a, 2:00p, 6:00p local
+  });
+
+  const offer = offerTxt(dayWord, slots);
+  const name = agentName || (es ? "su corredor autorizado" : "your licensed broker");
+
+  // explicit time → confirm + optional link
+  if (intent === "time_specific") {
+    const m = String(text).match(/\b(1?\d(?::\d{2})?\s?(a\.?m\.?|p\.?m\.?|am|pm))\b/i) || String(text).match(/\b(1?\d:\d{2})\b/);
+    const label = m ? m[1].toUpperCase().replace(/\s+/g, " ") : (slots[1]?.label || slots[0]?.label || "the time we discussed");
+    let out = T.timeConfirm(es, label);
+    if (calendlyLink) out += T.link(es, calendlyLink);
+    return { text: out, intent: "confirm_time" };
+  }
+
+  // reschedule (even if already booked)
+  if (intent === "reschedule") {
+    let out = T.reschedule(es, offer);
+    if (calendlyLink) out += T.link(es, calendlyLink);
+    return { text: out, intent: "reschedule" };
+  }
+
+  // other mapped intents
+  if (intent === "greet")     return { text: T.greet(es, name, offer),    intent };
+  if (intent === "who")       return { text: T.who(es, name, offer),      intent };
+  if (intent === "price")     return { text: T.price(es, offer),          intent };
+  if (intent === "covered")   return { text: T.covered(es, offer),        intent };
+  if (intent === "brushoff")  return { text: T.brushoff(es, offer),       intent };
+  if (intent === "spouse")    return { text: T.spouse(es, offer),         intent };
+  if (intent === "wrong")     return { text: T.wrong(es),                  intent };
+  if (intent === "agree")     return { text: T.agree(es, offer),           intent };
+  if (intent === "time_window"|| intent === "general") {
+    return { text: T.agree(es, offer), intent: "offer_slots" };
+  }
+
+  // stop: upstream usually handles, but be safe: return no text
+  if (intent === "stop") {
+    return { text: "", intent: "stop" };
+  }
+
+  return { text: T.agree(es, offer), intent: "offer_slots" };
+}
+
+module.exports = { decide };
