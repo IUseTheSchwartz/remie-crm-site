@@ -1,9 +1,13 @@
-// File: netlify/functions/tfn-assign.js
+// netlify/functions/tfn-assign.js
 const fetch = require("node-fetch");
 const { getServiceClient, getUserFromRequest } = require("./_supabase");
 
 function json(body, status = 200) {
-  return { statusCode: status, headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) };
+  return {
+    statusCode: status,
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  };
 }
 
 const TELNYX_API_KEY = process.env.TELNYX_API_KEY;
@@ -20,7 +24,7 @@ exports.handler = async (event) => {
 
     const supabase = getServiceClient();
 
-    // If user already has a number, return it
+    // If already assigned, just return it
     {
       const { data: existing, error: exErr } = await supabase
         .from("toll_free_numbers")
@@ -33,7 +37,7 @@ exports.handler = async (event) => {
       }
     }
 
-    // Next available verified number
+    // Find next available verified TFN
     const { data: candidate, error: candErr } = await supabase
       .from("toll_free_numbers")
       .select("id, phone_number, verified, telnyx_number_id")
@@ -41,10 +45,11 @@ exports.handler = async (event) => {
       .eq("verified", true)
       .limit(1)
       .maybeSingle();
+
     if (candErr) throw candErr;
     if (!candidate) return json({ error: "No verified numbers available. Please contact Support." }, 409);
 
-    // Bind to Telnyx profile/forwarding (optional)
+    // Optional: bind in Telnyx
     if (TELNYX_API_KEY && candidate.telnyx_number_id && TELNYX_MESSAGING_PROFILE_ID) {
       try {
         await fetch(`https://api.telnyx.com/v2/phone_numbers/${candidate.telnyx_number_id}`, {
@@ -64,11 +69,12 @@ exports.handler = async (event) => {
       }
     }
 
-    // Assign to user
+    // Assign to this user
     const { error: updErr } = await supabase
       .from("toll_free_numbers")
       .update({ assigned_to: user.id, date_assigned: new Date().toISOString() })
       .eq("id", candidate.id);
+
     if (updErr) throw updErr;
 
     return json({ ok: true, phone_number: candidate.phone_number, verified: !!candidate.verified });
