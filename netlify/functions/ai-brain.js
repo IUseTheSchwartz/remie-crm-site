@@ -1,13 +1,16 @@
 // File: netlify/functions/ai-brain.js
-// Hybrid brain with human-friendly copy and Calendly-first CTA (no time-slot lists).
-// Exports: decide({ text, agentName, calendlyLink, tz, officeHours, context, useLLM, llmMinConf })
+// Human-friendly brain with Calendly-first CTA (no time-slot lists).
+// Deterministic rules first; optional LLM fallback for classification only.
+// decide({ text, agentName, calendlyLink, tz, officeHours, context, useLLM, llmMinConf })
 // -> { text, intent, meta? }
 
-const { llmClassify } = require("./ai-brain-llm-helper");
+// --- LLM (optional; safe stub if helper missing)
+let llmClassify = async () => ({ intent: "", confidence: 0 });
+try { llmClassify = require("./ai-brain-llm-helper").llmClassify; } catch {}
+const LLM_ENABLED = String(process.env.AI_BRAIN_USE_LLM || "false").toLowerCase() === "true";
+const LLM_MIN_CONF = Number(process.env.AI_BRAIN_LLM_CONFIDENCE || 0.55);
 
 const DEFAULT_TZ = "America/Chicago";
-const LLM_ENABLED = String(process.env.AI_BRAIN_USE_LLM || "true").toLowerCase() === "true";
-const LLM_MIN_CONF = Number(process.env.AI_BRAIN_LLM_CONFIDENCE || 0.55);
 
 /* ---------------- helpers ---------------- */
 const pick = (arr) => arr[Math.floor(Math.random() * arr.length)];
@@ -32,7 +35,11 @@ function linkLine(es, link) {
 function detectSpanish(t = "") {
   const s = String(t).toLowerCase();
   if (/[ñáéíóúü¿¡]/.test(s)) return true;
-  const esHints = ["cuánto","cuanto","precio","costo","seguro","vida","mañana","manana","tarde","noche","quien","quién","numero","número","ocupado","esposo","esposa","hola","buenas","sí","si","vale","claro"];
+  const esHints = [
+    "cuánto","cuanto","precio","costo","seguro","vida","mañana","manana",
+    "tarde","noche","quien","quién","numero","número","ocupado","esposo","esposa",
+    "hola","buenas","sí","si","vale","claro"
+  ];
   let score = 0; for (const w of esHints) if (s.includes(w)) score++;
   return score >= 2;
 }
@@ -79,15 +86,15 @@ function classify(t = "") {
 
   if (/\b(1?\d(?::\d{2})?\s?(a\.?m\.?|p\.?m\.?|am|pm))\b/.test(x) || /\b(1?\d:\d{2})\b/.test(x)) return "time_specific";
 
-  if (/^(hi|hey|hello|hola|buenas)\b/.test(x)) return "greet";
-
   // Bare hour “7” without am/pm or minutes
   if (/\b([1-9]|1[0-2])\b/.test(x) && !/\b(am|pm)\b/.test(x) && !/\d:\d{2}/.test(x)) return "bare_hour";
+
+  if (/^(hi|hey|hello|hola|buenas)\b/.test(x)) return "greet";
 
   return "general";
 }
 
-/* ---------------- Copy (Calendly-first, no times) ---------------- */
+/* ---------------- Copy (Calendly-first, no time lists) ---------------- */
 const T = {
   greetFirst: (es, n, link, ctx) => {
     const first = safe(ctx?.firstName);
@@ -185,14 +192,16 @@ async function decide({ text, agentName, calendlyLink, tz, officeHours, context,
 
   const intentDet = classify(text);
 
-  if (intentDet === "stop") return { text: "", intent: "stop", meta: { route: "deterministic" } };
+  if (intentDet === "stop") {
+    return { text: "", intent: "stop", meta: { route: "deterministic" } };
+  }
 
   // Special: "how are you?"
   if (intentDet === "courtesy_greet") {
     return { text: T.courtesy(es, name, calendlyLink, context), intent: "courtesy_greet", meta: { route: "deterministic" } };
   }
 
-  // Time-specific (confirm exact time) — handle “noon” too
+  // Time-specific (confirm exact time) — handle “noon”
   if (/\bnoon\b/i.test(text)) {
     return { text: T.timeConfirm(es, "12 PM", calendlyLink), intent: "confirm_time", meta: { route: "deterministic" } };
   }
@@ -202,20 +211,20 @@ async function decide({ text, agentName, calendlyLink, tz, officeHours, context,
     return { text: T.timeConfirm(es, label, calendlyLink), intent: "confirm_time", meta: { route: "deterministic" } };
   }
 
-  // Bare hour like "7" → clarify AM/PM (plus Calendly link)
+  // Bare hour like "7" → clarify AM/PM
   if (intentDet === "bare_hour") {
     const h = String(text).match(/\b([1-9]|1[0-2])\b/)[1];
     return { text: T.clarifyTime(es, h, calendlyLink), intent: "clarify_time", meta: { route: "deterministic" } };
   }
 
-  // Time window (no slot suggestions)
+  // Time window — no slot suggestions
   if (intentDet === "time_window") {
     const lead = es ? `Perfecto.` : `That works.`;
     const ask = es ? ` ¿Qué hora le conviene?` : ` What time’s easiest for you?`;
     return { text: `${lead}${ask}${linkLine(es, calendlyLink)}`, intent: "offer_slots_windowed", meta: { route: "deterministic" } };
   }
 
-  // Direct mappings (no slot lists—Calendly-first)
+  // Direct mappings (Calendly-first)
   if (intentDet === "reschedule") return { text: T.reschedule(es, calendlyLink), intent: "reschedule", meta: { route: "deterministic" } };
 
   if (intentDet === "greet") {
