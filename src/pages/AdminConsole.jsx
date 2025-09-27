@@ -500,7 +500,7 @@ export default function AdminConsole() {
   }
 
   /* -------------------------- rendering ------------------------- */
-  if (loading) return <div className="p-4 text-white/80">Checking access…</div>;
+  if (loading) return <div className="p-4 text.white/80">Checking access…</div>;
   if (!isAdmin) return <div className="p-4 text-rose-400">Access denied</div>;
 
   return (
@@ -564,7 +564,7 @@ export default function AdminConsole() {
                     />
                   </td>
                   <td className="px-3 py-2">
-                    <div className="flex items-center gap-2">
+                    <div className="flex items.center gap-2">
                       <span className="text-white/60">$</span>
                       <input
                         type="text"
