@@ -382,9 +382,9 @@ function LandingPage() {
         "Automated message system",
         "Appointment tracker",
         "Personalized agent website",
-        "Notes & files on contacts",
+        "Notes & files on leads",
         "Easy to use pipeline",
-        "No-show rescue campaigns",
+        "Power Dialer",
         "Agent tools",
         "Automated client mail(coming soon)",
         "Pay per text $.01",
@@ -446,7 +446,7 @@ function LandingPage() {
           </p>
           <div className="mt-6 flex items-center justify-center gap-6 text-xs text-white/60">
             <span className="inline-flex items-center gap-1"><Star className="h-4 w-4" /> Concierge migration (Remie CRM)</span>
-            <span className="inline-flex items-center gap-1"><Shield className="h-4 w-4" /> Bootcamp for new features</span>
+            <span className="inline-flex items-center gap-1"><Phone className="h-4 w-4" /> Power Dialer</span>
           </div>
         </div>
       </section>
