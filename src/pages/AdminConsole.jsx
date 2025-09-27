@@ -1,5 +1,5 @@
 // File: src/pages/AdminConsole.jsx
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 import { supabase } from "../lib/supabaseClient.js";
 import useIsAdminAllowlist from "../hooks/useIsAdminAllowlist.js";
 
@@ -27,144 +27,6 @@ function makeAll(enabledObj, templatesObj, val) {
   const out = {};
   for (const k of allKeysFrom(enabledObj, templatesObj)) out[k] = Boolean(val);
   return out;
-}
-
-/* ---------------- Chat-style AI Brain Tester (dry-run) ----------------
-   - Minimal "iMessage-like" box: type ➜ Enter to send ➜ see AI reply
-   - Calls POST /.netlify/functions/ai-brain-dryrun (no SMS is sent)
-   - No extra fields. Defaults baked in (agent name, tz, hours).
------------------------------------------------------------------------ */
-function AIChatTester() {
-  const [messages, setMessages] = useState([]); // { role: 'you'|'ai', text, intent? }
-  const [input, setInput] = useState("");
-  const [sending, setSending] = useState(false);
-  const bottomRef = useRef(null);
-
-  // scroll to bottom on new message
-  useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [messages]);
-
-  const DEFAULTS = {
-    agentName: "Jacob Prieto",
-    calendlyLink: "https://calendly.com/your-link/15min",
-    tz: "America/Chicago",
-    officeHours: { start: 9, end: 21 },
-  };
-
-  async function send() {
-    const text = input.trim();
-    if (!text || sending) return;
-
-    setMessages((m) => [...m, { role: "you", text }]);
-    setInput("");
-    setSending(true);
-
-    try {
-      const r = await fetch("/.netlify/functions/ai-brain-dryrun", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ text, ...DEFAULTS }),
-      });
-      const j = await r.json().catch(() => ({}));
-      if (!r.ok || j.ok === false) {
-        setMessages((m) => [
-          ...m,
-          { role: "ai", text: `⚠️ Error: ${j?.error || `HTTP ${r.status}`}` },
-        ]);
-      } else {
-        const aiText = j.text || "(no reply)";
-        setMessages((m) => [
-          ...m,
-          { role: "ai", text: aiText, intent: j.intent || undefined },
-        ]);
-      }
-    } catch (e) {
-      setMessages((m) => [
-        ...m,
-        { role: "ai", text: `⚠️ Error: ${e?.message || "Request failed"}` },
-      ]);
-    } finally {
-      setSending(false);
-    }
-  }
-
-  function onKeyDown(e) {
-    if (e.key === "Enter" && !e.shiftKey) {
-      e.preventDefault();
-      send();
-    }
-  }
-
-  function clearChat() {
-    setMessages([]);
-    setInput("");
-  }
-
-  return (
-    <div className="rounded-2xl border border-white/10 bg-black/30 flex flex-col h-[480px]">
-      {/* Header (subtle) */}
-      <div className="flex items-center justify-between px-3 py-2 border-b border-white/10">
-        <div className="text-sm text-white/70">AI Chat Tester (dry-run)</div>
-        <button
-          onClick={clearChat}
-          className="text-xs rounded border border-white/20 px-2 py-1 hover:bg-white/10"
-        >
-          Clear
-        </button>
-      </div>
-
-      {/* Messages */}
-      <div className="flex-1 overflow-y-auto p-3 space-y-2">
-        {messages.length === 0 && (
-          <div className="text-white/50 text-sm">
-            Type a message below and press <kbd className="px-1 py-0.5 bg-white/10 rounded">Enter</kbd>. No SMS is sent.
-          </div>
-        )}
-
-        {messages.map((m, i) => {
-          const isYou = m.role === "you";
-          return (
-            <div key={i} className={`flex ${isYou ? "justify-end" : "justify-start"}`}>
-              <div
-                className={`max-w-[70%] whitespace-pre-wrap rounded-2xl px-3 py-2 text-sm ${
-                  isYou
-                    ? "bg-emerald-500/20 border border-emerald-400/20"
-                    : "bg-white/10 border border-white/10"
-                }`}
-              >
-                <div>{m.text}</div>
-                {!isYou && m.intent && (
-                  <div className="mt-1 text-[10px] text-white/60">intent: {m.intent}</div>
-                )}
-              </div>
-            </div>
-          );
-        })}
-        <div ref={bottomRef} />
-      </div>
-
-      {/* Composer */}
-      <div className="p-2 border-t border-white/10">
-        <div className="flex items-end gap-2">
-          <textarea
-            className="flex-1 min-h-[44px] max-h-40 rounded-xl border border-white/15 bg-black/50 px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-indigo-500/40"
-            placeholder="Message…"
-            value={input}
-            onChange={(e) => setInput(e.target.value)}
-            onKeyDown={onKeyDown}
-          />
-          <button
-            onClick={send}
-            disabled={sending || input.trim().length === 0}
-            className="h-[44px] rounded-xl px-4 border border-emerald-400/30 hover:bg-emerald-400/10 disabled:opacity-50"
-          >
-            Send
-          </button>
-        </div>
-      </div>
-    </div>
-  );
 }
 
 /* ---------------------------- page ----------------------------- */
@@ -256,7 +118,7 @@ export default function AdminConsole() {
       // Merge into rows
       const merged = (profiles || []).map((p) => {
         const teamId = ownerToTeam.get(p.user_id) || null;
-        const seatsPurchased = teamId ? (teamSeats.get(teamId) ?? 0) : 0;
+        const seatsPurchased = teamId ? (teamSeats.get(teamId) ?? 0) : 0; // ✅ fixed
         const balance = walletByUser.get(p.user_id) ?? 0;
 
         const t = tmplByUser.get(p.user_id) || { enabled: {}, templates: {} };
@@ -307,7 +169,7 @@ export default function AdminConsole() {
   async function saveRow(row) {
     setSaving(true);
     setErr("");
-    try {
+       try {
       // 0) Lead Rescue enable/disable -> upsert into lead_rescue_settings
       {
         const { error } = await supabase
@@ -624,11 +486,6 @@ export default function AdminConsole() {
       {/* ---------- NEW: Partners Admin Section ---------- */}
       <div className="pt-6 border-t border-white/10">
         <PartnersAdminSection />
-      </div>
-
-      {/* ---------- NEW: AI Chat Tester ---------- */}
-      <div className="pt-6 border-t border-white/10">
-        <AIChatTester />
       </div>
     </div>
   );
