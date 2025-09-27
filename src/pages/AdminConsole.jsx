@@ -29,6 +29,154 @@ function makeAll(enabledObj, templatesObj, val) {
   return out;
 }
 
+/* ---------------- AI Brain Tester (dry-run) ----------------
+   Calls: POST /.netlify/functions/ai-brain-dryrun
+   Body:  { text, agentName?, calendlyLink?, tz?, officeHours? }
+   Resp:  { ok, intent, text }   -- no SMS is sent
+---------------------------------------------------------------- */
+function AIBrainTester() {
+  const [text, setText] = useState("who's this?");
+  const [agentName, setAgentName] = useState("Jacob Prieto");
+  const [calendlyLink, setCalendlyLink] = useState("https://calendly.com/your-link/15min");
+  const [tz, setTz] = useState("America/Chicago");
+  const [hoursStart, setHoursStart] = useState(9);
+  const [hoursEnd, setHoursEnd] = useState(21);
+  const [resp, setResp] = useState(null);
+  const [loading, setLoading] = useState(false);
+  const [err, setErr] = useState("");
+
+  async function run() {
+    setLoading(true);
+    setErr("");
+    setResp(null);
+    try {
+      const r = await fetch("/.netlify/functions/ai-brain-dryrun", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          text,
+          agentName,
+          calendlyLink,
+          tz,
+          officeHours: { start: Number(hoursStart), end: Number(hoursEnd) },
+        }),
+      });
+      const j = await r.json();
+      if (!r.ok || j.ok === false) {
+        setErr(j?.error || `HTTP ${r.status}`);
+      } else {
+        setResp(j);
+      }
+    } catch (e) {
+      setErr(e?.message || "Request failed");
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  return (
+    <div className="rounded-2xl border border-white/10 bg-black/30 p-4 space-y-4">
+      <div className="flex items-center justify-between">
+        <h2 className="text-lg font-semibold text-white/90">AI Brain Tester (dry-run)</h2>
+        <button
+          onClick={run}
+          disabled={loading}
+          className="rounded-md border border-emerald-400/30 px-3 py-1 text-sm hover:bg-emerald-400/10 disabled:opacity-50"
+        >
+          {loading ? "Testing…" : "Run Test"}
+        </button>
+      </div>
+
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+        <label className="flex flex-col">
+          <span className="text-sm text-white/70 mb-1">Inbound text</span>
+          <textarea
+            className="rounded-md border border-white/15 bg-black/40 p-2 outline-none focus:ring-2 focus:ring-indigo-500/40"
+            rows={3}
+            value={text}
+            onChange={(e) => setText(e.target.value)}
+            placeholder='e.g., "who’s this?" or "tomorrow afternoon"'
+          />
+        </label>
+
+        <div className="grid grid-cols-2 gap-3">
+          <label className="flex flex-col">
+            <span className="text-sm text-white/70 mb-1">Agent name</span>
+            <input
+              className="rounded-md border border-white/15 bg-black/40 p-2 outline-none focus:ring-2 focus:ring-indigo-500/40"
+              value={agentName}
+              onChange={(e) => setAgentName(e.target.value)}
+            />
+          </label>
+          <label className="flex flex-col">
+            <span className="text-sm text-white/70 mb-1">Timezone (IANA)</span>
+            <input
+              className="rounded-md border border-white/15 bg-black/40 p-2 outline-none focus:ring-2 focus:ring-indigo-500/40"
+              value={tz}
+              onChange={(e) => setTz(e.target.value)}
+              placeholder="America/Chicago"
+            />
+          </label>
+          <label className="flex flex-col col-span-2">
+            <span className="text-sm text-white/70 mb-1">Calendly link (optional)</span>
+            <input
+              className="rounded-md border border-white/15 bg-black/40 p-2 outline-none focus:ring-2 focus:ring-indigo-500/40"
+              value={calendlyLink}
+              onChange={(e) => setCalendlyLink(e.target.value)}
+              placeholder="https://calendly.com/..."
+            />
+          </label>
+          <label className="flex flex-col">
+            <span className="text-sm text-white/70 mb-1">Hours start</span>
+            <input
+              type="number"
+              className="rounded-md border border-white/15 bg-black/40 p-2 outline-none focus:ring-2 focus:ring-indigo-500/40"
+              value={hoursStart}
+              min={0}
+              max={23}
+              onChange={(e) => setHoursStart(e.target.value)}
+            />
+          </label>
+          <label className="flex flex-col">
+            <span className="text-sm text-white/70 mb-1">Hours end</span>
+            <input
+              type="number"
+              className="rounded-md border border-white/15 bg-black/40 p-2 outline-none focus:ring-2 focus:ring-indigo-500/40"
+              value={hoursEnd}
+              min={0}
+              max={23}
+              onChange={(e) => setHoursEnd(e.target.value)}
+            />
+          </label>
+        </div>
+      </div>
+
+      {err && (
+        <div className="rounded-lg border border-rose-400/30 bg-rose-500/10 p-3 text-sm text-rose-200">
+          {err}
+        </div>
+      )}
+
+      {resp && (
+        <div className="rounded-lg border border-white/10 bg-white/5 p-3 space-y-2">
+          <div className="text-sm text-white/70">Intent</div>
+          <div className="font-mono text-sm">{resp.intent || "(none)"}</div>
+
+          <div className="text-sm text-white/70 mt-2">Reply preview</div>
+          <div className="rounded-md border border-white/10 bg-black/40 p-3 whitespace-pre-wrap">
+            {resp.text || "(empty)"}
+          </div>
+        </div>
+      )}
+
+      <p className="text-xs text-white/50">
+        Runs <code>/.netlify/functions/ai-brain-dryrun</code>. No SMS is sent. Make sure you’ve added that Netlify
+        function (server) which calls your brain’s <code>decide()</code>.
+      </p>
+    </div>
+  );
+}
+
 /* ---------------------------- page ----------------------------- */
 export default function AdminConsole() {
   const { isAdmin, loading } = useIsAdminAllowlist();
@@ -486,6 +634,11 @@ export default function AdminConsole() {
       {/* ---------- NEW: Partners Admin Section ---------- */}
       <div className="pt-6 border-t border-white/10">
         <PartnersAdminSection />
+      </div>
+
+      {/* ---------- NEW: AI Brain Tester ---------- */}
+      <div className="pt-6 border-t border-white/10">
+        <AIBrainTester />
       </div>
     </div>
   );
