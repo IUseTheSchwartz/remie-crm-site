@@ -1,29 +1,7 @@
 // File: src/pages/MessagingSettings.jsx
 import { useEffect, useRef, useState } from "react";
 import { supabase } from "../lib/supabaseClient";
-import { CreditCard, Check, Loader2, MessageSquare, Info, RotateCcw, Lock } from "lucide-react";
-import TFNPickerModal from "../components/NumberPicker/TFNPickerModal.jsx";
-
-/** ------------- NEW: call backend function and surface full errors in browser ------------- */
-async function tfnSelect(userId, payload) {
-  const res = await fetch("/.netlify/functions/tfn-select", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ user_id: userId, ...payload }),
-  });
-
-  const text = await res.text();
-  let json;
-  try { json = JSON.parse(text); } catch { json = { parse_error: true, raw: text }; }
-
-  if (!res.ok || json?.error) {
-    console.error("[tfn-select error]", { status: res.status, json });
-    throw new Error(json?.error || `HTTP_${res.status}`);
-  }
-  console.log("[tfn-select ok]", json);
-  return json;
-}
-/** ----------------------------------------------------------------------------------------- */
+import { CreditCard, Check, Loader2, MessageSquare, Info, RotateCcw, Lock, Phone } from "lucide-react";
 
 /* ---------------- Template Catalog (appointment removed) ---------------- */
 const TEMPLATE_DEFS = [
@@ -112,6 +90,20 @@ function prettyE164(e164) {
   return `+1 (${d.slice(0,3)}) ${d.slice(3,6)}-${d.slice(6)}`;
 }
 
+/* ------------------ TFN helpers (auto-assign flow) ------------------ */
+async function apiGetTFNStatus() {
+  const res = await fetch("/.netlify/functions/tfn-status");
+  const j = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(j?.error || `HTTP_${res.status}`);
+  return j; // { ok, phone_number, verified }
+}
+async function apiAssignTFN() {
+  const res = await fetch("/.netlify/functions/tfn-assign", { method: "POST" });
+  const j = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(j?.error || `HTTP_${res.status}`);
+  return j; // { ok, phone_number, verified }
+}
+
 /* Default test values shown in the preview form */
 const DEFAULT_TEST_DATA = {
   first_name: "Jacob",
@@ -172,9 +164,12 @@ export default function MessagingSettings() {
     calendly_link: "",
   });
 
-  // --- Toll-Free Number UI state ---
-  const [tfnModalOpen, setTfnModalOpen] = useState(false);
+  // --- Toll-Free Number state (new flow) ---
   const [myTFN, setMyTFN] = useState(null);
+  const [tfnVerified, setTfnVerified] = useState(false);
+  const [tfnLoading, setTfnLoading] = useState(true);
+  const [tfnAssigning, setTfnAssigning] = useState(false);
+  const [tfnError, setTfnError] = useState("");
 
   const balanceDollars = (balanceCents / 100).toFixed(2);
 
@@ -273,16 +268,6 @@ export default function MessagingSettings() {
         calendly_link: d.calendly_link || nextAgentVars.calendly_link,
       }));
 
-      // load first active TFN from agent_messaging_numbers
-      const { data: myNum } = await supabase
-        .from("agent_messaging_numbers")
-        .select("e164, status")
-        .eq("user_id", uid)
-        .eq("status", "active")
-        .limit(1)
-        .maybeSingle();
-      setMyTFN(myNum?.e164 || null);
-
       setLoading(false);
     })();
 
@@ -307,6 +292,29 @@ export default function MessagingSettings() {
       if (enabledTimer.current) clearTimeout(enabledTimer.current);
     };
   }, [userId]);
+
+  /* -------- Load TFN status (new flow) -------- */
+  useEffect(() => {
+    let mounted = true;
+    (async () => {
+      setTfnError("");
+      setTfnLoading(true);
+      try {
+        const s = await apiGetTFNStatus();
+        if (!mounted) return;
+        setMyTFN(s?.phone_number || null);
+        setTfnVerified(!!s?.verified);
+      } catch (e) {
+        if (!mounted) return;
+        setTfnError(e.message || "Failed to load toll-free number.");
+      } finally {
+        if (mounted) setTfnLoading(false);
+      }
+    })();
+    return () => {
+      mounted = false;
+    };
+  }, []);
 
   /* -------- Autosave templates -------- */
   async function saveTemplates(next) {
@@ -515,111 +523,82 @@ export default function MessagingSettings() {
       </section>
 
       {/* Toll-Free Number (auto-assign from verified pool) */}
-<section className="rounded-2xl border border-white/10 bg-white/[0.03] p-4">
-  <div className="mb-2 flex items-center justify-between">
-    <div>
-      <h3 className="text-sm font-semibold">Your Toll-Free Number</h3>
-      <p className="text-xs text-white/60">
-        We’ll assign you a verified toll-free number for messaging. It’s included — no extra cost.
-      </p>
-    </div>
-  </div>
+      <section className="rounded-2xl border border-white/10 bg-white/[0.03] p-4">
+        <div className="mb-2 flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            <div className="grid h-10 w-10 place-items-center rounded-xl bg-white/5 ring-1 ring-white/10">
+              <Phone className="h-5 w-5" />
+            </div>
+            <div>
+              <h3 className="text-sm font-semibold">Your Toll-Free Number</h3>
+              <p className="text-xs text-white/60">
+                Messages you send will come from this number. It’s included — no cost to you.
+              </p>
+            </div>
+          </div>
 
-  <TollFreeNumberPanel />
-</section>
-
-function TollFreeNumberPanel() {
-  const [loading, setLoading] = useState(true);
-  const [assigning, setAssigning] = useState(false);
-  const [error, setError] = useState("");
-  const [number, setNumber] = useState(null); // e.g. "+18881234567"
-  const [verified, setVerified] = useState(false);
-
-  async function refresh() {
-    setError("");
-    setLoading(true);
-    try {
-      const r = await fetch("/.netlify/functions/tfn-status");
-      const j = await r.json();
-      if (!r.ok) throw new Error(j.error || "Failed to load TFN status");
-      setNumber(j.phone_number || null);
-      setVerified(!!j.verified);
-    } catch (e) {
-      setError(e.message || "Failed to load TFN status");
-    } finally {
-      setLoading(false);
-    }
-  }
-
-  useEffect(() => { refresh(); }, []);
-
-  async function handleGetNumber() {
-    setError("");
-    setAssigning(true);
-    try {
-      const r = await fetch("/.netlify/functions/tfn-assign", { method: "POST" });
-      const j = await r.json();
-      if (!r.ok) throw new Error(j.error || "Failed to assign number");
-      setNumber(j.phone_number);
-      setVerified(!!j.verified);
-    } catch (e) {
-      setError(e.message || "Failed to assign number");
-    } finally {
-      setAssigning(false);
-    }
-  }
-
-  if (loading) return <div className="rounded-lg bg-white/5 p-3 text-sm text-white/70">Loading your number…</div>;
-  if (error) return <div className="rounded-lg bg-red-500/10 border border-red-500/30 p-3 text-sm text-red-200">{error}</div>;
-
-  if (!number) {
-    return (
-      <div className="flex flex-col gap-3">
-        <div className="rounded-lg bg-white/5 p-3 text-sm text-white/70">
-          You don’t have a number yet. Click the button below and we’ll assign you a pre-verified number from our pool.
+          {myTFN ? (
+            <div className="text-[11px] text-white/50">Number locked. Contact support to change.</div>
+          ) : null}
         </div>
-        <div className="flex items-center gap-2">
-          <button
-            type="button"
-            onClick={handleGetNumber}
-            disabled={assigning}
-            className="inline-flex items-center justify-center rounded-lg bg-white/10 px-3 py-2 text-sm font-medium hover:bg-white/15 disabled:opacity-60"
-          >
-            {assigning ? "Assigning…" : "Get My Number"}
-          </button>
-          <a href="/support" className="text-xs text-white/60 hover:text-white">Need help? Contact Support</a>
-        </div>
-      </div>
-    );
-  }
 
-  return (
-    <div className="flex flex-col gap-2">
-      <div className="rounded-lg bg-white/5 p-3">
-        <div className="text-xs uppercase tracking-wide text-white/60">Your number</div>
-        <div className="mt-1 text-lg font-semibold">{formatLocal(number)}</div>
-        <div className="mt-1 text-xs text-emerald-300">
-          {verified ? "✅ Verified & ready to send" : "⏳ Pending verification"}
-        </div>
-      </div>
-      <div className="text-xs text-white/60">
-        Want to change your number? Please{" "}
-        <a href="/support" className="underline hover:text-white">contact Support</a>.
-      </div>
-    </div>
-  );
-}
-
-function formatLocal(e164) {
-  const d = String(e164 || "").replace(/\D/g, "");
-  if (d.length === 11 && d.startsWith("1")) {
-    const n = d.slice(1);
-    return `+1 (${n.slice(0,3)}) ${n.slice(3,6)}-${n.slice(6)}`;
-  }
-  if (d.length === 10) return `(${d.slice(0,3)}) ${d.slice(3,6)}-${d.slice(6)}`;
-  return e164 || "";
-}
-
+        {/* Status / Actions */}
+        {tfnLoading ? (
+          <div className="rounded-lg bg-white/5 p-3 text-sm text-white/70">
+            <Loader2 className="mr-2 inline h-4 w-4 animate-spin" />
+            Loading your number…
+          </div>
+        ) : tfnError ? (
+          <div className="rounded-lg border border-rose-400/30 bg-rose-400/10 p-3 text-sm text-rose-100">{tfnError}</div>
+        ) : !myTFN ? (
+          <div className="flex flex-col gap-3">
+            <div className="rounded-lg bg-white/5 p-3 text-sm text-white/70">
+              You don’t have a number yet. Click the button below and we’ll assign you a pre-verified toll-free number from our pool.
+            </div>
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={async () => {
+                  try {
+                    setTfnError("");
+                    setTfnAssigning(true);
+                    const r = await apiAssignTFN();
+                    setMyTFN(r?.phone_number || null);
+                    setTfnVerified(!!r?.verified);
+                  } catch (e) {
+                    setTfnError(e.message || "Failed to assign number.");
+                  } finally {
+                    setTfnAssigning(false);
+                  }
+                }}
+                disabled={tfnAssigning}
+                className="inline-flex items-center gap-1 rounded-lg border border-white/15 bg-white/5 px-3 py-2 text-sm hover:bg-white/10 disabled:opacity-60"
+              >
+                {tfnAssigning ? <Loader2 className="h-4 w-4 animate-spin" /> : <Phone className="h-4 w-4" />}
+                <span>{tfnAssigning ? "Assigning…" : "Get My Number"}</span>
+              </button>
+              <a href="/support" className="text-xs text-white/60 hover:text-white">
+                Need help? Contact Support
+              </a>
+            </div>
+          </div>
+        ) : (
+          <div className="flex items-center justify-between rounded-lg border border-white/10 bg-white/[0.02] p-3 text-sm">
+            <div className="text-white/80">
+              Current: <span className="font-semibold">{prettyE164(myTFN)}</span>
+            </div>
+            <span
+              className={`rounded-md px-2 py-0.5 text-[11px] ${
+                tfnVerified
+                  ? "border border-emerald-400/30 bg-emerald-400/10 text-emerald-300"
+                  : "border border-amber-300/30 bg-amber-300/10 text-amber-200"
+              }`}
+            >
+              {tfnVerified ? "Verified & ready" : "Pending verification"}
+            </span>
+          </div>
+        )}
+      </section>
 
       {/* Templates editor */}
       <section className="rounded-2xl border border-white/10 bg-white/[0.03] p-4">
@@ -892,45 +871,6 @@ function formatLocal(e164) {
           <li>First-touch texts should avoid links; send links only after a reply.</li>
         </ul>
       </section>
-
-      {/* TFN Modal */}
-      {tfnModalOpen && (
-        <TFNPickerModal
-          userId={userId}
-          onClose={() => setTfnModalOpen(false)}
-          /** ------------- CHANGED: actually assigns via backend then updates UI ------------- */
-          onPicked={async (picked) => {
-            try {
-              if (!userId) throw new Error("Not signed in");
-
-              // Support a few shapes coming from the modal:
-              // string => phone number; object may include e164/phone_number or telnyx_phone_id/id
-              let payload = {};
-              if (typeof picked === "string") {
-                payload = { phone_number: picked };
-              } else if (picked && typeof picked === "object") {
-                if (picked.e164 || picked.phone_number) {
-                  payload = { phone_number: picked.e164 || picked.phone_number };
-                } else if (picked.telnyx_phone_id || picked.id) {
-                  payload = { telnyx_phone_id: picked.telnyx_phone_id || picked.id };
-                }
-              }
-
-              if (!payload.phone_number && !payload.telnyx_phone_id) {
-                throw new Error("No number selected.");
-              }
-
-              const resp = await tfnSelect(userId, payload);
-              setMyTFN(resp?.e164 || payload.phone_number || null);
-              setTfnModalOpen(false);
-            } catch (err) {
-              console.error("TFN select failed", err);
-              alert(err.message || "Failed to select number. Check Console → Network for details.");
-            }
-          }}
-          /** ------------------------------------------------------------------------------- */
-        />
-      )}
     </div>
   );
 }
