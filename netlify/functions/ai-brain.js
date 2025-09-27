@@ -1,6 +1,6 @@
 // File: netlify/functions/ai-brain.js
 // Hybrid brain: deterministic rules first; optional Groq fallback for classification only.
-// Exports: decide({ text, agentName, calendlyLink, tz, officeHours, context, useLLM, llmMinConf }) -> { text, intent, meta? }
+// Exports: decide({ text, agentName, calendlyLink, tz, context, useLLM, llmMinConf }) -> { text, intent, meta? }
 
 // ---- SAFE LLM IMPORT (won't crash if helper/env missing)
 let llmClassify = async () => ({ intent: "", confidence: 0 });
@@ -82,7 +82,7 @@ function hasAmbiguousBareHour(t) {
   const m = x.match(/\b([1-9]|1[0-2])\b/);
   if (!m) return false;
   if (/\b(am|pm)\b/.test(x) || /\d:\d{2}/.test(x)) return false;
-  if (/\bafter\s+[1-9]|1[0-2]\b/.test(x)) return false;
+  if (/\bafter\s+([1-9]|1[0-2])\b/.test(x)) return false; // fixed grouping
   return true;
 }
 
@@ -101,7 +101,6 @@ function cta(es, link) {
 
 /* ---------------- Copy templates (natural; no slot lists) ---------------- */
 const T = {
-  // First reply after your initial outreach
   greetFirst: (es, n, link, ctx) => {
     const first = safe(ctx?.firstName);
     const state = safe(ctx?.state);
@@ -186,7 +185,6 @@ const T = {
     es ? `¿Le queda mejor ${h} AM o ${h} PM?`
        : `Does ${h} work better AM or PM?`,
 
-  // Window acknowledgement (no slot lists)
   windowAck: (es, win, link) =>
     es ? `${/mañana/i.test(win) ? "La mañana funciona." : /tarde/i.test(win) ? "La tarde funciona." : "La noche funciona."} ${cta(es, link)}`
        : `${/morning/i.test(win) ? "Morning works." : /afternoon/i.test(win) ? "Afternoon works." : "Evening works."} ${cta(false, link)}`,
@@ -250,27 +248,31 @@ async function decide({ text, agentName, calendlyLink, tz, context, useLLM, llmM
   const minConf = typeof llmMinConf === "number" ? llmMinConf : LLM_MIN_CONF;
 
   if (wantLLM) {
-    const llm = await llmClassify(text);
-    if (llm.confidence >= minConf) {
-      const intent = llm.intent;
+    try {
+      const llm = await llmClassify(text);
+      if (llm && typeof llm === "object" && Number(llm.confidence) >= minConf) {
+        const intent = llm.intent || "";
 
-      if (intent === "time_specific" && llm.time?.type === "specific" && llm.time.value) {
-        return { text: T.timeConfirm(es, llm.time.value, link), intent: "confirm_time", meta: { route: "llm", conf: llm.confidence } };
-      }
-      if (intent === "time_window" && llm.time?.type === "window" && llm.time.value) {
-        return { text: T.windowAck(es, llm.time.value, link), intent: "time_window", meta: { route: "llm", conf: llm.confidence } };
-      }
+        if (intent === "time_specific" && llm.time?.type === "specific" && llm.time.value) {
+          return { text: T.timeConfirm(es, llm.time.value, link), intent: "confirm_time", meta: { route: "llm", conf: llm.confidence } };
+        }
+        if (intent === "time_window" && llm.time?.type === "window" && llm.time.value) {
+          return { text: T.windowAck(es, llm.time.value, link), intent: "time_window", meta: { route: "llm", conf: llm.confidence } };
+        }
 
-      if (intent === "courtesy_greet") return { text: T.courtesy(es, name, link),       intent, meta: { route: "llm", conf: llm.confidence } };
-      if (intent === "greet")          return { text: T.greet(es, name, link, context), intent, meta: { route: "llm", conf: llm.confidence } };
-      if (intent === "who")            return { text: T.who(es, name, link, context),   intent, meta: { route: "llm", conf: llm.confidence } };
-      if (intent === "price")          return { text: T.price(es, link),                intent, meta: { route: "llm", conf: llm.confidence } };
-      if (intent === "covered")        return { text: T.covered(es, link),              intent, meta: { route: "llm", conf: llm.confidence } };
-      if (intent === "brushoff")       return { text: T.brushoff(es, link),             intent, meta: { route: "llm", conf: llm.confidence } };
-      if (intent === "spouse")         return { text: T.spouse(es, link),               intent, meta: { route: "llm", conf: llm.confidence } };
-      if (intent === "wrong")          return { text: T.wrong(es),                      intent, meta: { route: "llm", conf: llm.confidence } };
-      if (intent === "callme")         return { text: T.agree(es, link),                intent, meta: { route: "llm", conf: llm.confidence } };
-      if (intent === "agree")          return { text: T.agree(es, link),                intent, meta: { route: "llm", conf: llm.confidence } };
+        if (intent === "courtesy_greet") return { text: T.courtesy(es, name, link),       intent, meta: { route: "llm", conf: llm.confidence } };
+        if (intent === "greet")          return { text: T.greet(es, name, link, context), intent, meta: { route: "llm", conf: llm.confidence } };
+        if (intent === "who")            return { text: T.who(es, name, link, context),   intent, meta: { route: "llm", conf: llm.confidence } };
+        if (intent === "price")          return { text: T.price(es, link),                intent, meta: { route: "llm", conf: llm.confidence } };
+        if (intent === "covered")        return { text: T.covered(es, link),              intent, meta: { route: "llm", conf: llm.confidence } };
+        if (intent === "brushoff")       return { text: T.brushoff(es, link),             intent, meta: { route: "llm", conf: llm.confidence } };
+        if (intent === "spouse")         return { text: T.spouse(es, link),               intent, meta: { route: "llm", conf: llm.confidence } };
+        if (intent === "wrong")          return { text: T.wrong(es),                      intent, meta: { route: "llm", conf: llm.confidence } };
+        if (intent === "callme")         return { text: T.agree(es, link),                intent, meta: { route: "llm", conf: llm.confidence } };
+        if (intent === "agree")          return { text: T.agree(es, link),                intent, meta: { route: "llm", conf: llm.confidence } };
+      }
+    } catch (e) {
+      // swallow LLM errors completely; never block sending
     }
   }
 
