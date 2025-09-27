@@ -5,7 +5,6 @@ import { motion } from "framer-motion";
 import {
   Check,
   LogOut,
-  Shield,
   Star,
   CreditCard,
   ExternalLink,
@@ -13,6 +12,8 @@ import {
   CheckCircle2,
   Menu, // mobile hamburger
   Instagram, // ✅ added
+  Phone,     // ✅ added
+  // PhoneCall // (optional) swap in if you prefer the ringing icon
 } from "lucide-react";
 
 import ProtectedRoute from "./components/ProtectedRoute.jsx";
@@ -263,7 +264,7 @@ function PartnersGrid() {
         .eq("active", true)
         .order("sort_order", { ascending: true, nullsFirst: true })
         .order("name", { ascending: true });
-    if (!error) setPartners(data || []);
+      if (!error) setPartners(data || []);
       setLoading(false);
     }
     load();
