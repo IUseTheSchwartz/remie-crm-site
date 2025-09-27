@@ -1,6 +1,6 @@
 // netlify/functions/telnyx-voice-webhook.js
-// Transfers AGENT -> LEAD after answer, logs to call_logs, handles optional recording,
-// computes billed_cents (1¢/min or 2¢/min when recording), and debits user_wallets.
+// Transfers AGENT -> LEAD after answer, plays ringback, hangs up cleanly on no-answer/busy,
+// logs to call_logs, handles optional recording, computes billed_cents, debits wallet.
 
 const crypto = require("crypto");
 const fetch = require("node-fetch");
@@ -56,7 +56,7 @@ async function transferCall({ callControlId, to, from }) {
   const resp = await fetch(url, {
     method: "POST",
     headers: { Authorization: `Bearer ${TELNYX_API_KEY}`, "Content-Type": "application/json" },
-    body: JSON.stringify({ to, from }) // Telnyx hairpins media for us
+    body: JSON.stringify({ to, from }) // Telnyx hairpins media
   });
   const data = await resp.json().catch(() => ({}));
   if (!resp.ok) log("transfer failed", resp.status, data);
@@ -71,7 +71,7 @@ async function startRecording(callControlId) {
       method: "POST",
       headers: { Authorization: `Bearer ${TELNYX_API_KEY}`, "Content-Type": "application/json" },
       body: JSON.stringify({
-        channels: "dual",            // split channels (agent / lead)
+        channels: "dual",
         audio: { direction: "both" },
         format: "mp3"
       })
@@ -87,7 +87,67 @@ async function startRecording(callControlId) {
   }
 }
 
-/* ---------------- Wallet debit ---------------- */
+async function playbackStart(callControlId, audioUrl) {
+  try {
+    if (!TELNYX_API_KEY || !callControlId || !audioUrl) return;
+    const url = `https://api.telnyx.com/v2/calls/${callControlId}/actions/playback_start`;
+    const resp = await fetch(url, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${TELNYX_API_KEY}`, "Content-Type": "application/json" },
+      body: JSON.stringify({ audio_url: audioUrl, loop: true })
+    });
+    if (!resp.ok) {
+      const j = await resp.json().catch(() => ({}));
+      log("playback_start failed", resp.status, j);
+    } else {
+      log("playback_start ok");
+    }
+  } catch (e) {
+    log("playback_start error", e?.message);
+  }
+}
+
+async function playbackStop(callControlId) {
+  try {
+    if (!TELNYX_API_KEY || !callControlId) return;
+    const url = `https://api.telnyx.com/v2/calls/${callControlId}/actions/playback_stop`;
+    const resp = await fetch(url, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${TELNYX_API_KEY}`, "Content-Type": "application/json" },
+      body: JSON.stringify({})
+    });
+    if (!resp.ok) {
+      const j = await resp.json().catch(() => ({}));
+      log("playback_stop failed", resp.status, j);
+    } else {
+      log("playback_stop ok");
+    }
+  } catch (e) {
+    log("playback_stop error", e?.message);
+  }
+}
+
+async function hangupCall(callControlId) {
+  try {
+    if (!TELNYX_API_KEY || !callControlId) return;
+    const url = `https://api.telnyx.com/v2/calls/${callControlId}/actions/hangup`;
+    const resp = await fetch(url, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${TELNYX_API_KEY}`, "Content-Type": "application/json" },
+      body: JSON.stringify({})
+    });
+    if (!resp.ok) {
+      const j = await resp.json().catch(() => ({}));
+      log("hangup failed", resp.status, j);
+    } else {
+      log("hangup ok");
+    }
+  } catch (e) {
+    log("hangup error", e?.message);
+  }
+}
+
+/* ---------------- Wallet / DB helpers (unchanged) ---------------- */
 async function debitWalletForCall({ legA, user_id, cents }) {
   if (!supa || !legA || !user_id || !cents || cents <= 0) return { ok: true, skipped: true };
   const { data, error } = await supa.rpc("wallet_debit_for_call", {
@@ -102,7 +162,6 @@ async function debitWalletForCall({ legA, user_id, cents }) {
   return { ok: true, data };
 }
 
-/* ---------------- DB writes (your schema) ---------------- */
 async function upsertInitiated({
   user_id, contact_id, to_number, from_number, agent_number,
   legA, call_session_id, started_at, record_enabled
@@ -171,7 +230,6 @@ async function saveRecordingUrlByCallSession({ call_session_id, recording_url })
   if (error) log("saveRecordingUrl err", error.message);
 }
 
-// Compute billed_cents (1¢ per started minute; 2¢/min when record_enabled) + update row + debit wallet
 async function markEnded({ legA, ended_at, hangup_cause }) {
   if (!supa || !legA) return;
 
@@ -194,8 +252,7 @@ async function markEnded({ legA, ended_at, hangup_cause }) {
     duration_seconds = Math.max(0, Math.round((t1 - t0) / 1000));
   }
 
-  // per-started-minute, min 1 minute
-  const rate_cents_per_min = record_enabled ? 2 : 1; // 2¢ when recording enabled
+  const rate_cents_per_min = record_enabled ? 2 : 1;
   let billed_cents = null;
   if (duration_seconds !== null) {
     const mins = Math.max(1, Math.ceil(duration_seconds / 60));
@@ -211,7 +268,6 @@ async function markEnded({ legA, ended_at, hangup_cause }) {
   if (billed_cents !== null) baseUpdates.billed_cents = billed_cents;
   if (failed) baseUpdates.error = hangup_cause;
 
-  // Update call row (with graceful fallback if billed_cents not present)
   const { error: upErr } = await supa
     .from("call_logs")
     .update(baseUpdates)
@@ -234,7 +290,6 @@ async function markEnded({ legA, ended_at, hangup_cause }) {
     }
   }
 
-  // Debit wallet (atomic + idempotent in SQL function)
   if (billed_cents && user_id) {
     const res = await debitWalletForCall({ legA, user_id, cents: billed_cents });
     if (!res.ok) log("wallet debit failed (non-fatal)", res.error || "unknown");
@@ -284,7 +339,8 @@ exports.handler = async (event) => {
   const lead_number = cs.lead_number || p?.to || null;
   const from_number = cs.from_number || p?.from || null;
   const agent_number = cs.agent_number || null;
-  const record_enabled = !!cs.record; // ⬅️ from call-start
+  const record_enabled = !!cs.record;
+  const ringback_url = cs.ringback_url || null;
 
   log("event", eventType, {
     hasLegA: !!legA,
@@ -310,37 +366,66 @@ exports.handler = async (event) => {
         }
         break;
       }
+
       case "call.answered": {
-        // 🔁 A-leg (agent) answered → TRANSFER to the lead (Telnyx bridges media)
+        // Agent answered: start ringback to agent, then transfer to lead.
+        if (ringback_url && legA) await playbackStart(legA, ringback_url);
+
         if (kind === "crm_outbound" && legA && lead_number && from_number) {
           await transferCall({ callControlId: legA, to: lead_number, from: from_number });
         }
         if (legA) await markAnswered({ legA, answered_at: occurred_at });
-
-        // ⚠️ Do NOT start recording here — wait for call.bridged
         break;
       }
+
       case "call.bridged": {
+        // Stop ringback and mark bridged
+        if (legA) await playbackStop(legA);
         await markBridged({ legA, maybeLegB: peerLeg || null });
 
-        // ✅ primary: start recording once both legs are up (prevents dead audio issues)
+        // Start recording only after media is up
         if (record_enabled && legA) startRecording(legA);
         break;
       }
+
+      case "call.transfer.completed": {
+        // Transfer finished. If we never bridged (no peer leg), treat as no-answer/busy and hang up agent.
+        const outcome = (p?.result || p?.cause || p?.hangup_cause || "").toLowerCase();
+        log("transfer.completed", { outcome, peerLeg: !!peerLeg });
+
+        // Always stop ringback if it was playing
+        if (legA) await playbackStop(legA);
+
+        const failed =
+          !peerLeg ||
+          ["busy", "no_answer", "call_rejected", "user_busy", "unallocated_number", "normal_clearing"].includes(outcome);
+
+        if (failed && legA) {
+          await hangupCall(legA); // cleanly end A-leg so you aren’t left in silence
+        }
+        break;
+      }
+
       case "call.recording.saved": {
-        const url = p?.recording_urls?.mp3 || p?.recording_url || null;
+        const url =
+          p?.recording_urls?.mp3 ||
+          p?.recording_url ||
+          null;
         if (call_session_id && url) {
           await saveRecordingUrlByCallSession({ call_session_id, recording_url: url });
         }
         break;
       }
+
       case "call.ended":
       case "call.hangup": {
+        await playbackStop(legA); // best-effort
         await markEnded({ legA, ended_at: occurred_at, hangup_cause: p?.hangup_cause });
         break;
       }
+
+      // If Telnyx emits these with a peer id, mark bridged so UI isn’t stuck
       case "call.transfer.initiated":
-      case "call.transfer.completed":
       case "call.initiated.outbound":
       case "call.answered.outbound": {
         if (legA && peerLeg) {
@@ -348,6 +433,7 @@ exports.handler = async (event) => {
         }
         break;
       }
+
       default:
         break;
     }
