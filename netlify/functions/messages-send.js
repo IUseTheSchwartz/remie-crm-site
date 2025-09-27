@@ -98,23 +98,24 @@ async function getBalanceCents(db, user_id) {
   return Number(data?.balance_cents ?? 0);
 }
 
-/* ====== FROM number: toll_free_numbers ONLY ====== */
-async function pickFromNumber(db, user_id) {
-  const { data: tfn, error } = await db
+/* ====== NEW: TFN status via toll_free_numbers ======
+   Returns { status: 'verified'|'pending'|'none', e164?: string }
+==================================================== */
+async function getAgentTFNStatus(db, user_id) {
+  const { data, error } = await db
     .from("toll_free_numbers")
     .select("phone_number, verified")
     .eq("assigned_to", user_id)
-    .eq("verified", true)
+    .order("verified", { ascending: false })
     .limit(1)
     .maybeSingle();
   if (error) throw error;
-  if (tfn?.phone_number) {
-    const e = toE164(tfn.phone_number);
-    if (e) return e;
-  }
-  return null; // no verified, assigned TFN found
+
+  if (!data) return { status: "none" };
+  const e = toE164(data.phone_number);
+  if (!e) return { status: "none" };
+  return data.verified ? { status: "verified", e164: e } : { status: "pending", e164: e };
 }
-/* ====== /FROM number ====== */
 
 // ---- Telnyx send ----
 async function telnyxSend({ from, to, text, profileId }) {
@@ -293,9 +294,20 @@ exports.handler = async (event) => {
       trace.push({ step: "template.rendered", key: keyToUse, body_len: bodyText.length });
     }
 
-    // -------- Determine FROM number (must be agent's verified TFN) --------
-    const fromE164 = await pickFromNumber(db, user_id);
-    if (!fromE164) {
+    // -------- Determine FROM number & verification status --------
+    const tfn = await getAgentTFNStatus(db, user_id);
+    if (tfn.status === "pending") {
+      return json(
+        {
+          error: "tfn_pending_verification",
+          message:
+            "Your toll-free number is pending verification (typically 4–7 business days). Outbound texting will enable automatically once approved.",
+          trace,
+        },
+        409
+      );
+    }
+    if (tfn.status !== "verified") {
       return json(
         {
           error: "no_agent_tfn_configured",
@@ -305,6 +317,7 @@ exports.handler = async (event) => {
         400
       );
     }
+    const fromE164 = tfn.e164;
 
     // -------- WALLET pre-flight --------
     const COST_CENTS = 1; // keep in sync with webhook/trigger
