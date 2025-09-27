@@ -1,6 +1,6 @@
 // Sends an SMS via Telnyx using a template or raw body.
 // DEDUPE-SAFE using provider_message_id (pass it!)
-// Accepts: { to?, contact_id?, lead_id?, body?, templateKey?/template_key?/template?, requesterId?, provider_message_id? }
+// Accepts: { to?, contact_id?, lead_id?, body?, templateKey?/template_key?/template?, requesterId?, provider_message_id?, sent_by_ai? }
 
 const { getServiceClient } = require("./_supabase");
 const fetch = require("node-fetch"); // ensure fetch exists in function runtime
@@ -170,6 +170,7 @@ exports.handler = async (event) => {
       templateKey, // camelCase
       requesterId,
       provider_message_id,
+      sent_by_ai, // <-- NEW: allow AI to tag the message
     } = body || {};
 
     // accept snake_case too
@@ -372,6 +373,7 @@ exports.handler = async (event) => {
       provider_message_id: provider_message_id || null,
       price_cents: COST_CENTS,
       meta: { templateKey: templateKey || null, lead_id: lead?.id || (lead_id || null) },
+      sent_by_ai: Boolean(sent_by_ai) === true, // tiny flag for UI badge
     };
 
     const ins = await db.from("messages").insert([row]).select("id, contact_id").maybeSingle();
