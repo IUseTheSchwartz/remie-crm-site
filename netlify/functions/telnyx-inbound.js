@@ -258,7 +258,7 @@ function t_confirm(isEs, tsLabel, calendly) {
   return core + link;
 }
 
-/* ===== DB Helper: Agent profile (the missing piece in your logs) ===== */
+/* ===== DB Helper: Agent profile ===== */
 async function getAgentProfile(db, user_id) {
   const { data, error } = await db
     .from("agent_profiles")
@@ -399,7 +399,7 @@ exports.handler = async (event) => {
   }
 
   // Natural greeting (don’t jump straight to long intro)
-  if (intent === "greeting")) {
+  if (intent === "greeting") {
     const name = agent?.full_name || "your licensed broker";
     const msg = isEs
       ? `¡Hola! Soy ${name}. Podemos revisar sus opciones en unos minutos — ¿le funciona ${offerText}?`
