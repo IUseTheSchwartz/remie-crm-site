@@ -35,11 +35,10 @@ export default function TFNPoolAdminSection() {
     setLoading(true);
     setMsg("");
 
-    // 1) Load TFNs
+    // No created_at in this table — fetch without ordering, then sort in JS
     const { data, error } = await supabase
       .from("toll_free_numbers")
-      .select("id, phone_number, telnyx_number_id, verified, assigned_to, date_assigned, created_at")
-      .order("created_at", { ascending: false });
+      .select("id, phone_number, telnyx_number_id, verified, assigned_to, date_assigned, notes");
 
     if (error) {
       setMsg(error.message);
@@ -49,10 +48,24 @@ export default function TFNPoolAdminSection() {
       return;
     }
 
-    const list = data || [];
+    let list = data || [];
+
+    // Sort: available+verified first, then assigned, then by phone_number
+    list = list.sort((a, b) => {
+      const aAvail = a.verified && !a.assigned_to ? 0 : 1;
+      const bAvail = b.verified && !b.assigned_to ? 0 : 1;
+      if (aAvail !== bAvail) return aAvail - bAvail;
+
+      const aAssigned = a.assigned_to ? 1 : 0;
+      const bAssigned = b.assigned_to ? 1 : 0;
+      if (aAssigned !== bAssigned) return aAssigned - bAssigned;
+
+      return String(a.phone_number).localeCompare(String(b.phone_number));
+    });
+
     setRows(list);
 
-    // 2) Load any assigned users' profiles in one shot
+    // Pull profiles for any assigned users
     const ids = [...new Set(list.map(r => r.assigned_to).filter(Boolean))];
     if (ids.length === 0) {
       setProfilesByUser(new Map());
@@ -96,6 +109,7 @@ export default function TFNPoolAdminSection() {
       phone_number: phone,
       telnyx_number_id: form.telnyx_number_id?.trim() || null,
       verified: !!form.verified,
+      // notes: you can add optional notes here if desired
     };
     const { error } = await supabase.from("toll_free_numbers").insert(payload);
     if (error) setMsg(error.message); else setForm({ phone_number: "", telnyx_number_id: "", verified: true });
@@ -334,7 +348,22 @@ export default function TFNPoolAdminSection() {
                         {r.verified ? "Verified" : "Pending"}
                       </span>
                     </td>
-                    <td className="px-3 py-2">{renderAssigned(r)}</td>
+                    <td className="px-3 py-2">
+                      {(() => {
+                        if (!r.assigned_to) return <span className="text-white/50">—</span>;
+                        const prof = profilesByUser.get(r.assigned_to);
+                        if (!prof) return <span className="text-white/70">{r.assigned_to}</span>;
+                        const name = prof.full_name || "(no name)";
+                        const email = prof.email || "";
+                        return (
+                          <div className="flex flex-col">
+                            <span className="text-white/90">{name}</span>
+                            <span className="text-white/60 text-[11px]">{email}</span>
+                            <span className="text-white/40 text-[10px] mt-0.5">{r.assigned_to}</span>
+                          </div>
+                        );
+                      })()}
+                    </td>
                     <td className="px-3 py-2">
                       {r.date_assigned ? new Date(r.date_assigned).toLocaleString() : "—"}
                     </td>
