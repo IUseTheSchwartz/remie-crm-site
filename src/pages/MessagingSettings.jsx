@@ -514,56 +514,112 @@ export default function MessagingSettings() {
         </div>
       </section>
 
-      {/* Toll-Free Number (per-agent) */}
+      {/* Toll-Free Number (auto-assign from verified pool) */}
 <section className="rounded-2xl border border-white/10 bg-white/[0.03] p-4">
   <div className="mb-2 flex items-center justify-between">
     <div>
       <h3 className="text-sm font-semibold">Your Toll-Free Number</h3>
       <p className="text-xs text-white/60">
-        Messages you send will come from this number. It’s included — no cost to you.
+        We’ll assign you a verified toll-free number for messaging. It’s included — no extra cost.
       </p>
     </div>
-
-    {/* lock after first selection */}
-    {!myTFN ? (
-      <div>
-        <button
-          type="button"
-          onClick={() => setTfnModalOpen(true)}
-          className="inline-flex items-center gap-1 rounded-lg border border-white/15 bg-white/5 px-3 py-2 text-sm hover:bg-white/10"
-        >
-          Choose Number
-        </button>
-      </div>
-    ) : (
-      <div className="text-[11px] text-white/50">
-        Number locked. Contact support to change.
-      </div>
-    )}
   </div>
 
-  <div className="rounded-lg border border-white/10 bg-white/[0.02] p-3 text-sm">
-    {myTFN ? (
-      <div className="flex items-center justify-between">
-        <div className="text-white/80">
-          Current: <span className="font-semibold">{prettyE164(myTFN)}</span>
-        </div>
-        <span className="rounded-md border border-emerald-400/30 bg-emerald-400/10 px-2 py-0.5 text-[11px] text-emerald-300">
-          Active
-        </span>
-      </div>
-    ) : (
-      <div className="space-y-1">
-        <div className="text-white/80">
-          Current: <span className="font-semibold">None selected</span>
-        </div>
-        <div className="text-[12px] text-amber-300">
-          Messaging is <b>disabled</b> until you choose a toll-free number.
-        </div>
-      </div>
-    )}
-  </div>
+  <TollFreeNumberPanel />
 </section>
+
+function TollFreeNumberPanel() {
+  const [loading, setLoading] = useState(true);
+  const [assigning, setAssigning] = useState(false);
+  const [error, setError] = useState("");
+  const [number, setNumber] = useState(null); // e.g. "+18881234567"
+  const [verified, setVerified] = useState(false);
+
+  async function refresh() {
+    setError("");
+    setLoading(true);
+    try {
+      const r = await fetch("/.netlify/functions/tfn-status");
+      const j = await r.json();
+      if (!r.ok) throw new Error(j.error || "Failed to load TFN status");
+      setNumber(j.phone_number || null);
+      setVerified(!!j.verified);
+    } catch (e) {
+      setError(e.message || "Failed to load TFN status");
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  useEffect(() => { refresh(); }, []);
+
+  async function handleGetNumber() {
+    setError("");
+    setAssigning(true);
+    try {
+      const r = await fetch("/.netlify/functions/tfn-assign", { method: "POST" });
+      const j = await r.json();
+      if (!r.ok) throw new Error(j.error || "Failed to assign number");
+      setNumber(j.phone_number);
+      setVerified(!!j.verified);
+    } catch (e) {
+      setError(e.message || "Failed to assign number");
+    } finally {
+      setAssigning(false);
+    }
+  }
+
+  if (loading) return <div className="rounded-lg bg-white/5 p-3 text-sm text-white/70">Loading your number…</div>;
+  if (error) return <div className="rounded-lg bg-red-500/10 border border-red-500/30 p-3 text-sm text-red-200">{error}</div>;
+
+  if (!number) {
+    return (
+      <div className="flex flex-col gap-3">
+        <div className="rounded-lg bg-white/5 p-3 text-sm text-white/70">
+          You don’t have a number yet. Click the button below and we’ll assign you a pre-verified number from our pool.
+        </div>
+        <div className="flex items-center gap-2">
+          <button
+            type="button"
+            onClick={handleGetNumber}
+            disabled={assigning}
+            className="inline-flex items-center justify-center rounded-lg bg-white/10 px-3 py-2 text-sm font-medium hover:bg-white/15 disabled:opacity-60"
+          >
+            {assigning ? "Assigning…" : "Get My Number"}
+          </button>
+          <a href="/support" className="text-xs text-white/60 hover:text-white">Need help? Contact Support</a>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="flex flex-col gap-2">
+      <div className="rounded-lg bg-white/5 p-3">
+        <div className="text-xs uppercase tracking-wide text-white/60">Your number</div>
+        <div className="mt-1 text-lg font-semibold">{formatLocal(number)}</div>
+        <div className="mt-1 text-xs text-emerald-300">
+          {verified ? "✅ Verified & ready to send" : "⏳ Pending verification"}
+        </div>
+      </div>
+      <div className="text-xs text-white/60">
+        Want to change your number? Please{" "}
+        <a href="/support" className="underline hover:text-white">contact Support</a>.
+      </div>
+    </div>
+  );
+}
+
+function formatLocal(e164) {
+  const d = String(e164 || "").replace(/\D/g, "");
+  if (d.length === 11 && d.startsWith("1")) {
+    const n = d.slice(1);
+    return `+1 (${n.slice(0,3)}) ${n.slice(3,6)}-${n.slice(6)}`;
+  }
+  if (d.length === 10) return `(${d.slice(0,3)}) ${d.slice(3,6)}-${d.slice(6)}`;
+  return e164 || "";
+}
+
 
       {/* Templates editor */}
       <section className="rounded-2xl border border-white/10 bg-white/[0.03] p-4">
