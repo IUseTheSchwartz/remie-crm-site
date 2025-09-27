@@ -1,6 +1,6 @@
 // netlify/functions/telnyx-voice-webhook.js
-// Dials AGENT (Leg A), then dials LEAD (Leg B) and BRIDGES A<->B (no transfer).
-// Works with Telnyx accounts expecting either `connection_id` OR `call_control_app_id`.
+// Transfers AGENT -> LEAD after answer, logs to call_logs, handles optional recording,
+// computes billed_cents (1¢/min or 2¢/min when recording), and debits user_wallets.
 
 const crypto = require("crypto");
 const fetch = require("node-fetch");
@@ -8,20 +8,11 @@ const { createClient } = require("@supabase/supabase-js");
 
 const TELNYX_API_KEY = process.env.TELNYX_API_KEY || "";
 const TELNYX_WEBHOOK_SECRET = process.env.TELNYX_WEBHOOK_SECRET || ""; // optional HMAC
-// Your env may hold a *connection* id even if it's named CALL_CONTROL_APP_ID.
-// We'll send BOTH keys to be safe.
-const CC_APP_OR_CONN_ID =
-  process.env.TELNYX_CALL_CONTROL_APP_ID ||
-  process.env.CALL_CONTROL_APP_ID ||
-  process.env.TELNYX_CONNECTION_ID ||
-  process.env.CONNECTION_ID ||
-  "";
-
 const SUPABASE_URL = process.env.SUPABASE_URL || "";
 const SUPABASE_SERVICE_ROLE =
   process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_SERVICE_ROLE || "";
 
-const supa = SUPABASE_URL && SUPABASE_SERVICE_ROLE
+const supa = (SUPABASE_URL && SUPABASE_SERVICE_ROLE)
   ? createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE)
   : null;
 
@@ -59,6 +50,19 @@ function decodeClientState(any) {
 }
 
 /* ---------------- Telnyx helpers ---------------- */
+async function transferCall({ callControlId, to, from }) {
+  if (!TELNYX_API_KEY) { log("transfer skipped: no TELNYX_API_KEY"); return; }
+  const url = `https://api.telnyx.com/v2/calls/${callControlId}/actions/transfer`;
+  const resp = await fetch(url, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${TELNYX_API_KEY}`, "Content-Type": "application/json" },
+    body: JSON.stringify({ to, from }) // Telnyx hairpins media for us
+  });
+  const data = await resp.json().catch(() => ({}));
+  if (!resp.ok) log("transfer failed", resp.status, data);
+  else log("transfer ok", { to, from });
+}
+
 async function startRecording(callControlId) {
   try {
     if (!TELNYX_API_KEY || !callControlId) return;
@@ -67,10 +71,10 @@ async function startRecording(callControlId) {
       method: "POST",
       headers: { Authorization: `Bearer ${TELNYX_API_KEY}`, "Content-Type": "application/json" },
       body: JSON.stringify({
-        channels: "dual",
+        channels: "dual",            // split channels (agent / lead)
         audio: { direction: "both" },
-        format: "mp3",
-      }),
+        format: "mp3"
+      })
     });
     if (!resp.ok) {
       const j = await resp.json().catch(() => ({}));
@@ -81,46 +85,6 @@ async function startRecording(callControlId) {
   } catch (e) {
     log("record_start error", e?.message);
   }
-}
-
-// Dial B using BOTH id fields for maximum compatibility
-async function dialLegB({ to, from, client_state }) {
-  if (!TELNYX_API_KEY || !CC_APP_OR_CONN_ID) {
-    log("dialLegB skipped: missing API key or app/connection id");
-    throw new Error("missing_app_or_key");
-  }
-  const body = {
-    to,
-    from,
-    // send both — Telnyx ignores the wrong one
-    call_control_app_id: CC_APP_OR_CONN_ID,
-    connection_id: CC_APP_OR_CONN_ID,
-    client_state,
-  };
-  const resp = await fetch("https://api.telnyx.com/v2/calls", {
-    method: "POST",
-    headers: { Authorization: `Bearer ${TELNYX_API_KEY}`, "Content-Type": "application/json" },
-    body: JSON.stringify(body),
-  });
-  const j = await resp.json().catch(() => ({}));
-  if (!resp.ok) {
-    log("dialLegB failed", resp.status, j);
-    throw new Error(j?.errors?.[0]?.detail || j?.message || "dialLegB failed");
-  }
-  log("dialLegB ok", { to, from, id: j?.data?.id || j?.data?.call_leg_id });
-  return j;
-}
-
-async function bridge(legA, legB) {
-  if (!TELNYX_API_KEY || !legA || !legB) return;
-  const resp = await fetch("https://api.telnyx.com/v2/call_control/commands/bridge", {
-    method: "POST",
-    headers: { Authorization: `Bearer ${TELNYX_API_KEY}`, "Content-Type": "application/json" },
-    body: JSON.stringify({ call_control_id: legA, call_control_ids: [legB] }),
-  });
-  const j = await resp.json().catch(() => ({}));
-  if (!resp.ok) log("bridge failed", resp.status, j);
-  else log("bridge ok", { legA, legB });
 }
 
 /* ---------------- Wallet debit ---------------- */
@@ -139,7 +103,10 @@ async function debitWalletForCall({ legA, user_id, cents }) {
 }
 
 /* ---------------- DB writes (your schema) ---------------- */
-async function upsertInitiated({ user_id, contact_id, to_number, from_number, agent_number, legA, call_session_id, started_at, record_enabled }) {
+async function upsertInitiated({
+  user_id, contact_id, to_number, from_number, agent_number,
+  legA, call_session_id, started_at, record_enabled
+}) {
   if (!supa) return;
   const { data: existing } = await supa
     .from("call_logs")
@@ -158,10 +125,19 @@ async function upsertInitiated({ user_id, contact_id, to_number, from_number, ag
   if (call_session_id) baseFields.call_session_id = call_session_id;
 
   if (existing?.id) {
-    const { error } = await supa.from("call_logs").update(baseFields).eq("id", existing.id);
+    const { error } = await supa
+      .from("call_logs")
+      .update(baseFields)
+      .eq("id", existing.id);
     if (error) log("upsert initiated (update) err", error.message);
   } else {
-    const { error } = await supa.from("call_logs").insert({ direction: "outbound", telnyx_leg_a_id: legA, ...baseFields });
+    const { error } = await supa
+      .from("call_logs")
+      .insert({
+        direction: "outbound",
+        telnyx_leg_a_id: legA,
+        ...baseFields,
+      });
     if (error) log("upsert initiated (insert) err", error.message);
   }
 }
@@ -179,18 +155,26 @@ async function markBridged({ legA, maybeLegB }) {
   if (!supa || !legA) return;
   const updates = { status: "bridged" };
   if (maybeLegB) updates.telnyx_leg_b_id = maybeLegB;
-  const { error } = await supa.from("call_logs").update(updates).eq("telnyx_leg_a_id", legA);
+  const { error } = await supa
+    .from("call_logs")
+    .update(updates)
+    .eq("telnyx_leg_a_id", legA);
   if (error) log("markBridged err", error.message);
 }
 
 async function saveRecordingUrlByCallSession({ call_session_id, recording_url }) {
   if (!supa || !call_session_id || !recording_url) return;
-  const { error } = await supa.from("call_logs").update({ recording_url }).eq("call_session_id", call_session_id);
+  const { error } = await supa
+    .from("call_logs")
+    .update({ recording_url })
+    .eq("call_session_id", call_session_id);
   if (error) log("saveRecordingUrl err", error.message);
 }
 
+// Compute billed_cents (1¢ per started minute; 2¢/min when record_enabled) + update row + debit wallet
 async function markEnded({ legA, ended_at, hangup_cause }) {
   if (!supa || !legA) return;
+
   const endedISO = ended_at || new Date().toISOString();
 
   const { data: row } = await supa
@@ -210,7 +194,8 @@ async function markEnded({ legA, ended_at, hangup_cause }) {
     duration_seconds = Math.max(0, Math.round((t1 - t0) / 1000));
   }
 
-  const rate_cents_per_min = record_enabled ? 2 : 1;
+  // per-started-minute, min 1 minute
+  const rate_cents_per_min = record_enabled ? 2 : 1; // 2¢ when recording enabled
   let billed_cents = null;
   if (duration_seconds !== null) {
     const mins = Math.max(1, Math.ceil(duration_seconds / 60));
@@ -218,18 +203,30 @@ async function markEnded({ legA, ended_at, hangup_cause }) {
   }
 
   const failed = hangup_cause && hangup_cause !== "normal_clearing";
-  const baseUpdates = { status: failed ? "failed" : "completed", ended_at: endedISO };
+  const baseUpdates = {
+    status: failed ? "failed" : "completed",
+    ended_at: endedISO,
+  };
   if (duration_seconds !== null) baseUpdates.duration_seconds = duration_seconds;
   if (billed_cents !== null) baseUpdates.billed_cents = billed_cents;
   if (failed) baseUpdates.error = hangup_cause;
 
-  const { error: upErr } = await supa.from("call_logs").update(baseUpdates).eq("telnyx_leg_a_id", legA);
+  // Update call row (with graceful fallback if billed_cents not present)
+  const { error: upErr } = await supa
+    .from("call_logs")
+    .update(baseUpdates)
+    .eq("telnyx_leg_a_id", legA);
 
   if (upErr) {
     if (upErr.code === "42703" || /billed_cents/i.test(upErr.message || "")) {
       const { error: up2 } = await supa
         .from("call_logs")
-        .update({ status: baseUpdates.status, ended_at: baseUpdates.ended_at, duration_seconds: baseUpdates.duration_seconds, error: baseUpdates.error })
+        .update({
+          status: baseUpdates.status,
+          ended_at: baseUpdates.ended_at,
+          duration_seconds: baseUpdates.duration_seconds,
+          error: baseUpdates.error,
+        })
         .eq("telnyx_leg_a_id", legA);
       if (up2) log("markEnded fallback err", up2.message);
     } else {
@@ -237,6 +234,7 @@ async function markEnded({ legA, ended_at, hangup_cause }) {
     }
   }
 
+  // Debit wallet (atomic + idempotent in SQL function)
   if (billed_cents && user_id) {
     const res = await debitWalletForCall({ legA, user_id, cents: billed_cents });
     if (!res.ok) log("wallet debit failed (non-fatal)", res.error || "unknown");
@@ -267,7 +265,7 @@ exports.handler = async (event) => {
   const p = data?.payload || data;
   const occurred_at = p?.occurred_at || payload?.occurred_at || new Date().toISOString();
 
-  const currLeg = p?.call_control_id || p?.call_control_ids?.[0] || null;
+  const legA = p?.call_control_id || p?.call_control_ids?.[0] || null;
   const call_session_id = p?.call_session_id || null;
 
   const peerLeg =
@@ -278,20 +276,18 @@ exports.handler = async (event) => {
 
   const cs =
     decodeClientState(p?.client_state) ||
-    decodeClientState(p?.client_state_b64) ||
-    {};
+    decodeClientState(p?.client_state_b64) || {};
 
   const kind = cs.kind || null;
   const user_id = cs.user_id || cs.agent_id || null;
   const contact_id = cs.contact_id || null;
   const lead_number = cs.lead_number || p?.to || null;
-  const from_number = cs.from_number || p?.from || null;  // must be your Telnyx DID
+  const from_number = cs.from_number || p?.from || null;
   const agent_number = cs.agent_number || null;
-  const record_enabled = !!cs.record;
-  const b_timeout_secs = Number(cs.b_timeout_secs || 25) || 25;
+  const record_enabled = !!cs.record; // ⬅️ from call-start
 
   log("event", eventType, {
-    leg: currLeg,
+    hasLegA: !!legA,
     kind,
     leadPrefix: lead_number ? String(lead_number).slice(0,4) + "…" : null,
     record_enabled
@@ -300,74 +296,37 @@ exports.handler = async (event) => {
   try {
     switch (eventType) {
       case "call.initiated": {
-        // Leg A initiated (agent leg)
-        if (currLeg && user_id && lead_number && from_number) {
+        if (legA && user_id && lead_number && from_number) {
           await upsertInitiated({
             user_id, contact_id,
             to_number: lead_number,
             from_number,
             agent_number,
-            legA: currLeg,
+            legA,
             call_session_id,
             started_at: occurred_at,
-            record_enabled,
+            record_enabled
           });
         }
         break;
       }
-
       case "call.answered": {
-        // Could be A or B. If it's A (crm_outbound & no role), dial B.
-        // If it's B (role === 'lead_leg'), bridge using cs.a_leg_id.
-        if (cs.role === "lead_leg" && cs.a_leg_id && currLeg) {
-          // B answered (came as generic answered, not outbound flavor)
-          await bridge(cs.a_leg_id, currLeg);
-          await markBridged({ legA: cs.a_leg_id, maybeLegB: currLeg });
-          if (record_enabled) startRecording(cs.a_leg_id);
-          break;
+        // 🔁 A-leg (agent) answered → TRANSFER to the lead (Telnyx bridges media)
+        if (kind === "crm_outbound" && legA && lead_number && from_number) {
+          await transferCall({ callControlId: legA, to: lead_number, from: from_number });
         }
+        if (legA) await markAnswered({ legA, answered_at: occurred_at });
 
-        // A answered → dial B
-        if (kind === "crm_outbound" && currLeg && lead_number && from_number) {
-          const bStateB64 = Buffer.from(JSON.stringify({
-            ...cs,
-            role: "lead_leg",
-            a_leg_id: currLeg,    // stash A for later bridge
-            // optional timeout you may enforce with your own scheduler
-            b_timeout_secs,
-          }), "utf8").toString("base64");
-
-          try {
-            await dialLegB({ to: lead_number, from: from_number, client_state: bStateB64 });
-            log("dialLegB queued");
-          } catch (e) {
-            log("dialLegB error", e?.message);
-          }
-        }
-
-        if (currLeg) await markAnswered({ legA: currLeg, answered_at: occurred_at });
-        if (record_enabled && currLeg) startRecording(currLeg); // backup
+        // ⚠️ Do NOT start recording here — wait for call.bridged
         break;
       }
-
-      // If your account emits the outbound-flavored events, we bridge here too
-      case "call.answered.outbound": {
-        const legB = currLeg;
-        const legA = p?.peer_call_control_id || cs.a_leg_id || null;
-        if (legA && legB) {
-          await bridge(legA, legB);
-          await markBridged({ legA, maybeLegB: legB });
-          if (record_enabled) startRecording(legA);
-        }
-        break;
-      }
-
       case "call.bridged": {
-        await markBridged({ legA: currLeg, maybeLegB: peerLeg || null });
-        if (record_enabled && currLeg) startRecording(currLeg);
+        await markBridged({ legA, maybeLegB: peerLeg || null });
+
+        // ✅ primary: start recording once both legs are up (prevents dead audio issues)
+        if (record_enabled && legA) startRecording(legA);
         break;
       }
-
       case "call.recording.saved": {
         const url = p?.recording_urls?.mp3 || p?.recording_url || null;
         if (call_session_id && url) {
@@ -375,23 +334,20 @@ exports.handler = async (event) => {
         }
         break;
       }
-
       case "call.ended":
       case "call.hangup": {
-        await markEnded({ legA: currLeg, ended_at: occurred_at, hangup_cause: p?.hangup_cause });
+        await markEnded({ legA, ended_at: occurred_at, hangup_cause: p?.hangup_cause });
         break;
       }
-
-      // Tolerate Telnyx variants
-      case "call.initiated.outbound":
       case "call.transfer.initiated":
       case "call.transfer.completed":
-      case "call.answered.outbound.partial":
-      case "call.bridged.outbound": {
-        if (currLeg && peerLeg) await markBridged({ legA: currLeg, maybeLegB: peerLeg });
+      case "call.initiated.outbound":
+      case "call.answered.outbound": {
+        if (legA && peerLeg) {
+          await markBridged({ legA, maybeLegB: peerLeg });
+        }
         break;
       }
-
       default:
         break;
     }
