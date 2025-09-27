@@ -32,25 +32,42 @@ function UpcomingMeetings() {
   const [err, setErr] = useState("");
 
   useEffect(() => {
+    if (!user?.id) return;
     let active = true;
+
     (async () => {
       setLoading(true);
       setErr("");
-
       try {
-        const res = await fetch("/.netlify/functions/calendly-events", {
-          method: "GET",
-          headers: { "Content-Type": "application/json" },
-        });
+        // Call your Netlify function WITH uid so it can find your token
+        const res = await fetch(`/.netlify/functions/calendly-events?uid=${user.id}`);
+        const data = await res.json().catch(() => ({}));
 
-        if (!res.ok) throw new Error(await res.text());
+        if (!res.ok || data?.error) {
+          throw new Error(data?.error || `HTTP ${res.status}`);
+        }
 
-        const data = await res.json();
-        if (!active) return;
-        setItems(Array.isArray(data) ? data.slice(0, 10) : []);
+        // Your function returns Calendly's raw payload: { collection: [...] }
+        const collection = Array.isArray(data?.collection) ? data.collection : [];
+
+        // Map Calendly event shape -> your UI fields
+        const mapped = collection.map((ev) => ({
+          id: ev.uri || ev.id,
+          title: ev.name || "Meeting",
+          start_time: ev.start_time,
+          // prefer join_url (Zoom/Meet), else plain location string
+          location:
+            (ev.location && (ev.location.join_url || ev.location.location)) || "",
+          // scheduled_events doesn't include invitee emails; leave blank
+          invitee_email: "",
+        }));
+
+        if (active) setItems(mapped.slice(0, 10));
       } catch (e) {
-        setItems([]);
-        setErr(e?.message || "Failed to load meetings.");
+        if (active) {
+          setItems([]);
+          setErr(e?.message || "Failed to load meetings.");
+        }
       } finally {
         if (active) setLoading(false);
       }
@@ -70,7 +87,7 @@ function UpcomingMeetings() {
         {loading ? (
           <div className="text-white/60">Loading...</div>
         ) : err ? (
-          <div className="text-white/60">No upcoming meetings.</div>
+          <div className="text-rose-400">Calendly error: {err}</div>
         ) : items.length === 0 ? (
           <div className="text-white/60">No upcoming meetings.</div>
         ) : (
@@ -128,7 +145,6 @@ function UpcomingFollowUps() {
 
       const { data, error } = await supabase
         .from("leads")
-        // ✅ Include 'name' now; other columns still exist in your schema
         .select("id,next_follow_up_at,phone,email,name")
         .eq("user_id", user.id)
         .not("next_follow_up_at", "is", null)
