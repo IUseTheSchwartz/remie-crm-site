@@ -1,5 +1,5 @@
 // File: src/pages/AdminConsole.jsx
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { supabase } from "../lib/supabaseClient.js";
 import useIsAdminAllowlist from "../hooks/useIsAdminAllowlist.js";
 
@@ -29,150 +29,140 @@ function makeAll(enabledObj, templatesObj, val) {
   return out;
 }
 
-/* ---------------- AI Brain Tester (dry-run) ----------------
-   Calls: POST /.netlify/functions/ai-brain-dryrun
-   Body:  { text, agentName?, calendlyLink?, tz?, officeHours? }
-   Resp:  { ok, intent, text }   -- no SMS is sent
----------------------------------------------------------------- */
-function AIBrainTester() {
-  const [text, setText] = useState("who's this?");
-  const [agentName, setAgentName] = useState("Jacob Prieto");
-  const [calendlyLink, setCalendlyLink] = useState("https://calendly.com/your-link/15min");
-  const [tz, setTz] = useState("America/Chicago");
-  const [hoursStart, setHoursStart] = useState(9);
-  const [hoursEnd, setHoursEnd] = useState(21);
-  const [resp, setResp] = useState(null);
-  const [loading, setLoading] = useState(false);
-  const [err, setErr] = useState("");
+/* ---------------- Chat-style AI Brain Tester (dry-run) ----------------
+   - Minimal "iMessage-like" box: type ➜ Enter to send ➜ see AI reply
+   - Calls POST /.netlify/functions/ai-brain-dryrun (no SMS is sent)
+   - No extra fields. Defaults baked in (agent name, tz, hours).
+----------------------------------------------------------------------- */
+function AIChatTester() {
+  const [messages, setMessages] = useState([]); // { role: 'you'|'ai', text, intent? }
+  const [input, setInput] = useState("");
+  const [sending, setSending] = useState(false);
+  const bottomRef = useRef(null);
 
-  async function run() {
-    setLoading(true);
-    setErr("");
-    setResp(null);
+  // scroll to bottom on new message
+  useEffect(() => {
+    bottomRef.current?.scrollIntoView({ behavior: "smooth" });
+  }, [messages]);
+
+  const DEFAULTS = {
+    agentName: "Jacob Prieto",
+    calendlyLink: "https://calendly.com/your-link/15min",
+    tz: "America/Chicago",
+    officeHours: { start: 9, end: 21 },
+  };
+
+  async function send() {
+    const text = input.trim();
+    if (!text || sending) return;
+
+    setMessages((m) => [...m, { role: "you", text }]);
+    setInput("");
+    setSending(true);
+
     try {
       const r = await fetch("/.netlify/functions/ai-brain-dryrun", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          text,
-          agentName,
-          calendlyLink,
-          tz,
-          officeHours: { start: Number(hoursStart), end: Number(hoursEnd) },
-        }),
+        body: JSON.stringify({ text, ...DEFAULTS }),
       });
-      const j = await r.json();
+      const j = await r.json().catch(() => ({}));
       if (!r.ok || j.ok === false) {
-        setErr(j?.error || `HTTP ${r.status}`);
+        setMessages((m) => [
+          ...m,
+          { role: "ai", text: `⚠️ Error: ${j?.error || `HTTP ${r.status}`}` },
+        ]);
       } else {
-        setResp(j);
+        const aiText = j.text || "(no reply)";
+        setMessages((m) => [
+          ...m,
+          { role: "ai", text: aiText, intent: j.intent || undefined },
+        ]);
       }
     } catch (e) {
-      setErr(e?.message || "Request failed");
+      setMessages((m) => [
+        ...m,
+        { role: "ai", text: `⚠️ Error: ${e?.message || "Request failed"}` },
+      ]);
     } finally {
-      setLoading(false);
+      setSending(false);
     }
   }
 
+  function onKeyDown(e) {
+    if (e.key === "Enter" && !e.shiftKey) {
+      e.preventDefault();
+      send();
+    }
+  }
+
+  function clearChat() {
+    setMessages([]);
+    setInput("");
+  }
+
   return (
-    <div className="rounded-2xl border border-white/10 bg-black/30 p-4 space-y-4">
-      <div className="flex items-center justify-between">
-        <h2 className="text-lg font-semibold text-white/90">AI Brain Tester (dry-run)</h2>
+    <div className="rounded-2xl border border-white/10 bg-black/30 flex flex-col h-[480px]">
+      {/* Header (subtle) */}
+      <div className="flex items-center justify-between px-3 py-2 border-b border-white/10">
+        <div className="text-sm text-white/70">AI Chat Tester (dry-run)</div>
         <button
-          onClick={run}
-          disabled={loading}
-          className="rounded-md border border-emerald-400/30 px-3 py-1 text-sm hover:bg-emerald-400/10 disabled:opacity-50"
+          onClick={clearChat}
+          className="text-xs rounded border border-white/20 px-2 py-1 hover:bg-white/10"
         >
-          {loading ? "Testing…" : "Run Test"}
+          Clear
         </button>
       </div>
 
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-        <label className="flex flex-col">
-          <span className="text-sm text-white/70 mb-1">Inbound text</span>
-          <textarea
-            className="rounded-md border border-white/15 bg-black/40 p-2 outline-none focus:ring-2 focus:ring-indigo-500/40"
-            rows={3}
-            value={text}
-            onChange={(e) => setText(e.target.value)}
-            placeholder='e.g., "who’s this?" or "tomorrow afternoon"'
-          />
-        </label>
+      {/* Messages */}
+      <div className="flex-1 overflow-y-auto p-3 space-y-2">
+        {messages.length === 0 && (
+          <div className="text-white/50 text-sm">
+            Type a message below and press <kbd className="px-1 py-0.5 bg-white/10 rounded">Enter</kbd>. No SMS is sent.
+          </div>
+        )}
 
-        <div className="grid grid-cols-2 gap-3">
-          <label className="flex flex-col">
-            <span className="text-sm text-white/70 mb-1">Agent name</span>
-            <input
-              className="rounded-md border border-white/15 bg-black/40 p-2 outline-none focus:ring-2 focus:ring-indigo-500/40"
-              value={agentName}
-              onChange={(e) => setAgentName(e.target.value)}
-            />
-          </label>
-          <label className="flex flex-col">
-            <span className="text-sm text-white/70 mb-1">Timezone (IANA)</span>
-            <input
-              className="rounded-md border border-white/15 bg-black/40 p-2 outline-none focus:ring-2 focus:ring-indigo-500/40"
-              value={tz}
-              onChange={(e) => setTz(e.target.value)}
-              placeholder="America/Chicago"
-            />
-          </label>
-          <label className="flex flex-col col-span-2">
-            <span className="text-sm text-white/70 mb-1">Calendly link (optional)</span>
-            <input
-              className="rounded-md border border-white/15 bg-black/40 p-2 outline-none focus:ring-2 focus:ring-indigo-500/40"
-              value={calendlyLink}
-              onChange={(e) => setCalendlyLink(e.target.value)}
-              placeholder="https://calendly.com/..."
-            />
-          </label>
-          <label className="flex flex-col">
-            <span className="text-sm text-white/70 mb-1">Hours start</span>
-            <input
-              type="number"
-              className="rounded-md border border-white/15 bg-black/40 p-2 outline-none focus:ring-2 focus:ring-indigo-500/40"
-              value={hoursStart}
-              min={0}
-              max={23}
-              onChange={(e) => setHoursStart(e.target.value)}
-            />
-          </label>
-          <label className="flex flex-col">
-            <span className="text-sm text-white/70 mb-1">Hours end</span>
-            <input
-              type="number"
-              className="rounded-md border border-white/15 bg-black/40 p-2 outline-none focus:ring-2 focus:ring-indigo-500/40"
-              value={hoursEnd}
-              min={0}
-              max={23}
-              onChange={(e) => setHoursEnd(e.target.value)}
-            />
-          </label>
-        </div>
+        {messages.map((m, i) => {
+          const isYou = m.role === "you";
+          return (
+            <div key={i} className={`flex ${isYou ? "justify-end" : "justify-start"}`}>
+              <div
+                className={`max-w-[70%] whitespace-pre-wrap rounded-2xl px-3 py-2 text-sm ${
+                  isYou
+                    ? "bg-emerald-500/20 border border-emerald-400/20"
+                    : "bg-white/10 border border-white/10"
+                }`}
+              >
+                <div>{m.text}</div>
+                {!isYou && m.intent && (
+                  <div className="mt-1 text-[10px] text-white/60">intent: {m.intent}</div>
+                )}
+              </div>
+            </div>
+          );
+        })}
+        <div ref={bottomRef} />
       </div>
 
-      {err && (
-        <div className="rounded-lg border border-rose-400/30 bg-rose-500/10 p-3 text-sm text-rose-200">
-          {err}
+      {/* Composer */}
+      <div className="p-2 border-t border-white/10">
+        <div className="flex items-end gap-2">
+          <textarea
+            className="flex-1 min-h-[44px] max-h-40 rounded-xl border border-white/15 bg-black/50 px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-indigo-500/40"
+            placeholder="Message…"
+            value={input}
+            onChange={(e) => setInput(e.target.value)}
+            onKeyDown={onKeyDown}
+          />
+          <button
+            onClick={send}
+            disabled={sending || input.trim().length === 0}
+            className="h-[44px] rounded-xl px-4 border border-emerald-400/30 hover:bg-emerald-400/10 disabled:opacity-50"
+          >
+            Send
+          </button>
         </div>
-      )}
-
-      {resp && (
-        <div className="rounded-lg border border-white/10 bg-white/5 p-3 space-y-2">
-          <div className="text-sm text-white/70">Intent</div>
-          <div className="font-mono text-sm">{resp.intent || "(none)"}</div>
-
-          <div className="text-sm text-white/70 mt-2">Reply preview</div>
-          <div className="rounded-md border border-white/10 bg-black/40 p-3 whitespace-pre-wrap">
-            {resp.text || "(empty)"}
-          </div>
-        </div>
-      )}
-
-      <p className="text-xs text-white/50">
-        Runs <code>/.netlify/functions/ai-brain-dryrun</code>. No SMS is sent. Make sure you’ve added that Netlify
-        function (server) which calls your brain’s <code>decide()</code>.
-      </p>
+      </div>
     </div>
   );
 }
@@ -266,7 +256,7 @@ export default function AdminConsole() {
       // Merge into rows
       const merged = (profiles || []).map((p) => {
         const teamId = ownerToTeam.get(p.user_id) || null;
-        const seatsPurchased = teamId ? (teamSeats.get(teamId) ?? 0) : 0; // ✅ fixed
+        const seatsPurchased = teamId ? (teamSeats.get(teamId) ?? 0) : 0;
         const balance = walletByUser.get(p.user_id) ?? 0;
 
         const t = tmplByUser.get(p.user_id) || { enabled: {}, templates: {} };
@@ -500,7 +490,7 @@ export default function AdminConsole() {
   }
 
   /* -------------------------- rendering ------------------------- */
-  if (loading) return <div className="p-4 text.white/80">Checking access…</div>;
+  if (loading) return <div className="p-4 text-white/80">Checking access…</div>;
   if (!isAdmin) return <div className="p-4 text-rose-400">Access denied</div>;
 
   return (
@@ -564,7 +554,7 @@ export default function AdminConsole() {
                     />
                   </td>
                   <td className="px-3 py-2">
-                    <div className="flex items.center gap-2">
+                    <div className="flex items-center gap-2">
                       <span className="text-white/60">$</span>
                       <input
                         type="text"
@@ -636,9 +626,9 @@ export default function AdminConsole() {
         <PartnersAdminSection />
       </div>
 
-      {/* ---------- NEW: AI Brain Tester ---------- */}
+      {/* ---------- NEW: AI Chat Tester ---------- */}
       <div className="pt-6 border-t border-white/10">
-        <AIBrainTester />
+        <AIChatTester />
       </div>
     </div>
   );
