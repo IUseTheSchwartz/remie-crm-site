@@ -1,4 +1,3 @@
-// File: netlify/functions/ai-dispatch.js
 // Receives { user_id, contact_id, from, to, text } from telnyx-inbound.
 // Classifies the text and sends one reply through messages-send.
 // Adds meta.sent_by_ai=true so the UI shows the AI badge.
@@ -13,6 +12,10 @@ function ok(body) {
 function bad(msg, code = 400) {
   return { statusCode: code, headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ok: false, error: msg }) };
 }
+
+/* ---------------- Body parsing helpers ---------------- */
+const isJSON = (h) => String(h || "").toLowerCase().includes("application/json");
+const isForm = (h) => String(h || "").toLowerCase().includes("application/x-www-form-urlencoded");
 
 /* ---------------- Classifiers & helpers ---------------- */
 function detectSpanish(text) {
@@ -142,13 +145,37 @@ function deriveSendUrl(event) {
 exports.handler = async (event) => {
   const db = getServiceClient();
 
+  // ---- decode body (handles base64) ----
+  let raw = event.body || "";
+  if (event.isBase64Encoded) {
+    try { raw = Buffer.from(raw, "base64").toString("utf8"); } catch {}
+  }
+
+  // ---- parse body robustly ----
+  const headers = event.headers || {};
+  const ct = headers["content-type"] || headers["Content-Type"] || "";
   let body = {};
-  try { body = JSON.parse(event.body || "{}"); } catch {}
+  try {
+    if (isJSON(ct)) {
+      body = raw ? JSON.parse(raw) : {};
+    } else if (isForm(ct)) {
+      body = Object.fromEntries(new URLSearchParams(raw));
+    } else {
+      // try JSON first, then urlencoded fallback
+      try { body = JSON.parse(raw); }
+      catch { body = Object.fromEntries(new URLSearchParams(raw)); }
+    }
+  } catch (e) {
+    console.warn("[ai-dispatch] parse error", e?.message);
+  }
+
   const { user_id, contact_id, from, to, text } = body || {};
 
-  console.log("[ai-dispatch] payload:", { user_id, contact_id, from, to, text });
+  console.log("[ai-dispatch] payload:", {
+    user_id, contact_id, from, to, text: text ? `(len=${text.length})` : undefined
+  });
   if (!user_id || !contact_id || !from || !to) {
-    console.error("[ai-dispatch] missing fields");
+    console.error("[ai-dispatch] missing fields", { ct, sample: raw?.slice?.(0, 120) });
     return bad("missing_fields", 400);
   }
 
