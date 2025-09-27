@@ -1,9 +1,9 @@
 // File: netlify/functions/telnyx-inbound.js
-// Inserts incoming SMS, handles STOP/START, pauses Lead Rescue,
-// and (NEW) drives natural AI replies for appointment setting.
+// Inserts incoming SMS and handles STOP/START style opt-out/opt-in.
+// Adds AI auto-reply: warm-up + 3 next-day slots (9a–9p); confirm + Calendly link; stop after booking.
 
 const { getServiceClient } = require("./_supabase");
-const fetch = require("node-fetch"); // ensure fetch exists in function runtime
+const fetch = require("node-fetch");
 
 function ok(body) {
   return {
@@ -23,9 +23,8 @@ function toE164(p) {
   return null;
 }
 
-/* ===== Deterministic To→agent mapping (your existing behavior + direct TFN ownership) ===== */
+/* ===== Agent resolution: per-agent TFN, then fallback ===== */
 async function resolveUserId(db, telnyxToE164) {
-  // A) Direct ownership via per-agent TFN
   const { data: owner } = await db
     .from("agent_messaging_numbers")
     .select("user_id")
@@ -33,7 +32,6 @@ async function resolveUserId(db, telnyxToE164) {
     .maybeSingle();
   if (owner?.user_id) return owner.user_id;
 
-  // B) Most recent outgoing message that used this number as "from"
   const { data: m } = await db
     .from("messages")
     .select("user_id")
@@ -42,20 +40,18 @@ async function resolveUserId(db, telnyxToE164) {
     .limit(1);
   if (m && m[0]?.user_id) return m[0].user_id;
 
-  // C) Shared number fallback (optional)
   const SHARED =
     process.env.TELNYX_FROM ||
     process.env.TELNYX_FROM_NUMBER ||
     process.env.DEFAULT_FROM_NUMBER ||
     null;
   if (SHARED && SHARED === telnyxToE164) {
-    // Custom shared-number behavior could go here if you want it later.
+    // optional shared-number behavior
   }
-
-  // D) Final fallback
   return process.env.INBOUND_FALLBACK_USER_ID || process.env.DEFAULT_USER_ID || null;
 }
 
+/* ===== Contacts ===== */
 async function findOrCreateContact(db, user_id, fromE164) {
   const last10 = norm10(fromE164);
   const { data, error } = await db
@@ -76,22 +72,21 @@ async function findOrCreateContact(db, user_id, fromE164) {
   return ins.data;
 }
 
+/* ===== STOP/START ===== */
 function parseKeyword(textIn) {
   const raw = String(textIn || "").trim();
-  const normalized = raw.toUpperCase().replace(/[^A-Z]/g, ""); // letters only
+  const normalized = raw.toUpperCase().replace(/[^A-Z]/g, "");
   const STOP_SET = new Set(["STOP", "STOPALL", "UNSUBSCRIBE", "CANCEL", "END", "QUIT"]);
   const START_SET = new Set(["START", "YES", "UNSTOP"]);
 
-  // Optional: treat "NO" as STOP (toggle via env)
   const treatNo = String(process.env.INBOUND_TREAT_NO_AS_STOP || "true").toLowerCase() === "true";
   if (treatNo && normalized === "NO") return "STOP";
-
   if (STOP_SET.has(normalized)) return "STOP";
   if (START_SET.has(normalized)) return "START";
   return null;
 }
 
-// STRICT: mark Lead Rescue as responded + paused
+/* ===== Lead Rescue integration ===== */
 async function stopLeadRescueOnReply(db, user_id, contact_id) {
   const now = new Date().toISOString();
   const { error } = await db
@@ -108,185 +103,203 @@ async function stopLeadRescueOnReply(db, user_id, contact_id) {
   if (error) throw error;
 }
 
-/* ===================== AI helpers ===================== */
+/* ===== AI Helpers ===== */
+const OUTBOUND_SEND_URL =
+  process.env.OUTBOUND_SEND_URL ||
+  (process.env.SITE_URL ? `${process.env.SITE_URL.replace(/\/$/, "")}/.netlify/functions/messages-send` : null);
+
+const AGENT_TZ = process.env.AGENT_DEFAULT_TZ || "America/Chicago";
+const WORK_START = 9;  // 9am
+const WORK_END = 21;   // 9pm
+
+function detectSpanish(text) {
+  const t = String(text || "").toLowerCase();
+  if (/[ñáéíóú¿¡]/.test(t)) return true;
+  const hits = ["cuánto", "precio", "costo", "seguro", "vida", "mañana", "tarde", "quién", "número", "equivocado", "esposo", "esposa"];
+  let score = 0;
+  hits.forEach((w) => { if (t.includes(w)) score += 1; });
+  return score >= 2;
+}
 
 function classifyIntent(txt) {
   const t = String(txt || "").trim().toLowerCase();
   if (!t) return "general";
-
-  // fast exits / common branches
-  if (/\b(who is this|who dis|who’s this|quien eres|quién eres)\b/.test(t)) return "who";
-  if (/\b(price|how much|cost|quote|rate|monthly|precio|cuánto|costo)\b/.test(t)) return "price";
-  if (/\b(call me|ll[aá]mame|llamame|can you call)\b/.test(t)) return "callme";
-  if (/\b(already have|covered|i'm covered|ya tengo|tengo seguro)\b/.test(t)) return "covered";
+  if (/\b(stop|unsubscribe|quit)\b/.test(t)) return "stop";
+  if (/\b(^hi$|^hey$|^hello$|hola|buenas)\b/.test(t)) return "greeting";
+  if (/\b(call me|llámame|llamame)\b/.test(t)) return "callme";
+  if (/\b(price|how much|cost|monthly|cuánto|precio|costo)\b/.test(t)) return "price";
+  if (/\b(who is this|who dis|quién|how did you get|cómo obtuvo)\b/.test(t)) return "who";
+  if (/\b(already have|covered|ya tengo|tengo seguro)\b/.test(t)) return "covered";
   if (/\b(not interested|no me interesa|busy|ocupad[oa])\b/.test(t)) return "brushoff";
-  if (/\b(wrong number|n[úu]mero equivocado)\b/.test(t)) return "wrong";
+  if (/\b(wrong number|número equivocado)\b/.test(t)) return "wrong";
   if (/\b(spouse|wife|husband|espos[ao])\b/.test(t)) return "spouse";
-
-  // time windows / specifics
-  if (/\b(tomorrow|today|tonight|mañana|hoy|tarde|noche|evening|afternoon|morning)\b/.test(t)) return "time_window";
-  if (/\b(\d{1,2})(?::(\d{2}))?\s*(am|pm)\b/.test(t)) return "time_specific";
-
-  // greeting / agreement
-  if (/^(hi|hey|hello|hola|buenas)\b/.test(t)) return "greeting";
+  if (/\b(tom|tomorrow|mañana|today|hoy|evening|afternoon|morning|tonight)\b/.test(t)) return "time_window";
+  if (/\b(\d{1,2})(?::(\d{2}))?\s*(am|pm)\b/.test(t) || /\bnoon\b/.test(t)) return "time_specific";
   if (/^(ok|okay|sounds good|vale|bien|si|sí)\b/.test(t)) return "agree";
-
   return "general";
 }
 
-const TZ_FALLBACK = process.env.AGENT_DEFAULT_TZ || "America/Chicago";
-const WORK_START = 9;  // 09:00
-const WORK_END = 21;   // 21:00 (9 PM)
-
-// Simple local-time helper without external deps (assumes server in UTC)
-function toLocalDate(tz, d = new Date()) {
-  // Create a new Date that represents "now" in that TZ by using the parts formatter.
-  const parts = new Intl.DateTimeFormat("en-US", { timeZone: tz, hour12: false,
-    year: "numeric", month: "2-digit", day: "2-digit",
-    hour: "2-digit", minute: "2-digit", second: "2-digit"
-  }).formatToParts(d).reduce((acc, p) => (acc[p.type] = p.value, acc), {});
-  const iso = `${parts.year}-${parts.month}-${parts.day}T${parts.hour}:${parts.minute}:${parts.second}Z`;
-  return new Date(iso);
-}
-
-function formatHuman(dt, tz) {
-  const fmt = new Intl.DateTimeFormat("en-US", {
-    timeZone: tz,
-    weekday: "long",
-    hour: "numeric",
-    minute: "2-digit",
-    hour12: true,
-  });
-  return fmt.format(dt);
-}
-
-function formatHumanNoWeekday(dt, tz) {
-  const fmt = new Intl.DateTimeFormat("en-US", {
-    timeZone: tz,
-    hour: "numeric",
-    minute: "2-digit",
-    hour12: true,
-  });
-  return fmt.format(dt);
-}
-
-function nextDayLocalMidnight(tz) {
-  const now = toLocalDate(tz);
-  const d = new Date(now);
-  d.setDate(now.getDate() + 1);
-  d.setHours(0, 0, 0, 0);
+// next-day in agent TZ
+function nextDayLocal(tz) {
+  const now = new Date();
+  const opts = { timeZone: tz, year: "numeric", month: "2-digit", day: "2-digit" };
+  const parts = new Intl.DateTimeFormat("en-US", opts).formatToParts(now).reduce((a,p)=>(a[p.type]=p.value,a),{});
+  const d = new Date(`${parts.year}-${parts.month}-${parts.day}T00:00:00Z`);
+  d.setUTCDate(d.getUTCDate() + 1);
   return d;
 }
 
-function clampToWindow(dt, startHour = WORK_START, endHour = WORK_END) {
-  const d = new Date(dt);
-  const h = d.getHours();
-  if (h < startHour) d.setHours(startHour, 0, 0, 0);
-  if (h > endHour) d.setHours(endHour, 0, 0, 0);
-  return d;
+function withinWindow(dt) {
+  const h = dt.getUTCHours();
+  // Convert desired local window (WORK_START..WORK_END) to UTC is messy without tz math;
+  // Easier: construct times directly at desired local hours using toLocaleString with TZ.
+  return true; // we validate by *constructing* only 9–21 times; custom parse will clamp.
 }
 
-function synthesizeThreeSlots(tz) {
-  const base = nextDayLocalMidnight(tz);
-  const slots = [9, 13, 18]; // 9:00 AM, 1:00 PM, 6:00 PM
-  return slots.map((h) => {
-    const d = new Date(base);
-    d.setHours(h, 0, 0, 0);
-    return d;
+// 3 suggested slots: 9:00, 1:00, 6:00 (next day, agent TZ)
+function synthesizeThreeSlots(agentTZ) {
+  const tz = agentTZ || AGENT_TZ;
+  const base = nextDayLocal(tz); // midnight next day (UTC ref)
+  const hours = [9, 13, 18]; // 9a, 1p, 6p local
+  const picks = hours.map((h) => {
+    // format directly in TZ for label
+    const label = new Intl.DateTimeFormat("en-US", {
+      timeZone: tz, hour: "numeric", minute: "2-digit", hour12: true
+    }).format(new Date(new Date(base).setUTCHours(h, 0, 0, 0)));
+    return { label };
   });
+  const dayName = new Intl.DateTimeFormat("en-US", { timeZone: tz, weekday: "long" })
+    .format(new Date(base));
+  return { dayName, slots: picks };
 }
 
-function parseTimeFromText(tz, txt) {
+// Try to parse "1pm", "1:30 pm", "noon", and whether they said "tomorrow"
+function parseRequestedTimeLabel(txt, agentTZ) {
   const t = String(txt || "").toLowerCase();
-  const isTomorrow = /\b(tom|tomorrow|mañana)\b/.test(t);
-  const baseDay = isTomorrow ? nextDayLocalMidnight(tz) : toLocalDate(tz);
+  const tz = agentTZ || AGENT_TZ;
 
-  // hh(:mm)? am/pm
+  // quick labels
+  if (/\bnoon\b/.test(t)) return "12:00 PM";
+
   const m = t.match(/\b(\d{1,2})(?::(\d{2}))?\s*(am|pm)\b/);
-  if (m) {
-    let hh = parseInt(m[1], 10);
-    const mm = m[2] ? parseInt(m[2], 10) : 0;
-    const ap = m[3];
-    if (ap === "pm" && hh !== 12) hh += 12;
-    if (ap === "am" && hh === 12) hh = 0;
-    const d = new Date(baseDay);
-    d.setHours(hh, mm, 0, 0);
-    return clampToWindow(d);
+  if (!m) {
+    if (/\bmorning\b/.test(t)) return "10:00 AM";
+    if (/\bafternoon\b/.test(t)) return "2:00 PM";
+    if (/\bevening\b|\btonight\b/.test(t)) return "6:00 PM";
+    return null;
   }
-  // “noon” / “midday”
-  if (/\b(noon|midday)\b/.test(t)) {
-    const d = new Date(baseDay);
-    d.setHours(12, 0, 0, 0);
-    return clampToWindow(d);
-  }
-  // “evening / afternoon / morning”
-  if (/\bmorning\b/.test(t)) {
-    const d = new Date(baseDay); d.setHours(10, 0, 0, 0); return clampToWindow(d);
-  }
-  if (/\bafternoon\b/.test(t)) {
-    const d = new Date(baseDay); d.setHours(14, 0, 0, 0); return clampToWindow(d);
-  }
-  if (/\bevening\b/.test(t) || /\btonight\b/.test(t)) {
-    const d = new Date(baseDay); d.setHours(18, 0, 0, 0); return clampToWindow(d);
-  }
-  return null;
+  let hh = parseInt(m[1], 10);
+  const mm = m[2] ? parseInt(m[2], 10) : 0;
+  const ap = m[3];
+  if (ap === "pm" && hh !== 12) hh += 12;
+  if (ap === "am" && hh === 12) hh = 0;
+
+  // clamp to 9–21
+  if (hh < WORK_START) hh = WORK_START;
+  if (hh > WORK_END) hh = WORK_END;
+
+  const d = new Date();
+  const label = new Intl.DateTimeFormat("en-US", {
+    timeZone: tz, hour: "numeric", minute: "2-digit", hour12: true
+  }).format(new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate(), hh, mm, 0)));
+
+  return label;
 }
 
-function withinWindow(dt, startHr = WORK_START, endHr = WORK_END) {
-  const h = dt.getHours();
-  return h >= startHr && h <= endHr;
+/* ====== Templates (EN & ES) ====== */
+function t_price(isEs, offer) {
+  return isEs
+    ? `Buena pregunta—el precio depende de su edad, salud y la cantidad de cobertura. Solo toma unos minutos en una llamada rápida para ver sus opciones exactas. Tengo ${offer}. ¿Cuál prefiere?`
+    : `Good question—the price depends on your age, health, and coverage amount. It only takes a few minutes on a quick call to see your exact options. I have ${offer}. Which works best for you?`;
+}
+function t_covered(isEs, offer) {
+  return isEs
+    ? `Excelente. Aun así, muchas familias hacen una revisión rápida para no pagar de más ni perder beneficios. Solo toma unos minutos. Tengo ${offer}. ¿Cuál le conviene?`
+    : `That’s great—you’re ahead of most people. Many families still do a quick review to make sure they’re not overpaying or missing benefits. It only takes a few minutes. I have ${offer}. Which is better for you?`;
+}
+function t_who(isEs, agentName, offer) {
+  return isEs
+    ? `Hola, soy ${agentName}. Usted solicitó información sobre seguros de vida y soy el corredor autorizado asignado para ayudarle. Podemos revisar sus opciones en pocos minutos—¿le funciona ${offer}?`
+    : `Hey, it’s ${agentName}. You requested info about life insurance recently where you listed your beneficiary, and I’m the licensed broker assigned to follow up. We can go over your options in just a few minutes—would ${offer} work?`;
+}
+function t_brushoff(isEs, offer) {
+  return isEs
+    ? `Entiendo. Aun así, suele ser útil revisar opciones; toma solo unos minutos. Tengo ${offer}. ¿Cuál prefiere?`
+    : `Totally understand—most people feel that way at first until they see how quick and straightforward it is. Let’s set aside a few minutes. I can do ${offer}. Which works better for you?`;
+}
+function t_callme(isEs) {
+  return isEs
+    ? `Claro—¿qué hora le conviene más? Puedo en la mañana o en la tarde.`
+    : `Absolutely—what time works best for you? I can do mornings or evenings.`;
+}
+function t_spouse(isEs, offer) {
+  return isEs
+    ? `Totalmente de acuerdo—es la mejor forma. Programemos cuando puedan estar ambos. Tengo ${offer}. ¿Cuál funciona mejor para ustedes?`
+    : `Totally understand—that’s the best way to do it. Let’s set a quick time when you can both be on. I have ${offer}. Which works better for you two?`;
+}
+function t_wrong(isEs) {
+  return isEs
+    ? `¡Disculpe la molestia! Ya que estamos—¿tiene su seguro de vida al día?`
+    : `My apologies! Since I’ve got you—have you already got your life insurance taken care of?`;
+}
+function t_agree(isEs, offer) {
+  return isEs
+    ? `Perfecto—reserve unos minutos. Tengo ${offer}. ¿Cuál prefiere?`
+    : `Great—let’s set aside a few minutes. I have ${offer}. Which works best for you?`;
+}
+function t_offer(dayName, slots) {
+  const labels = slots.map(s => s.label);
+  if (labels.length === 3) {
+    return `tomorrow (${dayName}) at ${labels[0]}, ${labels[1]}, or ${labels[2]}`;
+  }
+  return `tomorrow at ${labels.join(", ")}`;
+}
+function t_confirm(isEs, tsLabel, calendly) {
+  const core = isEs
+    ? `Perfecto, puedo a las ${tsLabel}. Mantendremos la llamada en unos minutos.`
+    : `Yes, I can make ${tsLabel} work. We’ll keep it to just a few minutes.`;
+  const link = calendly
+    ? (isEs
+        ? ` Aquí tiene un enlace rápido para confirmar y recibir recordatorios: ${calendly}`
+        : ` Here’s a quick link to confirm so it’s locked in: ${calendly}`)
+    : "";
+  return core + link;
 }
 
-async function getAgentProfile(db, user_id) {
-  const { data, error } = await db
-    .from("agent_profiles")
-    .select("full_name, calendly_url")
-    .eq("user_id", user_id)
-    .maybeSingle();
-  if (error) throw error;
-  return data || {};
-}
-
-function warmGreeting(agentName, dayName, slotStrs, includeIntroOnly = false) {
-  const intro = `Hey there — it’s ${agentName}.`;
-  if (includeIntroOnly) return `${intro} How can I help today?`;
-  return `${intro} We can go over your options in just a few minutes. Would tomorrow (${dayName}) at ${slotStrs[0]}, ${slotStrs[1]}, or ${slotStrs[2]} work?`;
-}
-
-function pricePivot(agentName, dayName, slotStrs) {
-  return `Great question — the exact price depends on a couple of quick details like age and coverage. The fastest way is to go over it together on a brief call. I have tomorrow (${dayName}) at ${slotStrs[0]}, ${slotStrs[1]}, or ${slotStrs[2]}. Which works best for you?`;
-}
-
-async function sendAIText({ to, user_id, body }) {
-  const SITE_URL = process.env.SITE_URL || "";
-  const OUTBOUND_SEND_URL =
-    process.env.OUTBOUND_SEND_URL ||
-    (SITE_URL ? `${SITE_URL.replace(/\/$/, "")}/.netlify/functions/messages-send` : null);
-
+/* ====== Outbound via messages-send (with AI badge) ====== */
+async function sendAI(db, { user_id, toE164, body, meta }) {
   if (!OUTBOUND_SEND_URL) {
-    // No sender configured—just no-op OK
-    return { ok: false, error: "outbound_send_url_missing" };
+    await db.from("messages").insert([{
+      user_id, direction: "outgoing", provider:"system",
+      from_number: "system", to_number: toE164,
+      body: `[AI not sent: missing OUTBOUND_SEND_URL] ${body}`,
+      status: "skipped", price_cents: 0, meta: { ...(meta||{}), sent_by_ai: true }, sent_by_ai: true
+    }]);
+    return { ok: false, skipped: true, reason: "no_outbound_url" };
   }
 
   const res = await fetch(OUTBOUND_SEND_URL, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
-      to,
+      to: toE164,
       body,
       requesterId: user_id,
-      // If your messages-send supports it, this flag will store and render the AI badge.
       sent_by_ai: true,
     }),
   });
   const out = await res.json().catch(() => ({}));
   if (!res.ok || out?.error) {
-    return { ok: false, error: out?.error || out?.detail || "send_failed", raw: out };
+    await db.from("messages").insert([{
+      user_id, direction:"outgoing", provider:"system", from_number:"system", to_number:toE164,
+      body:`[AI send failed] ${body}`, status:"error", price_cents:0,
+      meta: { ...(meta||{}), sent_by_ai:true, error: out?.error || res.status },
+      sent_by_ai: true,
+    }]);
+    return { ok: false, error: out?.error || `status_${res.status}` };
   }
-  return { ok: true, data: out };
+  return { ok: true, ...out };
 }
-
-/* ===================== Handler ===================== */
 
 exports.handler = async (event) => {
   const db = getServiceClient();
@@ -337,10 +350,10 @@ exports.handler = async (event) => {
   const ins = await db.from("messages").insert([row]);
   if (ins.error) return ok({ ok: false, error: ins.error.message });
 
-  // Any inbound reply stops Lead Rescue
-  await stopLeadRescueOnReply(db, user_id, contact.id);
+  // Lead Rescue: pause on any reply
+  try { await stopLeadRescueOnReply(db, user_id, contact.id); } catch {}
 
-  // STOP/START keywords (hard stop / resume)
+  // STOP/START keywords
   const action = parseKeyword(text);
   if (action === "STOP") {
     await db.from("message_contacts").update({ subscribed: false }).eq("id", contact.id);
@@ -351,75 +364,81 @@ exports.handler = async (event) => {
     return ok({ ok: true, action: "resubscribed" });
   }
 
-  // Respect subscription & booked state
-  if (contact?.subscribed === false) return ok({ ok: true, note: "skipped_unsubscribed" });
-  if (contact?.ai_booked) return ok({ ok: true, note: "skipped_already_booked" });
+  // Respect unsubscribed / booked
+  if (contact.subscribed === false) return ok({ ok: true, note: "contact_unsubscribed" });
+  if (contact.ai_booked === true) return ok({ ok: true, note: "ai_silent_booked" });
 
-  // ====== AI Response Flow ======
-  try {
-    const agent = await getAgentProfile(db, user_id);
-    const agentName = agent?.full_name || "your licensed broker";
-    const tz = TZ_FALLBACK; // (Optional: store per-agent tz later)
+  // Agent context & tomorrow offer (9a–9p)
+  const agent = await getAgentProfile(db, user_id);
+  const calendlyLink = agent?.calendly_url || "";
+  const { dayName, slots } = synthesizeThreeSlots(AGENT_TZ);
+  const offerText = t_offer(dayName, slots);
 
-    const tomorrow = nextDayLocalMidnight(tz);
-    const dayName = new Intl.DateTimeFormat("en-US", { timeZone: tz, weekday: "long" }).format(tomorrow);
+  const isEs = detectSpanish(text);
+  const intent = classifyIntent(text);
 
-    // Offer only 9a–9p
-    const slots = synthesizeThreeSlots(tz);
-    const slotStrs = slots.map((d) => formatHumanNoWeekday(d, tz));
-
-    const calendly = agent?.calendly_url || "";
-
-    const intent = classifyIntent(text);
-
-    let reply = null;
-
-    if (intent === "greeting") {
-      reply = warmGreeting(agentName, dayName, slotStrs, false);
-    } else if (intent === "who") {
-      reply = `Hey! It’s ${agentName}. You requested info about life insurance recently where you listed your beneficiary, and I’m the licensed broker assigned to follow up. We can go over your options in just a few minutes—would tomorrow (${dayName}) at ${slotStrs[0]}, ${slotStrs[1]}, or ${slotStrs[2]} work?`;
-    } else if (intent === "price") {
-      reply = pricePivot(agentName, dayName, slotStrs);
-    } else if (intent === "time_specific" || intent === "time_window" || intent === "callme" || intent === "agree") {
-      const when = parseTimeFromText(tz, text);
-      if (when && withinWindow(when)) {
-        const human = formatHuman(when, tz);
-        if (calendly) {
-          reply = `Yes, I can make ${human} work. I’ll give you a quick call then. Here’s a quick link to confirm so it’s locked in: ${calendly}`;
-        } else {
-          reply = `Yes, I can make ${human} work. I’ll give you a quick call then.`;
-        }
-        // Stop the AI after confirmation text
-        try {
-          await db.from("message_contacts").update({ ai_booked: true }).eq("id", contact.id);
-        } catch {}
-      } else {
-        // Out-of-hours or ambiguous → offer three options within window
-        reply = `I usually take calls between 9:00 AM and 9:00 PM. Would tomorrow (${dayName}) at ${slotStrs[0]}, ${slotStrs[1]}, or ${slotStrs[2]} work?`;
-      }
-    } else if (intent === "covered") {
-      reply = `Got it—totally respect that. If anything changes or you want a quick review to make sure your current coverage still fits, I’m happy to help. Otherwise, have a great day!`;
-    } else if (intent === "wrong") {
-      reply = `Sorry about that! I’ll make sure you’re removed. If you know who might have requested info, feel free to let me know.`;
-    } else if (intent === "brushoff") {
-      reply = `No problem. I can text you a quick link so you can pick a time later, or we can circle back another day. What works best for you?`;
-    } else if (intent === "spouse") {
-      reply = `Totally fine—we can include your spouse. A quick few minutes is all we need. Would tomorrow (${dayName}) at ${slotStrs[0]}, ${slotStrs[1]}, or ${slotStrs[2]} work?`;
-    } else {
-      // General fallback = natural intro + three in-window options
-      reply = warmGreeting(agentName, dayName, slotStrs, false);
-    }
-
-    if (!reply) return ok({ ok: true, note: "no_reply_built" });
-
-    const send = await sendAIText({ to: from, user_id, body: reply });
-    if (!send.ok) {
-      return ok({ ok: false, error: "ai_send_failed", detail: send.error || send.raw || null });
-    }
-
-    return ok({ ok: true, ai_sent: true });
-  } catch (e) {
-    // swallow AI failure (so inbound webhook always 200s)
-    return ok({ ok: true, ai_error: String(e?.message || e) });
+  async function send(bodyText, meta) {
+    return await sendAI(db, { user_id, toE164: from, body: bodyText, meta });
   }
+
+  // If they gave or implied a specific time → accept if in-window and send Calendly; else nudge to options.
+  if (intent === "time_specific" || intent === "time_window") {
+    const requestedLabel = parseRequestedTimeLabel(text, AGENT_TZ); // e.g., "1:00 PM"
+    if (requestedLabel) {
+      await send(t_confirm(isEs, requestedLabel, calendlyLink), { ai_intent: "confirm_time" });
+      await db.from("message_contacts").update({ ai_booked: true }).eq("id", contact.id);
+      return ok({ ok: true, ai: "confirmed_and_linked" });
+    }
+    // ambiguous or outside window → offer slots
+    await send(t_agree(isEs, offerText), { ai_intent: "offer_slots_after_time_window" });
+    return ok({ ok: true, ai: "offered_slots" });
+  }
+
+  // Natural greeting (don’t jump straight to “who I am” paragraph every time)
+  if (intent === "greeting") {
+    const name = agent?.full_name || "your licensed broker";
+    const msg = isEs
+      ? `¡Hola! Soy ${name}. Podemos revisar sus opciones en unos minutos — ¿le funciona ${offerText}?`
+      : `Hey there—it's ${name}. We can go over your options in just a few minutes — would ${offerText} work?`;
+    await send(msg, { ai_intent: "greeting" });
+    return ok({ ok: true, ai: "greeted" });
+  }
+
+  // Direct “who is this?”
+  if (intent === "who") {
+    await send(t_who(isEs, agent?.full_name || "your licensed broker", offerText), { ai_intent: "who" });
+    return ok({ ok: true, ai: "who" });
+  }
+
+  // Price pivot
+  if (intent === "price") {
+    await send(t_price(isEs, offerText), { ai_intent: "price" });
+    return ok({ ok: true, ai: "price" });
+  }
+
+  // Other standard branches
+  if (intent === "covered") {
+    await send(t_covered(isEs, offerText), { ai_intent: "covered" });
+    return ok({ ok: true, ai: "covered" });
+  }
+  if (intent === "brushoff") {
+    await send(t_brushoff(isEs, offerText), { ai_intent: "brushoff" });
+    return ok({ ok: true, ai: "brushoff" });
+  }
+  if (intent === "wrong") {
+    await send(t_wrong(isEs), { ai_intent: "wrong" });
+    return ok({ ok: true, ai: "wrong" });
+  }
+  if (intent === "spouse") {
+    await send(t_spouse(isEs, offerText), { ai_intent: "spouse" });
+    return ok({ ok: true, ai: "spouse" });
+  }
+  if (intent === "callme" || intent === "agree") {
+    await send(t_callme(isEs), { ai_intent: "callme_or_agree" });
+    return ok({ ok: true, ai: "callme_or_agree" });
+  }
+
+  // Fallback → warm push with 3 options (9/1/6)
+  await send(t_agree(isEs, offerText), { ai_intent: "offer_slots_fallback" });
+  return ok({ ok: true, ai: "responded" });
 };
