@@ -1,3 +1,4 @@
+// File: netlify/functions/ai-brain.js
 // Hybrid brain: deterministic rules first; optional Groq fallback for classification only.
 // Exports: decide({ text, agentName, calendlyLink, tz, officeHours, context, useLLM, llmMinConf }) -> { text, intent, meta? }
 
@@ -29,12 +30,16 @@ function classify(t = "") {
   const x = normalize(t);
   if (!x) return "general";
 
+  // courtesy / greetings / simple acks
   if (/\b(how are you|how’s it going|how's it going|hru|how are u|how r you)\b/.test(x)) return "courtesy_greet";
-  if (/^(k|kk|kay|ok(ay)?|sure|sounds good|works|perfect|great|cool|yep|yeah|si|sí|vale|dale|va)\b/.test(x)) return "agree";
+  if (/^(k|kk|kay|ok(ay)?|sure|sounds good|works|perfect|great|cool|yep|yeah|si|sí|vale|dale|va|👍|👌)\b/.test(x)) return "agree";
   if (/^(nah|nope|not now|no)\b/.test(x)) return "brushoff";
+  if (/^(hi|hey|hello|hola|buenas)\b/.test(x)) return "greet";
 
+  // strong signals
   if (/\b(stop|unsubscribe|quit|cancel)\b/.test(x)) return "stop";
 
+  // classic routes
   if (/\b(price|how much|cost|monthly|payment|premium|quote|rate|rates?)\b/.test(x) ||
       /\b(cu[áa]nto|precio|costo|pago|mensual|cuota|prima)\b/.test(x)) return "price";
 
@@ -45,27 +50,41 @@ function classify(t = "") {
       /\bwhy (are|r) you texting\b/.test(x) ||
       /\bqui[eé]n (eres|habla|manda|me escribe)\b/.test(x)) return "who";
 
-  if (/\b(already have|i have insurance|covered|i'?m covered|policy already)\b/.test(x) ||
+  if (/\b(already have|i have insurance|covered|i'?m covered|policy already|i'm good)\b/.test(x) ||
       /\b(ya tengo|tengo seguro|ya estoy cubiert[oa])\b/.test(x)) return "covered";
 
-  if (/\b(not interested|stop texting|leave me alone|busy|working|at work|later|another time|no thanks)\b/.test(x) ||
+  if (/\b(not interested|leave me alone|busy|working|at work|later|another time|no thanks)\b/.test(x) ||
       /\b(no me interesa|ocupad[oa]|luego|m[aá]s tarde|otro d[ií]a)\b/.test(x)) return "brushoff";
 
   if (/\bwrong number|not (me|my number)\b/.test(x) || /\bn[uú]mero equivocado\b/.test(x)) return "wrong";
 
   if (/\b(spouse|wife|husband|partner)\b/.test(x) || /\bespos[ao]\b/.test(x)) return "spouse";
 
+  // phone/callback
   if (/\b(call|ring|phone me|give me a call|ll[aá]mame|llamar)\b/.test(x)) return "callme";
 
+  // rescheduling / windows / specifics
   if (/\b(resched|re[- ]?schedule|different time|change (the )?time|move (it|appt)|new time)\b/i.test(x) ||
       /\b(reprogramar|cambiar hora|otra hora|mover la cita)\b/.test(x)) return "reschedule";
 
-  if (/\b(tom(orrow)?|today|evening|afternoon|morning|tonight|this (afternoon|evening|morning))\b/.test(x) ||
-      /\b(ma[ñn]ana|hoy|tarde|noche)\b/.test(x)) return "time_window";
+  if (/\b(tom(orrow)?|today|evening|afternoon|morning|tonight|this (afternoon|evening|morning)|after\s+\d{1,2})\b/.test(x) ||
+      /\b(ma[ñn]ana|hoy|tarde|noche|despu[eé]s de\s+\d{1,2})\b/.test(x)) return "time_window";
 
-  if (/\b(1?\d(?::\d{2})?\s?(a\.?m\.?|p\.?m\.?|am|pm))\b/.test(x) || /\b(1?\d:\d{2})\b/.test(x)) return "time_specific";
+  if (/\b(1?\d(?::\d{2})?\s?(a\.?m\.?|p\.?m\.?|am|pm))\b/.test(x) || /\b(1?\d:\d{2})\b/.test(x) || /\bnoon\b/.test(x)) return "time_specific";
 
-  if (/^(hi|hey|hello|hola|buenas)\b/.test(x)) return "greet";
+  // NEW: verification / bot / legitimacy
+  if (/\b(sc(am|ammers?)|legit|real person|are you (a )?bot|spam|fraud|fake|robot)\b/.test(x)) return "verify";
+
+  // NEW: info-by-text / link requests
+  if (/\b(text (me )?(info|details)|send (me )?(info|details|the link|website|site|page)|just text( it)?|can you text)\b/.test(x) ||
+      /\b(info|details|link|site|website|page)\b/.test(x)) return "info";
+
+  // NEW: can't talk now
+  if (/\b(can'?t|cannot|won'?t) (talk|chat|speak)|in a meeting|driving|on (a )?call|now isn'?t good|text only\b/.test(x)) return "cant_talk";
+
+  // NEW: how long will it take
+  if (/\b(how long|how many minutes|quick call\??|time does it take)\b/.test(x) ||
+      /\b(cu[aá]nto tarda|cu[aá]ntos minutos|es r[aá]pido)\b/.test(x)) return "how_long";
 
   return "general";
 }
@@ -80,9 +99,8 @@ function hasAmbiguousBareHour(t) {
   return true;
 }
 
-/* ---------------- copy (no time-slot offers) ---------------- */
+/* ---------------- copy (no time-slot offers; use agent-site link only) ---------------- */
 const T = {
-  // Generic “brand link” helper
   linkLine: (es, link) =>
     link
       ? (es
@@ -128,6 +146,30 @@ const T = {
       ? `Perfecto—lo dejamos rápido.${T.linkLine(es, link)} ¿Qué hora le conviene?`
       : `Great—let’s keep it quick.${T.linkLine(es, link)} What time works for you?`,
 
+  // verification / legitimacy
+  verify: (es, n, link) =>
+    es
+      ? `Pregunta válida—soy ${n}, corredor autorizado. Me comunico por la solicitud de seguro de vida que envió. Es una revisión corta para ver opciones.${T.linkLine(es, link)} ¿Qué hora le funciona?`
+      : `Fair question—this is ${n}, a licensed broker. I’m following up on the life-insurance request you sent. It’s a quick review to go over options.${T.linkLine(es, link)} What time works for you?`,
+
+  // info-by-text
+  info: (es, link) =>
+    es
+      ? `Le puedo enviar lo básico por aquí—en la llamada confirmamos salud y beneficiario para darle cifras reales.${T.linkLine(es, link)} ¿Qué hora prefiere?`
+      : `I can text the basics here—on a quick call we confirm health and beneficiary to give exact numbers.${T.linkLine(es, link)} What time works for you?`,
+
+  // can't talk now
+  cant_talk: (es, link) =>
+    es
+      ? `Sin problema, lo coordinamos.${T.linkLine(es, link)} ¿Qué hora más tarde le queda mejor?`
+      : `No problem—let’s line it up.${T.linkLine(es, link)} What time later today works best?`,
+
+  // how long
+  how_long: (es, link) =>
+    es
+      ? `Solo 5–7 minutos para ver salud básica, presupuesto y beneficiario, y darle opciones claras.${T.linkLine(es, link)} ¿Qué hora le conviene?`
+      : `Just 5–7 minutes to cover basic health, budget, and beneficiary so we can show clear options.${T.linkLine(es, link)} What time works for you?`,
+
   // time handling
   timeConfirm: (es, label, link) =>
     es
@@ -161,7 +203,7 @@ async function decide({
 
   const intentDet = classify(text);
 
-  // STOP: return no text; upstream inbound handler can manage compliance
+  // STOP: return no text (you asked not to handle opt-out copy here)
   if (intentDet === "stop") return { text: "", intent: "stop", meta: { route: "deterministic" } };
 
   // Courtesy “how are you”
@@ -169,7 +211,7 @@ async function decide({
     return { text: T.courtesy(es, name, link), intent: "courtesy_greet", meta: { route: "deterministic" } };
   }
 
-  // Specific clock time (and “noon”)
+  // Specific clock time (incl. “noon”)
   if (/\bnoon\b/i.test(text)) {
     return { text: T.timeConfirm(es, "12 PM", link), intent: "confirm_time", meta: { route: "deterministic" } };
   }
@@ -187,18 +229,18 @@ async function decide({
     return { text: T.clarifyTime(es, h), intent: "clarify_time", meta: { route: "deterministic" } };
   }
 
-  // Time window → acknowledge, but no slot list
+  // Time window → acknowledge, then ask for specific time (no slot list)
   if (intentDet === "time_window") {
     return {
       text: es
-        ? `Esa franja me funciona. ${T.linkLine(es, link).trimStart()} ¿Qué hora específica le queda mejor?`
+        ? `Esa franja me funciona.${T.linkLine(es, link)} ¿Qué hora específica le queda mejor?`
         : `That window works for me.${T.linkLine(es, link)} What specific time is best for you?`,
       intent: "time_window_ack",
       meta: { route: "deterministic" },
     };
   }
 
-  // Direct mappings (no slot menus; always human + CTA when link exists)
+  // Direct mappings (natural; always human; CTA when link exists)
   if (intentDet === "greet")     return { text: T.greetGeneral(es, name, link), intent: "greet",    meta: { route: "deterministic" } };
   if (intentDet === "who")       return { text: T.who(es, name, link),          intent: "who",      meta: { route: "deterministic" } };
   if (intentDet === "price")     return { text: T.price(es, link),              intent: "price",    meta: { route: "deterministic" } };
@@ -208,6 +250,18 @@ async function decide({
   if (intentDet === "wrong")     return { text: T.wrong(es),                    intent: "wrong",    meta: { route: "deterministic" } };
   if (intentDet === "callme")    return { text: T.greetGeneral(es, name, link), intent: "callme",   meta: { route: "deterministic" } };
   if (intentDet === "agree")     return { text: T.agree(es, link),              intent: "agree",    meta: { route: "deterministic" } };
+
+  // NEW: verification / bot / legit?
+  if (intentDet === "verify")    return { text: T.verify(es, name, link),       intent: "verify",   meta: { route: "deterministic" } };
+
+  // NEW: info-by-text
+  if (intentDet === "info")      return { text: T.info(es, link),               intent: "info",     meta: { route: "deterministic" } };
+
+  // NEW: can’t talk now
+  if (intentDet === "cant_talk") return { text: T.cant_talk(es, link),          intent: "cant_talk",meta: { route: "deterministic" } };
+
+  // NEW: how long
+  if (intentDet === "how_long")  return { text: T.how_long(es, link),           intent: "how_long", meta: { route: "deterministic" } };
 
   // -------- LLM fallback (classification only, no text generation) --------
   const wantLLM = typeof useLLM === "boolean" ? useLLM : LLM_ENABLED;
@@ -224,7 +278,7 @@ async function decide({
       if (intent === "time_window" && llm.time?.type === "window") {
         return {
           text: es
-            ? `Esa franja me funciona. ${T.linkLine(es, link).trimStart()} ¿Qué hora específica le queda mejor?`
+            ? `Esa franja me funciona.${T.linkLine(es, link)} ¿Qué hora específica le queda mejor?`
             : `That window works for me.${T.linkLine(es, link)} What specific time is best for you?`,
           intent: "time_window_ack",
           meta: { route: "llm", conf: llm.confidence },
@@ -241,10 +295,15 @@ async function decide({
       if (intent === "wrong")          return { text: T.wrong(es),                        intent, meta: { route: "llm", conf: llm.confidence } };
       if (intent === "callme")         return { text: T.greetGeneral(es, name, link),     intent, meta: { route: "llm", conf: llm.confidence } };
       if (intent === "agree")          return { text: T.agree(es, link),                  intent, meta: { route: "llm", conf: llm.confidence } };
+
+      if (intent === "verify")         return { text: T.verify(es, name, link),           intent, meta: { route: "llm", conf: llm.confidence } };
+      if (intent === "info")           return { text: T.info(es, link),                   intent, meta: { route: "llm", conf: llm.confidence } };
+      if (intent === "cant_talk")      return { text: T.cant_talk(es, link),              intent, meta: { route: "llm", conf: llm.confidence } };
+      if (intent === "how_long")       return { text: T.how_long(es, link),               intent, meta: { route: "llm", conf: llm.confidence } };
     }
   }
 
-  // Fallback: natural greet with CTA
+  // Fallback: natural greet with CTA (human tone)
   return { text: T.greetGeneral(es, name, link), intent: "greet", meta: { route: "fallback" } };
 }
 
