@@ -98,6 +98,10 @@ function hasAmbiguousBareHour(t) {
   if (/\bafter\s+[1-9]|1[0-2]\b/.test(x)) return false;
   return true;
 }
+// NEW: detect replies that are ONLY "am"/"pm"
+function isAMPMOnly(t = "") {
+  return /^\s*(a\.?m\.?|p\.?m\.?|am|pm)\s*$/i.test(String(t || ""));
+}
 
 /* ---------------- copy (no time-slot offers; use agent-site link only) ---------------- */
 const T = {
@@ -206,6 +210,13 @@ async function decide({
   // STOP: return no text (you asked not to handle opt-out copy here)
   if (intentDet === "stop") return { text: "", intent: "stop", meta: { route: "deterministic" } };
 
+  // If last turn we asked "AM or PM?" and now they replied only "am"/"pm"
+  if (isAMPMOnly(text) && context?.promptedHour) {
+    const ampm = /p/i.test(text) ? "PM" : "AM";
+    const label = `${context.promptedHour} ${ampm}`;
+    return { text: T.timeConfirm(es, label, link), intent: "confirm_time", meta: { route: "context_am_pm" } };
+  }
+
   // Courtesy “how are you”
   if (intentDet === "courtesy_greet") {
     return { text: T.courtesy(es, name, link), intent: "courtesy_greet", meta: { route: "deterministic" } };
@@ -223,10 +234,10 @@ async function decide({
     return { text: T.timeConfirm(es, label, link), intent: "confirm_time", meta: { route: "deterministic" } };
   }
 
-  // Bare hour like “7” → clarify AM/PM
+  // Bare hour like “7” → clarify AM/PM and remember the hour
   if (hasAmbiguousBareHour(text)) {
     const h = String(text).match(/\b([1-9]|1[0-2])\b/)[1];
-    return { text: T.clarifyTime(es, h), intent: "clarify_time", meta: { route: "deterministic" } };
+    return { text: T.clarifyTime(es, h), intent: "clarify_time", meta: { route: "deterministic", prompt_hour: h } };
   }
 
   // Time window → acknowledge, then ask for specific time (no slot list)
