@@ -1,7 +1,7 @@
 // File: src/pages/MessagingSettings.jsx
 import { useEffect, useRef, useState } from "react";
 import { supabase } from "../lib/supabaseClient";
-import { CreditCard, Check, Loader2, MessageSquare, Info, RotateCcw, Lock, Phone } from "lucide-react";
+import { CreditCard, Check, Loader2, MessageSquare, Info, RotateCcw, Lock, Phone, X } from "lucide-react";
 
 /* ---------------- Template Catalog (appointment removed) ---------------- */
 const TEMPLATE_DEFS = [
@@ -19,14 +19,14 @@ const LOCKED_KEYS = new Set(["payment_reminder", "birthday_text", "holiday_text"
 /* Default enabled map: ALL OFF by default */
 const DEFAULT_ENABLED = Object.fromEntries(TEMPLATE_DEFS.map((t) => [t.key, false]));
 
-/* ---------------- Carrier-safe defaults (appointment removed) ---------------- */
+/* ---------------- Carrier-safe defaults (with agent_site; appointment removed) ---------------- */
 const DEFAULTS = {
   new_lead:
-    "Hi {{first_name}}, it’s {{agent_name}} in {{state}}. I received your request listing {{beneficiary}} as beneficiary.Text Or Call me anytime at {{agent_phone}}.",
+    "Hi {{first_name}}, it’s {{agent_name}} in {{state}}. I received your request listing {{beneficiary}} as beneficiary. When you’re ready, book here: {{agent_site}}",
   new_lead_military:
-    "Hi {{first_name}}, it’s {{agent_name}}. I see your {{military_branch}} background and your request listing {{beneficiary}}. For options, please call me at {{agent_phone}}.",
+    "Hi {{first_name}}, it’s {{agent_name}} the veterans life specialist here in {{state}}. I got the form you sent in to me, let’s book an appointment to go over this: {{agent_site}}",
   sold:
-    "Hi {{first_name}}, it’s {{agent_name}}. Your policy is active:\n• Carrier: {{carrier}}\n• Policy #: {{policy_number}}\n• Premium: ${{premium}}/mo\nQuestions? Text me here.",
+    "Hi {{first_name}}, it’s {{agent_name}}. Your policy is active:\n• Carrier: {{carrier}}\n• Policy #: {{policy_number}}\n• Premium: ${{premium}}/mo\nQuestions? Text me at {{agent_phone}}.",
   payment_reminder:
     "Hi {{first_name}}, it’s {{agent_name}}. Friendly reminder: your policy payment is coming up. Need anything updated? Text me here.",
   birthday_text:
@@ -70,12 +70,15 @@ function formatToday() {
 }
 function fillTemplate(text, data) {
   if (!text) return "";
+  // Safety shim: replace any old Calendly token with agent_site
+  let t = text.replace(/{{\s*calendly_link\s*}}/g, "{{agent_site}}");
+
   const map = {
     ...data,
     today: data?.today || formatToday(),
     full_name: data?.full_name || [data?.first_name, data?.last_name].filter(Boolean).join(" ").trim(),
   };
-  return text.replace(/{{\s*([\w.]+)\s*}}/g, (_, key) => {
+  return t.replace(/{{\s*([\w.]+)\s*}}/g, (_, key) => {
     const v = map[key];
     return v == null ? "" : String(v);
   });
@@ -121,13 +124,13 @@ const DEFAULT_TEST_DATA = {
   company: "Prieto Insurance Solutions LLC",
   agent_phone: "",
   agent_email: "",
+  agent_site: "",
   carrier: "Americo",
   policy_number: "A1B2C3D4",
   premium: "84.12",
   state: "TN",
   beneficiary: "Maria Prieto",
   military_branch: "US Army",
-  calendly_link: "",
   today: "",
 };
 
@@ -170,7 +173,7 @@ export default function MessagingSettings() {
     agent_name: "",
     agent_email: "",
     agent_phone: "",
-    calendly_link: "",
+    agent_site: "",
   });
 
   // --- Toll-Free Number state (new flow) ---
@@ -181,6 +184,18 @@ export default function MessagingSettings() {
   const [tfnError, setTfnError] = useState("");
 
   const balanceDollars = (balanceCents / 100).toFixed(2);
+
+  /* -------- Global ESC to close drawers -------- */
+  useEffect(() => {
+    function onKeyDown(e) {
+      if (e.key === "Escape") {
+        if (cheatOpen) setCheatOpen(false);
+        if (testOpen) setTestOpen(false);
+      }
+    }
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [cheatOpen, testOpen]);
 
   /* -------- Load data -------- */
   useEffect(() => {
@@ -252,20 +267,23 @@ export default function MessagingSettings() {
         }
       }
 
-      // agent profile
+      // agent profile (include slug to build agent_site)
       const { data: profile } = await supabase
         .from("agent_profiles")
-        .select("full_name, email, phone, calendly_url")
+        .select("full_name, email, phone, slug")
         .eq("user_id", uid)
         .maybeSingle();
 
       if (!mounted) return;
 
+      const slug = (profile?.slug || "").trim();
+      const agent_site = slug ? `https://remiecrm.com/a/${slug}` : "";
+
       const nextAgentVars = {
         agent_name: profile?.full_name || "",
         agent_email: profile?.email || "",
         agent_phone: profile?.phone || "",
-        calendly_link: profile?.calendly_url || "",
+        agent_site,
       };
       setAgentVars(nextAgentVars);
 
@@ -274,7 +292,7 @@ export default function MessagingSettings() {
         agent_name: d.agent_name || nextAgentVars.agent_name,
         agent_email: d.agent_email || nextAgentVars.agent_email,
         agent_phone: d.agent_phone || nextAgentVars.agent_phone,
-        calendly_link: d.calendly_link || nextAgentVars.calendly_link,
+        agent_site: d.agent_site || nextAgentVars.agent_site,
       }));
 
       setLoading(false);
@@ -479,6 +497,9 @@ export default function MessagingSettings() {
   const activePreviewTemplate = activePreviewKey ? templates[activePreviewKey] ?? "" : "";
   const activePreviewFilled = activePreviewKey ? fillTemplate(activePreviewTemplate, { ...agentVars, ...testData }) : "";
 
+  // Missing slug guard for UX (only inform, page still usable)
+  const missingAgentSite = !agentVars.agent_site;
+
   return (
     <div className="space-y-6">
       {/* Header */}
@@ -617,9 +638,14 @@ export default function MessagingSettings() {
           </div>
           <div className="min-w-0">
             <h3 className="text-sm font-semibold">Message Templates</h3>
-            <p className="text-xs text-white/60 truncate">
+            <p className="mt-1 text-xs text-white/60 truncate">
               Customize what’s sent for each event. Variables like <code className="px-1 rounded bg-white/10">{"{{first_name}}"}</code> are replaced automatically.
             </p>
+            {missingAgentSite && (
+              <div className="mt-2 text-[11px] text-amber-300">
+                Heads up: your Agent Site link is not set yet. Add a <code className="px-1 rounded bg-white/10">slug</code> in your profile to enable <code className="px-1 rounded bg-white/10">{"{{agent_site}}"}</code>.
+              </div>
+            )}
           </div>
 
           {/* RIGHT-SIDE ACTIONS */}
@@ -659,7 +685,7 @@ export default function MessagingSettings() {
             </button>
           </div>
 
-        <div className="text-xs text-white/60">
+          <div className="text-xs text-white/60">
             {saveState === "saving" && (
               <span className="ml-3 inline-flex items-center gap-1">
                 <Loader2 className="h-3 w-3 animate-spin" /> Saving…
@@ -746,7 +772,18 @@ export default function MessagingSettings() {
           })}
         </div>
 
-        {/* Drawer inline */}
+        {/* Backdrop for drawers */}
+        {(cheatOpen || testOpen) && (
+          <div
+            className="fixed inset-0 z-40 bg-black/40"
+            onClick={() => {
+              if (testOpen) setTestOpen(false);
+              else if (cheatOpen) setCheatOpen(false);
+            }}
+          />
+        )}
+
+        {/* Template Variables Drawer */}
         {cheatOpen && (
           <aside
             className="fixed right-0 top-0 z-50 h-full w-full max-w-md transform rounded-l-2xl border-l border-white/10 bg-[#0b0b12] p-4 shadow-2xl"
@@ -759,6 +796,14 @@ export default function MessagingSettings() {
                 <Info className="h-5 w-5" />
                 <h2 className="text-sm font-semibold">Template Variables</h2>
               </div>
+              <button
+                type="button"
+                className="rounded-lg border border-white/15 bg-white/5 px-2 py-1 text-xs hover:bg-white/10"
+                onClick={() => setCheatOpen(false)}
+                aria-label="Close template variables"
+              >
+                <X className="h-4 w-4" />
+              </button>
             </div>
 
             <p className="mb-3 text-xs text-white/70">
@@ -773,6 +818,7 @@ export default function MessagingSettings() {
               <VarRow token="company" desc="Your agency/company" />
               <VarRow token="agent_phone" desc="Your phone number" />
               <VarRow token="agent_email" desc="Your email address" />
+              <VarRow token="agent_site" desc="Your Agent Site link (from profile slug)" />
               <VarRow token="carrier" desc="Policy carrier (e.g., Americo)" />
               <VarRow token="policy_number" desc="Issued policy number" />
               <VarRow token="premium" desc="Monthly premium amount" />
@@ -780,7 +826,6 @@ export default function MessagingSettings() {
               <VarRow token="state" desc="Lead’s state (from form)" />
               <VarRow token="beneficiary" desc="Lead’s listed beneficiary" />
               <VarRow token="military_branch" desc="Military branch (if provided)" />
-              <VarRow token="calendly_link" desc="Your Calendly booking link" />
             </div>
           </aside>
         )}
@@ -804,6 +849,7 @@ export default function MessagingSettings() {
                 type="button"
                 onClick={() => setTestOpen(false)}
                 className="rounded-lg border border-white/15 bg-white/5 px-2 py-1 text-xs hover:bg-white/10"
+                aria-label="Close test preview"
               >
                 Close
               </button>
@@ -818,7 +864,7 @@ export default function MessagingSettings() {
                     <label key={k} className="text-[11px] text-white/70">
                       <div className="mb-1">
                         {k}
-                        {["agent_name","agent_email","agent_phone","calendly_link"].includes(k) && (
+                        {["agent_name","agent_email","agent_phone","agent_site"].includes(k) && (
                           <span className="ml-1 rounded bg-white/10 px-1 py-[1px] text-[10px] text-white/60">from profile</span>
                         )}
                       </div>
@@ -841,7 +887,7 @@ export default function MessagingSettings() {
                       agent_name: agentVars.agent_name || DEFAULT_TEST_DATA.agent_name,
                       agent_email: agentVars.agent_email || DEFAULT_TEST_DATA.agent_email,
                       agent_phone: agentVars.agent_phone || DEFAULT_TEST_DATA.agent_phone,
-                      calendly_link: agentVars.calendly_link || DEFAULT_TEST_DATA.calendly_link,
+                      agent_site: agentVars.agent_site || DEFAULT_TEST_DATA.agent_site,
                     }))}
                   >
                     Reset Test Data
@@ -869,16 +915,6 @@ export default function MessagingSettings() {
             </div>
           </aside>
         )}
-      </section>
-
-      {/* Compliance */}
-      <section className="rounded-2xl border border-white/10 bg-white/[0.03] p-4">
-        <h3 className="text-sm font-medium">Compliance</h3>
-        <ul className="mt-2 list-disc space-y-1 pl-5 text-xs text-white/70">
-          <li>Only text clients who have opted in or have an existing relationship.</li>
-          <li>Include any disclosures your brand requires.</li>
-          <li>First-touch texts should avoid links; send links only after a reply.</li>
-        </ul>
       </section>
     </div>
   );
