@@ -11,6 +11,11 @@ const DEFAULT_HOURS = { start: 9, end: 21 }; // inclusive local window
 const LLM_ENABLED = String(process.env.AI_BRAIN_USE_LLM || "false").toLowerCase() === "true";
 const LLM_MIN_CONF = Number(process.env.AI_BRAIN_LLM_CONFIDENCE || 0.55);
 
+// Deliverability helper: add STOP footer (recommended for TFN/10DLC)
+const ADD_STOP_FOOTER = String(process.env.AI_BRAIN_ADD_STOP_FOOTER || "true").toLowerCase() === "true";
+const STOP_FOOTER_EN = " Reply STOP to opt out.";
+const STOP_FOOTER_ES = " Responda STOP para dejar de recibir mensajes.";
+
 /* ---------------- Small helpers ---------------- */
 const pick = (arr) => arr[Math.floor(Math.random() * arr.length)];
 const safe = (s) => (s ? String(s).trim() : "");
@@ -73,7 +78,7 @@ function classify(t = "") {
   return "general";
 }
 
-/* ---------------- Time helpers (kept for confirm/clarify paths) ---------------- */
+/* ---------------- Time helpers (only for confirmations/clarifications) ---------------- */
 function getLocalHour24(tz = DEFAULT_TZ) {
   const parts = new Intl.DateTimeFormat("en-US", { timeZone: tz, hour: "numeric", minute: "numeric", hour12: true })
     .formatToParts(new Date()).reduce((a, p) => (a[p.type] = p.value, a), {});
@@ -104,29 +109,6 @@ function synthesizeSlots({ tz = DEFAULT_TZ, hours = DEFAULT_HOURS, basePicks = [
   const dayWord = sameDay ? "" : ` (${weekday})`;
   return { sameDay, dayWord, slots: labels, slotHours: picks };
 }
-function offerTxt(dayWord, slots) {
-  if (!slots.length) return "a quick time that works for you";
-  if (slots.length === 1) return `${slots[0]}${dayWord}`;
-  if (slots.length === 2) return `${slots[0]} or ${slots[1]}${dayWord}`;
-  return `${slots[0]}, ${slots[1]}, or ${slots[2]}${dayWord}`;
-}
-function pickByWindow(slotLabels, slotHours, windowWord) {
-  const pairs = slotLabels.map((label, i) => ({ label, hour: slotHours[i] }));
-  if (/morning|ma[ñn]ana/i.test(windowWord)) {
-    const m = pairs.filter(p => p.hour <= 12); return m.length ? m.map(p=>p.label) : slotLabels;
-  }
-  if (/afternoon|tarde/i.test(windowWord)) {
-    const a = pairs.filter(p => p.hour >= 12 && p.hour < 17);
-    return (a.length ? a : slotLabels).map(p => p.label);
-  }
-  if (/evening|night|tonight|noche/i.test(windowWord)) {
-    const e = pairs.filter(p => p.hour >= 17); return e.length ? e.map(p=>p.label) : slotLabels;
-  }
-  if (/after\s*(\d{1,2})/i.test(windowWord)) {
-    const n = Number(RegExp.$1); const e = pairs.filter(p => p.hour >= (n%24)); return e.length ? e.map(p=>p.label) : slotLabels;
-  }
-  return slotLabels;
-}
 function hasAmbiguousBareHour(t) {
   const x = normalize(t);
   const m = x.match(/\b([1-9]|1[0-2])\b/);
@@ -136,216 +118,181 @@ function hasAmbiguousBareHour(t) {
   return true;
 }
 
-/* ---------------- CTA helpers (no time-slot lists) ---------------- */
-function cta(es, link) {
-  if (link) {
-    return es
-      ? `Para recibir recordatorios y poder reprogramar si hace falta, reserve aquí: ${link}`
-      : `To get reminders (and reschedule if needed), grab a time here: ${link}`;
-  }
-  return es
-    ? "¿Qué hora suele funcionarle mejor: por la mañana, por la tarde o por la noche?"
-    : "What time usually works best for you—morning, afternoon, or evening?";
-}
-
-/* ---------------- Copy templates (natural; bridge + CTA; no slot lists) ---------------- */
+/* ---------------- Copy templates (no time-slot lists) ---------------- */
 const T = {
-  greetFirst: (es, n, link, ctx) => {
+  // First turn or plain greet; natural bridge and Calendly CTA
+  greetFirst: (es, n, ctx) => {
     const first = safe(ctx?.firstName);
-    const state = safe(ctx?.state);
-    const bene  = safe(ctx?.beneficiary);
     if (es) {
       const intro = first ? `Hola ${first}, soy ${n}.` : `Hola—soy ${n}.`;
-      const bridge = (state || bene)
-        ? `Vi su solicitud de seguro de vida${state ? ` en ${state}` : ""}${bene ? ` (donde puso a ${bene} como beneficiario)` : ""}.`
-        : `Vi su solicitud de seguro de vida.`;
-      return `${intro} ${bridge} Toma solo unos minutos por teléfono. ${cta(es, link)}`;
+      return `${intro} Vi su solicitud de seguro de vida. Podemos verlo en unos minutos.`;
     }
     const intro = first ? `Hey ${first}, it’s ${n}.` : `Hey—it’s ${n}.`;
-    const bridge = (state || bene)
-      ? `I got your life insurance request${state ? ` in ${state}` : ""}${bene ? ` (where you listed ${bene})` : ""}.`
-      : `I got your life insurance request.`;
-    return `${intro} ${bridge} It only takes a few minutes on the phone. ${cta(false, link)}`;
+    return `${intro} I saw your life-insurance request. We can go over it in a few minutes.`;
   },
-
-  greet: (es, n, link, ctx) => {
+  greet: (es, n, ctx) => {
     const first = safe(ctx?.firstName);
     if (es) {
-      const open = pick([ first ? `Hola ${first},` : `Hola,`, `¡Buenas!` ]);
-      const bridge = `sobre su solicitud de seguro de vida.`;
-      return `${open} soy ${n} ${bridge} ${cta(es, link)}`;
+      const intro = first ? `Hola ${first},` : `Hola,`;
+      return `${intro} soy ${n}. Sobre su solicitud de seguro de vida—podemos verlo rápido.`;
     }
-    const open = pick([ first ? `Hey ${first},` : `Hey,`, `Hi there,` ]);
-    const bridge = `about your life insurance request.`;
-    return `${open} it’s ${n} ${bridge} ${cta(false, link)}`;
+    const intro = first ? `Hi ${first},` : `Hi there,`;
+    return `${intro} it’s ${n}. About your life-insurance request—easy to review quickly.`;
   },
 
-  courtesy: (es, n, link) =>
-    es ? pick([`¡Bien, gracias!`,`Todo bien, gracias.`]) + ` Sobre su solicitud de seguro de vida: ${cta(es, link)}`
-       : pick([`Doing well, thanks!`,`All good, thanks for asking.`]) + ` About your life insurance request: ${cta(false, link)}`,
+  courtesy: (es) =>
+    es ? pick([`¡Bien, gracias!`,`Todo bien, gracias.`])
+       : pick([`Doing well, thanks!`,`All good—thanks for asking.`]),
 
-  who: (es, n, link, ctx) => {
+  who: (es, n, ctx) => {
     const first = safe(ctx?.firstName);
-    const state = safe(ctx?.state);
-    const bene  = safe(ctx?.beneficiary);
     if (es) {
       const intro = first ? `Hola ${first}, soy ${n}.` : `Hola, soy ${n}.`;
-      const bridge = (state || bene)
-        ? `Usted pidió información de seguro de vida${state ? ` en ${state}` : ""}${bene ? ` y puso a ${bene} como beneficiario` : ""}.`
-        : `Usted pidió información de seguro de vida.`;
-      return `${intro} ${bridge} Es rápido. ${cta(es, link)}`;
+      return `${intro} Usted pidió información de seguro de vida hace poco. Podemos verlo en unos minutos.`;
     }
     const intro = first ? `Hey ${first}, this is ${n}.` : `Hey, this is ${n}.`;
-    const bridge = (state || bene)
-      ? `You requested life insurance info${state ? ` in ${state}` : ""}${bene ? ` and listed ${bene}` : ""}.`
-      : `You requested life insurance info.`;
-    return `${intro} ${bridge} Super quick. ${cta(false, link)}`;
+    return `${intro} You requested life-insurance info recently. We can review everything in a few minutes.`;
   },
 
-  price: (es, link) =>
-    es ? `Buena pregunta—depende de edad, salud y cobertura. Lo vemos en una llamada corta. ${cta(es, link)}`
-       : `Great question—pricing depends on age, health, and coverage. We can pin it down on a quick call. ${cta(false, link)}`,
+  price: (es) =>
+    es ? `Buena pregunta—depende de edad, salud y cobertura. Lo más fácil es una llamada corta.`
+       : `Great question—it depends on age, health, and coverage. Easiest is a quick call to get exact options.`,
 
-  covered: (es, link) =>
-    es ? `Excelente. Muchas familias hacen una revisión rápida para no pagar de más ni perder beneficios. ${cta(es, link)}`
-       : `Good to hear. Many families still do a quick review to avoid overpaying or missing benefits. ${cta(false, link)}`,
+  covered: (es) =>
+    es ? `Perfecto. Igual muchos hacen una revisión corta para no pagar de más ni perder beneficios.`
+       : `Nice. Folks still do a quick review to make sure they’re not overpaying or missing benefits.`,
 
-  brushoff: (es, link) =>
-    es ? `Entiendo. Lo mantengo simple y breve para que sea útil. ${cta(es, link)}`
-       : `Totally get it—I’ll keep it quick and useful. ${cta(false, link)}`,
+  brushoff: (es) =>
+    es ? `Entiendo. Lo mantengo breve y simple.`
+       : `Totally get it—I’ll keep it quick and simple.`,
 
-  spouse: (es, link) =>
-    es ? `Perfecto—mejor cuando estén ambos. ${cta(es, link)}`
-       : `Makes sense—best when you’re both on. ${cta(false, link)}`,
+  spouse: (es) =>
+    es ? `De acuerdo—mejor cuando estén ambos.`
+       : `Makes sense—best when you’re both on.`,
 
   wrong: (es) =>
-    es ? `Sin problema. Si más adelante quiere ver opciones, avíseme.`
-       : `No worries. If you want to look at options later, just text me.`,
+    es ? `Sin problema. Si necesita opciones más adelante, avíseme.`
+       : `No worries. If you ever want to look at options later, just text me.`,
 
-  agree: (es, link) =>
-    es ? `Perfecto. ${cta(es, link)}`
-       : `Great. ${cta(false, link)}`,
+  agree: (es) =>
+    es ? `Perfecto—agendemos unos minutos.`
+       : `Great—let’s set aside a few minutes.`,
 
-  timeConfirm: (es, label, link) =>
-    es ? `Perfecto, le llamo a las ${label}. ${link ? `Para confirmarlo y recibir recordatorios: ${link}` : `Lo mantengo breve.`}`
-       : `Perfect, I’ll call you at ${label}. ${link ? `You can confirm to get reminders here: ${link}` : `I’ll keep it quick.`}`,
+  timeConfirm: (es, label) =>
+    es ? `Perfecto, le llamo a las ${label}. Lo mantengo breve.`
+       : `Perfect, I’ll call you at ${label}. I’ll keep it quick.`,
 
   link: (es, link) =>
-    es ? ` Aquí tiene un enlace para confirmar y recibir recordatorios (puede reprogramar si hace falta): ${link}`
-       : ` Here’s a quick link to confirm so you’ll get reminders (and can reschedule if needed): ${link}`,
-
-  reschedule: (es, link) =>
-    es ? `Claro, reprogramemos. ${cta(es, link)}`
-       : `Absolutely—let’s reschedule. ${cta(false, link)}`,
-
-  clarifyTime: (es, h) =>
-    es ? `¿Le queda mejor ${h} AM o ${h} PM?`
-       : `Does ${h} work better AM or PM?`,
-
-  windowAck: (es, win, link) =>
-    es ? `${/mañana/i.test(win) ? "La mañana funciona." : /tarde/i.test(win) ? "La tarde funciona." : "La noche funciona."} ${cta(es, link)}`
-       : `${/morning/i.test(win) ? "Morning works." : /afternoon/i.test(win) ? "Afternoon works." : "Evening works."} ${cta(false, link)}`,
+    es ? ` Aquí tiene un enlace para confirmar y recibir recordatorios (y reprogramar si hace falta): ${link}`
+       : ` Here’s a link to confirm so you’ll get reminders (and can reschedule if needed): ${link}`,
 };
+
+// always append Calendly link (when present) + STOP footer (configurable)
+function finalize(text, es, link) {
+  let out = String(text || "").trim();
+  if (link) out += T.link(es, link);
+  if (ADD_STOP_FOOTER) out += (es ? STOP_FOOTER_ES : STOP_FOOTER_EN);
+  return out;
+}
 
 /* ---------------- Decide ---------------- */
 async function decide({ text, agentName, calendlyLink, tz, officeHours, context, useLLM, llmMinConf } = {}) {
-  tz = tz || DEFAULT_TZ; // kept for potential future use; not listing slots now
+  tz = tz || DEFAULT_TZ;
   const hours = officeHours || DEFAULT_HOURS;
-
   const es = detectSpanish(text);
   const name = agentName || (es ? "su corredor autorizado" : "your licensed broker");
-  const link = calendlyLink || "";
 
-  // (Slots still synthesized but no longer used in generic replies—kept for future)
+  // keep slots util only for confirms/clarifications
   synthesizeSlots({ tz, hours, basePicks: [8, 13, 18] });
 
   const intentDet = classify(text);
 
   if (intentDet === "stop") return { text: "", intent: "stop", meta: { route: "deterministic" } };
 
-  // Special: "how are you?"
+  // Courtesy “how are you?”
   if (intentDet === "courtesy_greet") {
-    return { text: T.courtesy(es, name, link), intent: "courtesy_greet", meta: { route: "deterministic" } };
+    return { text: finalize(T.courtesy(es), es, calendlyLink), intent: "courtesy_greet", meta: { route: "deterministic" } };
   }
 
-  // Time-specific (deterministic) — also catch "noon"
+  // Time-specific (also catch "noon")
   if (/\bnoon\b/i.test(text)) {
-    return { text: T.timeConfirm(es, "12 PM", link), intent: "confirm_time", meta: { route: "deterministic" } };
+    return { text: finalize(T.timeConfirm(es, "12 PM"), es, calendlyLink), intent: "confirm_time", meta: { route: "deterministic" } };
   }
   if (intentDet === "time_specific") {
     const m = String(text).match(/\b(1?\d(?::\d{2})?\s?(a\.?m\.?|p\.?m\.?|am|pm))\b/i) || String(text).match(/\b(1?\d:\d{2})\b/);
     const label = m ? m[1].toUpperCase().replace(/\s+/g, " ") : "the time we discussed";
-    return { text: T.timeConfirm(es, label, link), intent: "confirm_time", meta: { route: "deterministic" } };
+    return { text: finalize(T.timeConfirm(es, label), es, calendlyLink), intent: "confirm_time", meta: { route: "deterministic" } };
   }
 
-  // Bare hour like "7" → clarify
+  // Bare hour like "7" -> ask AM/PM
   if (hasAmbiguousBareHour(text)) {
     const h = String(text).match(/\b([1-9]|1[0-2])\b/)[1];
-    return { text: T.clarifyTime(es, h), intent: "clarify_time", meta: { route: "deterministic" } };
+    const msg = es ? `¿Le queda mejor ${h} AM o ${h} PM? Puedo acomodarme.` : `Does ${h} work better AM or PM? I can make either work.`;
+    return { text: finalize(msg, es, calendlyLink), intent: "clarify_time", meta: { route: "deterministic" } };
   }
 
-  // Time window -> acknowledge (no slot lists) + CTA
+  // Time window -> keep natural + link (no slot lists)
   if (intentDet === "time_window") {
-    return { text: T.windowAck(es, text, link), intent: "time_window", meta: { route: "deterministic" } };
+    const msg = es
+      ? `De acuerdo. Elija la hora que le quede mejor en el enlace.`
+      : `Got it—pick whatever time works best for you at the link.`;
+    return { text: finalize(msg, es, calendlyLink), intent: "time_window", meta: { route: "deterministic" } };
   }
 
-  // Direct mappings
-  if (intentDet === "reschedule") return { text: T.reschedule(es, link), intent: "reschedule", meta: { route: "deterministic" } };
+  // Direct mappings (no time-slot offers)
+  if (intentDet === "reschedule") return { text: finalize(``, es, calendlyLink) || finalize(es ? `Claro, reprogramemos.` : `Absolutely—let’s reschedule.`, es, calendlyLink), intent: "reschedule", meta: { route: "deterministic" } };
 
   if (intentDet === "greet") {
     const firstTurn = context?.firstTurn === true;
-    if (firstTurn) return { text: T.greetFirst(es, name, link, context), intent: "greet_first_turn", meta: { route: "deterministic" } };
-    return { text: T.greet(es, name, link, context), intent: "greet", meta: { route: "deterministic" } };
+    const base = firstTurn ? T.greetFirst(es, name, context) : T.greet(es, name, context);
+    return { text: finalize(base, es, calendlyLink), intent: firstTurn ? "greet_first_turn" : "greet", meta: { route: "deterministic" } };
   }
 
-  if (intentDet === "who")      return { text: T.who(es, name, link, context), intent: "who",     meta: { route: "deterministic" } };
-  if (intentDet === "price")    return { text: T.price(es, link),              intent: "price",   meta: { route: "deterministic" } };
-  if (intentDet === "covered")  return { text: T.covered(es, link),            intent: "covered", meta: { route: "deterministic" } };
-  if (intentDet === "brushoff") return { text: T.brushoff(es, link),           intent: "brushoff",meta: { route: "deterministic" } };
-  if (intentDet === "spouse")   return { text: T.spouse(es, link),             intent: "spouse",  meta: { route: "deterministic" } };
-  if (intentDet === "wrong")    return { text: T.wrong(es),                    intent: "wrong",   meta: { route: "deterministic" } };
-  if (intentDet === "callme")   return { text: T.agree(es, link),              intent: "callme",  meta: { route: "deterministic" } };
-  if (intentDet === "agree")    return { text: T.agree(es, link),              intent: "agree",   meta: { route: "deterministic" } };
+  if (intentDet === "who")      return { text: finalize(T.who(es, name, context), es, calendlyLink), intent: "who", meta: { route: "deterministic" } };
+  if (intentDet === "price")    return { text: finalize(T.price(es), es, calendlyLink), intent: "price", meta: { route: "deterministic" } };
+  if (intentDet === "covered")  return { text: finalize(T.covered(es), es, calendlyLink), intent: "covered", meta: { route: "deterministic" } };
+  if (intentDet === "brushoff") return { text: finalize(T.brushoff(es), es, calendlyLink), intent: "brushoff", meta: { route: "deterministic" } };
+  if (intentDet === "spouse")   return { text: finalize(T.spouse(es), es, calendlyLink), intent: "spouse", meta: { route: "deterministic" } };
+  if (intentDet === "wrong")    return { text: finalize(T.wrong(es), es, calendlyLink), intent: "wrong", meta: { route: "deterministic" } };
+  if (intentDet === "callme")   return { text: finalize(T.greet(es, name, context), es, calendlyLink), intent: "callme", meta: { route: "deterministic" } };
+  if (intentDet === "agree")    return { text: finalize(T.agree(es), es, calendlyLink), intent: "agree", meta: { route: "deterministic" } };
 
-  // ---------- LLM fallback (classification only); never blocks sending ----------
+  // ---------- LLM fallback (classification only) ----------
   const wantLLM = typeof useLLM === "boolean" ? useLLM : LLM_ENABLED;
   const minConf = typeof llmMinConf === "number" ? llmMinConf : LLM_MIN_CONF;
 
   if (wantLLM) {
-    try {
-      const llm = await llmClassify(text);
-      if (llm && typeof llm === "object" && Number(llm.confidence) >= minConf) {
-        const intent = llm.intent || "";
+    const llm = await llmClassify(text);
+    if (llm.confidence >= minConf) {
+      const intent = llm.intent;
 
-        if (intent === "time_specific" && llm.time?.type === "specific" && llm.time.value) {
-          return { text: T.timeConfirm(es, llm.time.value, link), intent: "confirm_time", meta: { route: "llm", conf: llm.confidence } };
-        }
-        if (intent === "time_window" && llm.time?.type === "window" && llm.time.value) {
-          return { text: T.windowAck(es, llm.time.value, link), intent: "time_window", meta: { route: "llm", conf: llm.confidence } };
-        }
-
-        if (intent === "courtesy_greet") return { text: T.courtesy(es, name, link),       intent, meta: { route: "llm", conf: llm.confidence } };
-        if (intent === "greet")          return { text: T.greet(es, name, link, context), intent, meta: { route: "llm", conf: llm.confidence } };
-        if (intent === "who")            return { text: T.who(es, name, link, context),   intent, meta: { route: "llm", conf: llm.confidence } };
-        if (intent === "price")          return { text: T.price(es, link),                intent, meta: { route: "llm", conf: llm.confidence } };
-        if (intent === "covered")        return { text: T.covered(es, link),              intent, meta: { route: "llm", conf: llm.confidence } };
-        if (intent === "brushoff")       return { text: T.brushoff(es, link),             intent, meta: { route: "llm", conf: llm.confidence } };
-        if (intent === "spouse")         return { text: T.spouse(es, link),               intent, meta: { route: "llm", conf: llm.confidence } };
-        if (intent === "wrong")          return { text: T.wrong(es),                      intent, meta: { route: "llm", conf: llm.confidence } };
-        if (intent === "callme")         return { text: T.agree(es, link),                intent, meta: { route: "llm", conf: llm.confidence } };
-        if (intent === "agree")          return { text: T.agree(es, link),                intent, meta: { route: "llm", conf: llm.confidence } };
+      if (intent === "time_specific" && llm.time?.type === "specific" && llm.time.value) {
+        return { text: finalize(T.timeConfirm(es, llm.time.value), es, calendlyLink), intent: "confirm_time", meta: { route: "llm", conf: llm.confidence } };
       }
-    } catch {
-      // swallow LLM errors completely; never block sending
+      if (intent === "time_window") {
+        const msg = es
+          ? `De acuerdo. Elija la hora que le quede mejor en el enlace.`
+          : `Got it—pick whatever time works best for you at the link.`;
+        return { text: finalize(msg, es, calendlyLink), intent: "time_window", meta: { route: "llm", conf: llm.confidence } };
+      }
+
+      if (intent === "courtesy_greet") return { text: finalize(T.courtesy(es), es, calendlyLink), intent, meta: { route: "llm", conf: llm.confidence } };
+      if (intent === "greet")          return { text: finalize(T.greet(es, name, context), es, calendlyLink), intent, meta: { route: "llm", conf: llm.confidence } };
+      if (intent === "who")            return { text: finalize(T.who(es, name, context), es, calendlyLink), intent, meta: { route: "llm", conf: llm.confidence } };
+      if (intent === "price")          return { text: finalize(T.price(es), es, calendlyLink), intent, meta: { route: "llm", conf: llm.confidence } };
+      if (intent === "covered")        return { text: finalize(T.covered(es), es, calendlyLink), intent, meta: { route: "llm", conf: llm.confidence } };
+      if (intent === "brushoff")       return { text: finalize(T.brushoff(es), es, calendlyLink), intent, meta: { route: "llm", conf: llm.confidence } };
+      if (intent === "spouse")         return { text: finalize(T.spouse(es), es, calendlyLink), intent, meta: { route: "llm", conf: llm.confidence } };
+      if (intent === "wrong")          return { text: finalize(T.wrong(es), es, calendlyLink), intent, meta: { route: "llm", conf: llm.confidence } };
+      if (intent === "callme")         return { text: finalize(T.greet(es, name, context), es, calendlyLink), intent, meta: { route: "llm", conf: llm.confidence } };
+      if (intent === "agree")          return { text: finalize(T.agree(es), es, calendlyLink), intent, meta: { route: "llm", conf: llm.confidence } };
     }
   }
 
-  // Fallback general (no slot list; bridge + CTA)
+  // Fallback
   const firstTurn = context?.firstTurn === true;
-  if (firstTurn) {
-    return { text: T.greetFirst(es, name, link, context), intent: "greet_first_turn", meta: { route: "fallback" } };
-  }
-  return { text: T.greet(es, name, link, context), intent: "offer_cta", meta: { route: "fallback" } };
+  const base = firstTurn ? T.greetFirst(es, name, context) : T.greet(es, name, context);
+  return { text: finalize(base, es, calendlyLink), intent: firstTurn ? "greet_first_turn" : "offer_followup", meta: { route: "fallback" } };
 }
 
 module.exports = { decide };
