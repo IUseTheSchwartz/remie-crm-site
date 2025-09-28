@@ -3,7 +3,7 @@ import { NavLink } from "react-router-dom";
 import { useEffect, useMemo, useState } from "react";
 import { routes } from "../routesConfig.js";
 import { supabase } from "../lib/supabaseClient.js";
-import useIsAdminAllowlist from "../hooks/useIsAdminAllowlist.js"; // ← NEW
+import useIsAdminAllowlist from "../hooks/useIsAdminAllowlist.js"; // keep as-is
 import Logo from "../assets/logo-tight.png";
 
 /* Safe, widely-available Lucide icons */
@@ -17,7 +17,7 @@ import {
   LifeBuoy,
   Megaphone,
   Bot,
-  Phone,        // ← NEW for Dialer
+  Phone,
   PhoneCall,
   BarChart3,
   Wrench,
@@ -25,7 +25,7 @@ import {
   Pencil,
   ExternalLink,
   X,
-  Shield, // ← for Admin Console
+  Shield, // Admin Console
 } from "lucide-react";
 
 /* --- Gradient stroke helper (indigo → purple → fuchsia) --- */
@@ -34,9 +34,9 @@ function GradientStrokeIcon({ Icon, id, className = "" }) {
     <Icon className={className} stroke={`url(#${id})`}>
       <defs>
         <linearGradient id={id} x1="0" y1="0" x2="1" y2="1">
-          <stop offset="0%" stopColor="#6366f1" />   {/* indigo-500 */}
-          <stop offset="50%" stopColor="#a855f7" />  {/* purple-500 */}
-          <stop offset="100%" stopColor="#d946ef" /> {/* fuchsia-500 */}
+          <stop offset="0%" stopColor="#6366f1" />
+          <stop offset="50%" stopColor="#a855f7" />
+          <stop offset="100%" stopColor="#d946ef" />
         </linearGradient>
       </defs>
     </Icon>
@@ -52,7 +52,7 @@ const ICONS = {
   Calendar: CalendarIcon,
 
   // Productivity & Communication
-  Dialer: Phone,                 // ← NEW
+  Dialer: Phone,
   "Messaging Settings": SettingsIcon,
   Mailing: Megaphone,
   "AI Rebuttal Helper": Bot,
@@ -76,7 +76,7 @@ const ICONS = {
   Support: LifeBuoy,
 
   // Admin
-  "Admin Console": Shield, // ← NEW
+  "Admin Console": Shield,
 };
 
 function ItemLink({ r, onNavigate }) {
@@ -153,16 +153,16 @@ function ViewAgentSiteLink() {
         )
         .subscribe();
 
-    const onStorage = (e) => {
-      if (e.key === "agent_profile_refresh") fetchProfile();
-    };
-    window.addEventListener("storage", onStorage);
+      const onStorage = (e) => {
+        if (e.key === "agent_profile_refresh") fetchProfile();
+      };
+      window.addEventListener("storage", onStorage);
 
-    return () => {
-      isMounted = false;
-      try { supabase.removeChannel?.(channel); } catch {}
-      window.removeEventListener("storage", onStorage);
-    };
+      return () => {
+        isMounted = false;
+        try { supabase.removeChannel?.(channel); } catch {}
+        window.removeEventListener("storage", onStorage);
+      };
     })();
   }, []);
 
@@ -250,10 +250,13 @@ function SimpleList({ items, onNavigate }) {
 
 /* Content of the sidebar (used by desktop + mobile) */
 function SidebarContent({ onNavigate }) {
-  const { isAdmin } = useIsAdminAllowlist(); // ← NEW
+  const { isAdmin } = useIsAdminAllowlist();
 
   const sections = useMemo(() => {
-    const visible = routes.filter((r) => r.showInSidebar);
+    // ✅ Only include /app routes, and hide ONLY adminOnly for non-admins
+    const visible = routes.filter(
+      (r) => r.showInSidebar && r.path?.startsWith("/app")
+    );
     const by = (s) => visible.filter((r) => r.section === s);
     return {
       top: by("top"),
@@ -265,10 +268,28 @@ function SidebarContent({ onNavigate }) {
     };
   }, []);
 
-  // Inject Admin Console into bottom section only for admins
-  const bottomItems = isAdmin
-    ? [{ key: "admin-console", path: "/app/admin", label: "Admin Console" }, ...sections.bottom]
-    : sections.bottom;
+  // ✅ Hide admin-only items for non-admins at render time
+  const hideAdminOnly = (arr) => arr.filter((r) => !r.adminOnly || isAdmin);
+
+  // ✅ Defensive: ensure Support is present in bottom group
+  const supportRoute = routes.find((r) => r.key === "support");
+  const dedupeByKey = (arr) => {
+    const seen = new Set();
+    return arr.filter((r) => (seen.has(r.key) ? false : (seen.add(r.key), true)));
+  };
+
+  // Base bottom items (respect adminOnly)
+  let bottomItems = hideAdminOnly(sections.bottom);
+
+  // Inject Admin Console when admin
+  if (isAdmin) {
+    bottomItems = [{ key: "admin-console", path: "/app/admin", label: "Admin Console" }, ...bottomItems];
+  }
+
+  // Ensure Support exists (in case it was accidentally filtered elsewhere)
+  if (supportRoute) {
+    bottomItems = dedupeByKey([...bottomItems, supportRoute]);
+  }
 
   return (
     <>
@@ -286,16 +307,16 @@ function SidebarContent({ onNavigate }) {
       </a>
 
       <div className="p-3 text-sm">
-        <SimpleList items={sections.top} onNavigate={onNavigate} />
+        <SimpleList items={hideAdminOnly(sections.top)} onNavigate={onNavigate} />
         <Group
           title="Productivity & Communication"
-          items={sections.productivity}
+          items={hideAdminOnly(sections.productivity)}
           storageKey="grp_productivity"
           onNavigate={onNavigate}
         />
         <Group
           title="Insights & Tools"
-          items={sections.insightsTools}
+          items={hideAdminOnly(sections.insightsTools)}
           storageKey="grp_insights_tools"
           onNavigate={onNavigate}
         />
@@ -304,7 +325,7 @@ function SidebarContent({ onNavigate }) {
         <ViewAgentSiteLink />
         <Group
           title="Agent Site Management"
-          items={sections.agentSite}
+          items={hideAdminOnly(sections.agentSite)}
           storageKey="grp_agent_site"
           onNavigate={onNavigate}
         />
@@ -312,7 +333,7 @@ function SidebarContent({ onNavigate }) {
         <div className="pt-2 mt-2 border-t border-white/10" />
         <Group
           title="Teams"
-          items={sections.teams}
+          items={hideAdminOnly(sections.teams)}
           storageKey="grp_teams"
           onNavigate={onNavigate}
         />
