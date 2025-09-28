@@ -206,15 +206,34 @@ exports.handler = async (event) => {
     return ok({ ok: false, error: json?.error || `status_${res?.status}`, ai_intent: aiIntent });
   }
 
-  // Tag sent message for UI
+  // Tag sent message for UI (boolean column + meta JSON)
   try {
     if (json?.id) {
-      await db
+      // 1) Try to update explicit boolean/intent columns if they exist
+      const { error: colErr } = await db
         .from("messages")
-        .update({ meta: { sent_by_ai: true, ai_intent: aiIntent } })
+        .update({ sent_by_ai: true, ai_intent: aiIntent })
         .eq("id", json.id);
+
+      if (colErr) {
+        console.warn("[ai-dispatch] sent_by_ai column update failed (ok if column missing):", colErr.message);
+      }
+
+      // 2) Merge into meta JSON (backward-compat)
+      const { data: msg, error: selErr } = await db
+        .from("messages")
+        .select("meta")
+        .eq("id", json.id)
+        .maybeSingle();
+
+      if (!selErr) {
+        const mergedMeta = { ...(msg?.meta || {}), sent_by_ai: true, ai_intent: aiIntent };
+        await db.from("messages").update({ meta: mergedMeta }).eq("id", json.id);
+      }
     }
-  } catch {}
+  } catch (e) {
+    console.warn("[ai-dispatch] tag AI message warn:", e?.message || e);
+  }
 
   // Mark booked on confirm
   if (aiIntent === "confirm_time") {
