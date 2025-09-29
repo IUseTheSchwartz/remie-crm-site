@@ -7,7 +7,7 @@ import { supabase } from "../lib/supabaseClient";
 import useIsAdminAllowlist from "../lib/useIsAdminAllowlist.js";
 
 // Toggle this to hide the banner for everyone:
-const SHOW_BANNER_FOR_NON_OWNER = true;
+const SHOW_BANNER_FOR_NON_OWNER = false;
 
 // Simple banner shown when access is via team membership
 function TeamAccessBanner({ teamName }) {
