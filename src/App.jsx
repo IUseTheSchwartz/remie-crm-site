@@ -580,7 +580,8 @@ function AppLayout() {
   const [mobileOpen, setMobileOpen] = useState(false);
 
   return (
-    <div className="h-screen overflow-hidden relative bg-neutral-950 text-white grid md:grid-cols-[240px_1fr]">
+    // CHANGED: removed overflow-hidden, added min-h-0 so children can scroll
+    <div className="h-screen min-h-0 relative bg-neutral-950 text-white grid md:grid-cols-[240px_1fr]">
       {/* background blobs */}
       <div className="pointer-events-none fixed inset-0 z-0">
         <div className="absolute -top-40 left-1/2 h-[36rem] w-[36rem] -translate-x-1/2 rounded-full
@@ -592,7 +593,8 @@ function AppLayout() {
       {/* Sidebar: desktop + mobile drawer */}
       <Sidebar mobileOpen={mobileOpen} setMobileOpen={setMobileOpen} />
 
-      <main className="relative z-10 h-screen overflow-y-auto overscroll-contain [scrollbar-gutter:stable]">
+      {/* CHANGED: remove h-screen; allow this pane to shrink/scroll */}
+      <main className="relative z-10 min-h-0 overflow-y-auto overscroll-contain [scrollbar-gutter:stable]">
         <div
           className="flex items-center justify-between border-b border-white/10
                      bg-gradient-to-r from-indigo-600/10 via-purple-600/10 to-fuchsia-600/10
