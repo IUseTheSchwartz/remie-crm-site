@@ -423,7 +423,7 @@ function LandingPage() {
             <a href="#contact" className="text-sm opacity-80 hover:opacity-100">Contact</a>
             <Link to="/login" className="text-sm opacity-80 hover:opacity-100">Log in</Link>
             <Link
-              to="/signup?next=start-trial&price=price_1S2jggPgdGNoe2LHTnBIX94d" // ✅ pass exact Price ID
+              to="/signup?next=start-trial&price=price_1S2jggPgdGNoe2LHTnBIX94d"
               className="hidden rounded-xl bg-gradient-to-r from-indigo-500 via-purple-500 to-fuchsia-500 px-4 py-2 text-sm font-medium ring-1 ring-white/10 md:block"
             >
               Start 7-day free trial
@@ -579,9 +579,35 @@ function AppLayout() {
   const nav = useNavigate();
   const [mobileOpen, setMobileOpen] = useState(false);
 
+  // NEW: one-time toast when balance increases (zero-schema; per-device)
+  const [walletToast, setWalletToast] = useState(null);
+  useEffect(() => {
+    let cancelled = false;
+    async function checkWalletBump() {
+      if (!user?.id) return;
+      const { data, error } = await supabase
+        .from("user_wallets")
+        .select("balance_cents")
+        .eq("user_id", user.id)
+        .maybeSingle();
+      if (cancelled || error) return;
+
+      const current = Number(data?.balance_cents || 0);
+      const key = `wallet:lastSeen:${user.id}`;
+      const last = Number(localStorage.getItem(key));
+
+      if (Number.isFinite(last) && current > last) {
+        setWalletToast({ deltaCents: current - last });
+        setTimeout(() => setWalletToast(null), 6000);
+      }
+      localStorage.setItem(key, String(current));
+    }
+    checkWalletBump();
+    return () => { cancelled = true; };
+  }, [user?.id]);
+
   return (
-    // CHANGED: removed overflow-hidden, added min-h-0 so children can scroll
-    <div className="h-screen min-h-0 relative bg-neutral-950 text-white grid md:grid-cols-[240px_1fr]">
+    <div className="h-screen overflow-hidden relative bg-neutral-950 text-white grid md:grid-cols-[240px_1fr]">
       {/* background blobs */}
       <div className="pointer-events-none fixed inset-0 z-0">
         <div className="absolute -top-40 left-1/2 h-[36rem] w-[36rem] -translate-x-1/2 rounded-full
@@ -593,8 +619,7 @@ function AppLayout() {
       {/* Sidebar: desktop + mobile drawer */}
       <Sidebar mobileOpen={mobileOpen} setMobileOpen={setMobileOpen} />
 
-      {/* CHANGED: remove h-screen; allow this pane to shrink/scroll */}
-      <main className="relative z-10 min-h-0 overflow-y-auto overscroll-contain [scrollbar-gutter:stable]">
+      <main className="relative z-10 h-screen overflow-y-auto overscroll-contain [scrollbar-gutter:stable]">
         <div
           className="flex items-center justify-between border-b border-white/10
                      bg-gradient-to-r from-indigo-600/10 via-purple-600/10 to-fuchsia-600/10
@@ -624,6 +649,14 @@ function AppLayout() {
             <LogOut className="h-4 w-4" /> Log out
           </button>
         </div>
+
+        {/* NEW: Toast for balance increase */}
+        {walletToast && (
+          <div className="fixed right-4 top-4 z-50 rounded-xl border border-emerald-400/30 bg-emerald-500/10 px-4 py-2 text-sm text-emerald-200 shadow-lg">
+            Balance increased by{" "}
+            <span className="font-medium">${(walletToast.deltaCents / 100).toFixed(2)}</span>
+          </div>
+        )}
 
         <div className="p-4">
           <Routes>
