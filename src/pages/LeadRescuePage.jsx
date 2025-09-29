@@ -47,7 +47,6 @@ function renderRescueStatus(currentDay, sendHourLocal, tz) {
   if (cd <= 1) {
     const hh = String(Number(sendHourLocal ?? 9)).padStart(2, "0");
     return `Waiting for Day 2 @ ${hh}:00 ${tz || TZ_DEFAULT}`;
-    // After the next calendar day hits that hour (in tz), Day 2 will send and current_day will become 2.
   }
   return `Day ${cd}`;
 }
@@ -90,6 +89,38 @@ const PRESETS = {
 
 // ---- Page ----
 export default function LeadRescuePage() {
+  // 🔒 Temporary off switch. Set to false to re-enable the full page.
+  const UNDER_MAINTENANCE = true;
+  if (UNDER_MAINTENANCE) {
+    return (
+      <div className="flex h-full min-h-[60vh] w-full items-center justify-center">
+        <div className="text-center">
+          <h1 className="text-2xl font-bold text-white">Sorry — Under Maintenance</h1>
+          <p className="mt-2 text-white/70">
+            The Lead Rescue page is temporarily unavailable while we make updates.
+          </p>
+          <div className="mt-4 flex items-center justify-center gap-3">
+            <button
+              type="button"
+              onClick={() => window.history.back()}
+              className="rounded-xl border border-white/15 bg-white/5 px-4 py-2 text-sm text-white hover:bg-white/10"
+            >
+              Go Back
+            </button>
+            <button
+              type="button"
+              onClick={() => window.location.reload()}
+              className="rounded-xl border border-white/15 bg-white px-4 py-2 text-sm font-medium text-black hover:bg-white/90"
+            >
+              Refresh
+            </button>
+          </div>
+          <p className="mt-3 text-xs text-white/50">Thanks for your patience—check back soon.</p>
+        </div>
+      </div>
+    );
+  }
+
   const [loading, setLoading] = useState(true);
   const [userId, setUserId] = useState(null);
 
@@ -198,8 +229,7 @@ export default function LeadRescuePage() {
 
   useEffect(() => {
     refreshTrackers();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [userId]);
+  }, [userId]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // ---- Settings save ----
   async function saveSettings() {
