@@ -29,76 +29,6 @@ function makeAll(enabledObj, templatesObj, val) {
   return out;
 }
 
-/* ----------------- Credit everyone (simple card) ---------------- */
-function CreditEveryoneCard({ onAfter }) {
-  const [amount, setAmount] = useState("");
-  const [busy, setBusy] = useState(false);
-  const [msg, setMsg] = useState("");
-  const [err, setErr] = useState("");
-
-  async function runCredit() {
-    setErr(""); setMsg("");
-    const n = Number(String(amount).replace(/[^0-9.]/g, ""));
-    if (!Number.isFinite(n) || n <= 0) { setErr("Enter a positive amount"); return; }
-    const ok = confirm(`Credit everyone $${n.toFixed(2)} ?`);
-    if (!ok) return;
-
-    setBusy(true);
-    try {
-      const { data: { session } } = await supabase.auth.getSession();
-      const token = session?.access_token || "";
-      const res = await fetch("/.netlify/functions/admin-credit-everyone", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${token}`,
-        },
-        body: JSON.stringify({ amountUsd: n }),
-      });
-      const json = await res.json();
-      if (!res.ok || !json.ok) throw new Error(json.error || "Failed");
-      setMsg(`Credited ${json.affected} users $${(json.amount_cents/100).toFixed(2)}.`);
-      onAfter?.(); // refresh the table for visual confirmation
-      setAmount("");
-    } catch (e) {
-      setErr(e.message || "Failed");
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  return (
-    <div className="rounded-2xl border border-white/10 bg-white/[0.04] p-4 ring-1 ring-white/5">
-      <div className="flex items-end gap-4">
-        <div>
-          <label className="text-sm text-white/70">Amount (USD)</label>
-          <input
-            type="text"
-            inputMode="decimal"
-            placeholder="0.10"
-            value={amount}
-            onChange={(e) => setAmount(e.target.value)}
-            className="mt-1 w-40 rounded-md border border-white/15 bg-black/40 px-2 py-1.5 outline-none focus:ring-2 focus:ring-indigo-500/40"
-          />
-        </div>
-        <button
-          onClick={runCredit}
-          disabled={busy}
-          className="h-10 rounded-lg border border-emerald-400/30 px-4 text-sm font-medium hover:bg-emerald-400/10 disabled:opacity-60"
-        >
-          {busy ? "Crediting…" : "Credit everyone"}
-        </button>
-      </div>
-
-      {msg && <div className="mt-2 text-emerald-300 text-sm">{msg}</div>}
-      {err && <div className="mt-2 text-rose-300 text-sm">{err}</div>}
-      <div className="mt-1 text-xs text-white/45">
-        Adds the amount to <code>user_wallets.balance_cents</code> for all users.
-      </div>
-    </div>
-  );
-}
-
 /* ---------------------------- page ----------------------------- */
 export default function AdminConsole() {
   const { isAdmin, loading } = useIsAdminAllowlist();
@@ -106,6 +36,12 @@ export default function AdminConsole() {
   const [fetching, setFetching] = useState(false);
   const [saving, setSaving] = useState(false);
   const [err, setErr] = useState("");
+
+  // --- NEW: Global credit UI state ---
+  const [creditUsd, setCreditUsd] = useState("0.10");
+  const [creditNote, setCreditNote] = useState("Thanks for being with Remie CRM!");
+  const [creditBusy, setCreditBusy] = useState(false);
+  const [creditResult, setCreditResult] = useState(null);
 
   /* --------------------------- loader --------------------------- */
   async function load() {
@@ -188,7 +124,7 @@ export default function AdminConsole() {
       // Merge into rows
       const merged = (profiles || []).map((p) => {
         const teamId = ownerToTeam.get(p.user_id) || null;
-        const seatsPurchased = teamId ? (teamSeats.get(teamId) ?? 0) : 0; // ✅ fixed
+        const seatsPurchased = teamId ? (teamSeats.get(teamId) ?? 0) : 0;
         const balance = walletByUser.get(p.user_id) ?? 0;
 
         const t = tmplByUser.get(p.user_id) || { enabled: {}, templates: {} };
@@ -214,10 +150,9 @@ export default function AdminConsole() {
           lead_rescue_enabled,
           templates_locked,
           created_at: p.created_at,
-          // raw blobs for lock/unlock logic
           _enabled: t.enabled || {},
           _templates: t.templates || {},
-          _enabled_backup: enabled_backup, // from backup table
+          _enabled_backup: enabled_backup,
         };
       });
 
@@ -421,6 +356,39 @@ export default function AdminConsole() {
     }
   }
 
+  // --- NEW: call the Netlify function to credit everyone ---
+  async function creditEveryoneNow() {
+    setCreditBusy(true);
+    setErr("");
+    setCreditResult(null);
+    try {
+      const amount_cents = usdToCents(creditUsd);
+      if (!(amount_cents > 0)) throw new Error("Enter a positive amount");
+
+      const { data: { session } } = await supabase.auth.getSession();
+
+      const res = await fetch("/.netlify/functions/admin-credit-everyone", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${session?.access_token ?? ""}`,
+        },
+        body: JSON.stringify({ amount_cents, message: creditNote }),
+      });
+
+      const json = await res.json().catch(() => ({}));
+      if (!res.ok || !json.ok) throw new Error(json.error || `Request failed (${res.status})`);
+
+      setCreditResult({ credited: json.credited, amount_cents: json.amount_cents });
+      // Refresh local table so you see updated balances immediately
+      await load();
+    } catch (e) {
+      setErr(e.message || "Failed to credit everyone");
+    } finally {
+      setCreditBusy(false);
+    }
+  }
+
   /* -------------------------- rendering ------------------------- */
   if (loading) return <div className="p-4 text-white/80">Checking access…</div>;
   if (!isAdmin) return <div className="p-4 text-rose-400">Access denied</div>;
@@ -447,14 +415,52 @@ export default function AdminConsole() {
         </div>
       </div>
 
-      {/* New: credit everyone card */}
-      <CreditEveryoneCard onAfter={load} />
-
       {err && (
         <div className="rounded-lg border border-rose-400/30 bg-rose-500/10 p-3 text-sm text-rose-200">
           {err}
         </div>
       )}
+
+      {/* ---------- NEW: Global Wallet Credit ---------- */}
+      <div className="rounded-2xl border border-white/10 bg-white/[0.04] p-4 ring-1 ring-white/5">
+        <div className="font-medium mb-2">Global actions</div>
+        <div className="grid gap-3 sm:grid-cols-[160px_1fr_auto] items-center">
+          <label className="text-sm text-white/70">Amount (USD)</label>
+          <input
+            type="text"
+            inputMode="decimal"
+            value={creditUsd}
+            onChange={(e) => setCreditUsd(e.target.value)}
+            className="rounded-md border border-white/15 bg-black/40 px-2 py-1 outline-none focus:ring-2 focus:ring-indigo-500/40 w-40"
+            placeholder="0.10"
+          />
+          <button
+            onClick={creditEveryoneNow}
+            disabled={creditBusy}
+            className="rounded-lg border border-emerald-400/30 px-3 py-1.5 text-sm hover:bg-emerald-400/10"
+          >
+            {creditBusy ? "Crediting…" : "Credit everyone"}
+          </button>
+
+          <label className="text-sm text-white/70 sm:col-start-1">Message (optional)</label>
+          <input
+            type="text"
+            value={creditNote}
+            onChange={(e) => setCreditNote(e.target.value)}
+            className="rounded-md border border-white/15 bg-black/40 px-2 py-1 outline-none focus:ring-2 focus:ring-indigo-500/40 sm:col-span-2"
+            placeholder="Shown in admin logs; users will see new balance next load."
+          />
+        </div>
+
+        {creditResult && (
+          <div className="mt-3 text-sm text-emerald-300">
+            Credited {creditResult.credited} users with ${centsToUsd(creditResult.amount_cents)} each.
+          </div>
+        )}
+        <p className="mt-2 text-xs text-white/45">
+          Adds the amount to <code>user_wallets.balance_cents</code> for all users.
+        </p>
+      </div>
 
       <div className="overflow-x-auto rounded-2xl border border-white/10">
         <table className="min-w-full text-sm">
