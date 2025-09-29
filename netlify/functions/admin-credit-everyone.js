@@ -1,103 +1,124 @@
 // netlify/functions/admin-credit-everyone.js
 import { createClient } from "@supabase/supabase-js";
 
-const url = process.env.SUPABASE_URL;
-const anon = process.env.SUPABASE_ANON_KEY;
-const service = process.env.SUPABASE_SERVICE_ROLE_KEY;
+/** Read env in a way that works with your current names */
+const SUPABASE_URL =
+  process.env.SUPABASE_URL ||
+  process.env.VITE_SUPABASE_URL;
+
+const SUPABASE_SERVICE_ROLE_KEY =
+  process.env.SUPABASE_SERVICE_ROLE ||           // ← your existing name
+  process.env.SUPABASE_SERVICE_ROLE_KEY;         // (also accept _KEY if present)
+
+const SUPABASE_ANON =
+  process.env.SUPABASE_ANON_KEY ||
+  process.env.VITE_SUPABASE_ANON_KEY ||
+  SUPABASE_SERVICE_ROLE_KEY; // fallback so user client can still auth.getUser()
+
+function json(status, payload) {
+  return { statusCode: status, body: JSON.stringify(payload) };
+}
+
+function toInt(n, def = 0) {
+  const v = Number(n);
+  return Number.isFinite(v) ? Math.trunc(v) : def;
+}
+
+function chunk(arr, size = 800) {
+  const out = [];
+  for (let i = 0; i < arr.length; i += size) out.push(arr.slice(i, i + size));
+  return out;
+}
 
 export async function handler(event) {
+  if (!SUPABASE_URL)  return json(500, { ok: false, error: "Missing SUPABASE_URL (or VITE_SUPABASE_URL)" });
+  if (!SUPABASE_SERVICE_ROLE_KEY) return json(500, { ok: false, error: "Missing SUPABASE_SERVICE_ROLE (server env)" });
+
   if (event.httpMethod !== "POST") {
-    return { statusCode: 405, body: "Method Not Allowed" };
+    return json(405, { ok: false, error: "Method Not Allowed" });
   }
 
-  try {
-    const { amountUsd } = JSON.parse(event.body || "{}");
-    const amount = Number(String(amountUsd).replace(/[^0-9.]/g, ""));
-    if (!Number.isFinite(amount) || amount <= 0) {
-      return { statusCode: 400, body: JSON.stringify({ ok: false, error: "Invalid amount" }) };
-    }
-    const amountCents = Math.round(amount * 100);
+  // Parse body
+  let body = {};
+  try { body = JSON.parse(event.body || "{}"); } catch {}
+  const amountCents = toInt(body.amount_cents ?? 0);
+  const message = String(body.message ?? "");
 
-    // Verify requester (must be logged in + on admin allowlist)
-    const token = event.headers.authorization?.replace(/^Bearer\s+/i, "") || "";
-    const userScoped = createClient(url, anon, {
-      global: { headers: { Authorization: `Bearer ${token}` } },
-      auth: { persistSession: false, autoRefreshToken: false },
-    });
-    const { data: userRes } = await userScoped.auth.getUser();
-    const userId = userRes?.user?.id;
-    if (!userId) return { statusCode: 401, body: JSON.stringify({ ok: false, error: "Unauthorized" }) };
+  if (!(amountCents > 0)) {
+    return json(400, { ok: false, error: "amount_cents must be a positive integer" });
+  }
 
-    // Service client (elevated)
-    const serviceClient = createClient(url, service, {
-      auth: { persistSession: false, autoRefreshToken: false },
-    });
+  // Build clients
+  const bearer = (event.headers.authorization || "").replace(/^Bearer\s+/i, "");
+  const userClient = createClient(SUPABASE_URL, SUPABASE_ANON, {
+    global: { headers: { Authorization: `Bearer ${bearer}` } },
+    auth: { persistSession: false, autoRefreshToken: false },
+  });
+  const service = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, {
+    auth: { persistSession: false, autoRefreshToken: false },
+  });
 
-    // Check allowlist (table: admin_allowlist with pk user_id)
-    const { data: allow, error: allowErr } = await serviceClient
-      .from("admin_allowlist")
-      .select("user_id")
-      .eq("user_id", userId)
-      .maybeSingle();
-    if (allowErr) throw allowErr;
-    if (!allow) return { statusCode: 403, body: JSON.stringify({ ok: false, error: "Forbidden" }) };
+  // Identify caller
+  const { data: userRes, error: userErr } = await userClient.auth.getUser();
+  if (userErr || !userRes?.user) {
+    return json(401, { ok: false, error: "Unauthorized" });
+  }
+  const callerId = userRes.user.id;
 
-    // Load all user_ids from agent_profiles
-    const { data: profiles, error: pErr } = await serviceClient
-      .from("agent_profiles")
-      .select("user_id");
-    if (pErr) throw pErr;
+  // Allowlist check (same concept as your hook)
+  const { data: allow, error: allowErr } = await userClient
+    .from("admin_allowlist")
+    .select("user_id")
+    .eq("user_id", callerId)
+    .maybeSingle();
 
-    const allUserIds = (profiles || []).map((p) => p.user_id).filter(Boolean);
-    if (allUserIds.length === 0) {
-      return { statusCode: 200, body: JSON.stringify({ ok: true, affected: 0, amount_cents: amountCents }) };
-    }
+  if (allowErr) return json(500, { ok: false, error: `Allowlist check failed: ${allowErr.message}` });
+  if (!allow)  return json(403, { ok: false, error: "Forbidden" });
 
-    // Fetch existing wallets
-    const { data: wallets, error: wErr } = await serviceClient
+  // Get the universe of users to credit (use agent_profiles as "everyone")
+  const { data: agents, error: agentsErr } = await service
+    .from("agent_profiles")
+    .select("user_id");
+  if (agentsErr) return json(500, { ok: false, error: agentsErr.message });
+
+  const userIds = (agents || []).map(a => a.user_id).filter(Boolean);
+  if (userIds.length === 0) return json(200, { ok: true, credited: 0, amount_cents: amountCents });
+
+  // For each chunk, read existing wallet balances then upsert with the increment applied
+  let credited = 0;
+  for (const ids of chunk(userIds, 800)) {
+    // Existing balances
+    const { data: wallets, error: wErr } = await service
       .from("user_wallets")
-      .select("user_id, balance_cents");
-    if (wErr) throw wErr;
+      .select("user_id,balance_cents")
+      .in("user_id", ids);
 
-    const have = new Set((wallets || []).map((w) => w.user_id));
-    const missing = allUserIds.filter((id) => !have.has(id));
+    if (wErr) return json(500, { ok: false, error: wErr.message });
 
-    // Ensure missing wallets exist
-    if (missing.length) {
-      const payload = missing.map((user_id) => ({ user_id, balance_cents: 0 }));
-      for (let i = 0; i < payload.length; i += 500) {
-        const chunk = payload.slice(i, i + 500);
-        const { error } = await serviceClient
-          .from("user_wallets")
-          .upsert(chunk, { onConflict: "user_id" });
-        if (error) throw error;
-      }
-    }
+    const current = new Map((wallets || []).map(w => [w.user_id, toInt(w.balance_cents, 0)]));
 
-    // Build current balances map
-    const byUser = new Map();
-    (wallets || []).forEach((w) => byUser.set(w.user_id, Number(w.balance_cents || 0)));
-    missing.forEach((id) => byUser.set(id, 0));
-
-    // Increment everyone
-    const updates = allUserIds.map((id) => ({
-      user_id: id,
-      balance_cents: (byUser.get(id) || 0) + amountCents,
+    const payload = ids.map(uid => ({
+      user_id: uid,
+      balance_cents: toInt((current.get(uid) || 0) + amountCents, amountCents),
     }));
 
-    for (let i = 0; i < updates.length; i += 500) {
-      const chunk = updates.slice(i, i + 500);
-      const { error } = await serviceClient
-        .from("user_wallets")
-        .upsert(chunk, { onConflict: "user_id" });
-      if (error) throw error;
-    }
+    const { error: upErr } = await service
+      .from("user_wallets")
+      .upsert(payload, { onConflict: "user_id" });
 
-    return {
-      statusCode: 200,
-      body: JSON.stringify({ ok: true, affected: allUserIds.length, amount_cents: amountCents }),
-    };
-  } catch (e) {
-    return { statusCode: 500, body: JSON.stringify({ ok: false, error: e.message || "Server error" }) };
+    if (upErr) return json(500, { ok: false, error: upErr.message });
+
+    credited += payload.length;
   }
+
+  // Optionally log an admin event (no-op if you don't have the table)
+  if (message) {
+    await service.from("admin_events").insert({
+      type: "wallet_mass_credit",
+      meta: { amount_cents: amountCents, users: credited, message },
+      created_by: callerId,
+    }).catch(() => {});
+  }
+
+  return json(200, { ok: true, credited, amount_cents: amountCents });
 }
