@@ -3,7 +3,7 @@ import { NavLink } from "react-router-dom";
 import { useEffect, useMemo, useState } from "react";
 import { routes } from "../routesConfig.js";
 import { supabase } from "../lib/supabaseClient.js";
-import useIsAdminAllowlist from "../hooks/useIsAdminAllowlist.js"; // ← keep
+import useIsAdminAllowlist from "../hooks/useIsAdminAllowlist.js";
 import Logo from "../assets/logo-tight.png";
 
 /* Safe, widely-available Lucide icons */
@@ -24,8 +24,7 @@ import {
   Globe2,
   Pencil,
   ExternalLink,
-  X,
-  Shield, // Admin Console
+  Shield,
 } from "lucide-react";
 
 /* --- Gradient stroke helper (indigo → purple → fuchsia) --- */
@@ -253,7 +252,6 @@ function SidebarContent({ onNavigate }) {
   const { isAdmin } = useIsAdminAllowlist();
 
   const sections = useMemo(() => {
-    // Build from /app routes that want to show in sidebar
     const visible = routes.filter((r) => r.showInSidebar && r.path?.startsWith("/app"));
     const by = (s) => visible.filter((r) => r.section === s);
     return {
@@ -268,7 +266,7 @@ function SidebarContent({ onNavigate }) {
 
   const hideAdminOnly = (arr) => arr.filter((r) => !r.adminOnly || isAdmin);
 
-  // --- Build bottom items
+  // Build bottom items
   let bottomItems = hideAdminOnly(sections.bottom);
 
   // Admin Console for admins
@@ -276,17 +274,11 @@ function SidebarContent({ onNavigate }) {
     bottomItems = [{ key: "admin-console", path: "/app/admin", label: "Admin Console" }, ...bottomItems];
   }
 
-  // 🔒 Keep Admin Console admin-only, but **force-show Support** for all logged-in users
-  const supportPresent = bottomItems.some((r) => r.path === "/app/support");
-  const ForcedSupportLink = !supportPresent ? (
-    <NavLink
-      to="/app/support"
-      className="group flex items-center gap-2 px-3 py-2 rounded-md transition text-white/80 hover:bg-white/10 hover:text-white"
-    >
-      <GradientStrokeIcon Icon={LifeBuoy} id="remie-forced-support" className="w-4 h-4 shrink-0 transition group-hover:scale-105" />
-      <span>Support</span>
-    </NavLink>
-  ) : null;
+  // Ensure Support is present
+  const hasSupport = bottomItems.some((r) => r.key === "support");
+  if (!hasSupport) {
+    bottomItems.push({ key: "support", path: "/app/support", label: "Support" });
+  }
 
   return (
     <>
@@ -340,21 +332,20 @@ function SidebarContent({ onNavigate }) {
         <div className="text-xs uppercase tracking-wide text-white/50 px-3 pb-2">
           Account &amp; Help
         </div>
-
-        {/* ✅ Fallback link in case filtering excludes Support for some users */}
-        {ForcedSupportLink}
-
         <SimpleList items={bottomItems} onNavigate={onNavigate} />
       </div>
     </>
   );
 }
 
-/* Desktop + Mobile wrappers (keeps hidden scrollbars) */
+/* Desktop + Mobile wrappers (now with proper scroll containers) */
 export default function Sidebar({ mobileOpen = false, setMobileOpen = () => {} }) {
+  // ✅ Make aside a flex column and move the scroll to a child with min-h-0
   const desktopAside = (
-    <aside className="relative z-10 hidden md:block border-r border-white/10 bg-black/30 h-screen overflow-y-auto overscroll-contain no-scrollbar">
-      <SidebarContent />
+    <aside className="relative z-10 hidden md:flex md:flex-col border-r border-white/10 bg-black/30 h-screen">
+      <div className="flex-1 min-h-0 overflow-y-auto overscroll-contain no-scrollbar">
+        <SidebarContent />
+      </div>
     </aside>
   );
 
@@ -368,19 +359,23 @@ export default function Sidebar({ mobileOpen = false, setMobileOpen = () => {} }
         }`}
         onClick={close}
       />
+      {/* ✅ Same fix for mobile drawer */}
       <div
-        className={`fixed inset-y-0 left-0 z-50 w-[80%] max-w-[280px] transform bg-neutral-950 border-r border-white/10 md:hidden
-        h-screen overflow-y-auto overscroll-contain no-scrollbar
-        transition-transform duration-300 ${mobileOpen ? "translate-x-0" : "-translate-x-full"}`}
+        className={`fixed inset-y-0 left-0 z-50 w-[80%] max-w-[280px] bg-neutral-950 border-r border-white/10 md:hidden
+        h-screen flex flex-col transition-transform duration-300 ${
+          mobileOpen ? "translate-x-0" : "-translate-x-full"
+        }`}
       >
-        <div className="flex items-center justify-between px-4 py-3 border-b border-white/10">
-          <div className="flex items-center gap-2">
-            <img src={Logo} alt="Logo" className="h-7 w-7 object-contain" />
-            <div className="font-semibold">Remie CRM</div>
+        <div className="flex-1 min-h-0 overflow-y-auto overscroll-contain no-scrollbar">
+          <div className="flex items-center justify-between px-4 py-3 border-b border-white/10">
+            <div className="flex items-center gap-2">
+              <img src={Logo} alt="Logo" className="h-7 w-7 object-contain" />
+              <div className="font-semibold">Remie CRM</div>
+            </div>
           </div>
-        </div>
 
-        <SidebarContent onNavigate={close} />
+          <SidebarContent onNavigate={close} />
+        </div>
       </div>
     </>
   );
