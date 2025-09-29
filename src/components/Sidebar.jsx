@@ -3,7 +3,7 @@ import { NavLink } from "react-router-dom";
 import { useEffect, useMemo, useState } from "react";
 import { routes } from "../routesConfig.js";
 import { supabase } from "../lib/supabaseClient.js";
-import useIsAdminAllowlist from "../hooks/useIsAdminAllowlist.js"; // keep as-is
+import useIsAdminAllowlist from "../hooks/useIsAdminAllowlist.js"; // ← keep
 import Logo from "../assets/logo-tight.png";
 
 /* Safe, widely-available Lucide icons */
@@ -253,10 +253,8 @@ function SidebarContent({ onNavigate }) {
   const { isAdmin } = useIsAdminAllowlist();
 
   const sections = useMemo(() => {
-    // ✅ Only include /app routes, and hide ONLY adminOnly for non-admins
-    const visible = routes.filter(
-      (r) => r.showInSidebar && r.path?.startsWith("/app")
-    );
+    // Build from /app routes that want to show in sidebar
+    const visible = routes.filter((r) => r.showInSidebar && r.path?.startsWith("/app"));
     const by = (s) => visible.filter((r) => r.section === s);
     return {
       top: by("top"),
@@ -268,27 +266,23 @@ function SidebarContent({ onNavigate }) {
     };
   }, []);
 
-  // ✅ Hide admin-only items for non-admins at render time
   const hideAdminOnly = (arr) => arr.filter((r) => !r.adminOnly || isAdmin);
 
-  // ✅ Defensive: ensure Support is present in bottom group
-  const supportRoute = routes.find((r) => r.key === "support");
-  const dedupeByKey = (arr) => {
-    const seen = new Set();
-    return arr.filter((r) => (seen.has(r.key) ? false : (seen.add(r.key), true)));
-  };
-
-  // Base bottom items (respect adminOnly)
+  // --- Build bottom items
   let bottomItems = hideAdminOnly(sections.bottom);
 
-  // Inject Admin Console when admin
+  // Admin Console for admins
   if (isAdmin) {
     bottomItems = [{ key: "admin-console", path: "/app/admin", label: "Admin Console" }, ...bottomItems];
   }
 
-  // Ensure Support exists (in case it was accidentally filtered elsewhere)
-  if (supportRoute) {
-    bottomItems = dedupeByKey([...bottomItems, supportRoute]);
+  // ✅ Hard-ensure Support exists for all logged-in users
+  const hasSupport = bottomItems.some((r) => r.key === "support");
+  if (!hasSupport) {
+    bottomItems = [
+      ...bottomItems,
+      { key: "support", path: "/app/support", label: "Support" }, // <- guaranteed
+    ];
   }
 
   return (
