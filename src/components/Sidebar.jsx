@@ -276,14 +276,17 @@ function SidebarContent({ onNavigate }) {
     bottomItems = [{ key: "admin-console", path: "/app/admin", label: "Admin Console" }, ...bottomItems];
   }
 
-  // ✅ Hard-ensure Support exists for all logged-in users
-  const hasSupport = bottomItems.some((r) => r.key === "support");
-  if (!hasSupport) {
-    bottomItems = [
-      ...bottomItems,
-      { key: "support", path: "/app/support", label: "Support" }, // <- guaranteed
-    ];
-  }
+  // 🔒 Keep Admin Console admin-only, but **force-show Support** for all logged-in users
+  const supportPresent = bottomItems.some((r) => r.path === "/app/support");
+  const ForcedSupportLink = !supportPresent ? (
+    <NavLink
+      to="/app/support"
+      className="group flex items-center gap-2 px-3 py-2 rounded-md transition text-white/80 hover:bg-white/10 hover:text-white"
+    >
+      <GradientStrokeIcon Icon={LifeBuoy} id="remie-forced-support" className="w-4 h-4 shrink-0 transition group-hover:scale-105" />
+      <span>Support</span>
+    </NavLink>
+  ) : null;
 
   return (
     <>
@@ -337,6 +340,10 @@ function SidebarContent({ onNavigate }) {
         <div className="text-xs uppercase tracking-wide text-white/50 px-3 pb-2">
           Account &amp; Help
         </div>
+
+        {/* ✅ Fallback link in case filtering excludes Support for some users */}
+        {ForcedSupportLink}
+
         <SimpleList items={bottomItems} onNavigate={onNavigate} />
       </div>
     </>
