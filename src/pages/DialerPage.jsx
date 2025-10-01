@@ -19,7 +19,7 @@ import { getMyBalanceCents, formatUSD } from "../lib/wallet";
 import { supabase } from "../lib/supabaseClient";
 
 /* ===== Maintenance toggle (add-only) ===== */
-const DIALER_UNDER_MAINTENANCE = false; // <-- set to true to show the maintenance screen
+const DIALER_UNDER_MAINTENANCE = true; // <-- set to true to show the maintenance screen
 
 /* ------- config & small helpers ------- */
 const PRICE_CENTS = 500;                 // $5.00 after freebies
