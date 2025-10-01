@@ -18,6 +18,9 @@ import { startCall, listMyCallLogs } from "../lib/calls";
 import { getMyBalanceCents, formatUSD } from "../lib/wallet";
 import { supabase } from "../lib/supabaseClient";
 
+/* ===== Maintenance toggle (add-only) ===== */
+const DIALER_UNDER_MAINTENANCE = false; // <-- set to true to show the maintenance screen
+
 /* ------- config & small helpers ------- */
 const PRICE_CENTS = 500;                 // $5.00 after freebies
 const FREE_NUMBERS = 5;                  // first 5 numbers are free
@@ -36,6 +39,48 @@ const normUS = (s) => {
 const startedMinuteSegments = (seconds) => Math.max(1, Math.ceil((Number(seconds) || 0) / 60));
 
 export default function DialerPage() {
+  /* ===== Early return for maintenance (add-only) ===== */
+  if (DIALER_UNDER_MAINTENANCE) {
+    return (
+      <div className="relative min-h-[70vh]">
+        {/* subtle hero gradient (matches your style) */}
+        <div className="pointer-events-none absolute inset-0 -z-10">
+          <div
+            className="absolute -top-24 left-1/2 h-72 w-[48rem] -translate-x-1/2 rounded-full blur-3xl opacity-40"
+            style={{
+              background:
+                "radial-gradient(40rem 20rem at 30% 30%, rgba(99,102,241,.35), transparent), radial-gradient(40rem 20rem at 70% 40%, rgba(217,70,239,.25), transparent)",
+            }}
+          />
+        </div>
+
+        <div className="grid place-items-center h-full py-16">
+          <div className="text-center max-w-xl">
+            <h1 className="text-2xl font-semibold mb-2">Sorry — Under Maintenance</h1>
+            <p className="text-white/70 mb-6">
+              The Dialer page is temporarily unavailable while we make updates.
+            </p>
+            <div className="flex items-center justify-center gap-3">
+              <button
+                onClick={() => window.history.back()}
+                className="rounded-xl border border-white/15 bg-white/10 px-4 py-2 text-sm hover:bg-white/15"
+              >
+                Go Back
+              </button>
+              <button
+                onClick={() => window.location.reload()}
+                className="rounded-xl text-white bg-gradient-to-br from-indigo-500/90 to-fuchsia-500/90 hover:from-indigo-500 hover:to-fuchsia-500 px-4 py-2 text-sm shadow-lg shadow-fuchsia-500/10"
+              >
+                Refresh
+              </button>
+            </div>
+            <p className="mt-4 text-xs text-white/60">Thanks for your patience—check back soon.</p>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
   /* ---------- state ---------- */
   const [agentCell, setAgentCell] = useState("");
   const [toNumber, setToNumber] = useState("");
