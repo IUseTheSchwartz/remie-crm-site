@@ -15,6 +15,7 @@
     @media(min-width:800px){.row{grid-template-columns:1fr 1fr}}
     .consent{margin-top:1rem;display:flex;gap:.5rem;align-items:flex-start}
     footer{margin-top:2rem;opacity:.9;font-size:.9rem;text-align:center}
+    .hint{font-size:.85rem;opacity:.9;margin-top:.25rem}
   </style>
 </head>
 <body>
@@ -26,7 +27,7 @@
        <strong>Email:</strong> <a href="mailto:JacobPrieto@gmail.com">JacobPrieto@gmail.com</a></p>
 
     <!-- Simple GET submit to guarantee thank-you redirect -->
-    <form action="/thank-you.html" method="GET">
+    <form action="/thank-you.html" method="GET" novalidate>
       <div class="row">
         <div>
           <label for="name">Name</label>
@@ -38,15 +39,33 @@
         </div>
       </div>
 
+      <div class="row">
+        <div>
+          <label for="phone">Phone (required for SMS)</label>
+          <input
+            id="phone"
+            name="phone"
+            type="tel"
+            inputmode="tel"
+            placeholder="(555) 123-4567"
+            required
+            pattern="^(\+?1\s?)?(\(?\d{3}\)?[\s\-.]?)\d{3}[\s\-.]?\d{4}$"
+            title="Enter a valid US phone number"
+          />
+          <div class="hint">We’ll text this number regarding your inquiry. Reply STOP to opt out.</div>
+        </div>
+        <div></div>
+      </div>
+
       <label for="message">Message</label>
       <textarea id="message" name="message" rows="5" required></textarea>
 
       <div class="consent">
         <input id="sms-consent" name="sms_consent" type="checkbox" value="yes" required />
         <label for="sms-consent">
-          I consent to receive SMS about my inquiry from Prieto Insurance Solutions LLC.
-          <strong>Message frequency varies. Message &amp; data rates may apply.
-          Reply STOP to opt out. Reply HELP for assistance.</strong>
+          I consent to receive SMS about my inquiry from Prieto Insurance Solutions LLC at
+          the <strong>phone number I provided</strong>. <strong>Message frequency varies.
+          Message &amp; data rates may apply. Reply STOP to opt out. Reply HELP for assistance.</strong>
           See our <a href="/privacy.html">Privacy Policy</a> and <a href="/terms.html">Terms of Service</a>.
         </label>
       </div>
