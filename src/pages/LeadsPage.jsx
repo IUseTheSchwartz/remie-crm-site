@@ -17,8 +17,8 @@ import {
 // Supabase browser client (read + realtime)
 import { supabase } from "../lib/supabaseClient.js";
 
-// Google Sheets connector
-import GoogleSheetsConnector from "../components/GoogleSheetsConnector.jsx";
+// (REPLACED) Google Sheets connector → Zapier embed
+import ZapierEmbed from "../components/autoimport/ZapierEmbed.jsx";
 
 // Phone normalizer (E.164)
 import { toE164 } from "../lib/phone.js";
@@ -327,9 +327,9 @@ async function findRecentlyInsertedLeadId({ userId, person }) {
   }
 
   const orParts = [];
-  const S = (x) => (x == null ? "" : String(x).trim());
-  const email = S(person.email).toLowerCase();
-  const phoneE164 = toE164(S(person.phone));
+  const Sx = (x) => (x == null ? "" : String(x).trim());
+  const email = Sx(person.email).toLowerCase();
+  const phoneE164 = toE164(Sx(person.phone));
   if (email) orParts.push(`email.eq.${encodeURIComponent(email)}`);
   if (phoneE164) orParts.push(`phone.eq.${encodeURIComponent(phoneE164)}`);
   if (orParts.length === 0) return null;
@@ -414,12 +414,12 @@ async function triggerAutoTextForLeadId({ leadId, userId, person }) {
     return;
   }
 
-  const S = (x) => (x == null ? "" : String(x).trim());
-  const to = toE164(S(person?.phone));
+  const Sx = (x) => (x == null ? "" : String(x).trim());
+  const to = toE164(Sx(person?.phone));
   if (!to) { console.warn("[auto-text] invalid phone; cannot send"); return; }
 
   // Decide military vs normal
-  let isMilitary = !!S(person?.military_branch);
+  let isMilitary = !!Sx(person?.military_branch);
   if (!isMilitary) {
     try {
       const { data: contact } = await supabase
@@ -484,7 +484,7 @@ async function triggerAutoTextForLeadId({ leadId, userId, person }) {
       if (!enabledFor(key)) continue;
       const fromJson = mt.templates?.[key];
       const fromTop  = mt[key];
-      const body = S(fromJson || fromTop);
+      const body = Sx(fromJson || fromTop);
       if (body) return { key, body };
     }
     return null;
@@ -736,7 +736,8 @@ export default function LeadsPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Realtime inserts → ignore duplicates (id/email/phone) + send auto-text on INSERT
+  // Realtime inserts → ignore duplicates (id/email/phone)
+  // IMPORTANT: We NO LONGER auto-send texts here (server handles it on ingest).
   useEffect(() => {
     let channel;
     (async () => {
@@ -764,30 +765,10 @@ export default function LeadsPage() {
               saveClients(newClients);
               setLeads(newLeads);
               setClients(newClients);
-              setServerMsg("✅ New lead arrived (deduped)");
+              setServerMsg("✅ New lead arrived");
 
-              // 🔽 keep Contacts in sync + trigger the auto-text for THIS new lead id
-              (async () => {
-                try {
-                  await upsertLeadContact({
-                    userId,
-                    phone: row.phone,
-                    fullName: row.name,
-                    militaryBranch: row.military_branch,
-                  });
-
-                  await triggerAutoTextForLeadId({
-                    leadId: row.id,
-                    userId,
-                    person: row,
-                  });
-
-                  setServerMsg("📨 New lead text queued");
-                } catch (e) {
-                  console.error("Realtime auto-text error:", e);
-                  setServerMsg(`⚠️ Auto-text error: ${e.message || e}`);
-                }
-              })();
+              // ❌ Removed: do NOT upsert contact or send auto-text here.
+              // The server-side inbound (Zapier) already upserts contact and sends the text.
             }
           )
           .subscribe();
@@ -1223,6 +1204,7 @@ export default function LeadsPage() {
     }
 
     // Reflect to contacts + trigger auto-text using savedId
+    // (We keep this for manual adds since Zapier isn’t involved here.)
     try {
       const { data: authData } = await supabase.auth.getUser();
       const userId = authData?.user?.id;
@@ -1269,9 +1251,9 @@ export default function LeadsPage() {
           className="rounded-xl border border-white/15 bg-white/5 px-3 py-2 text-sm"
           aria-expanded={showConnector}
           aria-controls="auto-import-panel"
-          title="Setup Google Sheets auto-import"
+          title="Connect Google Sheets via Zapier"
         >
-          {showConnector ? "Close setup" : "Setup auto import leads"}
+          {showConnector ? "Close setup" : "Setup auto import (Zapier)"}
         </button>
 
         {/* Manual add lead */}
@@ -1331,7 +1313,8 @@ export default function LeadsPage() {
           id="auto-import-panel"
           className="my-4 rounded-2xl border border-white/15 bg-white/[0.03] p-4"
         >
-          <GoogleSheetsConnector />
+          {/* New Zapier embed replaces GoogleSheetsConnector */}
+          <ZapierEmbed />
         </div>
       )}
 
