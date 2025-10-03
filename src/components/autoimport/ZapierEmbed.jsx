@@ -17,8 +17,9 @@ export default function ZapierEmbed() {
       try {
         const { data: ses } = await supabase.auth.getSession();
         const token = ses?.session?.access_token;
-        if (!token) throw new Error("Please sign in to set up Zapier import.");
+        if (!token) throw new Error("Please sign in to set up Zapier.");
 
+        // Read or create per-user webhook (id + secret)
         const res = await fetch(API_PATH, {
           method: "GET",
           headers: { Authorization: `Bearer ${token}` },
@@ -46,7 +47,10 @@ export default function ZapierEmbed() {
 
       const res = await fetch(API_PATH, {
         method: "POST",
-        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${token}`,
+        },
         body: JSON.stringify({ rotate: true }),
       });
 
@@ -60,49 +64,20 @@ export default function ZapierEmbed() {
     }
   }
 
-  const webhookUrl = useMemo(() => {
+  const endpointUrl = useMemo(() => {
     return hook.id
-      ? `${window.location.origin}/.netlify/functions/gsheet-webhook?id=${hook.id}`
+      ? `${window.location.origin}/.netlify/functions/zap-webhook`
       : "—";
   }, [hook.id]);
 
-  function copy(t) { if (t) navigator.clipboard.writeText(t); }
-
-  const zapierCurlBasic = useMemo(() => {
-    const sample = JSON.stringify({
-      name: "Zap Sample",
-      phone: "(555) 111-2222",
-      email: "zap@example.com",
-      state: "TN",
-      notes: "From Zapier (Basic Auth)",
-      created_at: new Date().toISOString(),
-    });
-    return `# Webhooks by Zapier → Custom Request (Basic Auth)
-# Method: POST
-# URL: ${webhookUrl}
-# Basic Auth: username='${hook.id}'  password='${hook.secret}'
-# Headers:
-#   Content-Type: application/json
-# Body: raw JSON (the same fields your sheet provides)
-
-curl -X POST \\
-  -u "${hook.id}:${hook.secret}" \\
-  -H "Content-Type: application/json" \\
-  -d '${sample}' \\
-  "${webhookUrl}"`;
-  }, [hook.id, hook.secret, webhookUrl]);
-
-  const zapierCodeStep = `// "Code by Zapier" (Run Javascript)
-// Input Data: body (string), secret (string)
-const crypto = require('crypto');
-if (typeof inputData.body !== 'string') throw new Error('Expected body to be a JSON string');
-if (!inputData.secret) throw new Error('Missing secret');
-const hmac = crypto.createHmac('sha256', inputData.secret).update(inputData.body, 'utf8').digest('base64');
-return { signature: hmac };`;
+  function copy(text) {
+    if (!text) return;
+    navigator.clipboard.writeText(text);
+  }
 
   return (
     <div className="space-y-4 text-sm">
-      <h3 className="text-base font-semibold">Zapier: Google Sheets → Remie CRM</h3>
+      <h3 className="text-base font-semibold">Zapier: Auto-Import Leads</h3>
 
       {err && (
         <div className="rounded-md border border-amber-500/40 bg-amber-500/10 p-2 text-amber-200">
@@ -111,52 +86,82 @@ return { signature: hmac };`;
       )}
 
       <div className="rounded-xl border border-white/10 bg-white/[0.04] p-3">
-        <div className="mb-2 font-medium">Your Webhook (per user)</div>
-        <p className="mb-1"><strong>Webhook URL:</strong> <span className="break-all">{webhookUrl}</span></p>
-        <p className="mb-2"><strong>Secret:</strong> <span className="break-all">{hook.secret || "—"}</span></p>
-
-        <div className="flex flex-wrap gap-2">
-          <button onClick={() => copy(webhookUrl)} disabled={!hook.id || loading} className="rounded-md border border-white/15 bg-white/5 px-3 py-1">Copy URL</button>
-          <button onClick={() => copy(hook.secret)} disabled={!hook.secret || loading} className="rounded-md border border-white/15 bg-white/5 px-3 py-1">Copy Secret</button>
-          <button onClick={rotateSecret} disabled={!hook.id || loading} className="rounded-md border border-rose-500/40 bg-rose-500/10 px-3 py-1">Rotate secret</button>
-        </div>
-      </div>
-
-      {/* NO-CODE PATH */}
-      <div className="rounded-xl border border-white/10 bg-white/[0.04] p-3">
-        <div className="mb-2 font-medium">No-code (recommended): Webhooks + Basic Auth</div>
-        <ol className="list-decimal list-inside space-y-1">
-          <li>Trigger: <strong>Google Sheets</strong> → New or Updated Row.</li>
-          <li>Action: <strong>Webhooks by Zapier</strong> → Custom Request.</li>
-          <li>Method: <code>POST</code>, URL: <code>{webhookUrl}</code>.</li>
-          <li>Auth: choose <strong>Basic Auth</strong>. Username: <code>{hook.id || "…"}</code>, Password: <code>{hook.secret || "…"}</code>.</li>
-          <li>Headers: <code>Content-Type: application/json</code>.</li>
-          <li>Data: build a JSON body mapping your sheet fields (name, phone, email, state, notes, etc.).</li>
-        </ol>
-        <div className="mt-2">
-          <div className="mb-1 font-medium">cURL example</div>
-          <pre className="max-h-[240px] overflow-auto rounded-lg border border-white/10 bg-black/40 p-3 text-xs text-white">
-{zapierCurlBasic}
-          </pre>
-          <button onClick={() => copy(zapierCurlBasic)} className="rounded-md border border-white/15 bg-white/5 px-3 py-1">Copy example</button>
-        </div>
-      </div>
-
-      {/* ADVANCED PATH (kept for compatibility) */}
-      <div className="rounded-xl border border-white/10 bg-white/[0.04] p-3">
-        <div className="mb-2 font-medium">Advanced: HMAC signature (optional)</div>
-        <p className="mb-2 text-white/70">
-          If you prefer to sign requests, add a <em>Code by Zapier (Run Javascript)</em> step to compute <code>X-Signature</code> and send it with your POST.
+        <p className="mb-2">
+          <strong>Endpoint (URL):</strong>{" "}
+          <span className="break-all">{endpointUrl}</span>
         </p>
-        <pre className="max-h-[280px] overflow-auto rounded-lg border border-white/10 bg-black/40 p-3 text-xs text-white">
-{zapierCodeStep}
-        </pre>
-        <button onClick={() => copy(zapierCodeStep)} className="rounded-md border border-white/15 bg-white/5 px-3 py-1">Copy code</button>
+        <p className="mb-2">
+          <strong>Auth Type:</strong> Basic Auth
+        </p>
+        <p className="mb-1">
+          <strong>Username:</strong>{" "}
+          <span className="break-all">{hook.id || "—"}</span>
+        </p>
+        <p>
+          <strong>Password:</strong>{" "}
+          <span className="break-all">{hook.secret || "—"}</span>
+        </p>
+
+        <div className="mt-3 flex flex-wrap gap-2">
+          <button
+            onClick={() => copy(endpointUrl)}
+            disabled={!hook.id || loading}
+            className="rounded-md border border-white/15 bg-white/5 px-3 py-1"
+            title="Copy URL"
+          >
+            Copy URL
+          </button>
+          <button
+            onClick={() => copy(hook.id)}
+            disabled={!hook.id || loading}
+            className="rounded-md border border-white/15 bg-white/5 px-3 py-1"
+            title="Copy Username"
+          >
+            Copy Username
+          </button>
+          <button
+            onClick={() => copy(hook.secret)}
+            disabled={!hook.secret || loading}
+            className="rounded-md border border-white/15 bg-white/5 px-3 py-1"
+            title="Copy Password"
+          >
+            Copy Password
+          </button>
+          <button
+            onClick={rotateSecret}
+            disabled={loading || !hook.id}
+            className="rounded-md border border-rose-500/40 bg-rose-500/10 px-3 py-1"
+            title="Rotate secret"
+          >
+            Rotate secret
+          </button>
+        </div>
       </div>
 
-      <p className="text-xs text-white/50">
-        Tip: Use <code>netlify dev</code> during development so <code>/.netlify/functions/*</code> resolves locally. You must be signed in for this page to load your per-user webhook.
-      </p>
+      <div className="space-y-2">
+        <div className="font-medium">Zap steps (per user):</div>
+        <ol className="list-decimal list-inside space-y-1">
+          <li>Trigger: <em>Google Sheets → New/Updated Row</em> (pick sheet + tab).</li>
+          <li>(Optional) Add <em>Formatter</em> steps to clean phone/email.</li>
+          <li>
+            Action: <em>Webhooks by Zapier → Custom Request</em>
+            <ul className="ml-5 list-disc">
+              <li><strong>Method:</strong> POST</li>
+              <li><strong>URL:</strong> <code>{endpointUrl}</code></li>
+              <li><strong>Data (JSON):</strong> include fields like <code>name, phone, email, state, notes, military_branch, beneficiary, beneficiary_name</code></li>
+              <li><strong>Headers:</strong> <code>Content-Type: application/json</code></li>
+              <li><strong>Auth Type:</strong> Basic Auth</li>
+              <li><strong>Username:</strong> <code>{hook.id || "your_webhook_id"}</code></li>
+              <li><strong>Password:</strong> <code>{hook.secret || "your_secret"}</code></li>
+            </ul>
+          </li>
+          <li>Turn the Zap ON and add a test row in Google Sheets.</li>
+        </ol>
+        <p className="text-xs text-white/50">
+          When a row posts, we create the lead, update the contact tags, and auto-send
+          your “new lead” text (military template if <code>military_branch</code> is present).
+        </p>
+      </div>
     </div>
   );
 }
