@@ -15,7 +15,6 @@ export default function ZapierEmbed() {
       setLoading(true);
       setErr("");
       try {
-        // Get or create per-user webhook via server function
         const { data: ses } = await supabase.auth.getSession();
         const token = ses?.session?.access_token;
         if (!token) throw new Error("Please sign in to set up Zapier import.");
@@ -67,60 +66,39 @@ export default function ZapierEmbed() {
       : "—";
   }, [hook.id]);
 
-  function copy(t) {
-    if (!t) return;
-    navigator.clipboard.writeText(t);
-  }
+  function copy(t) { if (t) navigator.clipboard.writeText(t); }
 
-  const zapierCodeStep = useMemo(() => {
-    // This is the exact JS you can paste in a "Code by Zapier" (Run Javascript) step.
-    // Input Data (on the step): body, secret
-    //  - body: stringified JSON you will POST to the webhook
-    //  - secret: paste the Secret from this page
-    return `// "Code by Zapier" (Run Javascript)
-// Input Data: body (string), secret (string)
-// Output: { signature } to use as the X-Signature header
-
-const crypto = require('crypto');
-
-if (typeof inputData.body !== 'string') {
-  throw new Error('Expected inputData.body to be a JSON string');
-}
-if (!inputData.secret) {
-  throw new Error('Missing secret');
-}
-
-const hmac = crypto.createHmac('sha256', inputData.secret)
-  .update(inputData.body, 'utf8')
-  .digest('base64');
-
-return { signature: hmac };`;
-  }, []);
-
-  const zapierCurlExample = useMemo(() => {
+  const zapierCurlBasic = useMemo(() => {
     const sample = JSON.stringify({
-      name: "Jane Zap",
+      name: "Zap Sample",
       phone: "(555) 111-2222",
-      email: "jane@example.com",
+      email: "zap@example.com",
       state: "TN",
-      notes: "From Zapier",
+      notes: "From Zapier (Basic Auth)",
       created_at: new Date().toISOString(),
-    }, null, 2);
-
-    return `# Example final step (Webhooks by Zapier → Custom Request)
+    });
+    return `# Webhooks by Zapier → Custom Request (Basic Auth)
 # Method: POST
 # URL: ${webhookUrl}
+# Basic Auth: username='${hook.id}'  password='${hook.secret}'
 # Headers:
 #   Content-Type: application/json
-#   X-Signature: {{steps.code_by_zapier.signature}}
-# Data: (Raw) use the same JSON you signed in the Code step
+# Body: raw JSON (the same fields your sheet provides)
 
 curl -X POST \\
+  -u "${hook.id}:${hook.secret}" \\
   -H "Content-Type: application/json" \\
-  -H "X-Signature: REPLACE_WITH_SIGNATURE_FROM_CODE_STEP" \\
-  -d '${sample.replace(/\n/g, "")}' \\
+  -d '${sample}' \\
   "${webhookUrl}"`;
-  }, [webhookUrl]);
+  }, [hook.id, hook.secret, webhookUrl]);
+
+  const zapierCodeStep = `// "Code by Zapier" (Run Javascript)
+// Input Data: body (string), secret (string)
+const crypto = require('crypto');
+if (typeof inputData.body !== 'string') throw new Error('Expected body to be a JSON string');
+if (!inputData.secret) throw new Error('Missing secret');
+const hmac = crypto.createHmac('sha256', inputData.secret).update(inputData.body, 'utf8').digest('base64');
+return { signature: hmac };`;
 
   return (
     <div className="space-y-4 text-sm">
@@ -138,86 +116,46 @@ curl -X POST \\
         <p className="mb-2"><strong>Secret:</strong> <span className="break-all">{hook.secret || "—"}</span></p>
 
         <div className="flex flex-wrap gap-2">
-          <button
-            onClick={() => copy(webhookUrl)}
-            disabled={!hook.id || loading}
-            className="rounded-md border border-white/15 bg-white/5 px-3 py-1"
-            title="Copy Webhook URL"
-          >
-            Copy URL
-          </button>
-          <button
-            onClick={() => copy(hook.secret)}
-            disabled={!hook.secret || loading}
-            className="rounded-md border border-white/15 bg-white/5 px-3 py-1"
-            title="Copy Secret"
-          >
-            Copy Secret
-          </button>
-          <button
-            onClick={rotateSecret}
-            disabled={!hook.id || loading}
-            className="rounded-md border border-rose-500/40 bg-rose-500/10 px-3 py-1"
-            title="Rotate secret"
-          >
-            Rotate secret
-          </button>
+          <button onClick={() => copy(webhookUrl)} disabled={!hook.id || loading} className="rounded-md border border-white/15 bg-white/5 px-3 py-1">Copy URL</button>
+          <button onClick={() => copy(hook.secret)} disabled={!hook.secret || loading} className="rounded-md border border-white/15 bg-white/5 px-3 py-1">Copy Secret</button>
+          <button onClick={rotateSecret} disabled={!hook.id || loading} className="rounded-md border border-rose-500/40 bg-rose-500/10 px-3 py-1">Rotate secret</button>
         </div>
       </div>
 
+      {/* NO-CODE PATH */}
       <div className="rounded-xl border border-white/10 bg-white/[0.04] p-3">
-        <div className="mb-2 font-medium">How to build the Zap</div>
+        <div className="mb-2 font-medium">No-code (recommended): Webhooks + Basic Auth</div>
         <ol className="list-decimal list-inside space-y-1">
           <li>Trigger: <strong>Google Sheets</strong> → New or Updated Row.</li>
-          <li>Action: <strong>Formatter by Zapier</strong> (optional) to clean up phone/email.</li>
-          <li>
-            Action: <strong>Code by Zapier (Run Javascript)</strong> — paste the code below.
-            Provide two inputs: <code>body</code> (the JSON string you will POST) and
-            <code> secret</code> (paste the Secret from above).
-          </li>
-          <li>
-            Action: <strong>Webhooks by Zapier → Custom Request</strong>.
-            Method: <code>POST</code> to the Webhook URL above.
-            Headers: <code>Content-Type: application/json</code> and <code>X-Signature</code> from the Code step output.
-            Data: the exact JSON string you signed.
-          </li>
+          <li>Action: <strong>Webhooks by Zapier</strong> → Custom Request.</li>
+          <li>Method: <code>POST</code>, URL: <code>{webhookUrl}</code>.</li>
+          <li>Auth: choose <strong>Basic Auth</strong>. Username: <code>{hook.id || "…"}</code>, Password: <code>{hook.secret || "…"}</code>.</li>
+          <li>Headers: <code>Content-Type: application/json</code>.</li>
+          <li>Data: build a JSON body mapping your sheet fields (name, phone, email, state, notes, etc.).</li>
         </ol>
+        <div className="mt-2">
+          <div className="mb-1 font-medium">cURL example</div>
+          <pre className="max-h-[240px] overflow-auto rounded-lg border border-white/10 bg-black/40 p-3 text-xs text-white">
+{zapierCurlBasic}
+          </pre>
+          <button onClick={() => copy(zapierCurlBasic)} className="rounded-md border border-white/15 bg-white/5 px-3 py-1">Copy example</button>
+        </div>
       </div>
 
-      <div>
-        <div className="mb-1 font-medium">Code by Zapier — JavaScript</div>
-        <pre className="max-h-[320px] overflow-auto rounded-lg border border-white/10 bg-black/40 p-3 text-xs text-white">
+      {/* ADVANCED PATH (kept for compatibility) */}
+      <div className="rounded-xl border border-white/10 bg-white/[0.04] p-3">
+        <div className="mb-2 font-medium">Advanced: HMAC signature (optional)</div>
+        <p className="mb-2 text-white/70">
+          If you prefer to sign requests, add a <em>Code by Zapier (Run Javascript)</em> step to compute <code>X-Signature</code> and send it with your POST.
+        </p>
+        <pre className="max-h-[280px] overflow-auto rounded-lg border border-white/10 bg-black/40 p-3 text-xs text-white">
 {zapierCodeStep}
         </pre>
-        <div className="mt-2">
-          <button
-            onClick={() => copy(zapierCodeStep)}
-            className="rounded-md border border-white/15 bg-white/5 px-3 py-1"
-          >
-            Copy code
-          </button>
-        </div>
-      </div>
-
-      <div>
-        <div className="mb-1 font-medium">cURL example of the final request</div>
-        <pre className="max-h-[280px] overflow-auto rounded-lg border border-white/10 bg-black/40 p-3 text-xs text-white">
-{zapierCurlExample}
-        </pre>
-        <div className="mt-2">
-          <button
-            onClick={() => copy(zapierCurlExample)}
-            className="rounded-md border border-white/15 bg-white/5 px-3 py-1"
-          >
-            Copy example
-          </button>
-        </div>
+        <button onClick={() => copy(zapierCodeStep)} className="rounded-md border border-white/15 bg-white/5 px-3 py-1">Copy code</button>
       </div>
 
       <p className="text-xs text-white/50">
-        Notes: Your webhook validates the signature (HMAC-SHA256, base64). If verification fails, the lead is rejected.
-        After a valid POST, the server inserts/merges the lead, upserts the contact/tags, checks your wallet, and sends the correct template (military-aware).
-        Client-side realtime updates simply display the new lead; <em>texting is handled entirely on the server</em>.
+        Tip: Use <code>netlify dev</code> during development so <code>/.netlify/functions/*</code> resolves locally. You must be signed in for this page to load your per-user webhook.
       </p>
     </div>
   );
