@@ -8,16 +8,12 @@ const SUPABASE_URL = process.env.SUPABASE_URL;
 const SUPABASE_SERVICE_ROLE_KEY =
   process.env.SUPABASE_SERVICE_ROLE || process.env.SUPABASE_SERVICE_ROLE_KEY;
 
-// ANON is optional here; only used in a rare fallback below
+// ANON is used by browser/client-style auth flows and our user-webhook GET
 const SUPABASE_ANON_KEY = process.env.SUPABASE_ANON_KEY;
 
 if (!SUPABASE_URL) console.warn("[_supabase] Missing SUPABASE_URL");
 if (!SUPABASE_SERVICE_ROLE_KEY) console.warn("[_supabase] Missing SERVICE ROLE KEY");
-// Don't warn for ANON here; we’ll warn only if the fallback path needs it.
 
-/**
- * Service client (server-side privileges)
- */
 function getServiceClient() {
   if (!SUPABASE_URL || !SUPABASE_SERVICE_ROLE_KEY) {
     throw new Error("Missing SUPABASE_URL or SUPABASE_SERVICE_ROLE(_KEY) env vars");
@@ -27,13 +23,29 @@ function getServiceClient() {
   });
 }
 
+// ✅ New: anon client (preferred for verifying a user JWT passed from the browser)
+function getAnonClient() {
+  if (SUPABASE_URL && SUPABASE_ANON_KEY) {
+    return createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
+      auth: { persistSession: false },
+    });
+  }
+  // Fallback so things still work in dev if ANON isn’t set
+  if (SUPABASE_URL && SUPABASE_SERVICE_ROLE_KEY) {
+    console.warn("[_supabase] Falling back to service role for anon client");
+    return createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, {
+      auth: { persistSession: false },
+    });
+  }
+  throw new Error("Missing SUPABASE_URL and SUPABASE_ANON_KEY");
+}
+
 /**
  * Extracts the Bearer token from a Netlify event OR a Request
  * and returns the authenticated user (or null).
  */
 async function getUserFromRequest(eventOrReq) {
   try {
-    // Netlify event (plain object headers) OR Request (Headers.get())
     const headers =
       eventOrReq?.headers?.get?.("authorization")
         ? { authorization: eventOrReq.headers.get("authorization") }
@@ -57,14 +69,12 @@ async function getUserFromRequest(eventOrReq) {
     if (error) return null;
     return data?.user || null;
   } catch (e) {
-    // Fallback: direct call to /auth/v1/user using anon key if available
     try {
       const headers =
         eventOrReq?.headers?.get?.("authorization")
           ? { authorization: eventOrReq.headers.get("authorization") }
           : (eventOrReq?.headers || {});
-      const authHeader =
-        headers.authorization || headers.Authorization || "";
+      const authHeader = headers.authorization || headers.Authorization || "";
       if (!authHeader) return null;
 
       if (!SUPABASE_ANON_KEY) {
@@ -85,5 +95,6 @@ async function getUserFromRequest(eventOrReq) {
 
 module.exports = {
   getServiceClient,
+  getAnonClient,           // 👈 export this
   getUserFromRequest,
 };
