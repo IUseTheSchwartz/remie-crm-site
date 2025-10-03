@@ -1,159 +1,164 @@
 // netlify/functions/zap-webhook.js
-// Purpose: receive Zapier POSTs and create a lead, update contact tags,
-// and trigger your existing new-lead auto-text flow.
-// Auth: Basic Auth (username = webhook id, password = secret).
+// Ingest leads from Zapier (or any HTTP client) using Basic Auth:
+//   username = webhook id (wh_u_...)
+//   password = webhook secret
+//
+// Returns 200 on success, 401/403/4xx on failures with clear messages.
 
 const { getServiceClient } = require("./_supabase");
+
 const supabase = getServiceClient();
 
-// Helpers
-const S = (v) => (v == null ? "" : typeof v === "string" ? v.trim() : String(v).trim());
-const U = (v) => { const s = S(v); return s === "" ? undefined : s; };
-
-function onlyDigits(s){return String(s||"").replace(/\D/g,"");}
-function normalizePhone(s){const d=onlyDigits(s); return d.length===11&&d.startsWith("1")?d.slice(1):d;}
-function toE164(s){const d=onlyDigits(s); if(!d) return null; if(d.length===11&&d.startsWith("1"))return `+${d}`; if(d.length===10)return `+1${d}`; return s&&s.startsWith("+")?s:null; }
-
-function getAuthHeader(event) {
-  const h = event.headers || {};
-  return h.authorization || h.Authorization || "";
+function json(status, body) {
+  return {
+    statusCode: status,
+    headers: { "Content-Type": "application/json" },
+    body: typeof body === "string" ? body : JSON.stringify(body),
+  };
 }
 
-// contact tag helper
-async function computeNextContactTags({ supabase, user_id, phone, full_name, military_branch }) {
-  const phoneNorm = normalizePhone(phone);
-  const { data: candidates } = await supabase
-    .from("message_contacts")
-    .select("id, phone, tags")
-    .eq("user_id", user_id);
-
-  const found = (candidates || []).find((c) => normalizePhone(c.phone) === phoneNorm);
-  const current = Array.isArray(found?.tags) ? found.tags : [];
-  const withoutStatus = current.filter((t) => !["lead", "military"].includes(String(t).toLowerCase()));
-  const status = (S(military_branch) ? "military" : "lead");
-  const next = Array.from(new Set([...withoutStatus, status]));
-  return { contactId: found?.id ?? null, tags: next };
+function S(v) {
+  if (v == null) return "";
+  if (typeof v === "string") return v.trim();
+  if (typeof v === "number") return String(v);
+  return String(v || "").trim();
 }
-
-async function upsertContact(supabase, { user_id, phone, full_name, tags, meta = {} }) {
-  const phoneE164 = toE164(phone) || phone;
-  const { data: existing } = await supabase
-    .from("message_contacts")
-    .select("id, meta, full_name")
-    .eq("user_id", user_id)
-    .eq("phone", phoneE164)
-    .maybeSingle();
-
-  if (existing?.id) {
-    const mergedMeta = { ...(existing.meta || {}), ...(meta || {}) };
-    await supabase
-      .from("message_contacts")
-      .update({ full_name: full_name || existing.full_name, tags, meta: mergedMeta })
-      .eq("id", existing.id);
-    return existing.id;
-  } else {
-    const { data: ins } = await supabase
-      .from("message_contacts")
-      .insert([{ user_id, phone: phoneE164, full_name, tags, meta, subscribed: true }])
-      .select("id")
-      .single();
-    return ins.id;
-  }
-}
-
-// auto-text sender
-const { handler: sendMessage } = require("./messages-send");
 
 exports.handler = async (event) => {
-  if (event.httpMethod !== "POST") return { statusCode: 405, body: "Method Not Allowed" };
-
   try {
-    // --- Basic Auth ---
-    const auth = getAuthHeader(event);
-    if (!auth.startsWith("Basic ")) return { statusCode: 401, body: "Missing Basic Auth" };
-    const [id, secret] = Buffer.from(auth.slice(6), "base64").toString("utf8").split(":");
+    if (event.httpMethod !== "POST") {
+      return json(405, { error: "method_not_allowed" });
+    }
 
-    if (!id || !secret) return { statusCode: 401, body: "Invalid Basic Auth" };
+    /* =========================
+     *  AUTH (Basic) — 403 path
+     * ========================= */
+    const auth = event.headers.authorization || event.headers.Authorization || "";
+    if (!auth.startsWith("Basic ")) {
+      // No Basic header at all → 401
+      return json(401, { error: "missing_basic_auth" });
+    }
 
-    const { data: rows } = await supabase
+    // Decode the Basic token → "username:password"
+    // (Zapier UI `username|password` becomes header `Basic base64(username:password)` automatically.)
+    let userpass;
+    try {
+      const b64 = auth.slice(6).trim();
+      userpass = Buffer.from(b64, "base64").toString("utf8"); // "wh_u_xxx:secret"
+    } catch {
+      return json(401, { error: "bad_basic_header" });
+    }
+
+    const sep = userpass.indexOf(":");
+    if (sep === -1) {
+      // If the decoded value didn’t contain ":", header is malformed
+      return json(401, { error: "malformed_basic_pair" });
+    }
+
+    const webhookId = userpass.slice(0, sep).trim();   // username
+    const providedSecret = userpass.slice(sep + 1).trim(); // password
+
+    if (!webhookId || !providedSecret) {
+      return json(401, { error: "empty_basic_fields" });
+    }
+
+    // Look up the webhook row by ID
+    const { data: rows, error: hookErr } = await supabase
       .from("user_inbound_webhooks")
       .select("id, user_id, secret, active")
-      .eq("id", id)
-      .eq("active", true)
+      .eq("id", webhookId)
       .limit(1);
 
-    const wh = rows?.[0];
-    if (!wh || wh.secret !== secret) return { statusCode: 403, body: "Forbidden" };
+    if (hookErr) {
+      // DB error → fail closed
+      return json(500, { error: "db_error", detail: hookErr.message });
+    }
+    if (!rows || !rows.length) {
+      // Unknown webhook id → 403 Forbidden
+      return json(403, { error: "unknown_webhook_id" });
+    }
 
-    // --- Parse JSON body ---
-    let p; try { p = JSON.parse(event.body || "{}"); } catch { return { statusCode: 400, body: "Invalid JSON" }; }
+    const hook = rows[0];
 
-    const nowIso = new Date().toISOString();
+    if (!hook.active) {
+      // Disabled webhook → 403
+      return json(403, { error: "webhook_disabled" });
+    }
+
+    // Constant-time compare of the secret → 403 if mismatch
+    const ok =
+      Buffer.byteLength(hook.secret) === Buffer.byteLength(providedSecret) &&
+      crypto.timingSafeEqual(Buffer.from(hook.secret), Buffer.from(providedSecret));
+
+    if (!ok) {
+      return json(403, { error: "bad_credentials" });
+    }
+
+    /* =========================
+     *  Body parse & normalization
+     * ========================= */
+    let p = {};
+    try {
+      p = JSON.parse(event.body || "{}");
+    } catch {
+      return json(400, { error: "invalid_json" });
+    }
+
+    // Build lead record (aligns with your gsheet-webhook fields)
     const lead = {
-      user_id: wh.user_id,
-      name: U(p.name) || null,
-      phone: U(p.phone) || null,
-      email: U(p.email) || null,
-      state: U(p.state) || null,
-      created_at: nowIso,
+      user_id: hook.user_id,
+      name: S(p.name) || null,
+      phone: S(p.phone) || null,
+      email: S(p.email).toLowerCase() || null,
+      state: S(p.state) || null,
+      notes: S(p.notes) || null,
+      beneficiary: S(p.beneficiary) || null,
+      beneficiary_name: S(p.beneficiary_name) || null,
+      gender: S(p.gender) || null,
+      company: S(p.company) || null,
+      military_branch: S(p.military_branch) || null,
+
+      // pipeline defaults
       stage: "no_pickup",
-      stage_changed_at: nowIso,
+      stage_changed_at: new Date().toISOString(),
       priority: "medium",
       call_attempts: 0,
       last_outcome: "",
       pipeline: {},
-      military_branch: U(p.military_branch) || null,
-      beneficiary: U(p.beneficiary),
-      beneficiary_name: U(p.beneficiary_name),
-      notes: U(p.notes),
+      created_at: new Date().toISOString(),
     };
 
-    if (!lead.phone && !lead.email) {
-      return { statusCode: 400, body: "Lead missing phone/email" };
+    if (!lead.name && !lead.phone && !lead.email) {
+      return json(400, { error: "empty_payload" });
     }
 
-    const { data: inserted, error: insErr } = await supabase
+    // Insert lead
+    const { data: ins, error: insErr } = await supabase
       .from("leads")
       .insert([lead])
       .select("id")
       .single();
-    if (insErr) return { statusCode: 500, body: insErr.message };
 
-    const leadId = inserted.id;
-
-    // --- Upsert contact ---
-    let contactId = null;
-    if (lead.phone) {
-      const { tags } = await computeNextContactTags({
-        supabase,
-        user_id: wh.user_id,
-        phone: lead.phone,
-        full_name: lead.name,
-        military_branch: lead.military_branch,
-      });
-      contactId = await upsertContact(supabase, {
-        user_id: wh.user_id,
-        phone: lead.phone,
-        full_name: lead.name,
-        tags,
-        meta: { lead_id: leadId, beneficiary: lead.beneficiary_name || lead.beneficiary },
-      });
+    if (insErr) {
+      // Graceful duplicate handling
+      const msg = (insErr.message || "").toLowerCase();
+      if (msg.includes("duplicate") || insErr.code === "23505") {
+        return json(200, { ok: true, skipped: true, reason: "duplicate_lead_insert" });
+      }
+      return json(500, { error: "insert_failed", detail: insErr.message });
     }
 
-    // --- Auto send new lead text ---
-    await sendMessage({
-      body: JSON.stringify({
-        lead_id: leadId,
-        contact_id: contactId,
-        templateKey: lead.military_branch ? "new_lead_military" : "new_lead",
-        requesterId: wh.user_id,
-        provider_message_id: `lead:${leadId}`,
-      }),
-    });
+    // Touch last_used_at for visibility
+    await supabase
+      .from("user_inbound_webhooks")
+      .update({ last_used_at: new Date().toISOString() })
+      .eq("id", webhookId);
 
-    return { statusCode: 200, body: JSON.stringify({ ok: true, id: leadId }) };
+    return json(200, { ok: true, id: ins.id });
   } catch (e) {
-    console.error("[zap-webhook]", e);
-    return { statusCode: 500, body: "Server error" };
+    console.error("[zap-webhook] unhandled:", e);
+    return json(500, { error: "server_error" });
   }
 };
+
+const crypto = require("crypto");
