@@ -423,7 +423,7 @@ function LandingPage() {
             <a href="#contact" className="text-sm opacity-80 hover:opacity-100">Contact</a>
             <Link to="/login" className="text-sm opacity-80 hover:opacity-100">Log in</Link>
             <Link
-              to="/signup?next=start-trial&price=price_1S2jggPgdGNoe2LHTnBIX94d"
+              to="/signup?next=start-trial&price=price_1SEZwrPgdGNoe2LHAkgRSFrl"
               className="hidden rounded-xl bg-gradient-to-r from-indigo-500 via-purple-500 to-fuchsia-500 px-4 py-2 text-sm font-medium ring-1 ring-white/10 md:block"
             >
               Start 7-day free trial
