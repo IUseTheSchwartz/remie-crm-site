@@ -372,11 +372,11 @@ function LandingPage() {
     {
       name: "Remie CRM",
       blurb: "All-in-one CRM for agents — pipeline, automations, and more.",
-      monthly: 280,
-      yearly: 250,
+      monthly: 175,
+      yearly: 150,
       buyUrl: {
-        monthly: "https://buy.stripe.com/28E4gB8OScYeffg2qg8Ra07",
-        annual: "https://buy.stripe.com/5kQ28tfdg2jA0km7KA8Ra0a",
+        monthly: "https://buy.stripe.com/4gM5kF4yCcYe4AC6Gw8Ra0c",
+        annual: "https://buy.stripe.com/dRm4gBfdgf6m1oqfd28Ra0d",
       },
       features: [
         "AI rebuttal helper",
