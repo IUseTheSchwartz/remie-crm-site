@@ -85,6 +85,9 @@ function buildHeaderIndex(headers) {
   const normalized = headers.map(norm);
 
   const matchesCandidate = (normalizedHeader, candidate) => {
+    // 👇 Guard: ignore junk "Unnamed: x" columns from spreadsheets
+    if ((normalizedHeader || "").startsWith("unnamed")) return false;
+
     const c = candidate.toLowerCase();
     if (normalizedHeader === c) return true;
     if (normalizedHeader === c.replace(/_/g, " ")) return true;
