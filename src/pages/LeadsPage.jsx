@@ -614,6 +614,11 @@ export default function LeadsPage() {
   // selection for mass actions
   const [selectedIds, setSelectedIds] = useState(new Set());
 
+  /* NEW: CSV -> choice & confirm modals state */
+  const [choiceModal, setChoiceModal] = useState(null);   // { count, people }
+  const [confirmModal, setConfirmModal] = useState(null); // {..., people }
+  const [isSendingBatch, setIsSendingBatch] = useState(false);
+
   useEffect(() => {
     setLeads(loadLeads());
     setClients(loadClients());
@@ -801,6 +806,47 @@ export default function LeadsPage() {
       : src;
   }, [tab, allClients, onlySold, filter]);
 
+  /* ---------- Helpers for CSV choice + dry-run ---------- */
+  async function persistLeadsToServer(people) {
+    // optimistic local
+    const newLeads = [...people, ...leads];
+    const newClients = [...people, ...clients];
+    saveLeads(newLeads);
+    saveClients(newClients);
+    setLeads(newLeads);
+    setClients(newClients);
+    setTab("clients");
+
+    // batch upsert
+    try {
+      setServerMsg(`Syncing ${people.length} new lead(s) to Supabase…`);
+      const count = await upsertManyLeadsServer(people);
+      setServerMsg(`✅ CSV synced (${count} new) — duplicates skipped`);
+    } catch (e) {
+      console.error("CSV sync error:", e);
+      setServerMsg(`⚠️ CSV sync failed: ${e.message || e}`);
+    }
+  }
+
+  async function runDryRun(people) {
+    const { data: auth } = await supabase.auth.getUser();
+    const requesterId = auth?.user?.id;
+    if (!requesterId) { alert("Not logged in."); return null; }
+
+    const res = await fetch(`${FN_BASE}/import-batch-send`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        requesterId,
+        dry_run: true,
+        batch_id: Math.random().toString(36).slice(2, 10),
+        people,
+      }),
+    });
+    const out = await res.json().catch(() => ({}));
+    return { status: res.status, out };
+  }
+
   // CSV import with duplicate skipping (email OR phone)
   async function handleImportCsv(file) {
     Papa.parse(file, {
@@ -870,33 +916,23 @@ export default function LeadsPage() {
           return;
         }
 
-        // Optimistic local update first
-        const newLeads = [...uniqueToAdd, ...leads];
-        const newClients = [...uniqueToAdd, ...clients];
-        saveLeads(newLeads);
-        saveClients(newClients);
-        setLeads(newLeads);
-        setClients(newClients);
-        setTab("clients");
-
-        // Try server batch upsert
-        try {
-          setServerMsg(`Syncing ${uniqueToAdd.length} new lead(s) to Supabase…`);
-          const count = await upsertManyLeadsServer(uniqueToAdd);
-          setServerMsg(`✅ CSV synced (${count} new) — duplicates skipped`);
-        } catch (e) {
-          console.error("CSV sync error:", e);
-          setServerMsg(`⚠️ CSV sync failed: ${e.message || e}`);
-        }
-
-        // NOTE: CSV path intentionally does NOT create Contacts or send messages.
+        // 👉 NEW: Ask user how to proceed (Add only vs Add & Message Now)
+        setChoiceModal({
+          count: uniqueToAdd.length,
+          people: uniqueToAdd.map(p => ({
+            phone: p.phone || "",
+            email: (p.email || "").toLowerCase(),
+            name: p.name || "",
+            military_branch: p.military_branch || "",
+          })),
+        });
       },
       error: (err) => alert("CSV parse error: " + err.message),
     });
   }
 
   function downloadTemplate() {
-    const csv = Papa.unparse([Object.fromEntries(TEMPLATE_HEADERS.map(h => [h, ""]))], { header: true });
+    const csv = Papa.unparse([Object.fromEntries(TEMPLATE_HEADERS.map(h => [h, ""))], { header: true });
     const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
@@ -1439,6 +1475,156 @@ export default function LeadsPage() {
           </tbody>
         </table>
       </div>
+
+      {/* 👉 NEW: Choice Modal (Add only vs Add & Message Now) */}
+      {choiceModal && (
+        <div className="fixed inset-0 z-50 grid bg-black/60 p-3">
+          <div className="relative m-auto w-full max-w-lg rounded-2xl border border-white/15 bg-neutral-950 p-4">
+            <div className="mb-2 text-base font-semibold">How do you want to import these leads?</div>
+            <p className="text-sm text-white/70 mb-4">
+              We found <span className="font-semibold text-white">{choiceModal.count}</span> new contact(s) in your file.
+            </p>
+            <div className="flex items-center justify-end gap-2">
+              <button
+                className="rounded-xl border border-white/15 px-4 py-2 text-sm hover:bg-white/10"
+                onClick={async () => {
+                  const people = choiceModal.people;
+                  setChoiceModal(null);
+                  await persistLeadsToServer(people);
+                  // Done: add only
+                }}
+              >
+                Add to CRM only
+              </button>
+              <button
+                className="rounded-xl bg-white px-4 py-2 text-sm font-medium text-black hover:bg-white/90"
+                onClick={async () => {
+                  const people = choiceModal.people;
+                  setChoiceModal(null);
+                  // 1) upsert first so server can resolve lead_ids
+                  await persistLeadsToServer(people);
+                  // 2) dry run to compute count + cost
+                  const { status, out } = await runDryRun(people) || {};
+                  if (!out) return;
+                  if (status === 403 && out?.error === "disabled") {
+                    setServerMsg("⚠️ Bulk messaging is disabled by env flag.");
+                    return;
+                  }
+                  if (status === 413 && out?.error === "over_cap") {
+                    setServerMsg(`⚠️ Over batch cap (${out.cap}). Reduce your file size.`);
+                    return;
+                  }
+                  if (out.error) {
+                    setServerMsg("⚠️ Preview failed. See console for details.");
+                    console.warn("[dry-run] fail", out);
+                    return;
+                  }
+                  setConfirmModal({
+                    batch_id: out.batch_id,
+                    total_candidates: out.total_candidates,
+                    will_send: out.will_send,
+                    estimated_cost_cents: out.estimated_cost_cents,
+                    wallet_balance_cents: out.wallet_balance_cents,
+                    skipped_by_reason: out.skipped_by_reason,
+                    blocker: out.blocker || null,
+                    people, // keep for final send call
+                  });
+                }}
+              >
+                Add &amp; Message Now
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* 👉 NEW: Confirmation Modal (cost preview + Send Now) */}
+      {confirmModal && (
+        <div className="fixed inset-0 z-50 grid bg-black/60 p-3">
+          <div className="relative m-auto w-full max-w-lg rounded-2xl border border-white/15 bg-neutral-950 p-4">
+            <div className="mb-2 text-base font-semibold">Confirm bulk message</div>
+            <div className="space-y-2 text-sm">
+              <div className="flex justify-between"><span>Candidates</span><span>{confirmModal.total_candidates}</span></div>
+              <div className="flex justify-between"><span>Will send now</span><span>{confirmModal.will_send}</span></div>
+              <div className="flex justify-between">
+                <span>Estimated cost</span>
+                <span>${(confirmModal.estimated_cost_cents / 100).toFixed(2)}</span>
+              </div>
+              {typeof confirmModal.wallet_balance_cents === "number" && (
+                <div className="flex justify-between">
+                  <span>Wallet balance</span>
+                  <span>${(confirmModal.wallet_balance_cents / 100).toFixed(2)}</span>
+                </div>
+              )}
+
+              <details className="mt-2">
+                <summary className="cursor-pointer text-white/80">Skipped (preview)</summary>
+                <div className="mt-2 grid gap-1 text-white/70">
+                  {Object.entries(confirmModal.skipped_by_reason || {}).map(([k,v]) => (
+                    <div key={k} className="flex justify-between">
+                      <span className="capitalize">{k.replace(/_/g," ")}</span><span>{v}</span>
+                    </div>
+                  ))}
+                </div>
+              </details>
+
+              {confirmModal.blocker && (
+                <div className="mt-2 rounded-lg border border-amber-500/40 bg-amber-500/10 p-2 text-amber-200">
+                  {confirmModal.blocker === "tfn_pending_verification" && "Your toll-free number is pending verification. You can import, but cannot send yet."}
+                  {confirmModal.blocker === "no_agent_tfn_configured" && "No verified toll-free number is configured. Add one in Messaging Settings."}
+                  {confirmModal.blocker === "insufficient_balance" && "Insufficient wallet balance to send this batch."}
+                </div>
+              )}
+            </div>
+
+            <div className="mt-4 flex items-center justify-end gap-2">
+              <button
+                className="rounded-xl border border-white/15 px-4 py-2 text-sm hover:bg-white/10"
+                onClick={() => setConfirmModal(null)}
+              >
+                Back
+              </button>
+              <button
+                disabled={!!confirmModal.blocker || isSendingBatch || confirmModal.will_send === 0}
+                className={`rounded-xl px-4 py-2 text-sm font-medium ${(!confirmModal.blocker && confirmModal.will_send>0 && !isSendingBatch) ? "bg-white text-black hover:bg-white/90" : "bg-white/20 text-white/60 cursor-not-allowed"}`}
+                onClick={async () => {
+                  try {
+                    setIsSendingBatch(true);
+                    setServerMsg("📨 Sending messages…");
+                    const { data: auth } = await supabase.auth.getUser();
+                    const requesterId = auth?.user?.id;
+                    const res = await fetch(`${FN_BASE}/import-batch-send`, {
+                      method: "POST",
+                      headers: { "Content-Type": "application/json" },
+                      body: JSON.stringify({
+                        requesterId,
+                        batch_id: confirmModal.batch_id,
+                        people: confirmModal.people,
+                      }),
+                    });
+                    const out = await res.json().catch(() => ({}));
+                    if (res.status === 402 && out?.stop === "insufficient_balance") {
+                      setServerMsg("⚠️ Not enough balance to send this batch.");
+                    } else if (res.status === 409 && out?.stop) {
+                      setServerMsg("⚠️ Cannot send until your toll-free number is verified/configured.");
+                    } else if (res.ok) {
+                      setServerMsg(`✅ Sent: ${out.ok}, skipped: ${out.skipped}, errors: ${out.errors}`);
+                    } else {
+                      setServerMsg("⚠️ Batch send failed. See console.");
+                      console.warn("[import-batch-send] send fail", out);
+                    }
+                  } finally {
+                    setIsSendingBatch(false);
+                    setConfirmModal(null);
+                  }
+                }}
+              >
+                {isSendingBatch ? "Sending…" : "Send Now"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Drawer for SOLD (create/edit sold) */}
       {selected && (
