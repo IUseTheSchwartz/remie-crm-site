@@ -17,7 +17,7 @@ import {
 // Supabase browser client (read + realtime)
 import { supabase } from "../lib/supabaseClient.js";
 
-// (REPLACED) Google Sheets connector → Zapier embed
+// Auto-import setup panel
 import ZapierEmbed from "../components/autoimport/ZapierEmbed.jsx";
 
 // Phone normalizer (E.164)
@@ -56,7 +56,10 @@ function labelForStage(id) {
 }
 
 /* --------------------------- Header alias helpers --------------------------- */
-const TEMPLATE_HEADERS = ["name","phone","email"]; // minimal CSV template
+const TEMPLATE_HEADERS = [
+  "name","phone","email",
+  "dob","state","beneficiary","beneficiary_name","gender","military_branch","notes"
+];
 
 const H = {
   first: ["first","first name","firstname","given name","given_name","fname","first_name"],
@@ -776,7 +779,7 @@ export default function LeadsPage() {
               setServerMsg("✅ New lead arrived");
 
               // ❌ Removed: do NOT upsert contact or send auto-text here.
-              // The server-side inbound (Zapier) already upserts contact and sends the text.
+              // The server-side inbound already upserts contact and sends the text.
             }
           )
           .subscribe();
@@ -919,15 +922,10 @@ export default function LeadsPage() {
           return;
         }
 
-        // 👉 NEW: Ask user how to proceed (Add only vs Add & Message Now)
+        // 👉 Keep FULL objects so extra fields persist
         setChoiceModal({
           count: uniqueToAdd.length,
-          people: uniqueToAdd.map(p => ({
-            phone: p.phone || "",
-            email: (p.email || "").toLowerCase(),
-            name: p.name || "",
-            military_branch: p.military_branch || "",
-          })),
+          people: uniqueToAdd,
         });
       },
       error: (err) => alert("CSV parse error: " + err.message),
@@ -1290,9 +1288,9 @@ export default function LeadsPage() {
           className="rounded-xl border border-white/15 bg-white/5 px-3 py-2 text-sm"
           aria-expanded={showConnector}
           aria-controls="auto-import-panel"
-          title="Connect Google Sheets via Zapier"
+          title="Auto-import leads setup"
         >
-          {showConnector ? "Close setup" : "Setup auto import (Zapier)"}
+          {showConnector ? "Close setup" : "Setup auto import"}
         </button>
 
         {/* Manual add lead */}
@@ -1352,7 +1350,6 @@ export default function LeadsPage() {
           id="auto-import-panel"
           className="my-4 rounded-2xl border border-white/15 bg-white/[0.03] p-4"
         >
-          {/* New Zapier embed replaces GoogleSheetsConnector */}
           <ZapierEmbed />
         </div>
       )}
@@ -1384,7 +1381,7 @@ export default function LeadsPage() {
               <Th>Actions</Th>
             </tr>
           </thead>
-          <tbody>
+            <tbody>
             {visible.map((p) => {
               const isSold = p.status === "sold";
               const stageId = p.stage || "no_pickup";
@@ -1402,7 +1399,7 @@ export default function LeadsPage() {
                   </Td>
                   <Td>{p.name || "—"}</Td>
 
-                  {/* Phone: show number + our call button (no dependency on other components) */}
+                  {/* Phone: show number + call button */}
                   <Td>
                     {p.phone ? (
                       <div className="flex items-center gap-2">
@@ -1479,7 +1476,7 @@ export default function LeadsPage() {
         </table>
       </div>
 
-      {/* 👉 NEW: Choice Modal (Add only vs Add & Message Now) */}
+      {/* 👉 Choice Modal (Add only vs Add & Message Now) */}
       {choiceModal && (
         <div className="fixed inset-0 z-50 grid bg-black/60 p-3">
           <div className="relative m-auto w-full max-w-lg rounded-2xl border border-white/15 bg-neutral-950 p-4">
@@ -1494,7 +1491,6 @@ export default function LeadsPage() {
                   const people = choiceModal.people;
                   setChoiceModal(null);
                   await persistLeadsToServer(people);
-                  // Done: add only
                 }}
               >
                 Add to CRM only
@@ -1541,7 +1537,7 @@ export default function LeadsPage() {
         </div>
       )}
 
-      {/* 👉 NEW: Confirmation Modal (cost preview + Send Now) */}
+      {/* 👉 Confirmation Modal (cost preview + Send Now) */}
       {confirmModal && (
         <div className="fixed inset-0 z-50 grid bg-black/60 p-3">
           <div className="relative m-auto w-full max-w-lg rounded-2xl border border-white/15 bg-neutral-950 p-4">
