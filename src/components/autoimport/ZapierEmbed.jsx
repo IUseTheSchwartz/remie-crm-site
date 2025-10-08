@@ -1,167 +1,166 @@
 // File: src/components/autoimport/ZapierEmbed.jsx
-import React, { useEffect, useMemo, useState } from "react";
-import { supabase } from "../../lib/supabaseClient";
-
-const API_PATH = "/.netlify/functions/user-webhook";
+import React, { useMemo } from "react";
 
 export default function ZapierEmbed() {
-  const [hook, setHook] = useState({ id: "", secret: "" });
-  const [loading, setLoading] = useState(true);
-  const [err, setErr] = useState("");
+  const EMAIL = "remiecrmleads@gmail.com";
 
-  useEffect(() => {
-    let cancelled = false;
-    (async () => {
-      setLoading(true);
-      setErr("");
-      try {
-        const { data: ses } = await supabase.auth.getSession();
-        const token = ses?.session?.access_token;
-        if (!token) throw new Error("Please sign in to set up Zapier.");
-
-        // Read or create per-user webhook (id + secret)
-        const res = await fetch(API_PATH, {
-          method: "GET",
-          headers: { Authorization: `Bearer ${token}` },
-        });
-
-        if (!res.ok) throw new Error(`Fetch webhook failed (${res.status})`);
-        const json = await res.json();
-        if (!cancelled) setHook({ id: json.id, secret: json.secret });
-      } catch (e) {
-        if (!cancelled) setErr(e?.message || String(e));
-      } finally {
-        if (!cancelled) setLoading(false);
-      }
-    })();
-    return () => { cancelled = true; };
+  const emailSubject = "Auto-Import Leads – Setup Request";
+  const emailBodyEncoded = useMemo(() => {
+    const lines = [
+      "Hi Remie CRM team,",
+      "",
+      "Please set up Auto-Import Leads for my account.",
+      "",
+      "• My Remie CRM username (email):",
+      "• My Remie CRM password:",
+      "• Lead type(s): (e.g., Veteran, FEX)",
+      "• Google Sheet link(s):",
+      "",
+      "I have shared the Google Sheet with remiecrmleads@gmail.com.",
+      "",
+      "Thanks!",
+    ];
+    return encodeURIComponent(lines.join("\n"));
   }, []);
 
-  async function rotateSecret() {
-    setLoading(true);
-    setErr("");
+  const mailto = `mailto:${EMAIL}?subject=${encodeURIComponent(
+    emailSubject
+  )}&body=${emailBodyEncoded}`;
+
+  async function copy(text) {
+    if (!text) return;
     try {
-      const { data: ses } = await supabase.auth.getSession();
-      const token = ses?.session?.access_token;
-      if (!token) throw new Error("Not signed in.");
-
-      const res = await fetch(API_PATH, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${token}`,
-        },
-        body: JSON.stringify({ rotate: true }),
-      });
-
-      if (!res.ok) throw new Error(`Rotate failed (${res.status})`);
-      const json = await res.json();
-      setHook({ id: json.id, secret: json.secret });
-    } catch (e) {
-      setErr(e?.message || String(e));
-    } finally {
-      setLoading(false);
+      await navigator.clipboard.writeText(text);
+      alert("Copied!");
+    } catch {
+      // fallback
+      const ta = document.createElement("textarea");
+      ta.value = text;
+      document.body.appendChild(ta);
+      ta.select();
+      document.execCommand("copy");
+      document.body.removeChild(ta);
+      alert("Copied!");
     }
   }
 
-  const endpointUrl = useMemo(() => {
-    return hook.id
-      ? `${window.location.origin}/.netlify/functions/zap-webhook`
-      : "—";
-  }, [hook.id]);
-
-  function copy(text) {
-    if (!text) return;
-    navigator.clipboard.writeText(text);
-  }
-
   return (
-    <div className="space-y-4 text-sm">
-      <h3 className="text-base font-semibold">Zapier: Auto-Import Leads</h3>
-
-      {err && (
-        <div className="rounded-md border border-amber-500/40 bg-amber-500/10 p-2 text-amber-200">
-          {err}
-        </div>
-      )}
-
-      <div className="rounded-xl border border-white/10 bg-white/[0.04] p-3">
-        <p className="mb-2">
-          <strong>Endpoint (URL):</strong>{" "}
-          <span className="break-all">{endpointUrl}</span>
-        </p>
-        <p className="mb-2">
-          <strong>Auth Type:</strong> Basic Auth
-        </p>
-        <p className="mb-1">
-          <strong>Username:</strong>{" "}
-          <span className="break-all">{hook.id || "—"}</span>
-        </p>
-        <p>
-          <strong>Password:</strong>{" "}
-          <span className="break-all">{hook.secret || "—"}</span>
-        </p>
-
-        <div className="mt-3 flex flex-wrap gap-2">
-          <button
-            onClick={() => copy(endpointUrl)}
-            disabled={!hook.id || loading}
-            className="rounded-md border border-white/15 bg-white/5 px-3 py-1"
-            title="Copy URL"
-          >
-            Copy URL
-          </button>
-          <button
-            onClick={() => copy(hook.id)}
-            disabled={!hook.id || loading}
-            className="rounded-md border border-white/15 bg-white/5 px-3 py-1"
-            title="Copy Username"
-          >
-            Copy Username
-          </button>
-          <button
-            onClick={() => copy(hook.secret)}
-            disabled={!hook.secret || loading}
-            className="rounded-md border border-white/15 bg-white/5 px-3 py-1"
-            title="Copy Password"
-          >
-            Copy Password
-          </button>
-          <button
-            onClick={rotateSecret}
-            disabled={loading || !hook.id}
-            className="rounded-md border border-rose-500/40 bg-rose-500/10 px-3 py-1"
-            title="Rotate secret"
-          >
-            Rotate secret
-          </button>
-        </div>
-      </div>
-
-      <div className="space-y-2">
-        <div className="font-medium">Zap steps (per user):</div>
-        <ol className="list-decimal list-inside space-y-1">
-          <li>Trigger: <em>Google Sheets → New/Updated Row</em> (pick sheet + tab).</li>
-          <li>(Optional) Add <em>Formatter</em> steps to clean phone/email.</li>
-          <li>
-            Action: <em>Webhooks by Zapier → Custom Request</em>
-            <ul className="ml-5 list-disc">
-              <li><strong>Method:</strong> POST</li>
-              <li><strong>URL:</strong> <code>{endpointUrl}</code></li>
-              <li><strong>Data (JSON):</strong> include fields like <code>name, phone, email, state, notes, military_branch, beneficiary, beneficiary_name</code></li>
-              <li><strong>Headers:</strong> <code>Content-Type: application/json</code></li>
-              <li><strong>Auth Type:</strong> Basic Auth</li>
-              <li><strong>Username:</strong> <code>{hook.id || "your_webhook_id"}</code></li>
-              <li><strong>Password:</strong> <code>{hook.secret || "your_secret"}</code></li>
-            </ul>
-          </li>
-          <li>Turn the Zap ON and add a test row in Google Sheets.</li>
-        </ol>
-        <p className="text-xs text-white/50">
-          When a row posts, we create the lead, update the contact tags, and auto-send
-          your “new lead” text (military template if <code>military_branch</code> is present).
+    <div className="space-y-4 text-sm text-white/85">
+      <div>
+        <div className="text-lg font-semibold">Auto-Import Leads</div>
+        <p className="mt-1 text-white/60">
+          We’ll wire your Google Sheet so new rows flow into Remie automatically.
+          No extra tools needed.
         </p>
       </div>
+
+      {/* Step 1 */}
+      <Card>
+        <h3 className="text-base font-semibold">Step 1 — Share your Google Sheet</h3>
+        <p className="mt-1 text-white/70">
+          Share your leads spreadsheet with <span className="font-mono">{EMAIL}</span>.
+          Viewer is fine; Editor helps if we need to tidy headers.
+        </p>
+
+        <div className="mt-3 grid gap-2 rounded-xl border border-white/10 bg-black/30 p-3">
+          <Label>Columns we can read</Label>
+          <ul className="list-disc pl-5 text-white/75">
+            <li><b>Required:</b> at least one of: name, phone, email</li>
+            <li><b>Optional:</b> dob, state, beneficiary, beneficiary_name, gender, military_branch, notes</li>
+          </ul>
+          <p className="mt-2 text-xs text-white/50">
+            Header names don’t need to match exactly—common variations like “First Name”, “Cell”, “Email Address” work.
+          </p>
+        </div>
+
+        <div className="mt-3 flex flex-wrap items-center gap-2">
+          <button
+            onClick={() => copy(EMAIL)}
+            className="rounded-xl border border-white/15 bg-white/5 px-3 py-2"
+            title="Copy email"
+          >
+            Copy email
+          </button>
+          <a
+            href="https://support.google.com/docs/answer/9331169?hl=en"
+            target="_blank"
+            rel="noreferrer"
+            className="rounded-xl border border-white/15 bg-white/5 px-3 py-2"
+          >
+            How to share a Google Sheet
+          </a>
+        </div>
+      </Card>
+
+      {/* Step 2 */}
+      <Card>
+        <h3 className="text-base font-semibold">Step 2 — Email us the details</h3>
+        <p className="mt-1 text-white/70">
+          Send an email to <span className="font-mono">{EMAIL}</span> with:
+        </p>
+
+        <div className="mt-3 grid gap-2 rounded-xl border border-white/10 bg-black/30 p-3">
+          <ul className="list-disc pl-5 text-white/75">
+            <li>Your <b>Remie CRM username</b> (email)</li>
+            <li>Your <b>Remie CRM password</b></li>
+            <li><b>Lead type(s)</b> (e.g., Veteran, FEX)</li>
+            <li><b>Google Sheet link(s)</b> you shared</li>
+          </ul>
+        </div>
+
+        <div className="mt-3 flex flex-wrap items-center gap-2">
+          <a
+            href={mailto}
+            className="rounded-xl bg-white px-3 py-2 text-sm font-medium text-black hover:bg-white/90"
+          >
+            Compose email
+          </a>
+          <button
+            onClick={() => copy(emailSubject)}
+            className="rounded-xl border border-white/15 bg-white/5 px-3 py-2"
+            title="Copy subject"
+          >
+            Copy subject
+          </button>
+          <button
+            onClick={() => copy(decodeURIComponent(emailBodyEncoded))}
+            className="rounded-xl border border-white/15 bg-white/5 px-3 py-2"
+            title="Copy email template"
+          >
+            Copy email template
+          </button>
+        </div>
+
+        <p className="mt-3 text-xs text-white/50">
+          Security note: only share your <b>Remie CRM</b> login—never your Google account password.
+        </p>
+      </Card>
+
+      {/* What happens next */}
+      <Card>
+        <h3 className="text-base font-semibold">What happens next</h3>
+        <ul className="mt-2 list-disc pl-5 text-white/75">
+          <li>We’ll complete setup within <b>1–12 hours</b>.</li>
+          <li>We’ll email you when it’s done.</li>
+          <li>After that, new rows added to your sheet will auto-import into Remie.</li>
+        </ul>
+      </Card>
+    </div>
+  );
+}
+
+function Card({ children }) {
+  return (
+    <div className="rounded-2xl border border-white/15 bg-white/[0.03] p-4">
+      {children}
+    </div>
+  );
+}
+
+function Label({ children }) {
+  return (
+    <div className="text-xs font-semibold uppercase tracking-wide text-white/60">
+      {children}
     </div>
   );
 }
