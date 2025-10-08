@@ -9,30 +9,40 @@ export async function getUserId() {
   return data?.user?.id || null;
 }
 
-const normEmail = (s) => String(s || "").trim().toLowerCase();
+const norm = (s) => (s == null ? "" : String(s).trim());
+const normEmail = (s) => norm(s).toLowerCase();
 
-/** Build a normalized row from incoming lead-like object */
+/** Build a normalized row from incoming lead-like object (keeps all new fields) */
 function buildNormalizedRow(lead, userId) {
-  const phoneE164 = lead.phone ? toE164(lead.phone) : null;
-  if (!phoneE164 && lead.phone) {
+  const wantsPhone = norm(lead.phone);
+  const phoneE164 = wantsPhone ? toE164(wantsPhone) : null;
+  if (!phoneE164 && wantsPhone) {
     throw new Error(`Invalid phone number: ${lead.phone}`);
   }
+
   return {
     // NOTE: do not set id here; we'll decide target id based on lookup/merge
     user_id: userId,
-    status: lead.status === "sold" ? "sold" : "lead",
-    name: lead.name || "",
+
+    // status: never force "lead" when the incoming payload is empty — set explicitly only if caller passed it
+    status: lead.status === "sold" ? "sold" : (lead.status === "lead" ? "lead" : null),
+
+    name: norm(lead.name),
     phone: phoneE164 || null,
     email: lead.email ? normEmail(lead.email) : null,
-    notes: lead.notes || "",
-    dob: lead.dob || null,
-    state: lead.state || "",
-    beneficiary: lead.beneficiary || "",
-    beneficiary_name: lead.beneficiary_name || "",
-    company: lead.company || "",
-    gender: lead.gender || "",
-    military_branch: lead.military_branch || "",
+    notes: norm(lead.notes),
+
+    // ✅ Extra CSV fields
+    dob: norm(lead.dob) || null,
+    state: norm(lead.state).toUpperCase() || null,
+    beneficiary: norm(lead.beneficiary),
+    beneficiary_name: norm(lead.beneficiary_name),
+    company: norm(lead.company),
+    gender: norm(lead.gender),
+    military_branch: norm(lead.military_branch),
+
     sold: lead.sold || null, // jsonb
+
     // pipeline fields
     stage: lead.stage ?? null,
     stage_changed_at: lead.stage_changed_at ?? null,
@@ -41,6 +51,7 @@ function buildNormalizedRow(lead, userId) {
     call_attempts: lead.call_attempts ?? null,
     priority: lead.priority ?? null,
     pipeline: lead.pipeline ?? null,
+
     updated_at: new Date().toISOString(),
   };
 }
@@ -48,13 +59,25 @@ function buildNormalizedRow(lead, userId) {
 /** Merge helper: prefer non-empty new values, otherwise keep existing */
 function mergeRows(base, patch) {
   const out = { ...base };
+
   for (const k of Object.keys(patch)) {
     const nv = patch[k];
+
+    // Skip undefined
     if (nv === undefined) continue;
-    if (nv === null) continue; // don't overwrite with nulls during merge
+
+    // Never downgrade sold -> lead
+    if (k === "status" && base.status === "sold" && nv !== "sold") continue;
+
+    // Skip nulls (don't erase existing values during merge)
+    if (nv === null) continue;
+
+    // Skip empty strings
     if (typeof nv === "string" && nv.trim() === "") continue;
+
     out[k] = nv;
   }
+
   // always refresh updated_at
   out.updated_at = new Date().toISOString();
   return out;
