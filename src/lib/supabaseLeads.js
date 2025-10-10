@@ -12,19 +12,28 @@ export async function getUserId() {
 const norm = (s) => (s == null ? "" : String(s).trim());
 const normEmail = (s) => norm(s).toLowerCase();
 
-/** Build a normalized row from incoming lead-like object (keeps all new fields) */
+/** Build a normalized row from incoming lead-like object (keeps all new fields)
+ *  IMPORTANT: do NOT throw on bad phone — set phone to null so batch continues.
+ */
 function buildNormalizedRow(lead, userId) {
   const wantsPhone = norm(lead.phone);
-  const phoneE164 = wantsPhone ? toE164(wantsPhone) : null;
-  if (!phoneE164 && wantsPhone) {
-    throw new Error(`Invalid phone number: ${lead.phone}`);
+  let phoneE164 = null;
+  if (wantsPhone) {
+    try {
+      phoneE164 = toE164(wantsPhone);
+      // if toE164 returns falsy, treat as invalid and fall through to null
+      if (!phoneE164) console.warn("[leads] invalid phone, storing as null:", lead.phone);
+    } catch {
+      console.warn("[leads] invalid phone, storing as null:", lead.phone);
+      phoneE164 = null;
+    }
   }
 
   return {
     // NOTE: do not set id here; we'll decide target id based on lookup/merge
     user_id: userId,
 
-    // status: never force "lead" when the incoming payload is empty — set explicitly only if caller passed it
+    // status: set only if caller provided; never force a downgrade in merge
     status: lead.status === "sold" ? "sold" : (lead.status === "lead" ? "lead" : null),
 
     name: norm(lead.name),
@@ -90,9 +99,13 @@ function onlyDigits(s) {
 }
 
 function phoneVariants(raw) {
-  const e164 = toE164(raw);
+  // raw might already be E.164 or arbitrary; try to normalize
+  let e164 = null;
+  try { e164 = toE164(raw); } catch { e164 = null; }
+
   const d = onlyDigits(raw);
   if (!d && !e164) return [];
+
   // last 10
   const ten = d?.length === 11 && d.startsWith("1") ? d.slice(1) : (d || "").slice(-10);
   const set = new Set();
