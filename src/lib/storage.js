@@ -32,6 +32,36 @@ export function saveClients(clients) {
 }
 
 /* ---------------------------
+   Normalization + merge utils
+----------------------------*/
+const norm = (s) => (s == null ? "" : String(s).trim());
+const normUpper = (s) => norm(s).toUpperCase();
+
+function nonEmpty(v) {
+  if (v === undefined || v === null) return false;
+  if (typeof v === "string") return v.trim() !== "";
+  return true;
+}
+
+/** Merge helper that prefers meaningful new values and never overwrites with empty/null */
+function mergeKeep(base = {}, patch = {}) {
+  const out = { ...base };
+  for (const k of Object.keys(patch)) {
+    const nv = patch[k];
+
+    // nested object merge (sold, address, etc.)
+    if (nv && typeof nv === "object" && !Array.isArray(nv)) {
+      out[k] = mergeKeep(base[k] || {}, nv);
+      continue;
+    }
+
+    if (!nonEmpty(nv)) continue; // skip empty/new nulls
+    out[k] = nv;
+  }
+  return out;
+}
+
+/* ---------------------------
    Shape normalizer
 
    Person:
@@ -41,6 +71,15 @@ export function saveClients(clients) {
      phone: string,
      email: string,
      status: "lead" | "sold",
+     // pipeline
+     stage?: string,
+     stage_changed_at?: string,
+     next_follow_up_at?: string,
+     last_outcome?: string,
+     call_attempts?: number,
+     priority?: string|number,
+     pipeline?: string,
+
      notes?: string,
      dob?: string,
      state?: string,
@@ -48,6 +87,8 @@ export function saveClients(clients) {
      beneficiary_name?: string,
      company?: string,
      gender?: string,
+     military_branch?: string,
+
      sold?: {
        carrier: string,
        faceAmount: string|number,
@@ -71,49 +112,56 @@ export function normalizePerson(p = {}) {
   const sold = p.sold || null;
 
   const keep = {
-    notes: p.notes ?? "",
-    dob: p.dob ?? "",
-    state: p.state ?? "",
-    beneficiary: p.beneficiary ?? "",
-    beneficiary_name: p.beneficiary_name ?? "",
-    company: p.company ?? "",
-    gender: p.gender ?? "",
+    notes: norm(p.notes),
+    dob: norm(p.dob),
+    state: normUpper(p.state),
+    beneficiary: norm(p.beneficiary),
+    beneficiary_name: norm(p.beneficiary_name),
+    company: norm(p.company),
+    gender: norm(p.gender),
+    military_branch: norm(p.military_branch),
+    // pipeline fields (keep if provided)
+    stage: p.stage ?? undefined,
+    stage_changed_at: p.stage_changed_at ?? undefined,
+    next_follow_up_at: p.next_follow_up_at ?? undefined,
+    last_outcome: p.last_outcome ?? undefined,
+    call_attempts: p.call_attempts ?? undefined,
+    priority: p.priority ?? undefined,
+    pipeline: p.pipeline ?? undefined,
   };
 
   // Prefer startDate (what the UI uses). If only effectiveDate exists (legacy),
   // keep it but also mirror to startDate so the UI can read it.
-  const startDate =
-    (sold && (sold.startDate || sold.effectiveDate)) || "";
-  const effectiveDate =
-    (sold && (sold.effectiveDate || sold.startDate)) || "";
+  const startDate = (sold && (sold.startDate || sold.effectiveDate)) || "";
+  const effectiveDate = (sold && (sold.effectiveDate || sold.startDate)) || "";
 
   return {
     id:
       p.id ||
-      (typeof crypto !== "undefined"
+      (typeof crypto !== "undefined" && crypto.randomUUID
         ? crypto.randomUUID()
         : String(Date.now())),
-    name: p.name || "",
+    name: norm(p.name),
     phone: p.phone || p.number || "",
-    email: p.email || "",
+    email: norm(p.email),
     status: p.status === "sold" ? "sold" : "lead",
     ...keep,
     sold: sold
       ? {
-          carrier: sold.carrier || "",
-          faceAmount: sold.faceAmount || "",
-          premium: sold.premium || "",
-          monthlyPayment: sold.monthlyPayment || "",
-          policyNumber: sold.policyNumber || "",
+          carrier: norm(sold.carrier),
+          faceAmount: sold.faceAmount ?? "",
+          premium: sold.premium ?? "",
+          monthlyPayment: sold.monthlyPayment ?? "",
+          policyNumber: norm(sold.policyNumber),
           // keep both for compatibility
           startDate,
           effectiveDate,
-          notes: sold.notes || "",
+          notes: norm(sold.notes),
           address: {
-            street: sold.address?.street || "",
-            city: sold.address?.city || "",
-            state: sold.address?.state || "",
-            zip: sold.address?.zip || "",
+            street: norm(sold.address?.street),
+            city: norm(sold.address?.city),
+            state: normUpper(sold.address?.state),
+            zip: norm(sold.address?.zip),
           },
         }
       : null,
@@ -124,16 +172,26 @@ export function normalizePerson(p = {}) {
    Upsert utility (merge by id)
 ----------------------------*/
 export function upsert(arr = [], person = {}) {
-  const item = normalizePerson(person);
-  const idx = arr.findIndex((x) => x.id === item.id);
-  if (idx === -1) return [...arr, item];
+  const incoming = normalizePerson(person);
+  const idx = arr.findIndex((x) => x.id === incoming.id);
+
+  if (idx === -1) {
+    return [...arr, incoming];
+  }
 
   const prev = arr[idx];
-  const next = {
-    ...prev,
-    ...item,
-    sold: item.sold ?? prev.sold ?? null,
-  };
+
+  // Merge top-level without clobbering with empties
+  const mergedTop = mergeKeep(prev, incoming);
+
+  // Merge sold (nested) carefully
+  const mergedSold =
+    incoming.sold == null
+      ? prev.sold ?? null
+      : mergeKeep(prev.sold || {}, incoming.sold);
+
+  const next = { ...mergedTop, sold: mergedSold };
+
   const copy = [...arr];
   copy[idx] = next;
   return copy;
