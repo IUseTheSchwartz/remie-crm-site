@@ -813,25 +813,44 @@ export default function LeadsPage() {
   }, [tab, allClients, onlySold, filter]);
 
   /* ---------- Helpers for CSV choice + dry-run ---------- */
-  async function persistLeadsToServer(people) {
-    // optimistic local
-    const newLeads = [...people, ...leads];
-    const newClients = [...people, ...clients];
+  // Split valid vs invalid-phone; only sync valid
+  async function persistLeadsToServer(rawPeople) {
+    const valid = [];
+    const invalidPhone = [];
+    for (const p of rawPeople) {
+      const hasPhone = !!String(p.phone || "").trim();
+      const okPhone = !hasPhone || !!toE164(p.phone);
+      if (okPhone) valid.push(p);
+      else invalidPhone.push(p);
+    }
+
+    // optimistic local: add only valid (still allow records without phone)
+    const newLeads = [...valid, ...leads];
+    const newClients = [...valid, ...clients];
     saveLeads(newLeads);
     saveClients(newClients);
     setLeads(newLeads);
     setClients(newClients);
     setTab("clients");
 
-    // batch upsert
+    // batch upsert valid
+    let wrote = 0;
     try {
-      setServerMsg(`Syncing ${people.length} new lead(s) to Supabase…`);
-      const count = await upsertManyLeadsServer(people);
-      setServerMsg(`✅ CSV synced (${count} new) — duplicates skipped`);
+      setServerMsg(`Syncing ${valid.length} new lead(s) to Supabase…`);
+      wrote = await upsertManyLeadsServer(valid);
+      const skippedMsg = invalidPhone.length
+        ? ` — ${invalidPhone.length} skipped for invalid phone`
+        : "";
+      setServerMsg(`✅ CSV synced (${wrote} saved)${skippedMsg}`);
     } catch (e) {
       console.error("CSV sync error:", e);
-      setServerMsg(`⚠️ CSV sync failed: ${e.message || e}`);
+      const skippedMsg = invalidPhone.length
+        ? ` (and ${invalidPhone.length} skipped for invalid phone)`
+        : "";
+      setServerMsg(`⚠️ CSV sync failed${skippedMsg}: ${e.message || e}`);
     }
+
+    return { valid, invalidPhone, wrote };
   }
 
   async function runDryRun(people) {
@@ -1488,9 +1507,11 @@ export default function LeadsPage() {
               <button
                 className="rounded-xl border border-white/15 px-4 py-2 text-sm hover:bg-white/10"
                 onClick={async () => {
-                  const people = choiceModal.people;
+                  const { valid, invalidPhone } = await persistLeadsToServer(choiceModal.people);
                   setChoiceModal(null);
-                  await persistLeadsToServer(people);
+                  if (invalidPhone.length) {
+                    setServerMsg(`✅ Imported ${valid.length}. Skipped ${invalidPhone.length} for invalid phone.`);
+                  }
                 }}
               >
                 Add to CRM only
@@ -1498,12 +1519,10 @@ export default function LeadsPage() {
               <button
                 className="rounded-xl bg-white px-4 py-2 text-sm font-medium text-black hover:bg-white/90"
                 onClick={async () => {
-                  const people = choiceModal.people;
+                  const { valid, invalidPhone } = await persistLeadsToServer(choiceModal.people);
                   setChoiceModal(null);
-                  // 1) upsert first so server can resolve lead_ids
-                  await persistLeadsToServer(people);
-                  // 2) dry run to compute count + cost
-                  const { status, out } = await runDryRun(people) || {};
+                  // 2) dry run to compute count + cost (only valid)
+                  const { status, out } = await runDryRun(valid) || {};
                   if (!out) return;
                   if (status === 403 && out?.error === "disabled") {
                     setServerMsg("⚠️ Bulk messaging is disabled by env flag.");
@@ -1526,7 +1545,8 @@ export default function LeadsPage() {
                     wallet_balance_cents: out.wallet_balance_cents,
                     skipped_by_reason: out.skipped_by_reason,
                     blocker: out.blocker || null,
-                    people, // keep for final send call
+                    people: valid, // message only valid imports
+                    _skipped_invalid_phone: invalidPhone.length, // display helper
                   });
                 }}
               >
@@ -1564,6 +1584,11 @@ export default function LeadsPage() {
                       <span className="capitalize">{k.replace(/_/g," ")}</span><span>{v}</span>
                     </div>
                   ))}
+                  {typeof confirmModal._skipped_invalid_phone === "number" && confirmModal._skipped_invalid_phone > 0 && (
+                    <div className="flex justify-between">
+                      <span>invalid phone (import)</span><span>{confirmModal._skipped_invalid_phone}</span>
+                    </div>
+                  )}
                 </div>
               </details>
 
