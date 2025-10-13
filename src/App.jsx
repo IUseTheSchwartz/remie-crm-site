@@ -19,7 +19,7 @@ import {
 import ProtectedRoute from "./components/ProtectedRoute.jsx";
 import { AuthProvider, useAuth } from "./auth.jsx";
 import LoginPage from "./pages/LoginPage.jsx";
-import SignupPage from "./pages/LoginPage.jsx"; // NOTE: If you truly have a separate SignupPage, switch back to "./pages/SignupPage.jsx"
+import SignupPage from "./pages/SignupPage.jsx"; // NOTE: If you truly have a separate SignupPage, switch back to "./pages/SignupPage.jsx"
 import AgentPublic from "./pages/AgentPublic.jsx";
 import AcceptInvite from "./pages/AcceptInvite.jsx";
 
