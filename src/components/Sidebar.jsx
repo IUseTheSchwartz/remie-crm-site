@@ -25,6 +25,7 @@ import {
   Pencil,
   ExternalLink,
   Shield,
+  Star, // ← NEW: for Reviews
 } from "lucide-react";
 
 /* --- Gradient stroke helper (indigo → purple → fuchsia) --- */
@@ -66,6 +67,7 @@ const ICONS = {
   // Agent site
   "View My Agent Site": Globe2,
   "Edit Agent Site": Pencil,
+  Reviews: Star, // ← NEW
 
   // Teams
   "My Teams": Users,
