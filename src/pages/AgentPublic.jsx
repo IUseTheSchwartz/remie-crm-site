@@ -30,11 +30,15 @@ const BROKERAGE_STATS = [
   { value: "29,000+", label: "Professional Agents" },
 ];
 
-// Use the exact same gradient as the brokerage stats:
+/* Gradients
+   - STAT_GRAD: bold, used for big numbers
+   - TEXT_GRAD: softer, used for inline text (name, NPN, phone) */
 const STAT_GRAD =
   "bg-gradient-to-r from-indigo-400 via-fuchsia-400 to-rose-400 bg-clip-text text-transparent";
+const TEXT_GRAD =
+  "bg-gradient-to-r from-indigo-300 via-fuchsia-300 to-rose-300 bg-clip-text text-transparent";
 
-// Phone normalizer -> “(xxx) - xxx - xxxx”
+/* Phone normalizer -> “(xxx) - xxx - xxxx” */
 function formatPhone(input) {
   if (!input) return "";
   const digits = ("" + input).replace(/\D/g, "");
@@ -44,7 +48,7 @@ function formatPhone(input) {
   return `(${a}) - ${b} - ${c}`;
 }
 
-// Stars (solid/outline), used in reviews
+/* Stars (solid/outline), used in reviews */
 function StarDisplay({ rating = 0, size = "lg", variant = "auto" }) {
   const full = Math.floor(rating);
   const hasHalf = rating % 1 >= 0.5;
@@ -82,7 +86,7 @@ function StarDisplay({ rating = 0, size = "lg", variant = "auto" }) {
   );
 }
 
-// “Leave a review” modal (no captcha)
+/* “Leave a review” modal (no captcha) */
 function LeaveReviewModal({ open, onClose, agentId, onSubmitted }) {
   const [rating, setRating] = useState(5);
   const [name, setName] = useState("");
@@ -279,7 +283,7 @@ export default function AgentPublic() {
     return () => { mounted = false; };
   }, [slug]);
 
-  // Fetch public reviews for this agent
+  // Fetch public reviews
   async function fetchReviews(agentId) {
     if (!agentId) return;
     setReviewsLoading(true);
@@ -346,7 +350,7 @@ export default function AgentPublic() {
             <div className={`h-8 w-8 rounded-2xl ring-1 ring-white/10 grid place-items-center ${heroGradient}`}>
               <Shield className="h-4 w-4" />
             </div>
-            <div className={`text-sm font-semibold tracking-tight ${STAT_GRAD}`}>
+            <div className={`text-sm font-semibold tracking-tight ${TEXT_GRAD}`}>
               {profile.full_name}
             </div>
           </div>
@@ -375,21 +379,21 @@ export default function AgentPublic() {
 
           <div className="space-y-3">
             <h1 className="text-3xl font-semibold tracking-tight">
-              <span className={STAT_GRAD}>{profile.full_name}</span>
+              <span className={TEXT_GRAD}>{profile.full_name}</span>
             </h1>
 
             <div className="text-white/70">
               Licensed Broker{" "}
               {profile.npn ? (
                 <>
-                  · NPN: <span className={STAT_GRAD}>{profile.npn}</span>
+                  · NPN: <span className={TEXT_GRAD}>{profile.npn}</span>
                 </>
               ) : null}
             </div>
 
             {profile.phone && (
               <div className="text-white/70">
-                Phone: <span className={STAT_GRAD}>{phonePretty}</span>
+                Phone: <span className={`${TEXT_GRAD} font-semibold`}>{phonePretty}</span>
               </div>
             )}
 
@@ -401,10 +405,10 @@ export default function AgentPublic() {
               {callHref && (
                 <a
                   href={callHref}
-                  className="inline-flex items-center gap-2 rounded-xl border border-white/15 bg-white/5 px-3 py-2 text-sm hover:bg-white/10"
+                  className="inline-flex items-center gap-2 rounded-xl border border-white/15 bg-white/[0.04] px-3 py-2 text-sm hover:bg-white/10 focus:outline-none focus:ring-2 focus:ring-indigo-500/30"
                 >
                   <Phone className="h-4 w-4" />
-                  <span className={STAT_GRAD}>{phonePretty}</span>
+                  <span className={`${TEXT_GRAD} font-medium tracking-tight`}>{phonePretty}</span>
                 </a>
               )}
               {mailHref && (
@@ -450,7 +454,7 @@ export default function AgentPublic() {
         </div>
       </section>
 
-      {/* Carrier logos (single image) */}
+      {/* Carrier logos */}
       <section className="mx-auto max-w-6xl px-4 pb-12">
         <h2 className="text-center text-xl font-semibold">
           As a broker, we shop multiple A-rated carriers to find your best fit.
@@ -464,7 +468,7 @@ export default function AgentPublic() {
         </div>
       </section>
 
-      {/* Reviews (full width) */}
+      {/* Reviews */}
       <section id="reviews" className="mx-auto max-w-6xl px-4 pb-12">
         <div className="rounded-3xl border border-white/10 bg-white/[0.04] ring-1 ring-white/5 p-6 sm:p-8">
           <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
@@ -498,7 +502,6 @@ export default function AgentPublic() {
             </button>
           </div>
 
-          {/* List */}
           <div className="mt-6">
             {reviewsLoading ? (
               <div className="text-sm text-white/60">Loading reviews…</div>
@@ -621,10 +624,10 @@ export default function AgentPublic() {
               {callHref && (
                 <a
                   href={callHref}
-                  className="inline-flex items-center gap-2 rounded-xl border border-white/15 bg-white/5 px-3 py-2 text-sm hover:bg-white/10"
+                  className="inline-flex items-center gap-2 rounded-xl border border-white/15 bg-white/[0.04] px-3 py-2 text-sm hover:bg-white/10 focus:outline-none focus:ring-2 focus:ring-indigo-500/30"
                 >
                   <Phone className="h-4 w-4" />
-                  <span className={STAT_GRAD}>{phonePretty}</span>
+                  <span className={`${TEXT_GRAD} font-medium tracking-tight`}>{phonePretty}</span>
                 </a>
               )}
               {mailHref && (
