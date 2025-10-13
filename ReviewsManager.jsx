@@ -1,16 +1,19 @@
 // File: src/pages/ReviewsManager.jsx
 import { useEffect, useMemo, useState } from "react";
 import { Star, Plus, Trash2, Edit3, Save, X, Eye, EyeOff, Loader2 } from "lucide-react";
-import { supabase } from "../lib/supabaseClient";
-import { useAuth } from "../auth";
+import { supabase } from "../lib/supabaseClient.js";
+import { useAuth } from "../auth.jsx";
 
-/* --------- small star input widget (supports half-steps) --------- */
+/* --------- small star input widget --------- */
 function StarInput({ value = 0, onChange, disabled }) {
   const [hover, setHover] = useState(null);
   const display = hover ?? value;
   const steps = [1, 2, 3, 4, 5];
 
-  const fill = (i) => (display >= i ? "bg-gradient-to-br from-indigo-500 via-purple-500 to-fuchsia-500" : "bg-white/0");
+  const fill = (i) =>
+    display >= i
+      ? "bg-gradient-to-br from-indigo-500 via-purple-500 to-fuchsia-500"
+      : "bg-white/0";
   const outline = "ring-1 ring-white/20";
 
   return (
@@ -40,7 +43,12 @@ export default function ReviewsManager() {
   const [busyId, setBusyId] = useState(null);
   const [err, setErr] = useState("");
   const [creating, setCreating] = useState(false);
-  const [newRow, setNewRow] = useState({ rating: 5, reviewer_name: "", comment: "", is_public: true });
+  const [newRow, setNewRow] = useState({
+    rating: 5,
+    reviewer_name: "",
+    comment: "",
+    is_public: true,
+  });
 
   const canUse = !!user?.id;
 
@@ -51,7 +59,9 @@ export default function ReviewsManager() {
     try {
       const { data, error } = await supabase
         .from("agent_reviews")
-        .select("id, agent_id, rating, comment, reviewer_name, is_public, created_at")
+        .select(
+          "id, agent_id, rating, comment, reviewer_name, is_public, created_at"
+        )
         .eq("agent_id", user.id)
         .order("created_at", { ascending: false });
       if (error) throw error;
@@ -63,11 +73,19 @@ export default function ReviewsManager() {
     }
   }
 
-  useEffect(() => { load(); /* eslint-disable-next-line */ }, [user?.id]);
+  useEffect(() => {
+    load();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [user?.id]);
 
   const avg = useMemo(() => {
     if (!rows.length) return 0;
-    return Math.round((rows.reduce((s, r) => s + Number(r.rating || 0), 0) / rows.length) * 10) / 10;
+    return (
+      Math.round(
+        (rows.reduce((s, r) => s + Number(r.rating || 0), 0) / rows.length) *
+          10
+      ) / 10
+    );
   }, [rows]);
 
   async function createRow() {
@@ -82,7 +100,11 @@ export default function ReviewsManager() {
         reviewer_name: (newRow.reviewer_name || "").trim() || null,
         is_public: !!newRow.is_public,
       };
-      const { data, error } = await supabase.from("agent_reviews").insert(payload).select().single();
+      const { data, error } = await supabase
+        .from("agent_reviews")
+        .insert(payload)
+        .select()
+        .single();
       if (error) throw error;
       setRows((r) => [data, ...r]);
       setNewRow({ rating: 5, reviewer_name: "", comment: "", is_public: true });
@@ -94,7 +116,20 @@ export default function ReviewsManager() {
   }
 
   function startEdit(id) {
-    setRows((r) => r.map((x) => (x.id === id ? { ...x, _editing: { reviewer_name: x.reviewer_name || "", comment: x.comment || "", rating: x.rating } } : x)));
+    setRows((r) =>
+      r.map((x) =>
+        x.id === id
+          ? {
+              ...x,
+              _editing: {
+                reviewer_name: x.reviewer_name || "",
+                comment: x.comment || "",
+                rating: x.rating,
+              },
+            }
+          : x
+      )
+    );
   }
 
   function cancelEdit(id) {
@@ -112,9 +147,17 @@ export default function ReviewsManager() {
         comment: (row._editing.comment || "").trim(),
         rating: Number(row._editing.rating || 0),
       };
-      const { data, error } = await supabase.from("agent_reviews").update(upd).eq("id", id).eq("agent_id", user.id).select().single();
+      const { data, error } = await supabase
+        .from("agent_reviews")
+        .update(upd)
+        .eq("id", id)
+        .eq("agent_id", user.id)
+        .select()
+        .single();
       if (error) throw error;
-      setRows((r) => r.map((x) => (x.id === id ? { ...data, _editing: null } : x)));
+      setRows((r) =>
+        r.map((x) => (x.id === id ? { ...data, _editing: null } : x))
+      );
     } catch (e) {
       setErr(e?.message || "Failed to save changes.");
     } finally {
@@ -147,7 +190,11 @@ export default function ReviewsManager() {
     setBusyId(id);
     setErr("");
     try {
-      const { error } = await supabase.from("agent_reviews").delete().eq("id", id).eq("agent_id", user.id);
+      const { error } = await supabase
+        .from("agent_reviews")
+        .delete()
+        .eq("id", id)
+        .eq("agent_id", user.id);
       if (error) throw error;
       setRows((r) => r.filter((x) => x.id !== id));
     } catch (e) {
@@ -175,7 +222,9 @@ export default function ReviewsManager() {
           </div>
         </div>
         <button
-          onClick={() => setNewRow((n) => ({ ...n, is_public: !n.is_public }))}
+          onClick={() =>
+            setNewRow((n) => ({ ...n, is_public: !n.is_public }))
+          }
           className="rounded-lg border border-white/15 bg-white/5 px-3 py-1.5 text-sm hover:bg-white/10"
           title="Default visibility for new review"
         >
@@ -189,13 +238,19 @@ export default function ReviewsManager() {
         <div className="grid gap-3 md:grid-cols-[minmax(180px,220px)_1fr_minmax(140px,220px)_auto]">
           <div>
             <div className="text-xs text-white/60 mb-1">Rating</div>
-            <StarInput value={newRow.rating} onChange={(v) => setNewRow((n) => ({ ...n, rating: v }))} disabled={creating} />
+            <StarInput
+              value={newRow.rating}
+              onChange={(v) => setNewRow((n) => ({ ...n, rating: v }))}
+              disabled={creating}
+            />
           </div>
           <div>
             <div className="text-xs text-white/60 mb-1">Reviewer name (optional)</div>
             <input
               value={newRow.reviewer_name}
-              onChange={(e) => setNewRow((n) => ({ ...n, reviewer_name: e.target.value }))}
+              onChange={(e) =>
+                setNewRow((n) => ({ ...n, reviewer_name: e.target.value }))
+              }
               placeholder="e.g., Maria R."
               className="w-full rounded-lg border border-white/10 bg-black/40 px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-indigo-500/40"
               disabled={creating}
@@ -205,7 +260,9 @@ export default function ReviewsManager() {
             <div className="text-xs text-white/60 mb-1">Comment</div>
             <input
               value={newRow.comment}
-              onChange={(e) => setNewRow((n) => ({ ...n, comment: e.target.value }))}
+              onChange={(e) =>
+                setNewRow((n) => ({ ...n, comment: e.target.value }))
+              }
               placeholder="Short feedback"
               className="w-full rounded-lg border border-white/10 bg-black/40 px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-indigo-500/40"
               disabled={creating}
@@ -217,7 +274,11 @@ export default function ReviewsManager() {
               disabled={creating}
               className="inline-flex items-center gap-2 rounded-xl border border-white/15 bg-white/5 px-3 py-2 text-sm hover:bg-white/10 disabled:opacity-50"
             >
-              {creating ? <Loader2 className="h-4 w-4 animate-spin" /> : <Plus className="h-4 w-4" />}
+              {creating ? (
+                <Loader2 className="h-4 w-4 animate-spin" />
+              ) : (
+                <Plus className="h-4 w-4" />
+              )}
               Add
             </button>
           </div>
@@ -253,7 +314,14 @@ export default function ReviewsManager() {
                       value={r._editing ? r._editing.rating : r.rating}
                       onChange={(v) =>
                         setRows((rows) =>
-                          rows.map((x) => (x.id === r.id ? { ...x, _editing: { ...(x._editing || r), rating: v } } : x))
+                          rows.map((x) =>
+                            x.id === r.id
+                              ? {
+                                  ...x,
+                                  _editing: { ...(x._editing || r), rating: v },
+                                }
+                              : x
+                          )
                         )
                       }
                       disabled={!r._editing || busyId === r.id}
@@ -264,7 +332,11 @@ export default function ReviewsManager() {
                       className="rounded-lg border border-white/15 bg-white/5 px-2.5 py-1.5 text-xs hover:bg-white/10 inline-flex items-center gap-1 disabled:opacity-60"
                       title={r.is_public ? "Hide from public page" : "Make public"}
                     >
-                      {r.is_public ? <Eye className="h-3.5 w-3.5" /> : <EyeOff className="h-3.5 w-3.5" />}
+                      {r.is_public ? (
+                        <Eye className="h-3.5 w-3.5" />
+                      ) : (
+                        <EyeOff className="h-3.5 w-3.5" />
+                      )}
                       {r.is_public ? "Public" : "Hidden"}
                     </button>
                   </div>
@@ -273,11 +345,21 @@ export default function ReviewsManager() {
                   <div>
                     <div className="text-xs text-white/60 mb-1">Reviewer</div>
                     <input
-                      value={r._editing ? r._editing.reviewer_name : (r.reviewer_name || "")}
+                      value={
+                        r._editing ? r._editing.reviewer_name : r.reviewer_name || ""
+                      }
                       onChange={(e) =>
                         setRows((rows) =>
                           rows.map((x) =>
-                            x.id === r.id ? { ...x, _editing: { ...(x._editing || r), reviewer_name: e.target.value } } : x
+                            x.id === r.id
+                              ? {
+                                  ...x,
+                                  _editing: {
+                                    ...(x._editing || r),
+                                    reviewer_name: e.target.value,
+                                  },
+                                }
+                              : x
                           )
                         )
                       }
@@ -291,11 +373,19 @@ export default function ReviewsManager() {
                   <div>
                     <div className="text-xs text-white/60 mb-1">Comment</div>
                     <input
-                      value={r._editing ? r._editing.comment : (r.comment || "")}
+                      value={r._editing ? r._editing.comment : r.comment || ""}
                       onChange={(e) =>
                         setRows((rows) =>
                           rows.map((x) =>
-                            x.id === r.id ? { ...x, _editing: { ...(x._editing || r), comment: e.target.value } } : x
+                            x.id === r.id
+                              ? {
+                                  ...x,
+                                  _editing: {
+                                    ...(x._editing || r),
+                                    comment: e.target.value,
+                                  },
+                                }
+                              : x
                           )
                         )
                       }
