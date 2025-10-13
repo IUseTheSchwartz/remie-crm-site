@@ -30,18 +30,28 @@ const BROKERAGE_STATS = [
   { value: "29,000+", label: "Professional Agents" },
 ];
 
+// Gradient utility
+const gradText = "bg-gradient-to-r from-indigo-400 via-fuchsia-400 to-rose-400 bg-clip-text text-transparent";
+
+// Phone normalizer -> “(xxx) - xxx - xxxx”
+function formatPhone(input) {
+  if (!input) return "";
+  const digits = ("" + input).replace(/\D/g, "");
+  // allow leading 1 country code
+  const clean = digits.length === 11 && digits.startsWith("1") ? digits.slice(1) : digits;
+  if (clean.length !== 10) return input; // fallback if not 10 digits
+  const [a, b, c] = [clean.slice(0, 3), clean.slice(3, 6), clean.slice(6)];
+  return `(${a}) - ${b} - ${c}`;
+}
+
 // ⭐ Reviews: helper to render large stars (solid or outline)
 function StarDisplay({ rating = 0, size = "lg", variant = "auto" }) {
   const full = Math.floor(rating);
-  const hasHalf = rating % 1 >= 0.5; // optional, not used visually here
+  const hasHalf = rating % 1 >= 0.5;
   const empty = 5 - full - (hasHalf ? 1 : 0);
 
-  const cls = {
-    lg: "h-6 w-6",
-    xl: "h-7 w-7",
-  }[size] || "h-6 w-6";
+  const cls = { lg: "h-6 w-6", xl: "h-7 w-7" }[size] || "h-6 w-6";
 
-  // if variant === "outline" force all outline; if "solid" force all solid; if "auto" follow rating
   const renderStar = (filled, i) => (
     <Star
       key={i}
@@ -68,7 +78,6 @@ function StarDisplay({ rating = 0, size = "lg", variant = "auto" }) {
       {Array.from({ length: 5 }).map((_, i) => {
         if (outlineSet) return renderStar(false, i);
         if (solidSet) return renderStar(true, i);
-        // auto
         return renderStar(i < full || (i === full && hasHalf), i);
       })}
     </div>
@@ -100,7 +109,6 @@ function LeaveReviewModal({ open, onClose, agentId, onSubmitted }) {
     setBusy(true);
     setErr("");
     try {
-      // Hitting Netlify function (uses service role) → inserts as is_public = false
       const res = await fetch("/.netlify/functions/leave-review", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -115,7 +123,6 @@ function LeaveReviewModal({ open, onClose, agentId, onSubmitted }) {
       if (!res.ok || !json?.ok) throw new Error(json?.error || "Failed to submit review.");
       setOk(true);
       onSubmitted?.();
-      // leave the success message until they close
     } catch (e) {
       setErr(e.message || "Something went wrong.");
     } finally {
@@ -233,7 +240,6 @@ export default function AgentPublic() {
       setLoadError("");
 
       try {
-        // ✅ Public profile by slug AND must be published
         const { data: prof, error: e1 } = await supabase
           .from("agent_profiles")
           .select(
@@ -254,7 +260,6 @@ export default function AgentPublic() {
 
         if (mounted) setProfile(prof);
 
-        // Public states
         const { data: st, error: e2 } = await supabase
           .from("agent_states")
           .select("state_code, state_name, license_number, license_image_url")
@@ -328,7 +333,10 @@ export default function AgentPublic() {
     );
   }
 
-  const callHref = profile.phone ? `tel:${profile.phone.replace(/[^\d+]/g, "")}` : null;
+  const telDigits = profile.phone ? profile.phone.replace(/[^\d+]/g, "") : null;
+  const telHref = telDigits ? `tel:${telDigits}` : null;
+  const phonePretty = profile.phone ? formatPhone(profile.phone) : "";
+  const callHref = telHref;
   const mailHref = profile.email ? `mailto:${profile.email}` : null;
   const bookHref = profile.calendly_url ? profile.calendly_url : null;
 
@@ -341,11 +349,13 @@ export default function AgentPublic() {
             <div className={`h-8 w-8 rounded-2xl ring-1 ring-white/10 grid place-items-center ${heroGradient}`}>
               <Shield className="h-4 w-4" />
             </div>
-            <div className="text-sm font-semibold tracking-tight">{profile.full_name}</div>
+            <div className={`text-sm font-semibold tracking-tight ${gradText}`}>
+              {profile.full_name}
+            </div>
           </div>
           <nav className="flex items-center gap-4 text-xs text-white/70">
             <a href="#overview" className="hover:text-white">Overview</a>
-            <a href="#reviews" className="hover:text-white">Reviews</a> {/* ⭐ new anchor */}
+            <a href="#reviews" className="hover:text-white">Reviews</a>
             <a href="#licenses" className="hover:text-white">Licenses</a>
             <a href="#contact" className="hover:text-white">Contact</a>
           </nav>
@@ -367,26 +377,57 @@ export default function AgentPublic() {
           </div>
 
           <div className="space-y-3">
-            <h1 className="text-3xl font-semibold tracking-tight">{profile.full_name}</h1>
+            <h1 className="text-3xl font-semibold tracking-tight">
+              <span className={gradText}>{profile.full_name}</span>
+            </h1>
+
             <div className="text-white/70">
-              Licensed Broker {profile.npn ? <>· NPN: <span className="text-white">{profile.npn}</span></> : null}
+              Licensed Broker{" "}
+              {profile.npn ? (
+                <>
+                  · NPN: <span className={gradText}>{profile.npn}</span>
+                </>
+              ) : null}
             </div>
-            {profile.phone && <div className="text-white/70">Phone: <span className="text-white">{profile.phone}</span></div>}
-            {profile.short_bio && <p className="text-white/70 max-w-2xl">{profile.short_bio}</p>}
+
+            {profile.phone && (
+              <div className="text-white/70">
+                Phone:{" "}
+                <span className={gradText}>
+                  {phonePretty}
+                </span>
+              </div>
+            )}
+
+            {profile.short_bio && (
+              <p className="text-white/70 max-w-2xl">{profile.short_bio}</p>
+            )}
 
             <div className="flex flex-wrap gap-3 pt-2">
               {callHref && (
-                <a href={callHref} className="inline-flex items-center gap-2 rounded-xl border border-white/15 bg-white/5 px-3 py-2 text-sm hover:bg-white/10">
+                <a
+                  href={callHref}
+                  className="inline-flex items-center gap-2 rounded-xl border border-white/15 bg-white/5 px-3 py-2 text-sm hover:bg-white/10"
+                >
                   <Phone className="h-4 w-4" /> Call
                 </a>
               )}
               {mailHref && (
-                <a href={mailHref} className="inline-flex items-center gap-2 rounded-xl border border-white/15 bg-white/5 px-3 py-2 text-sm hover:bg-white/10">
+                <a
+                  href={mailHref}
+                  className="inline-flex items-center gap-2 rounded-xl border border-white/15 bg-white/5 px-3 py-2 text-sm hover:bg-white/10"
+                >
                   <Mail className="h-4 w-4" /> Email
                 </a>
               )}
               {bookHref && (
-                <a href={bookHref} target="_blank" rel="noreferrer" className="inline-flex items-center gap-2 rounded-xl border border-white/15 bg-white/5 px-3 py-2 text-sm hover:bg-white/10" title="Book an appointment">
+                <a
+                  href={bookHref}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="inline-flex items-center gap-2 rounded-xl border border-white/15 bg-white/5 px-3 py-2 text-sm hover:bg-white/10"
+                  title="Book an appointment"
+                >
                   <ExternalLink className="h-4 w-4" /> Book appointment
                 </a>
               )}
@@ -398,11 +439,13 @@ export default function AgentPublic() {
       {/* Brokerage stats */}
       <section className="mx-auto max-w-6xl px-4 pb-10">
         <div className="rounded-2xl border border-white/10 bg-white/[0.03] p-6 ring-1 ring-white/5">
-          <div className="text-center text-xs tracking-widest text-white/60 mb-4">OUR BROKERAGE</div>
+          <div className="text-center text-xs tracking-widest text-white/60 mb-4">
+            OUR BROKERAGE
+          </div>
           <div className="grid gap-6 sm:grid-cols-2 lg:grid-cols-4">
             {BROKERAGE_STATS.map((s) => (
               <div key={s.label} className="text-center">
-                <div className="text-2xl font-extrabold tracking-tight bg-gradient-to-r from-indigo-400 via-fuchsia-400 to-rose-400 bg-clip-text text-transparent">
+                <div className={`text-2xl font-extrabold tracking-tight ${gradText}`}>
                   {s.value}
                 </div>
                 <div className="mt-1 text-sm text-white/70">{s.label}</div>
@@ -418,7 +461,11 @@ export default function AgentPublic() {
           As a broker, we shop multiple A-rated carriers to find your best fit.
         </h2>
         <div className="mt-6 flex justify-center">
-          <img src="/carriers/carriers.png" alt="Our carriers" className="max-w-full h-auto" />
+          <img
+            src="/carriers/carriers.png"
+            alt="Our carriers"
+            className="max-w-full h-auto opacity-90"
+          />
         </div>
       </section>
 
@@ -486,7 +533,9 @@ export default function AgentPublic() {
       <section id="licenses" className="mx-auto max-w-6xl px-4 pb-12">
         <div className="mb-3 flex items-center justify-between">
           <h2 className="text-lg font-semibold">Licensed States</h2>
-          <div className="text-xs text-white/50">Documents are provided by the agent’s state(s).</div>
+          <div className="text-xs text-white/50">
+            Documents are provided by the agent’s state(s).
+          </div>
         </div>
 
         {states.length === 0 ? (
@@ -506,7 +555,10 @@ export default function AgentPublic() {
                 const verifyHref = REGULATOR_LINKS[code];
 
                 return (
-                  <div key={code} className="rounded-2xl border border-white/10 bg-white/[0.03] p-4 ring-1 ring-white/5">
+                  <div
+                    key={code}
+                    className="rounded-2xl border border-white/10 bg-white/[0.03] p-4 ring-1 ring-white/5"
+                  >
                     <div className="flex items-center justify-between">
                       <div className="text-sm font-medium">
                         {displayName} <span className="text-white/50">({code})</span>
@@ -540,8 +592,14 @@ export default function AgentPublic() {
                         </a>
                       ) : (
                         <div className="mt-3 overflow-hidden rounded-lg border border-white/10 bg-black/20">
-                          <img src={url} alt={`${code} license`} className="h-36 w-full object-cover" />
-                          <div className="p-2 text-[11px] text-white/60">License image</div>
+                          <img
+                            src={url}
+                            alt={`${code} license`}
+                            className="h-36 w-full object-cover"
+                          />
+                          <div className="p-2 text-[11px] text-white/60">
+                            License image
+                          </div>
                         </div>
                       )
                     ) : (
@@ -565,18 +623,30 @@ export default function AgentPublic() {
               Have questions about coverage options or scheduling a call?
             </div>
             <div className="mt-4 flex flex-wrap gap-3">
-              {profile.phone && (
-                <a href={`tel:${profile.phone.replace(/[^\d+]/g, "")}`} className="inline-flex items-center gap-2 rounded-xl border border-white/15 bg-white/5 px-3 py-2 text-sm hover:bg-white/10">
-                  <Phone className="h-4 w-4" /> Call
+              {callHref && (
+                <a
+                  href={callHref}
+                  className="inline-flex items-center gap-2 rounded-xl border border-white/15 bg-white/5 px-3 py-2 text-sm hover:bg-white/10"
+                >
+                  <Phone className="h-4 w-4" />
+                  <span className={gradText}>{phonePretty}</span>
                 </a>
               )}
-              {profile.email && (
-                <a href={`mailto:${profile.email}`} className="inline-flex items-center gap-2 rounded-xl border border-white/15 bg-white/5 px-3 py-2 text-sm hover:bg-white/10">
+              {mailHref && (
+                <a
+                  href={mailHref}
+                  className="inline-flex items-center gap-2 rounded-xl border border-white/15 bg-white/5 px-3 py-2 text-sm hover:bg-white/10"
+                >
                   <Mail className="h-4 w-4" /> Email
                 </a>
               )}
               {profile.calendly_url && (
-                <a href={profile.calendly_url} target="_blank" rel="noreferrer" className="inline-flex items-center gap-2 rounded-xl border border-white/15 bg-white/5 px-3 py-2 text-sm hover:bg-white/10">
+                <a
+                  href={profile.calendly_url}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="inline-flex items-center gap-2 rounded-xl border border-white/15 bg-white/5 px-3 py-2 text-sm hover:bg-white/10"
+                >
                   <ExternalLink className="h-4 w-4" /> Book appointment
                 </a>
               )}
@@ -587,9 +657,13 @@ export default function AgentPublic() {
           <div className="mt-6 text-center text-[11px] text-white/50 space-y-2">
             <div>© {new Date().getFullYear()} Remie CRM — Agent page</div>
             <div className="space-x-3">
-              <Link to="/legal/terms" className="hover:text-white">Terms of Service</Link>
+              <Link to="/legal/terms" className="hover:text-white">
+                Terms of Service
+              </Link>
               <span className="text-white/30">•</span>
-              <Link to="/legal/privacy" className="hover:text-white">Privacy Policy</Link>
+              <Link to="/legal/privacy" className="hover:text-white">
+                Privacy Policy
+              </Link>
             </div>
           </div>
         </div>
