@@ -1,8 +1,8 @@
 // File: src/pages/AgentPublic.jsx
-import { useEffect, useState } from "react";
+import { useEffect, useState, useMemo } from "react";
 import { useParams, Link } from "react-router-dom";
 import { supabase } from "../lib/supabaseClient.js";
-import { ExternalLink, Phone, Mail, Shield } from "lucide-react";
+import { ExternalLink, Phone, Mail, Shield, Star } from "lucide-react";
 
 const STATE_NAMES = {
   AL: "Alabama", AK: "Alaska", AZ: "Arizona", AR: "Arkansas", CA: "California", CO: "Colorado",
@@ -29,6 +29,188 @@ const BROKERAGE_STATS = [
   { value: "$800 MILLION", label: "Premium Sold Per Year" },
   { value: "29,000+", label: "Professional Agents" },
 ];
+
+/* ----------------------------- Reviews UI -------------------------------- */
+
+function GradientStarOutline({ className = "h-5 w-5" }) {
+  // Outlined star with gradient stroke (empty state)
+  return (
+    <svg viewBox="0 0 24 24" className={className}>
+      <defs>
+        <linearGradient id="star-stroke" x1="0%" y1="0%" x2="100%" y2="100%">
+          <stop offset="0%" stopColor="#6366f1" /> {/* indigo-500 */}
+          <stop offset="50%" stopColor="#a855f7" /> {/* purple-500 */}
+          <stop offset="100%" stopColor="#ec4899" /> {/* fuchsia/rose-ish */}
+        </linearGradient>
+      </defs>
+      <path
+        d="M12 17.27 18.18 21l-1.64-7.03L22 9.24l-7.19-.61L12 2 9.19 8.63 2 9.24l5.46 4.73L5.82 21 12 17.27z"
+        fill="none"
+        stroke="url(#star-stroke)"
+        strokeWidth="1.75"
+        strokeLinejoin="round"
+      />
+    </svg>
+  );
+}
+
+function GradientStarFilled({ percent = 100, className = "h-5 w-5" }) {
+  // Filled star with gradient; supports partial fill via clipped overlay
+  return (
+    <div className="relative inline-block" style={{ width: "1.25rem", height: "1.25rem" }}>
+      {/* Base outline for crisp edges */}
+      <GradientStarOutline className={className + " absolute inset-0"} />
+      {/* Fill overlay clipped to percent */}
+      <div
+        className="absolute inset-0 overflow-hidden"
+        style={{ width: `${percent}%` }}
+      >
+        <svg viewBox="0 0 24 24" className={className}>
+          <defs>
+            <linearGradient id="star-fill" x1="0%" y1="0%" x2="100%" y2="100%">
+              <stop offset="0%" stopColor="#6366f1" />
+              <stop offset="50%" stopColor="#a855f7" />
+              <stop offset="100%" stopColor="#ec4899" />
+            </linearGradient>
+          </defs>
+          <path
+            d="M12 17.27 18.18 21l-1.64-7.03L22 9.24l-7.19-.61L12 2 9.19 8.63 2 9.24l5.46 4.73L5.82 21 12 17.27z"
+            fill="url(#star-fill)"
+            stroke="none"
+          />
+        </svg>
+      </div>
+    </div>
+  );
+}
+
+function StarRow({ value, size = "md" }) {
+  // value can be fractional (e.g., 4.3)
+  const sizeMap = { sm: "h-4 w-4", md: "h-5 w-5", lg: "h-6 w-6" };
+  const cls = sizeMap[size] || sizeMap.md;
+  const full = Math.floor(value);
+  const frac = value - full;
+  const pct = Math.round(frac * 100);
+
+  return (
+    <div className="inline-flex items-center gap-1">
+      {Array.from({ length: 5 }).map((_, i) => {
+        if (i < full) return <GradientStarFilled key={i} percent={100} className={cls} />;
+        if (i === full && pct > 0) return <GradientStarFilled key={i} percent={pct} className={cls} />;
+        return <GradientStarOutline key={i} className={cls} />;
+      })}
+    </div>
+  );
+}
+
+function ReviewsBlock({ agentId }) {
+  const [reviews, setReviews] = useState([]);
+  const [err, setErr] = useState("");
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    let on = true;
+    (async () => {
+      setLoading(true);
+      setErr("");
+      try {
+        const { data, error } = await supabase
+          .from("agent_reviews")
+          .select("id, rating, comment, reviewer_name, created_at, is_public")
+          .eq("agent_id", agentId)
+          .eq("is_public", true)
+          .order("created_at", { ascending: false });
+
+        if (error) throw error;
+        if (on) setReviews(data || []);
+      } catch (e) {
+        console.warn("agent_reviews fetch failed:", e?.message || e);
+        if (on) setErr("Reviews are unavailable right now.");
+      } finally {
+        if (on) setLoading(false);
+      }
+    })();
+    return () => { on = false; };
+  }, [agentId]);
+
+  const { avg, count } = useMemo(() => {
+    if (!reviews.length) return { avg: 0, count: 0 };
+    const sum = reviews.reduce((acc, r) => acc + Number(r.rating || 0), 0);
+    const avg = Math.max(0, Math.min(5, sum / reviews.length));
+    return { avg, count: reviews.length };
+  }, [reviews]);
+
+  return (
+    <section className="mt-5">
+      <div className="rounded-2xl border border-white/10 bg-white/[0.03] p-4 ring-1 ring-white/5">
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div className="flex items-center gap-3">
+            <div className="grid h-8 w-8 place-items-center rounded-xl border border-white/10 bg-white/5">
+              <Star className="h-4 w-4 text-white/80" />
+            </div>
+            <div>
+              <div className="text-sm font-medium">Client Reviews</div>
+              <div className="text-xs text-white/60">
+                {loading ? "Loading…" : count ? `${count} review${count > 1 ? "s" : ""}` : "No reviews yet"}
+              </div>
+            </div>
+          </div>
+
+          {/* Average stars */}
+          <div className="flex items-center gap-2">
+            {count ? (
+              <>
+                <StarRow value={avg} />
+                <span className="text-sm text-white/80">{avg.toFixed(1)}/5</span>
+              </>
+            ) : (
+              <div className="flex items-center gap-2">
+                {/* Empty state: outlined stars only */}
+                <div className="inline-flex items-center gap-1">
+                  {Array.from({ length: 5 }).map((_, i) => (
+                    <GradientStarOutline key={i} />
+                  ))}
+                </div>
+                <span className="text-sm text-white/60">No reviews yet</span>
+              </div>
+            )}
+          </div>
+        </div>
+
+        {/* Recent reviews */}
+        {err ? (
+          <div className="mt-3 text-xs text-rose-300">{err}</div>
+        ) : (
+          count > 0 && (
+            <div className="mt-4 grid gap-3 md:grid-cols-3">
+              {reviews.slice(0, 3).map((r) => (
+                <div
+                  key={r.id}
+                  className="rounded-xl border border-white/10 bg-black/30 p-3"
+                >
+                  <div className="flex items-center justify-between">
+                    <div className="text-sm font-medium truncate">
+                      {r.reviewer_name || "Anonymous"}
+                    </div>
+                    <StarRow value={Math.max(1, Math.min(5, Number(r.rating || 0)))} size="sm" />
+                  </div>
+                  {r.comment && (
+                    <p className="mt-2 text-sm text-white/80 line-clamp-5">{r.comment}</p>
+                  )}
+                  <div className="mt-2 text-[11px] text-white/50">
+                    {new Date(r.created_at).toLocaleDateString()}
+                  </div>
+                </div>
+              ))}
+            </div>
+          )
+        )}
+      </div>
+    </section>
+  );
+}
+
+/* -------------------------------------------------------------------------- */
 
 export default function AgentPublic() {
   const { slug } = useParams();
@@ -225,6 +407,9 @@ export default function AgentPublic() {
                 </a>
               )}
             </div>
+
+            {/* ⭐ Reviews block lives directly under the CTAs */}
+            <ReviewsBlock agentId={profile.user_id} />
           </div>
         </div>
       </section>
