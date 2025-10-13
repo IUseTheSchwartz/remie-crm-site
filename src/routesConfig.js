@@ -45,6 +45,9 @@ import LeadRescuePage from "./pages/LeadRescuePage.jsx"; // <— NEW
 // ---- Dialer (NEW) ----
 import DialerPage from "./pages/DialerPage.jsx"; // <— NEW
 
+// ---- Reviews Manager (NEW) ----
+import ReviewsManager from "./pages/ReviewsManager.jsx"; // <— NEW
+
 // Sidebar sections:
 // "top" → Top-Level (Most Used Daily)
 // "productivity" → Productivity & Communication
@@ -77,7 +80,7 @@ export const routes = [
 
   // Agent Site Management
   { key: "agentShowcase", path: "/app/agent/showcase", label: "Edit Agent Site", component: AgentShowcase, showInSidebar: true, section: "agent_site" },
-  // (If you add "View My Agent Site" route, place it here too.)
+  { key: "reviews",       path: "/app/reviews",        label: "Reviews",         component: ReviewsManager, showInSidebar: true, section: "agent_site" }, // ← NEW
 
   // Teams
   { key: "my-teams",       path: "/app/teams",                  label: "My Teams",       component: MyTeams,        showInSidebar: true,  section: "teams" },
