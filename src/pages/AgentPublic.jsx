@@ -30,26 +30,24 @@ const BROKERAGE_STATS = [
   { value: "29,000+", label: "Professional Agents" },
 ];
 
-// Gradient utility
-const gradText = "bg-gradient-to-r from-indigo-400 via-fuchsia-400 to-rose-400 bg-clip-text text-transparent";
+// Use the exact same gradient as the brokerage stats:
+const STAT_GRAD =
+  "bg-gradient-to-r from-indigo-400 via-fuchsia-400 to-rose-400 bg-clip-text text-transparent";
 
 // Phone normalizer -> “(xxx) - xxx - xxxx”
 function formatPhone(input) {
   if (!input) return "";
   const digits = ("" + input).replace(/\D/g, "");
-  // allow leading 1 country code
   const clean = digits.length === 11 && digits.startsWith("1") ? digits.slice(1) : digits;
-  if (clean.length !== 10) return input; // fallback if not 10 digits
+  if (clean.length !== 10) return input;
   const [a, b, c] = [clean.slice(0, 3), clean.slice(3, 6), clean.slice(6)];
   return `(${a}) - ${b} - ${c}`;
 }
 
-// ⭐ Reviews: helper to render large stars (solid or outline)
+// Stars (solid/outline), used in reviews
 function StarDisplay({ rating = 0, size = "lg", variant = "auto" }) {
   const full = Math.floor(rating);
   const hasHalf = rating % 1 >= 0.5;
-  const empty = 5 - full - (hasHalf ? 1 : 0);
-
   const cls = { lg: "h-6 w-6", xl: "h-7 w-7" }[size] || "h-6 w-6";
 
   const renderStar = (filled, i) => (
@@ -84,7 +82,7 @@ function StarDisplay({ rating = 0, size = "lg", variant = "auto" }) {
   );
 }
 
-// ⭐ Reviews: modal for public submissions (no captcha)
+// “Leave a review” modal (no captcha)
 function LeaveReviewModal({ open, onClose, agentId, onSubmitted }) {
   const [rating, setRating] = useState(5);
   const [name, setName] = useState("");
@@ -225,7 +223,7 @@ export default function AgentPublic() {
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState("");
 
-  // ⭐ Reviews: public list + controls
+  // Reviews (public list + controls)
   const [reviews, setReviews] = useState([]);
   const [reviewsLoading, setReviewsLoading] = useState(false);
   const [leaveOpen, setLeaveOpen] = useState(false);
@@ -281,7 +279,7 @@ export default function AgentPublic() {
     return () => { mounted = false; };
   }, [slug]);
 
-  // ⭐ Reviews: fetch public reviews for this agent
+  // Fetch public reviews for this agent
   async function fetchReviews(agentId) {
     if (!agentId) return;
     setReviewsLoading(true);
@@ -334,9 +332,8 @@ export default function AgentPublic() {
   }
 
   const telDigits = profile.phone ? profile.phone.replace(/[^\d+]/g, "") : null;
-  const telHref = telDigits ? `tel:${telDigits}` : null;
+  const callHref = telDigits ? `tel:${telDigits}` : null;
   const phonePretty = profile.phone ? formatPhone(profile.phone) : "";
-  const callHref = telHref;
   const mailHref = profile.email ? `mailto:${profile.email}` : null;
   const bookHref = profile.calendly_url ? profile.calendly_url : null;
 
@@ -349,7 +346,7 @@ export default function AgentPublic() {
             <div className={`h-8 w-8 rounded-2xl ring-1 ring-white/10 grid place-items-center ${heroGradient}`}>
               <Shield className="h-4 w-4" />
             </div>
-            <div className={`text-sm font-semibold tracking-tight ${gradText}`}>
+            <div className={`text-sm font-semibold tracking-tight ${STAT_GRAD}`}>
               {profile.full_name}
             </div>
           </div>
@@ -378,24 +375,21 @@ export default function AgentPublic() {
 
           <div className="space-y-3">
             <h1 className="text-3xl font-semibold tracking-tight">
-              <span className={gradText}>{profile.full_name}</span>
+              <span className={STAT_GRAD}>{profile.full_name}</span>
             </h1>
 
             <div className="text-white/70">
               Licensed Broker{" "}
               {profile.npn ? (
                 <>
-                  · NPN: <span className={gradText}>{profile.npn}</span>
+                  · NPN: <span className={STAT_GRAD}>{profile.npn}</span>
                 </>
               ) : null}
             </div>
 
             {profile.phone && (
               <div className="text-white/70">
-                Phone:{" "}
-                <span className={gradText}>
-                  {phonePretty}
-                </span>
+                Phone: <span className={STAT_GRAD}>{phonePretty}</span>
               </div>
             )}
 
@@ -409,7 +403,8 @@ export default function AgentPublic() {
                   href={callHref}
                   className="inline-flex items-center gap-2 rounded-xl border border-white/15 bg-white/5 px-3 py-2 text-sm hover:bg-white/10"
                 >
-                  <Phone className="h-4 w-4" /> Call
+                  <Phone className="h-4 w-4" />
+                  <span className={STAT_GRAD}>{phonePretty}</span>
                 </a>
               )}
               {mailHref && (
@@ -445,7 +440,7 @@ export default function AgentPublic() {
           <div className="grid gap-6 sm:grid-cols-2 lg:grid-cols-4">
             {BROKERAGE_STATS.map((s) => (
               <div key={s.label} className="text-center">
-                <div className={`text-2xl font-extrabold tracking-tight ${gradText}`}>
+                <div className={`text-2xl font-extrabold tracking-tight ${STAT_GRAD}`}>
                   {s.value}
                 </div>
                 <div className="mt-1 text-sm text-white/70">{s.label}</div>
@@ -469,7 +464,7 @@ export default function AgentPublic() {
         </div>
       </section>
 
-      {/* ⭐ REVIEWS — big, full-width block */}
+      {/* Reviews (full width) */}
       <section id="reviews" className="mx-auto max-w-6xl px-4 pb-12">
         <div className="rounded-3xl border border-white/10 bg-white/[0.04] ring-1 ring-white/5 p-6 sm:p-8">
           <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
@@ -629,7 +624,7 @@ export default function AgentPublic() {
                   className="inline-flex items-center gap-2 rounded-xl border border-white/15 bg-white/5 px-3 py-2 text-sm hover:bg-white/10"
                 >
                   <Phone className="h-4 w-4" />
-                  <span className={gradText}>{phonePretty}</span>
+                  <span className={STAT_GRAD}>{phonePretty}</span>
                 </a>
               )}
               {mailHref && (
@@ -669,7 +664,7 @@ export default function AgentPublic() {
         </div>
       </section>
 
-      {/* ⭐ Leave Review Modal */}
+      {/* Leave Review Modal */}
       <LeaveReviewModal
         open={leaveOpen}
         onClose={() => setLeaveOpen(false)}
