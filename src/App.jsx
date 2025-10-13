@@ -19,7 +19,7 @@ import {
 import ProtectedRoute from "./components/ProtectedRoute.jsx";
 import { AuthProvider, useAuth } from "./auth.jsx";
 import LoginPage from "./pages/LoginPage.jsx";
-import SignupPage from "./pages/SignupPage.jsx"; // ✅ real signup page
+import SignupPage from "./pages/LoginPage.jsx"; // NOTE: If you truly have a separate SignupPage, switch back to "./pages/SignupPage.jsx"
 import AgentPublic from "./pages/AgentPublic.jsx";
 import AcceptInvite from "./pages/AcceptInvite.jsx";
 
@@ -366,18 +366,13 @@ function PartnerCTA() {
 /* ------------------------------- Main Landing ------------------------------ */
 
 function LandingPage() {
-  const [annual, setAnnual] = useState(true);
-
+  // Monthly-only plan (annual removed)
   const PLANS = [
     {
       name: "Remie CRM",
       blurb: "All-in-one CRM for agents — pipeline, automations, and more.",
-      monthly: 175,
-      yearly: 150,
-      buyUrl: {
-        monthly: "https://buy.stripe.com/4gM5kF4yCcYe4AC6Gw8Ra0c",
-        annual: "https://buy.stripe.com/dRm4gBfdgf6m1oqfd28Ra0d",
-      },
+      monthly: 189, // ✅ updated price
+      buyUrl: "https://buy.stripe.com/4gMfZjaX05vM5EGd4U8Ra0e", // ✅ updated link
       features: [
         "AI rebuttal helper",
         "Automated message system",
@@ -398,12 +393,6 @@ function LandingPage() {
     },
   ];
 
-  const displayPrice = (plan) =>
-    annual && plan.yearly != null ? plan.yearly : plan.monthly;
-
-  const buyHref = (plan) =>
-    annual && plan.buyUrl?.annual ? plan.buyUrl.annual : plan.buyUrl?.monthly;
-
   return (
     <div className="min-h-screen bg-neutral-950 text-white">
       <div className="pointer-events-none fixed inset-0 overflow-hidden">
@@ -422,12 +411,7 @@ function LandingPage() {
           <div className="flex items-center gap-3">
             <a href="#contact" className="text-sm opacity-80 hover:opacity-100">Contact</a>
             <Link to="/login" className="text-sm opacity-80 hover:opacity-100">Log in</Link>
-            <Link
-              to="/signup?next=start-trial&price=price_1SEZwrPgdGNoe2LHAkgRSFrl"
-              className="hidden rounded-xl bg-gradient-to-r from-indigo-500 via-purple-500 to-fuchsia-500 px-4 py-2 text-sm font-medium ring-1 ring-white/10 md:block"
-            >
-              Start 7-day free trial
-            </Link>
+            {/* ❌ Removed free trial button */}
           </div>
         </nav>
       </header>
@@ -452,22 +436,18 @@ function LandingPage() {
         </div>
       </section>
 
-      {/* Pricing + Demo */}
+      {/* Pricing (Monthly only) */}
       <section id="pricing" className="relative z-10 mx-auto max-w-7xl px-6 py-14">
         <div className="mx-auto max-w-2xl text-center">
-          <h2 className="text-3xl font-semibold tracking-tight sm:text-4xl">Simple, transparent pricing</h2>
-          <p className="mt-2 text-white/70">Switch between monthly and annual billing. Annual saves around 20% where available.</p>
-          <div className="mt-6 inline-flex items-center gap-2 rounded-full border border-white/15 bg-white/5 p-1 text-sm">
-            <button onClick={() => setAnnual(false)} className={`rounded-full px-3 py-1 ${!annual ? "bg-white text-black" : "text-white/80"}`}>Monthly</button>
-            <button onClick={() => setAnnual(true)} className={`rounded-full px-3 py-1 ${annual ? "bg-white text-black" : "text-white/80"}`}>Annual</button>
-          </div>
+          <h2 className="text-3xl font-semibold tracking-tight sm:text-4xl">Straightforward monthly pricing — no contracts</h2>
+          <p className="mt-2 text-white/70">Simple, transparent pricing. Cancel anytime.</p>
+          {/* ❌ Removed monthly/annual toggle */}
         </div>
 
         <div className="mt-10 grid gap-6 md:grid-cols-2 items-start">
           {PLANS.map((plan) => {
-            const isAnnualShown = annual && plan.yearly != null;
-            const price = displayPrice(plan);
-            const href = buyHref(plan);
+            const price = plan.monthly;
+            const href = plan.buyUrl;
 
             return (
               <div
@@ -483,9 +463,7 @@ function LandingPage() {
                 <p className="mt-1 text-sm text-white/70">{plan.blurb}</p>
                 <div className="mt-5 flex items-baseline gap-2">
                   <span className="text-4xl font-bold">${price}</span>
-                  <span className="text-white/60">
-                    /mo {isAnnualShown && <span className="text-white/40">(annual)</span>}
-                  </span>
+                  <span className="text-white/60">/month</span>
                 </div>
                 <ul className="mt-6 space-y-2 text-sm">
                   {plan.features.map((f) => (
@@ -513,7 +491,7 @@ function LandingPage() {
         </div>
 
         <p className="mt-6 text-center text-xs text-white/50">
-          Prices in USD. Annual pricing shows per-month equivalent, billed annually (where available).
+          Prices in USD. Cancel anytime. No annual commitments.
         </p>
       </section>
 
