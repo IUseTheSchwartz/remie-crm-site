@@ -1552,44 +1552,54 @@ export default function LeadsPage() {
                   }
                 }}
               >
-                Add to CRM only
-              </button>
-              <button
-                className="rounded-xl bg-white px-4 py-2 text-sm font-medium text-black hover:bg-white/90"
-                onClick={async () => {
-                  const { valid, invalidPhone } = await persistLeadsToServer(choiceModal.people);
-                  setChoiceModal(null);
-                  // 2) dry run to compute count + cost (only valid)
-                  const { status, out } = await runDryRun(valid) || {};
-                  if (!out) return;
-                  if (status === 403 && out?.error === "disabled") {
-                    setServerMsg("⚠️ Bulk messaging is disabled by env flag.");
-                    return;
-                  }
-                  if (status === 413 && out?.error === "over_cap") {
-                    setServerMsg(`⚠️ Over batch cap (${out.cap}). Reduce your file size.`);
-                    return;
-                  }
-                  if (out.error) {
-                    setServerMsg("⚠️ Preview failed. See console for details.");
-                    console.warn("[dry-run] fail", out);
-                    return;
-                  }
-                  setConfirmModal({
-                    batch_id: out.batch_id,
-                    total_candidates: out.total_candidates,
-                    will_send: out.will_send,
-                    estimated_cost_cents: out.estimated_cost_cents,
-                    wallet_balance_cents: out.wallet_balance_cents,
-                    skipped_by_reason: out.skipped_by_reason,
-                    blocker: out.blocker || null,
-                    people: valid, // message only valid imports
-                    _skipped_invalid_phone: invalidPhone.length, // display helper
-                  });
-                }}
-              >
-                Add &amp; Message Now
-              </button>
+                {/* Add to CRM only */}
+<button
+  className="rounded-xl border border-white/15 px-4 py-2 text-sm hover:bg-white/10"
+  onClick={() => {
+    const people = choiceModal.people;     // snapshot before closing
+    setChoiceModal(null);                   // close immediately
+    (async () => {
+      const { valid, invalidPhone } = await persistLeadsToServer(people);
+      if (invalidPhone.length) {
+        setServerMsg(`✅ Imported ${valid.length}. Skipped ${invalidPhone.length} for invalid phone.`);
+      }
+    })();
+  }}
+>
+  Add to CRM only
+</button>
+
+{/* Add & Message Now */}
+<button
+  className="rounded-xl bg-white px-4 py-2 text-sm font-medium text-black hover:bg-white/90"
+  onClick={() => {
+    const people = choiceModal.people;     // snapshot before closing
+    setChoiceModal(null);                   // close immediately
+    (async () => {
+      const { valid, invalidPhone } = await persistLeadsToServer(people);
+      const { status, out } = (await runDryRun(valid)) || {};
+      if (!out) return;
+      if (status === 403 && out?.error === "disabled") { setServerMsg("⚠️ Bulk messaging is disabled by env flag."); return; }
+      if (status === 413 && out?.error === "over_cap") { setServerMsg(`⚠️ Over batch cap (${out.cap}). Reduce your file size.`); return; }
+      if (out.error) { setServerMsg("⚠️ Preview failed. See console for details."); console.warn("[dry-run] fail", out); return; }
+
+      setConfirmModal({
+        batch_id: out.batch_id,
+        total_candidates: out.total_candidates,
+        will_send: out.will_send,
+        estimated_cost_cents: out.estimated_cost_cents,
+        wallet_balance_cents: out.wallet_balance_cents,
+        skipped_by_reason: out.skipped_by_reason,
+        blocker: out.blocker || null,
+        people: valid,
+        _skipped_invalid_phone: invalidPhone.length,
+      });
+    })();
+  }}
+>
+  Add &amp; Message Now
+</button>
+
             </div>
           </div>
         </div>
