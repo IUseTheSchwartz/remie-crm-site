@@ -1,6 +1,5 @@
 // File: src/pages/LeadsPage.jsx
 import { useEffect, useMemo, useState } from "react";
-import Papa from "papaparse";
 import {
   loadLeads, saveLeads,
   loadClients, saveClients,
@@ -10,7 +9,6 @@ import {
 // Supabase helpers
 import {
   upsertLeadServer,
-  upsertManyLeadsServer,
   deleteLeadServer,
 } from "../lib/supabaseLeads.js";
 
@@ -25,6 +23,10 @@ import { toE164 } from "../lib/phone.js";
 
 /* startCall so Leads page can dial exactly like Dialer */
 import { startCall } from "../lib/calls";
+
+// NEW: extracted controls (buttons + their own modals/logic)
+import AddLeadControl from "../components/leads/AddLeadControl.jsx";
+import CsvImportControl from "../components/leads/CsvImportControl.jsx";
 
 /* (Optional) simple phone link UI; remove if you don’t want it */
 const PhoneMono = ({ children }) => (
@@ -55,146 +57,13 @@ function labelForStage(id) {
   return m[id] || "No Pickup";
 }
 
-/* --------------------------- Header alias helpers --------------------------- */
+/* --------------------------- CSV Template headers --------------------------- */
 const TEMPLATE_HEADERS = [
   "name","phone","email",
   "dob","state","beneficiary","beneficiary_name","gender","military_branch","notes"
 ];
 
-const H = {
-  first: ["first","first name","firstname","given name","given_name","fname","first_name"],
-  last:  ["last","last name","lastname","surname","family name","lname","last_name","family_name"],
-  full:  ["name","full name","fullname","full_name"],
-  email: ["email","e-mail","email address","mail","email_address"],
-  phone: ["phone","phone number","mobile","cell","tel","telephone","number","phone_number"],
-  notes: ["notes","note","comments","comment","details"],
-  company:["company","business","organization","organisation"],
-  // NEW fields
-  dob:   ["dob","date of birth","birthdate","birth date","d.o.b.","date"],
-  state: ["state","st","us state","residence state"],
-  beneficiary: ["beneficiary","beneficiary type"],
-  beneficiary_name: ["beneficiary name","beneficiary_name","beneficiary full name"],
-  gender: ["gender","sex"],
-  military_branch: ["military","military branch","branch","service branch","military_branch","branch_of_service"],
-};
-
-// ---- PATCH: BOM-stripper and stronger normalizers ----
-function stripBOM(s) {
-  return String(s || "").replace(/^\uFEFF/, "");
-}
-const norm = (s) => stripBOM(s).trim().toLowerCase();
-
-function cleanEmail(e) {
-  const v = stripBOM(String(e || "").trim().toLowerCase());
-  if (!v) return "";
-  const junk = new Set(["n/a","na","none","-","null","unknown","noemail","no email"]);
-  return junk.has(v) ? "" : v;
-}
-
-function canonicalDigits(s) {
-  const d = String(s || "").replace(/\D+/g, "");
-  if (!d) return "";
-  return d.slice(-10); // last 10 digits
-}
-// ------------------------------------------------------
-
-/**
- * buildHeaderIndex(headers)
- * Matching rules prefer exact/branch-aware matches; avoids mapping "military" to "military status".
- */
-function buildHeaderIndex(headers) {
-  const normalized = headers.map(norm);
-
-  const matchesCandidate = (normalizedHeader, candidate) => {
-    // 👇 Guard: ignore junk "Unnamed: x" columns from spreadsheets
-    if ((normalizedHeader || "").startsWith("unnamed")) return false;
-
-    const c = candidate.toLowerCase();
-    if (normalizedHeader === c) return true;
-    if (normalizedHeader === c.replace(/_/g, " ")) return true;
-    if (c.includes("branch") && normalizedHeader.includes("branch")) return true;
-    if (c === "military") {
-      return normalizedHeader === "military" || normalizedHeader.includes("branch");
-    }
-    if (normalizedHeader.includes(c) && c.length > 3) return true;
-    return false;
-  };
-
-  const find = (candidates) => {
-    // Exact pass
-    for (let i = 0; i < normalized.length; i++) {
-      for (const cand of candidates) {
-        if (normalized[i] === cand) return headers[i];
-      }
-    }
-    // Prefer headers containing "branch" for military_branch
-    for (let i = 0; i < normalized.length; i++) {
-      if (normalized[i].includes("branch")) {
-        for (const cand of candidates) {
-          if (matchesCandidate(normalized[i], cand)) return headers[i];
-        }
-      }
-    }
-    // Fallback loose pass
-    for (let i = 0; i < normalized.length; i++) {
-      for (const cand of candidates) {
-        if (matchesCandidate(normalized[i], cand)) return headers[i];
-      }
-    }
-    return null;
-  };
-
-  return {
-    first:  find(H.first),
-    last:   find(H.last),
-    full:   find(H.full),
-    email:  find(H.email),
-    phone:  find(H.phone),
-    notes:  find(H.notes),
-    company:find(H.company),
-    dob:    find(H.dob),
-    state:  find(H.state),
-    beneficiary: find(H.beneficiary),
-    beneficiary_name: find(H.beneficiary_name),
-    gender: find(H.gender),
-    military_branch: find(H.military_branch),
-  };
-}
-
-function pick(row, key) {
-  if (!key) return "";
-  const v = row[key];
-  return v == null ? "" : String(v).trim();
-}
-
-function buildName(row, map) {
-  const full = pick(row, map.full);
-  if (full) return full;
-  const first = pick(row, map.first);
-  const last  = pick(row, map.last);
-  const combined = `${first} ${last}`.trim();
-  if (combined) return combined;
-  const company = pick(row, map.company);
-  if (company) return company;
-  const email = pick(row, map.email);
-  if (email && email.includes("@")) return email.split("@")[0];
-  return "";
-}
-const buildPhone = (row, map) =>
-  pick(row, map.phone) || row.phone || row.number || row.Phone || row.Number || "";
-const buildEmail = (row, map) =>
-  pick(row, map.email) || row.email || row.Email || "";
-const buildNotes = (row, map) => pick(row, map.notes) || "";
-
-// NEW field builders (string passthrough)
-const buildDob = (row, map) => pick(row, map.dob);
-const buildState = (row, map) => pick(row, map.state).toUpperCase();
-const buildBeneficiary = (row, map) => pick(row, map.beneficiary);
-const buildBeneficiaryName = (row, map) => pick(row, map.beneficiary_name);
-const buildGender = (row, map) => pick(row, map.gender);
-const buildMilitaryBranch = (row, map) => pick(row, map.military_branch);
-
-// Dedupe helpers
+/* ------------------------ Small normalizers used here ----------------------- */
 const onlyDigits = (s) => String(s || "").replace(/\D+/g, "");
 const normEmail  = (s) => String(s || "").trim().toLowerCase();
 
@@ -633,15 +502,9 @@ export default function LeadsPage() {
 
   const [serverMsg, setServerMsg] = useState("");
   const [showConnector, setShowConnector] = useState(false);
-  const [showAdd, setShowAdd] = useState(false); // manual add modal
 
   // selection for mass actions
   const [selectedIds, setSelectedIds] = useState(new Set());
-
-  /* NEW: CSV -> choice & confirm modals state */
-  const [choiceModal, setChoiceModal] = useState(null);   // { count, people }
-  const [confirmModal, setConfirmModal] = useState(null); // {..., people }
-  const [isSendingBatch, setIsSendingBatch] = useState(false);
 
   useEffect(() => {
     setLeads(loadLeads());
@@ -830,167 +693,22 @@ export default function LeadsPage() {
       : src;
   }, [tab, allClients, onlySold, filter]);
 
-  /* ---------- Helpers for CSV choice + dry-run ---------- */
-  // Split valid vs invalid-phone; only sync valid
-  async function persistLeadsToServer(rawPeople) {
-    const valid = [];
-    const invalidPhone = [];
-    for (const p of rawPeople) {
-      const hasPhone = !!String(p.phone || "").trim();
-      const okPhone = !hasPhone || !!toE164(p.phone);
-      if (okPhone) valid.push(p);
-      else invalidPhone.push(p);
-    }
-
-    // optimistic local: add only valid (still allow records without phone)
-    const newLeads = [...valid, ...leads];
-    const newClients = [...valid, ...clients];
-    saveLeads(newLeads);
-    saveClients(newClients);
-    setLeads(newLeads);
-    setClients(newClients);
+  /* ---------- tiny helpers so child controls can update this page ---------- */
+  function addPeopleLocally(people) {
+    if (!Array.isArray(people) || people.length === 0) return;
+    const nextLeads = [...people, ...leads];
+    const nextClients = [...people, ...clients];
+    saveLeads(nextLeads);
+    saveClients(nextClients);
+    setLeads(nextLeads);
+    setClients(nextClients);
     setTab("clients");
-
-    // batch upsert valid
-    let wrote = 0;
-    try {
-      setServerMsg(`Syncing ${valid.length} new lead(s) to Supabase…`);
-      wrote = await upsertManyLeadsServer(valid);
-      const skippedMsg = invalidPhone.length
-        ? ` — ${invalidPhone.length} skipped for invalid phone`
-        : "";
-      setServerMsg(`✅ CSV synced (${wrote} saved)${skippedMsg}`);
-    } catch (e) {
-      console.error("CSV sync error:", e);
-      const skippedMsg = invalidPhone.length
-        ? ` (and ${invalidPhone.length} skipped for invalid phone)`
-        : "";
-      setServerMsg(`⚠️ CSV sync failed${skippedMsg}: ${e.message || e}`);
-    }
-
-    return { valid, invalidPhone, wrote };
   }
-
-  async function runDryRun(people) {
-    const { data: auth } = await supabase.auth.getUser();
-    const requesterId = auth?.user?.id;
-    if (!requesterId) { alert("Not logged in."); return null; }
-
-    const res = await fetch(`${FN_BASE}/import-batch-send`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        requesterId,
-        dry_run: true,
-        batch_id: Math.random().toString(36).slice(2, 10),
-        people,
-      }),
-    });
-    const out = await res.json().catch(() => ({}));
-    return { status: res.status, out };
-  }
-
-  // CSV import with duplicate skipping (email OR phone)
-  async function handleImportCsv(file) {
-    Papa.parse(file, {
-      header: true,
-      skipEmptyLines: true,
-      transformHeader: (h) => stripBOM(h).trim(), // PATCH: strip BOM on headers
-      complete: async (res) => {
-        const rows = res.data || [];
-        if (!rows.length) {
-          alert("CSV has no rows.");
-          return;
-        }
-        const headers = Object.keys(rows[0] || {});
-        const map = buildHeaderIndex(headers);
-
-        // PATCH: sturdier dedupe (ignore placeholder emails; canonicalize phones) + debug
-        const existingEmails = new Set(
-          [...clients, ...leads].map((r) => cleanEmail(r.email)).filter(Boolean)
-        );
-        const existingPhones = new Set(
-          [...clients, ...leads].map((r) => canonicalDigits(r.phone)).filter(Boolean)
-        );
-
-        // Track duplicates within the same CSV
-        const seenEmails = new Set();
-        const seenPhones = new Set();
-
-        // Normalize and filter
-        const uniqueToAdd = [];
-        let skippedDupEmail = 0;
-        let skippedDupPhone = 0;
-        let skippedEmpty = 0;
-
-        for (const r of rows) {
-          const name  = r.name || r.Name || buildName(r, map);
-          const phone = buildPhone(r, map);
-          const email = buildEmail(r, map);
-          const notes = buildNotes(r, map);
-
-          // NEW fields
-          const dob  = buildDob(r, map);
-          const state = buildState(r, map);
-          const beneficiary = buildBeneficiary(r, map);
-          const beneficiary_name = buildBeneficiaryName(r, map);
-          const gender = buildGender(r, map);
-          const military_branch = buildMilitaryBranch(r, map);
-
-          const person = normalizePerson({
-            name, phone, email, notes,
-            stage: "no_pickup",
-            dob, state, beneficiary, beneficiary_name, gender, military_branch,
-          });
-
-          // Canonical keys
-          const e = cleanEmail(person.email);
-          const p = canonicalDigits(person.phone);
-
-          // If everything truly empty (after BOM/clean), skip but count it
-          if (!(person.name || e || p)) {
-            skippedEmpty++;
-            continue;
-          }
-
-          const emailDup = e && (existingEmails.has(e) || seenEmails.has(e));
-          const phoneDup = p && (existingPhones.has(p) || seenPhones.has(p));
-
-          if (emailDup || phoneDup) {
-            if (emailDup) skippedDupEmail++;
-            if (phoneDup) skippedDupPhone++;
-            console.debug("[CSV DEDUPE] Skipped duplicate:", { name: person.name, email: e, phone10: p, emailDup, phoneDup });
-            continue;
-          }
-
-          if (e) seenEmails.add(e);
-          if (p) seenPhones.add(p);
-
-          uniqueToAdd.push(person);
-        }
-
-        if (!uniqueToAdd.length) {
-          const msgParts = [];
-          if (skippedDupEmail) msgParts.push(`${skippedDupEmail} email dupes`);
-          if (skippedDupPhone) msgParts.push(`${skippedDupPhone} phone dupes`);
-          if (skippedEmpty) msgParts.push(`${skippedEmpty} empty rows`);
-          const detail = msgParts.length ? ` (${msgParts.join(", ")})` : "";
-          setServerMsg(`No new leads found in CSV (duplicates skipped)${detail}.`);
-          return;
-        }
-
-        // 👉 Keep FULL objects so extra fields persist
-        setChoiceModal({
-          count: uniqueToAdd.length,
-          people: uniqueToAdd,
-        });
-      },
-      error: (err) => alert("CSV parse error: " + err.message),
-    });
-  }
+  function showServerMsg(s) { setServerMsg(s); }
 
   function downloadTemplate() {
-    const csv = Papa.unparse([Object.fromEntries(TEMPLATE_HEADERS.map(h => [h, ""]))], { header: true });
+    // create a simple CSV with just headers (no Papa dependency)
+    const csv = TEMPLATE_HEADERS.join(",") + "\n";
     const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
@@ -1254,69 +972,6 @@ export default function LeadsPage() {
     }
   }
 
-  // Manual add: uses saved id to trigger auto-text (no lookup race)
-  async function handleManualAdd(personInput) {
-    const person = normalizePerson({
-      ...personInput,
-      stage: "no_pickup",
-    });
-
-    if (!(person.name || person.phone || person.email)) {
-      alert("Enter at least a name, phone, or email.");
-      return;
-    }
-
-    // Optimistic local (avoid duplicating locally if same phone/email already present)
-    const emailKey = normEmail(person.email);
-    const phoneKey = onlyDigits(person.phone);
-    const isDupLocal = [...clients, ...leads].some((r) => {
-      const e = normEmail(r.email);
-      const p = onlyDigits(r.phone);
-      return (emailKey && e && e === emailKey) || (phoneKey && p && p === phoneKey);
-    });
-
-    if (!isDupLocal) {
-      const newLeads = [person, ...leads];
-      const newClients = [person, ...clients];
-      saveLeads(newLeads);
-      saveClients(newClients);
-      setLeads(newLeads);
-      setClients(newClients);
-    }
-    setTab("clients");
-    setShowAdd(false);
-
-    // Server upsert → capture id
-    let savedId = null;
-    try {
-      setServerMsg("Saving lead to Supabase…");
-      savedId = await upsertLeadServer(person);
-      setServerMsg(isDupLocal ? "ℹ️ Lead already existed — merged on server" : "✅ Lead saved");
-    } catch (e) {
-      console.error("Manual add sync error:", e);
-      setServerMsg(`⚠️ Save failed: ${e.message || e}`);
-    }
-
-    // Reflect to contacts + trigger auto-text using savedId
-    // (We keep this for manual adds since Zapier isn’t involved here.)
-    try {
-      const { data: authData } = await supabase.auth.getUser();
-      const userId = authData?.user?.id;
-      if (userId) {
-        await upsertLeadContact({
-          userId,
-          phone: person.phone,
-          fullName: person.name,
-          militaryBranch: person.military_branch,
-        });
-
-        await triggerAutoTextForLeadId({ leadId: savedId, userId, person });
-      }
-    } catch (err) {
-      console.error("Contact tag sync / auto-text (manual add) failed:", err);
-    }
-  }
-
   // Sold tab uses SAME columns as Leads (no policy columns visible)
   const baseHeaders = ["Name","Phone","Email","DOB","State","Beneficiary","Beneficiary Name","Gender","Military Branch","Stage"];
   const colCount = baseHeaders.length + 2; // + Select checkbox + Actions
@@ -1350,48 +1005,42 @@ export default function LeadsPage() {
           {showConnector ? "Close setup" : "Setup auto import"}
         </button>
 
-        {/* Manual add lead */}
-        <button
-          onClick={() => setShowAdd(true)}
-          className="rounded-xl border border-emerald-500/40 bg-emerald-500/10 px-3 py-2 text-sm"
-          title="Manually add a single lead"
-        >
-          Add lead
-        </button>
-
-        <label className="ml-auto inline-flex items-center gap-2 rounded-xl border border-white/15 bg-white/5 px-3 py-2 text-sm cursor-pointer">
-          <input
-            type="file"
-            accept=".csv"
-            className="hidden"
-            onChange={(e) => e.target.files?.[0] && handleImportCsv(e.target.files[0])}
+        {/* spacer pushes control buttons to the right like before */}
+        <div className="ml-auto flex items-center gap-3">
+          <AddLeadControl
+            onAddedLocal={addPeopleLocally}
+            onServerMsg={showServerMsg}
           />
-          Import CSV
-        </label>
 
-        <button
-          onClick={downloadTemplate}
-          className="rounded-xl border border-white/15 bg-white/5 px-3 py-2 text-sm"
-        >
-          Download CSV template
-        </button>
+          <CsvImportControl
+            onAddedLocal={addPeopleLocally}
+            onServerMsg={showServerMsg}
+          />
 
-        <button
-          onClick={removeAll}
-          className="rounded-xl border border-rose-500/40 bg-rose-500/10 px-3 py-2 text-sm"
-        >
-          Clear all (local)
-        </button>
+          <button
+            onClick={downloadTemplate}
+            className="rounded-xl border border-white/15 bg-white/5 px-3 py-2 text-sm"
+          >
+            Download CSV template
+          </button>
 
-        {/* Bulk delete button */}
-        <button
-          onClick={removeSelected}
-          disabled={selectedIds.size === 0}
-          className={`rounded-xl border ${selectedIds.size ? "border-rose-500/60 bg-rose-500/10" : "border-white/10 bg-white/5"} px-3 py-2 text-sm`}
-          title="Delete selected leads (local + Supabase + Contacts)"
-        >
-          Delete selected ({selectedIds.size})
-        </button>
+          <button
+            onClick={removeAll}
+            className="rounded-xl border border-rose-500/40 bg-rose-500/10 px-3 py-2 text-sm"
+          >
+            Clear all (local)
+          </button>
+
+          {/* Bulk delete button */}
+          <button
+            onClick={removeSelected}
+            disabled={selectedIds.size === 0}
+            className={`rounded-xl border ${selectedIds.size ? "border-rose-500/60 bg-rose-500/10" : "border-white/10 bg-white/5"} px-3 py-2 text-sm`}
+            title="Delete selected leads (local + Supabase + Contacts)"
+          >
+            Delete selected ({selectedIds.size})
+          </button>
+        </div>
       </div>
 
       {/* Server status line (non-blocking) */}
@@ -1533,169 +1182,6 @@ export default function LeadsPage() {
         </table>
       </div>
 
-      {/* 👉 Choice Modal (Add only vs Add & Message Now) */}
-      {choiceModal && (
-        <div className="fixed inset-0 z-50 grid bg-black/60 p-3">
-          <div className="relative m-auto w-full max-w-lg rounded-2xl border border-white/15 bg-neutral-950 p-4">
-            <div className="mb-2 text-base font-semibold">How do you want to import these leads?</div>
-            <p className="text-sm text-white/70 mb-4">
-              We found <span className="font-semibold text-white">{choiceModal.count}</span> new contact(s) in your file.
-            </p>
-            <div className="flex items-center justify-end gap-2">
-              {/* close modal immediately while work continues */}
-              <button
-                className="rounded-xl border border-white/15 px-4 py-2 text-sm hover:bg-white/10"
-                onClick={() => {
-                  const people = choiceModal.people; // snapshot before closing
-                  setChoiceModal(null);               // close immediately
-                  (async () => {
-                    const { valid, invalidPhone } = await persistLeadsToServer(people);
-                    if (invalidPhone.length) {
-                      setServerMsg(`✅ Imported ${valid.length}. Skipped ${invalidPhone.length} for invalid phone.`);
-                    }
-                  })();
-                }}
-              >
-                Add to CRM only
-              </button>
-              {/* close modal immediately while work continues */}
-              <button
-                className="rounded-xl bg-white px-4 py-2 text-sm font-medium text-black hover:bg-white/90"
-                onClick={() => {
-                  const people = choiceModal.people; // snapshot before closing
-                  setChoiceModal(null);               // close immediately
-                  (async () => {
-                    const { valid, invalidPhone } = await persistLeadsToServer(people);
-                    // 2) dry run to compute count + cost (only valid)
-                    const { status, out } = (await runDryRun(valid)) || {};
-                    if (!out) return;
-                    if (status === 403 && out?.error === "disabled") {
-                      setServerMsg("⚠️ Bulk messaging is disabled by env flag.");
-                      return;
-                    }
-                    if (status === 413 && out?.error === "over_cap") {
-                      setServerMsg(`⚠️ Over batch cap (${out.cap}). Reduce your file size.`);
-                      return;
-                    }
-                    if (out.error) {
-                      setServerMsg("⚠️ Preview failed. See console for details.");
-                      console.warn("[dry-run] fail", out);
-                      return;
-                    }
-                    setConfirmModal({
-                      batch_id: out.batch_id,
-                      total_candidates: out.total_candidates,
-                      will_send: out.will_send,
-                      estimated_cost_cents: out.estimated_cost_cents,
-                      wallet_balance_cents: out.wallet_balance_cents,
-                      skipped_by_reason: out.skipped_by_reason,
-                      blocker: out.blocker || null,
-                      people: valid, // message only valid imports
-                      _skipped_invalid_phone: invalidPhone.length, // display helper
-                    });
-                  })();
-                }}
-              >
-                Add &amp; Message Now
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* 👉 Confirmation Modal (cost preview + Send Now) */}
-      {confirmModal && (
-        <div className="fixed inset-0 z-50 grid bg-black/60 p-3">
-          <div className="relative m-auto w-full max-w-lg rounded-2xl border border-white/15 bg-neutral-950 p-4">
-            <div className="mb-2 text-base font-semibold">Confirm bulk message</div>
-            <div className="space-y-2 text-sm">
-              <div className="flex justify-between"><span>Candidates</span><span>{confirmModal.total_candidates}</span></div>
-              <div className="flex justify-between"><span>Will send now</span><span>{confirmModal.will_send}</span></div>
-              <div className="flex justify-between">
-                <span>Estimated cost</span>
-                <span>${(confirmModal.estimated_cost_cents / 100).toFixed(2)}</span>
-              </div>
-              {typeof confirmModal.wallet_balance_cents === "number" && (
-                <div className="flex justify-between">
-                  <span>Wallet balance</span>
-                  <span>${(confirmModal.wallet_balance_cents / 100).toFixed(2)}</span>
-                </div>
-              )}
-
-              <details className="mt-2">
-                <summary className="cursor-pointer text-white/80">Skipped (preview)</summary>
-                <div className="mt-2 grid gap-1 text-white/70">
-                  {Object.entries(confirmModal.skipped_by_reason || {}).map(([k,v]) => (
-                    <div key={k} className="flex justify-between">
-                      <span className="capitalize">{k.replace(/_/g," ")}</span><span>{v}</span>
-                    </div>
-                  ))}
-                  {typeof confirmModal._skipped_invalid_phone === "number" && confirmModal._skipped_invalid_phone > 0 && (
-                    <div className="flex justify-between">
-                      <span>invalid phone (import)</span><span>{confirmModal._skipped_invalid_phone}</span>
-                    </div>
-                  )}
-                </div>
-              </details>
-
-              {confirmModal.blocker && (
-                <div className="mt-2 rounded-lg border border-amber-500/40 bg-amber-500/10 p-2 text-amber-200">
-                  {confirmModal.blocker === "tfn_pending_verification" && "Your toll-free number is pending verification. You can import, but cannot send yet."}
-                  {confirmModal.blocker === "no_agent_tfn_configured" && "No verified toll-free number is configured. Add one in Messaging Settings."}
-                  {confirmModal.blocker === "insufficient_balance" && "Insufficient wallet balance to send this batch."}
-                </div>
-              )}
-            </div>
-
-            <div className="mt-4 flex items-center justify-end gap-2">
-              <button
-                className="rounded-xl border border-white/15 px-4 py-2 text-sm hover:bg-white/10"
-                onClick={() => setConfirmModal(null)}
-              >
-                Back
-              </button>
-              <button
-                disabled={!!confirmModal.blocker || isSendingBatch || confirmModal.will_send === 0}
-                className={`rounded-xl px-4 py-2 text-sm font-medium ${(!confirmModal.blocker && confirmModal.will_send>0 && !isSendingBatch) ? "bg-white text-black hover:bg-white/90" : "bg-white/20 text-white/60 cursor-not-allowed"}`}
-                onClick={async () => {
-                  try {
-                    setIsSendingBatch(true);
-                    setServerMsg("📨 Sending messages…");
-                    const { data: auth } = await supabase.auth.getUser();
-                    const requesterId = auth?.user?.id;
-                    const res = await fetch(`${FN_BASE}/import-batch-send`, {
-                      method: "POST",
-                      headers: { "Content-Type": "application/json" },
-                      body: JSON.stringify({
-                        requesterId,
-                        batch_id: confirmModal.batch_id,
-                        people: confirmModal.people,
-                      }),
-                    });
-                    const out = await res.json().catch(() => ({}));
-                    if (res.status === 402 && out?.stop === "insufficient_balance") {
-                      setServerMsg("⚠️ Not enough balance to send this batch.");
-                    } else if (res.status === 409 && out?.stop) {
-                      setServerMsg("⚠️ Cannot send until your toll-free number is verified/configured.");
-                    } else if (res.ok) {
-                      setServerMsg(`✅ Sent: ${out.ok}, skipped: ${out.skipped}, errors: ${out.errors}`);
-                    } else {
-                      setServerMsg("⚠️ Batch send failed. See console.");
-                      console.warn("[import-batch-send] send fail", out);
-                    }
-                  } finally {
-                    setIsSendingBatch(false);
-                    setConfirmModal(null);
-                  }
-                }}
-              >
-                {isSendingBatch ? "Sending…" : "Send Now"}
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
       {/* Drawer for SOLD (create/edit sold) */}
       {selected && (
         <SoldDrawer
@@ -1711,14 +1197,6 @@ export default function LeadsPage() {
         <PolicyViewer
           person={viewSelected}
           onClose={() => setViewSelected(null)}
-        />
-      )}
-
-      {/* Manual Add Lead modal */}
-      {showAdd && (
-        <ManualAddLeadModal
-          onClose={() => setShowAdd(false)}
-          onSave={handleManualAdd}
         />
       )}
     </div>
@@ -1896,139 +1374,6 @@ function SoldDrawer({ initial, allClients, onClose, onSave }) {
             <button type="submit"
               className="rounded-xl bg-white px-4 py-2 text-sm font-medium text-black hover:bg-white/90">
               Save as SOLD
-            </button>
-          </div>
-        </form>
-      </div>
-
-      <style>{`.inp{width:100%; border-radius:.75rem; border:1px solid rgba(255,255,255,.1); background:#00000066; padding:.5rem .75rem; outline:none}
-        .inp:focus{box-shadow:0 0 0 2px rgba(99,102,241,.4)}`}</style>
-    </div>
-  );
-}
-
-/* --------------------------- Manual Add Lead Modal --------------------------- */
-function ManualAddLeadModal({ onClose, onSave }) {
-  const [form, setForm] = useState({
-    name: "",
-    phone: "",
-    email: "",
-    notes: "",
-    dob: "",
-    state: "",
-    beneficiary: "",
-    beneficiary_name: "",
-    gender: "",
-    military_branch: "",
-  });
-
-  function submit(e) {
-    e.preventDefault();
-    onSave(form);
-  }
-
-  return (
-    <div className="fixed inset-0 z-50 grid bg-black/60 p-3">
-      <div className="relative m-auto w-full max-w-xl rounded-2xl border border-white/15 bg-neutral-950 p-4">
-        <div className="mb-2 flex items-center justify-between">
-          <div className="text-base font-semibold">Add lead</div>
-          <button onClick={onClose} className="rounded-lg px-2 py-1 text-sm hover:bg-white/10">Close</button>
-        </div>
-
-        <form onSubmit={submit} className="grid gap-3">
-          <div className="grid gap-3 sm:grid-cols-2">
-            <Field label="Name">
-              <input
-                className="inp"
-                placeholder="Jane Doe"
-                value={form.name}
-                onChange={(e)=>setForm({...form, name:e.target.value})}
-              />
-            </Field>
-            <Field label="Phone">
-              <input
-                className="inp"
-                placeholder="(555) 123-4567"
-                value={form.phone}
-                onChange={(e)=>setForm({...form, phone:e.target.value})}
-              />
-            </Field>
-          </div>
-
-          <Field label="Email">
-            <input
-              className="inp"
-              placeholder="jane@example.com"
-              value={form.email}
-              onChange={(e)=>setForm({...form, email:e.target.value})}
-            />
-          </Field>
-
-          <Field label="Notes">
-            <input
-              className="inp"
-              placeholder="Any context about the lead"
-              value={form.notes}
-              onChange={(e)=>setForm({...form, notes:e.target.value})}
-            />
-          </Field>
-
-          <div className="grid gap-3 sm:grid-cols-2">
-            <Field label="DOB">
-              <input
-                className="inp"
-                placeholder="MM-DD-YYYY"
-                value={form.dob}
-                onChange={(e)=>setForm({...form, dob:e.target.value})}
-              />
-            </Field>
-            <Field label="State">
-              <input
-                className="inp"
-                placeholder="TN"
-                value={form.state}
-                onChange={(e)=>setForm({...form, state:e.target.value.toUpperCase()})}
-              />
-            </Field>
-            <Field label="Beneficiary">
-              <input
-                className="inp"
-                value={form.beneficiary}
-                onChange={(e)=>setForm({...form, beneficiary:e.target.value})}
-              />
-            </Field>
-            <Field label="Beneficiary Name">
-              <input
-                className="inp"
-                value={form.beneficiary_name}
-                onChange={(e)=>setForm({...form, beneficiary_name:e.target.value})}
-              />
-            </Field>
-            <Field label="Gender">
-              <input
-                className="inp"
-                value={form.gender}
-                onChange={(e)=>setForm({...form, gender:e.target.value})}
-              />
-            </Field>
-            <Field label="Military Branch">
-              <input
-                className="inp"
-                placeholder="Army / Navy / …"
-                value={form.military_branch}
-                onChange={(e)=>setForm({...form, military_branch:e.target.value})}
-              />
-            </Field>
-          </div>
-
-          <div className="mt-3 flex items-center justify-end gap-2">
-            <button type="button" onClick={onClose}
-              className="rounded-xl border border-white/15 px-4 py-2 text-sm hover:bg-white/10">
-            Cancel
-            </button>
-            <button type="submit"
-              className="rounded-xl bg-white px-4 py-2 text-sm font-medium text-black hover:bg-white/90">
-              Save lead
             </button>
           </div>
         </form>
