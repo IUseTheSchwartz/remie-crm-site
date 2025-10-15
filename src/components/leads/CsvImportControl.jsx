@@ -15,7 +15,7 @@ function canonicalDigits(s){const d=String(s||"").replace(/\D+/g,""); if(!d) ret
 const onlyDigits=(s)=>String(s||"").replace(/\D+/g,"");
 const normEmail=(s)=>String(s||"").trim().toLowerCase();
 
-/* header mapping (short version: full set from your code) */
+/* header mapping */
 const H = {
   first:["first","first name","firstname","given name","given_name","fname","first_name"],
   last:["last","last name","lastname","surname","family name","lname","last_name","family_name"],
@@ -58,9 +58,17 @@ function buildHeaderIndex(headers){
 }
 const pick=(row,key)=>{ if(!key) return ""; const v=row[key]; return v==null?"":String(v).trim(); }
 function buildName(row,map){
-  const full=pick(row,map.full); if(full) return full;
-  const first=pick(row,map.first); const last=pick(row,map.last);
-  const combined=`${first} ${last}`.trim(); if(combined) return combined;
+  // Prefer explicit first + last if present
+  const first=pick(row,map.first);
+  const last=pick(row,map.last);
+  const combined=`${first} ${last}`.replace(/\s+/g," ").trim();
+  if(combined) return combined;
+
+  // Then any full-name column
+  const full=pick(row,map.full);
+  if(full) return full;
+
+  // Then fallbacks
   const company=pick(row,map.company); if(company) return company;
   const email=pick(row,map.email); if(email && email.includes("@")) return email.split("@")[0];
   return "";
@@ -69,7 +77,7 @@ const buildPhone=(row,map)=> pick(row,map.phone) || row.phone || row.number || r
 const buildEmail=(row,map)=> pick(row,map.email) || row.email || row.Email || "";
 const buildNotes=(row,map)=> pick(row,map.notes) || "";
 const buildDob=(row,map)=> pick(row,map.dob);
-const buildState=(row,map)=> pick(row,map.state).toUpperCase();
+const buildState=(row,map)=> (pick(row,map.state) || "").toUpperCase();
 const buildBeneficiary=(row,map)=> pick(row,map.beneficiary);
 const buildBeneficiaryName=(row,map)=> pick(row,map.beneficiary_name);
 const buildGender=(row,map)=> pick(row,map.gender);
@@ -102,8 +110,7 @@ export default function CsvImportControl({ onAddedLocal, onServerMsg }) {
         const rows = res.data || [];
         if(!rows.length){ alert("CSV has no rows."); return; }
 
-        // existing local dedupe keys come from parent via DOM-less approach:
-        // we'll read from localStorage like your storage helpers do.
+        // existing local dedupe keys
         let existing = [];
         try {
           const leads = JSON.parse(localStorage.getItem("remie_leads")||"[]");
@@ -121,7 +128,8 @@ export default function CsvImportControl({ onAddedLocal, onServerMsg }) {
         const uniqueToAdd=[]; let skippedDupEmail=0, skippedDupPhone=0, skippedEmpty=0;
 
         for(const r of rows){
-          const name  = r.name || r.Name || buildName(r,map);
+          // IMPORTANT: prefer combining First + Last, then fall back to any Name column
+          const name  = buildName(r,map) || r.name || r.Name || "";
           const phone = buildPhone(r,map);
           const email = buildEmail(r,map);
           const notes = buildNotes(r,map);
