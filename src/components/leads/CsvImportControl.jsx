@@ -146,6 +146,12 @@ export default function CsvImportControl({ onAddedLocal, onServerMsg }) {
             dob, state, beneficiary, beneficiary_name, gender, military_branch,
           });
 
+          // ---- NEW: normalize to match server lookup format ----
+          const e164 = toE164(person.phone);
+          if (e164) person.phone = e164;
+          person.email = (person.email || "").trim().toLowerCase();
+          // ------------------------------------------------------
+
           const e = cleanEmail(person.email);
           const p = canonicalDigits(person.phone);
 
@@ -225,16 +231,28 @@ export default function CsvImportControl({ onAddedLocal, onServerMsg }) {
                     const okPhone = !hasPhone || !!toE164(p.phone);
                     return okPhone;
                   });
+                  const skippedInvalid = choice.people.length - valid.length;
+
+                  // CLOSE chooser first
                   setChoice(null);
+
+                  // SAVE to CRM first so the server can find the leads
+                  await persist(valid);
+
+                  // Small pause helps slow networks/DB indexing
+                  await new Promise(r=>setTimeout(r, 600));
+
+                  // Now preview the send against saved leads
                   const { status, out } = await runDryRun(valid) || {};
                   if(!out) return;
                   if(status===403 && out?.error==="disabled"){ onServerMsg?.("⚠️ Bulk messaging is disabled by env flag."); return; }
                   if(status===413 && out?.error==="over_cap"){ onServerMsg?.(`⚠️ Over batch cap (${out.cap}). Reduce your file size.`); return; }
                   if(out.error){ onServerMsg?.("⚠️ Preview failed. See console for details."); console.warn("[dry-run] fail", out); return; }
+
                   setConfirm({
                     ...out,
                     people: valid,
-                    _skipped_invalid_phone: choice.people.length - valid.length,
+                    _skipped_invalid_phone: skippedInvalid,
                   });
                 }}
               >
