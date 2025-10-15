@@ -90,7 +90,7 @@ const PRESETS = {
 // ---- Page ----
 export default function LeadRescuePage() {
   // 🔒 Temporary off switch. Set to false to re-enable the full page.
-  const UNDER_MAINTENANCE = true;
+  const UNDER_MAINTENANCE = false;
   if (UNDER_MAINTENANCE) {
     return (
       <div className="flex h-full min-h-[60vh] w-full items-center justify-center">
