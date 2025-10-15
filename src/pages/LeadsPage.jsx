@@ -78,7 +78,25 @@ const H = {
   military_branch: ["military","military branch","branch","service branch","military_branch","branch_of_service"],
 };
 
-const norm = (s) => (s || "").toString().trim().toLowerCase();
+// ---- PATCH: BOM-stripper and stronger normalizers ----
+function stripBOM(s) {
+  return String(s || "").replace(/^\uFEFF/, "");
+}
+const norm = (s) => stripBOM(s).trim().toLowerCase();
+
+function cleanEmail(e) {
+  const v = stripBOM(String(e || "").trim().toLowerCase());
+  if (!v) return "";
+  const junk = new Set(["n/a","na","none","-","null","unknown","noemail","no email"]);
+  return junk.has(v) ? "" : v;
+}
+
+function canonicalDigits(s) {
+  const d = String(s || "").replace(/\D+/g, "");
+  if (!d) return "";
+  return d.slice(-10); // last 10 digits
+}
+// ------------------------------------------------------
 
 /**
  * buildHeaderIndex(headers)
@@ -877,7 +895,7 @@ export default function LeadsPage() {
     Papa.parse(file, {
       header: true,
       skipEmptyLines: true,
-      transformHeader: (h) => h.trim(),
+      transformHeader: (h) => stripBOM(h).trim(), // PATCH: strip BOM on headers
       complete: async (res) => {
         const rows = res.data || [];
         if (!rows.length) {
@@ -887,12 +905,12 @@ export default function LeadsPage() {
         const headers = Object.keys(rows[0] || {});
         const map = buildHeaderIndex(headers);
 
-        // Existing identifiers
+        // PATCH: sturdier dedupe (ignore placeholder emails; canonicalize phones) + debug
         const existingEmails = new Set(
-          [...clients, ...leads].map((r) => normEmail(r.email)).filter(Boolean)
+          [...clients, ...leads].map((r) => cleanEmail(r.email)).filter(Boolean)
         );
         const existingPhones = new Set(
-          [...clients, ...leads].map((r) => onlyDigits(r.phone)).filter(Boolean)
+          [...clients, ...leads].map((r) => canonicalDigits(r.phone)).filter(Boolean)
         );
 
         // Track duplicates within the same CSV
@@ -901,6 +919,10 @@ export default function LeadsPage() {
 
         // Normalize and filter
         const uniqueToAdd = [];
+        let skippedDupEmail = 0;
+        let skippedDupPhone = 0;
+        let skippedEmpty = 0;
+
         for (const r of rows) {
           const name  = r.name || r.Name || buildName(r, map);
           const phone = buildPhone(r, map);
@@ -921,14 +943,25 @@ export default function LeadsPage() {
             dob, state, beneficiary, beneficiary_name, gender, military_branch,
           });
 
-          if (!(person.name || person.phone || person.email)) continue;
+          // Canonical keys
+          const e = cleanEmail(person.email);
+          const p = canonicalDigits(person.phone);
 
-          const e = normEmail(person.email);
-          const p = onlyDigits(person.phone);
+          // If everything truly empty (after BOM/clean), skip but count it
+          if (!(person.name || e || p)) {
+            skippedEmpty++;
+            continue;
+          }
 
           const emailDup = e && (existingEmails.has(e) || seenEmails.has(e));
           const phoneDup = p && (existingPhones.has(p) || seenPhones.has(p));
-          if (emailDup || phoneDup) continue;
+
+          if (emailDup || phoneDup) {
+            if (emailDup) skippedDupEmail++;
+            if (phoneDup) skippedDupPhone++;
+            console.debug("[CSV DEDUPE] Skipped duplicate:", { name: person.name, email: e, phone10: p, emailDup, phoneDup });
+            continue;
+          }
 
           if (e) seenEmails.add(e);
           if (p) seenPhones.add(p);
@@ -937,7 +970,12 @@ export default function LeadsPage() {
         }
 
         if (!uniqueToAdd.length) {
-          setServerMsg("No new leads found in CSV (duplicates skipped).");
+          const msgParts = [];
+          if (skippedDupEmail) msgParts.push(`${skippedDupEmail} email dupes`);
+          if (skippedDupPhone) msgParts.push(`${skippedDupPhone} phone dupes`);
+          if (skippedEmpty) msgParts.push(`${skippedEmpty} empty rows`);
+          const detail = msgParts.length ? ` (${msgParts.join(", ")})` : "";
+          setServerMsg(`No new leads found in CSV (duplicates skipped)${detail}.`);
           return;
         }
 
