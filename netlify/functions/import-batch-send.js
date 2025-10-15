@@ -32,6 +32,7 @@ const H = {
   gender:["gender","sex"],
   military_branch:["military","military branch","branch","service branch","military_branch","branch_of_service"],
 };
+
 function buildHeaderIndex(headers){
   const normalized=headers.map(norm);
   const matches=(nh,cand)=>{
@@ -45,8 +46,11 @@ function buildHeaderIndex(headers){
     return false;
   };
   const find=(cands)=>{
+    // exact
     for(let i=0;i<normalized.length;i++){ for(const cand of cands){ if(normalized[i]===cand) return headers[i];}}
+    // prefer "branch" for military
     for(let i=0;i<normalized.length;i++){ if(normalized[i].includes("branch")){ for(const cand of cands){ if(matches(normalized[i],cand)) return headers[i];}}}
+    // loose
     for(let i=0;i<normalized.length;i++){ for(const cand of cands){ if(matches(normalized[i],cand)) return headers[i];}}
     return null;
   };
@@ -57,15 +61,23 @@ function buildHeaderIndex(headers){
     military_branch:find(H.military_branch),
   };
 }
+
 const pick=(row,key)=>{ if(!key) return ""; const v=row[key]; return v==null?"":String(v).trim(); }
+
 function buildName(row,map){
+  // prefer explicit full name
   const full=pick(row,map.full); if(full) return full;
-  const first=pick(row,map.first); const last=pick(row,map.last);
-  const combined=`${first} ${last}`.trim(); if(combined) return combined;
+  // combine first + last (either one can be empty)
+  const first=pick(row,map.first);
+  const last=pick(row,map.last);
+  const combined=`${first} ${last}`.trim();
+  if(combined) return combined;
+  // fallbacks
   const company=pick(row,map.company); if(company) return company;
   const email=pick(row,map.email); if(email && email.includes("@")) return email.split("@")[0];
   return "";
 }
+
 const buildPhone=(row,map)=> pick(row,map.phone) || row.phone || row.number || row.Phone || row.Number || "";
 const buildEmail=(row,map)=> pick(row,map.email) || row.email || row.Email || "";
 const buildNotes=(row,map)=> pick(row,map.notes) || "";
@@ -77,12 +89,11 @@ const buildGender=(row,map)=> pick(row,map.gender);
 const buildMilitaryBranch=(row,map)=> pick(row,map.military_branch);
 
 export default function CsvImportControl({ onAddedLocal, onServerMsg }) {
-  const [choice, setChoice] = useState(null); // {count, people}
+  const [choice, setChoice] = useState(null);   // {count, people}
   const [confirm, setConfirm] = useState(null); // preview payload
   const [isSending, setIsSending] = useState(false);
 
   const sleep = (ms) => new Promise(r => setTimeout(r, ms));
-
   function msg(s){ onServerMsg?.(s); }
 
   async function runDryRun(people){
@@ -90,7 +101,8 @@ export default function CsvImportControl({ onAddedLocal, onServerMsg }) {
     const requesterId = auth?.user?.id;
     if(!requesterId){ alert("Not logged in."); return null; }
     const res = await fetch(`${FN_BASE}/import-batch-send`, {
-      method:"POST", headers:{ "Content-Type":"application/json" },
+      method:"POST",
+      headers:{ "Content-Type":"application/json" },
       body: JSON.stringify({ requesterId, dry_run:true, batch_id:Math.random().toString(36).slice(2,10), people })
     });
     const out = await res.json().catch(()=>({}));
@@ -105,8 +117,7 @@ export default function CsvImportControl({ onAddedLocal, onServerMsg }) {
         const rows = res.data || [];
         if(!rows.length){ alert("CSV has no rows."); return; }
 
-        // existing local dedupe keys come from parent via DOM-less approach:
-        // we'll read from localStorage like your storage helpers do.
+        // existing local dedupe keys
         let existing = [];
         try {
           const leads = JSON.parse(localStorage.getItem("remie_leads")||"[]");
@@ -187,7 +198,12 @@ export default function CsvImportControl({ onAddedLocal, onServerMsg }) {
   return (
     <>
       <label className="inline-flex items-center gap-2 rounded-xl border border-white/15 bg-white/5 px-3 py-2 text-sm cursor-pointer">
-        <input type="file" accept=".csv" className="hidden" onChange={(e)=>e.target.files?.[0] && handleImportCsv(e.target.files[0])}/>
+        <input
+          type="file"
+          accept=".csv"
+          className="hidden"
+          onChange={(e)=>e.target.files?.[0] && handleImportCsv(e.target.files[0])}
+        />
         Import CSV
       </label>
 
@@ -196,7 +212,9 @@ export default function CsvImportControl({ onAddedLocal, onServerMsg }) {
         <div className="fixed inset-0 z-50 grid bg-black/60 p-3">
           <div className="relative m-auto w-full max-w-lg rounded-2xl border border-white/15 bg-neutral-950 p-4">
             <div className="mb-2 text-base font-semibold">How do you want to import these leads?</div>
-            <p className="text-sm text-white/70 mb-4">We found <span className="font-semibold text-white">{choice.count}</span> new contact(s) in your file.</p>
+            <p className="text-sm text-white/70 mb-4">
+              We found <span className="font-semibold text-white">{choice.count}</span> new contact(s) in your file.
+            </p>
             <div className="flex items-center justify-end gap-2">
               <button
                 className="rounded-xl border border-white/15 px-4 py-2 text-sm hover:bg-white/10"
@@ -212,6 +230,7 @@ export default function CsvImportControl({ onAddedLocal, onServerMsg }) {
               >
                 Add to CRM only
               </button>
+
               <button
                 className="rounded-xl bg-white px-4 py-2 text-sm font-medium text-black hover:bg-white/90"
                 onClick={async ()=>{
