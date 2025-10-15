@@ -57,12 +57,6 @@ function labelForStage(id) {
   return m[id] || "No Pickup";
 }
 
-/* --------------------------- CSV Template headers --------------------------- */
-const TEMPLATE_HEADERS = [
-  "name","phone","email",
-  "dob","state","beneficiary","beneficiary_name","gender","military_branch","notes"
-];
-
 /* ------------------------ Small normalizers used here ----------------------- */
 const onlyDigits = (s) => String(s || "").replace(/\D+/g, "");
 const normEmail  = (s) => String(s || "").trim().toLowerCase();
@@ -503,7 +497,7 @@ export default function LeadsPage() {
   const [serverMsg, setServerMsg] = useState("");
   const [showConnector, setShowConnector] = useState(false);
 
-  // selection for mass actions
+  // selection for mass actions (store as STRING ids)
   const [selectedIds, setSelectedIds] = useState(new Set());
 
   useEffect(() => {
@@ -706,18 +700,6 @@ export default function LeadsPage() {
   }
   function showServerMsg(s) { setServerMsg(s); }
 
-  function downloadTemplate() {
-    // create a simple CSV with just headers (no Papa dependency)
-    const csv = TEMPLATE_HEADERS.join(",") + "\n";
-    const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = "remie_leads_template.csv";
-    a.click();
-    URL.revokeObjectURL(url);
-  }
-
   function openAsSold(person) { setSelected(person); }
 
   /** Case-insensitive email lookup: find an existing lead id for this user */
@@ -853,10 +835,10 @@ export default function LeadsPage() {
     setLeads(nextLeads);
     if (selected?.id === id) setSelected(null);
 
-    // remove from selectedIds if present
+    // remove from selectedIds if present (string key)
     setSelectedIds(prev => {
       const n = new Set(prev);
-      n.delete(id);
+      n.delete(String(id));
       return n;
     });
 
@@ -883,47 +865,34 @@ export default function LeadsPage() {
     }
   }
 
-  function removeAll() {
-    if (!confirm("Clear ALL locally stored leads/clients? (This does NOT delete from Supabase)")) return;
-    saveLeads([]);
-    saveClients([]);
-    setLeads([]);
-    setClients([]);
-    setSelected(null);
-    setSelectedIds(new Set()); // clear selection
-  }
-
-  // selection helpers & bulk delete
+  // selection helpers & bulk delete (string-normalized ids)
   function toggleSelect(id) {
+    const key = String(id);
     setSelectedIds(prev => {
       const next = new Set(prev);
-      if (next.has(id)) next.delete(id);
-      else next.add(id);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
       return next;
     });
   }
 
   function toggleSelectAll() {
     setSelectedIds(prev => {
-      const next = new Set(prev);
-      const visibleIds = visible.map(v => v.id);
-      const allSelected = visibleIds.length > 0 && visibleIds.every(id => next.has(id));
-      if (allSelected) {
-        for (const id of visibleIds) next.delete(id);
-        return next;
-      } else {
-        for (const id of visibleIds) next.add(id);
-        return next;
-      }
+      const visibleIds = visible.map(v => String(v.id));
+      const allSelected = visibleIds.length > 0 && visibleIds.every(id => prev.has(id));
+      return allSelected ? new Set() : new Set(visibleIds);
     });
   }
 
   /* -------------------- DELETE bulk (leads + contacts) -------------------- */
   async function removeSelected() {
-    if (selectedIds.size === 0) return;
-    if (!confirm(`Delete ${selectedIds.size} selected record(s)? This affects both local and Supabase, and will also remove matching Contacts.`)) return;
+    // delete exactly the visible, checked rows
+    const idsToDelete = visible
+      .filter(v => selectedIds.has(String(v.id)))
+      .map(v => v.id);
 
-    const idsToDelete = Array.from(selectedIds);
+    if (idsToDelete.length === 0) return;
+    if (!confirm(`Delete ${idsToDelete.length} selected record(s)? This affects both local and Supabase, and will also remove matching Contacts.`)) return;
 
     // Collect phones before we drop from local so we can delete contacts
     const phonesToDelete = [...clients, ...leads]
@@ -943,7 +912,7 @@ export default function LeadsPage() {
 
     // Server deletes
     setServerMsg(`Deleting ${idsToDelete.length} selected...`);
-    let failed = [];
+    const failed = [];
     for (const id of idsToDelete) {
       try {
         await deleteLeadServer(id);
@@ -1017,28 +986,20 @@ export default function LeadsPage() {
             onServerMsg={showServerMsg}
           />
 
-          <button
-            onClick={downloadTemplate}
-            className="rounded-xl border border-white/15 bg-white/5 px-3 py-2 text-sm"
-          >
-            Download CSV template
-          </button>
-
-          <button
-            onClick={removeAll}
-            className="rounded-xl border border-rose-500/40 bg-rose-500/10 px-3 py-2 text-sm"
-          >
-            Clear all (local)
-          </button>
-
-          {/* Bulk delete button */}
+          {/* Bulk delete button (only one delete control now) */}
           <button
             onClick={removeSelected}
-            disabled={selectedIds.size === 0}
-            className={`rounded-xl border ${selectedIds.size ? "border-rose-500/60 bg-rose-500/10" : "border-white/10 bg-white/5"} px-3 py-2 text-sm`}
+            disabled={
+              visible.filter(v => selectedIds.has(String(v.id))).length === 0
+            }
+            className={`rounded-xl border ${
+              visible.filter(v => selectedIds.has(String(v.id))).length
+                ? "border-rose-500/60 bg-rose-500/10"
+                : "border-white/10 bg-white/5"
+            } px-3 py-2 text-sm`}
             title="Delete selected leads (local + Supabase + Contacts)"
           >
-            Delete selected ({selectedIds.size})
+            Delete selected ({visible.filter(v => selectedIds.has(String(v.id))).length})
           </button>
         </div>
       </div>
@@ -1079,7 +1040,10 @@ export default function LeadsPage() {
                 <input
                   type="checkbox"
                   onChange={toggleSelectAll}
-                  checked={visible.length > 0 && visible.every(v => selectedIds.has(v.id))}
+                  checked={
+                    visible.length > 0 &&
+                    visible.every(v => selectedIds.has(String(v.id)))
+                  }
                   aria-label="Select all visible"
                 />
               </Th>
@@ -1087,7 +1051,7 @@ export default function LeadsPage() {
               <Th>Actions</Th>
             </tr>
           </thead>
-            <tbody>
+          <tbody>
             {visible.map((p) => {
               const isSold = p.status === "sold";
               const stageId = p.stage || "no_pickup";
@@ -1098,7 +1062,7 @@ export default function LeadsPage() {
                   <Td>
                     <input
                       type="checkbox"
-                      checked={selectedIds.has(p.id)}
+                      checked={selectedIds.has(String(p.id))}
                       onChange={() => toggleSelect(p.id)}
                       aria-label={`Select ${p.name || p.id}`}
                     />
