@@ -1,6 +1,5 @@
 // netlify/functions/import-batch-send.js
-// Bulk fan-out after CSV import, with DRY RUN + cost preview.
-// Robust TFN detection + tolerant phone matching (last-10 suffix ILIKE).
+// Bulk fan-out after CSV import, with DRY RUN + cost preview + Lead Rescue auto-enroll.
 
 const fetch = require("node-fetch");
 const { getServiceClient } = require("./_supabase");
@@ -36,12 +35,11 @@ function json(body, statusCode = 200) {
   return { statusCode, headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) };
 }
 
-// ---- TFN lookup (compatible with your schema) ----
+// ---- TFN lookup ----
 async function getAgentTFNStatus(db, user_id) {
   if (BYPASS_TFN) return { status: "verified", e164: null, bypass: true };
 
   try {
-    // Your schema: public.toll_free_numbers (assigned_to, verified, phone_number)
     const { data, error } = await db
       .from("toll_free_numbers")
       .select("phone_number, verified")
@@ -81,56 +79,49 @@ async function getContactByPhone(db, user_id, phoneE164) {
   return data || null;
 }
 
-// ---- Tolerant lead match: exact E.164 OR suffix ILIKE on last-10 ----
+// ---- Tolerant lead match ----
 async function findLeadIdByUserAndIdentity(db, user_id, { phone, email }) {
   const p10 = last10(phone || "");
   const em = S(email).toLowerCase();
 
-  // 1) Exact phone matches for common variants (fast path)
   if (p10) {
     const variants = [p10, `1${p10}`, `+1${p10}`];
-
     try {
-      const { data, error } = await db
+      const { data } = await db
         .from("leads")
-        .select("id, phone")
+        .select("id")
         .eq("user_id", user_id)
         .in("phone", variants)
         .order("created_at", { ascending: false })
         .limit(1);
-      if (error) throw error;
       if (data?.length) return data[0].id;
     } catch (e) {
       console.warn("[lead match] exact variants error:", e.message || e);
     }
 
-    // 2) Suffix ILIKE on last-10 (handles formatting like (555) 123-4567, etc.)
     try {
-      const { data, error } = await db
+      const { data } = await db
         .from("leads")
         .select("id, phone")
         .eq("user_id", user_id)
-        .ilike("phone", `%${p10}`) // ends with last 10
+        .ilike("phone", `%${p10}`)
         .order("created_at", { ascending: false })
         .limit(1);
-      if (error) throw error;
       if (data?.length) return data[0].id;
     } catch (e) {
       console.warn("[lead match] suffix ilike error:", e.message || e);
     }
   }
 
-  // 3) Email match (case-insensitive)
   if (em) {
     try {
-      const { data, error } = await db
+      const { data } = await db
         .from("leads")
         .select("id")
         .eq("user_id", user_id)
         .ilike("email", em)
         .order("created_at", { ascending: false })
         .limit(1);
-      if (error) throw error;
       if (data?.length) return data[0].id;
     } catch (e) {
       console.warn("[lead match] email ilike error:", e.message || e);
@@ -151,6 +142,7 @@ async function providerMessageIdExists(db, user_id, provider_message_id) {
   return !!(data && data.length);
 }
 
+// ---- Main handler ----
 exports.handler = async (event) => {
   const db = getServiceClient();
   try {
@@ -178,7 +170,6 @@ exports.handler = async (event) => {
       return json({ error: "over_cap", cap: BATCH_CAP, total_candidates }, 413);
     }
 
-    // Pre-flight blockers shared by both dry run and real run
     const tfn = await getAgentTFNStatus(db, requesterId);
     const wallet_balance_cents = await getBalanceCents(db, requesterId);
 
@@ -200,7 +191,6 @@ exports.handler = async (event) => {
         continue;
       }
 
-      // Respect unsubscribed if we can resolve a phone
       if (phoneE164) {
         const c = await getContactByPhone(db, requesterId, phoneE164).catch(() => null);
         if (c && c.subscribed === false) {
@@ -217,7 +207,6 @@ exports.handler = async (event) => {
 
       const keyTail = phoneE164 ? last10(phoneE164) : Buffer.from(email).toString("hex").slice(0, 10);
       const provider_message_id = `csv-${batchId}-${keyTail}`;
-
       const exists = await providerMessageIdExists(db, requesterId, provider_message_id);
       if (exists) {
         skipped_by_reason.already_deduped++;
@@ -230,7 +219,7 @@ exports.handler = async (event) => {
     const will_send = queue.length;
     const estimated_cost_cents = will_send * COST_CENTS;
 
-    // Dry run returns preview + blockers (don’t attempt send)
+    // Dry run
     if (dryRun) {
       let blocker = null;
       if (!BYPASS_TFN) {
@@ -253,7 +242,7 @@ exports.handler = async (event) => {
       });
     }
 
-    // Real run: stop on blockers up front
+    // Real run
     if (!BYPASS_TFN) {
       if (tfn.status === "pending") return json({ stop: "tfn_pending_verification" }, 409);
       if (tfn.status !== "verified") return json({ stop: "no_agent_tfn_configured" }, 409);
@@ -261,10 +250,7 @@ exports.handler = async (event) => {
     if (wallet_balance_cents < estimated_cost_cents)
       return json({ stop: "insufficient_balance", needed_cents: estimated_cost_cents, wallet_balance_cents }, 402);
 
-    // Fan-out to messages-send
-    let ok = 0,
-      errors = 0,
-      skipped = total_candidates - will_send;
+    let ok = 0, errors = 0, skipped = total_candidates - will_send;
 
     for (const item of queue) {
       try {
@@ -275,7 +261,6 @@ exports.handler = async (event) => {
             requesterId,
             lead_id: item.lead_id,
             provider_message_id: item.provider_message_id,
-            // templateKey left undefined: messages-send chooses correct template.
           }),
         });
 
@@ -284,9 +269,29 @@ exports.handler = async (event) => {
         if (res.ok && (out.ok || out.deduped)) {
           ok++;
 
-          // Auto-enroll in Lead Rescue (after successful send)
+          // Auto-enroll in Lead Rescue
           try {
-            const contactId = out?.contact_id;
+            let contactId = out?.contact_id;
+
+            // Fallback lookup if missing
+            if (!contactId) {
+              const { data: lead } = await db
+                .from("leads")
+                .select("phone")
+                .eq("id", item.lead_id)
+                .maybeSingle();
+              const phone = lead?.phone;
+              if (phone) {
+                const { data: c } = await db
+                  .from("message_contacts")
+                  .select("id")
+                  .eq("user_id", requesterId)
+                  .ilike("phone", `%${phone.slice(-10)}`)
+                  .maybeSingle();
+                contactId = c?.id || null;
+              }
+            }
+
             if (contactId) {
               await db.from("lead_rescue_trackers").upsert(
                 {
@@ -298,6 +303,8 @@ exports.handler = async (event) => {
                 },
                 { onConflict: "user_id,contact_id,seq_key" }
               );
+            } else {
+              console.warn("[import-batch-send] no contact found to enroll for lead", item.lead_id);
             }
           } catch (err) {
             console.warn("[import-batch-send] lead_rescue_trackers insert warning:", err.message || err);
