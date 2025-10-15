@@ -121,8 +121,11 @@ exports.handler = async (event) => {
     }
 
     let body;
-    try { body = JSON.parse(event.body || "{}"); }
-    catch { return json({ error: "invalid_json" }, 400); }
+    try {
+      body = JSON.parse(event.body || "{}");
+    } catch {
+      return json({ error: "invalid_json" }, 400);
+    }
 
     const requesterId = S(body.requesterId);
     const dryRun = !!body.dry_run;
@@ -143,7 +146,7 @@ exports.handler = async (event) => {
 
     const skipped_by_reason = {
       unsubscribed: 0,
-      invalid_phone: 0,    // neither phone nor email (or bad phone)
+      invalid_phone: 0,
       no_lead_match: 0,
       already_deduped: 0,
     };
@@ -209,18 +212,16 @@ exports.handler = async (event) => {
     }
 
     // Real run: stop on blockers up front
-    if (tfn.status === "pending") {
-      return json({ stop: "tfn_pending_verification" }, 409);
-    }
-    if (tfn.status !== "verified") {
-      return json({ stop: "no_agent_tfn_configured" }, 409);
-    }
-    if (wallet_balance_cents < estimated_cost_cents) {
+    if (tfn.status === "pending") return json({ stop: "tfn_pending_verification" }, 409);
+    if (tfn.status !== "verified") return json({ stop: "no_agent_tfn_configured" }, 409);
+    if (wallet_balance_cents < estimated_cost_cents)
       return json({ stop: "insufficient_balance", needed_cents: estimated_cost_cents, wallet_balance_cents }, 402);
-    }
 
     // Fan-out to messages-send
-    let ok = 0, errors = 0, skipped = total_candidates - will_send;
+    let ok = 0,
+      errors = 0,
+      skipped = total_candidates - will_send;
+
     for (const item of queue) {
       try {
         const res = await fetch(ABS_SEND_URL, {
@@ -233,12 +234,37 @@ exports.handler = async (event) => {
             // Leave templateKey undefined so messages-send picks new_lead vs new_lead_military.
           }),
         });
+
         const out = await res.json().catch(() => ({}));
-        if (res.ok && (out.ok || out.deduped)) ok++;
-        else errors++;
+
+        if (res.ok && (out.ok || out.deduped)) {
+          ok++;
+
+          // --- Auto-enroll in Lead Rescue (only after successful send) ---
+          try {
+            const contactId = out?.contact_id;
+            if (contactId) {
+              await db.from("lead_rescue_trackers").upsert(
+                {
+                  user_id: requesterId,
+                  contact_id: contactId,
+                  seq_key: "lead_rescue",
+                  current_day: 1,
+                  started_at: new Date().toISOString(),
+                },
+                { onConflict: "user_id,contact_id,seq_key" }
+              );
+            }
+          } catch (err) {
+            console.warn("[import-batch-send] lead_rescue_trackers insert warning:", err.message || err);
+          }
+        } else {
+          errors++;
+        }
       } catch {
         errors++;
       }
+
       if (THROTTLE_MS > 0) await sleep(THROTTLE_MS);
     }
 
