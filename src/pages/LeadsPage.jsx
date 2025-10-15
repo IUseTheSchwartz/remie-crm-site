@@ -497,7 +497,7 @@ export default function LeadsPage() {
   const [serverMsg, setServerMsg] = useState("");
   const [showConnector, setShowConnector] = useState(false);
 
-  // selection for mass actions (store as STRING ids)
+  // selection for mass actions
   const [selectedIds, setSelectedIds] = useState(new Set());
 
   useEffect(() => {
@@ -835,10 +835,10 @@ export default function LeadsPage() {
     setLeads(nextLeads);
     if (selected?.id === id) setSelected(null);
 
-    // remove from selectedIds if present (string key)
+    // remove from selectedIds if present
     setSelectedIds(prev => {
       const n = new Set(prev);
-      n.delete(String(id));
+      n.delete(id);
       return n;
     });
 
@@ -865,26 +865,32 @@ export default function LeadsPage() {
     }
   }
 
-  // selection helpers & bulk delete (string-normalized ids)
+  // selection helpers & bulk delete
   function toggleSelect(id) {
-    const key = String(id);
     setSelectedIds(prev => {
       const next = new Set(prev);
-      if (next.has(key)) next.delete(key);
-      else next.add(key);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
       return next;
     });
   }
 
   function toggleSelectAll() {
     setSelectedIds(prev => {
-      const visibleIds = visible.map(v => String(v.id));
-      const allSelected = visibleIds.length > 0 && visibleIds.every(id => prev.has(id));
-      return allSelected ? new Set() : new Set(visibleIds);
+      const next = new Set(prev);
+      const visibleIds = visible.map(v => v.id);
+      const allSelected = visibleIds.length > 0 && visibleIds.every(id => next.has(id));
+      if (allSelected) {
+        for (const id of visibleIds) next.delete(id);
+        return next;
+      } else {
+        for (const id of visibleIds) next.add(id);
+        return next;
+      }
     });
   }
 
-  /* -------------------- DELETE bulk (leads + contacts) -------------------- */
+  /* -------------------- DELETE bulk (leads + contacts) — robust -------------------- */
   async function removeSelected() {
     // delete exactly the visible, checked rows
     const idsToDelete = visible
@@ -892,52 +898,78 @@ export default function LeadsPage() {
       .map(v => v.id);
 
     if (idsToDelete.length === 0) return;
-    if (!confirm(`Delete ${idsToDelete.length} selected record(s)? This affects both local and Supabase, and will also remove matching Contacts.`)) return;
 
-    // Collect phones before we drop from local so we can delete contacts
-    const phonesToDelete = [...clients, ...leads]
-      .filter(r => idsToDelete.includes(r.id))
-      .map(r => r.phone)
-      .filter(Boolean);
-
-    // Optimistic local removal
-    const nextClients = clients.filter(c => !idsToDelete.includes(c.id));
-    const nextLeads   = leads.filter(l  => !idsToDelete.includes(l.id));
-    saveClients(nextClients);
-    saveLeads(nextLeads);
-    setClients(nextClients);
-    setLeads(nextLeads);
-    setSelectedIds(new Set()); // clear selection
-    setSelected(null);
-
-    // Server deletes
-    setServerMsg(`Deleting ${idsToDelete.length} selected...`);
-    const failed = [];
-    for (const id of idsToDelete) {
-      try {
-        await deleteLeadServer(id);
-      } catch (e) {
-        console.error("Bulk delete failed for", id, e);
-        failed.push({ id, error: e });
-      }
+    if (!confirm(`Delete ${idsToDelete.length} selected record(s)? This deletes from Supabase and removes matching Contacts.`)) {
+      return;
     }
 
-    // Delete matching contacts in one go
+    // Map id -> phone before we modify local arrays (for contacts cleanup)
+    const phoneById = new Map(
+      [...clients, ...leads]
+        .filter(r => idsToDelete.includes(r.id))
+        .map(r => [r.id, r.phone])
+    );
+
+    // 1) SERVER BULK DELETE (single query)
     try {
       const { data: auth } = await supabase.auth.getUser();
       const userId = auth?.user?.id;
-      if (userId && phonesToDelete.length) {
-        await deleteContactsByPhones(userId, phonesToDelete);
+      if (!userId) {
+        setServerMsg("⚠️ Not logged in.");
+        return;
+      }
+
+      setServerMsg(`Deleting ${idsToDelete.length} on server…`);
+
+      // Delete and return the deleted ids so we know exactly what succeeded
+      const { data, error } = await supabase
+        .from("leads")
+        .delete()
+        .eq("user_id", userId)
+        .in("id", idsToDelete)
+        .select("id");
+
+      if (error) {
+        console.error("Bulk delete error:", error);
+        setServerMsg(`⚠️ Server delete failed: ${error.message || error}`);
+        return;
+      }
+
+      const deletedIds = new Set((data || []).map(r => r.id));
+      const actuallyDeletedCount = deletedIds.size;
+
+      // 2) LOCAL CLEANUP matching what server really deleted
+      const nextClients = clients.filter(c => !deletedIds.has(c.id));
+      const nextLeads   = leads.filter(l  => !deletedIds.has(l.id));
+      saveClients(nextClients);
+      saveLeads(nextLeads);
+      setClients(nextClients);
+      setLeads(nextLeads);
+      setSelectedIds(new Set()); // clear selection
+      setSelected(null);
+
+      // 3) CONTACTS CLEANUP (phones of successfully deleted leads)
+      try {
+        const phonesToDelete = Array.from(deletedIds)
+          .map(id => phoneById.get(id))
+          .filter(Boolean);
+        if (phonesToDelete.length) {
+          await deleteContactsByPhones(userId, phonesToDelete);
+        }
+      } catch (e) {
+        console.warn("Contact bulk delete failed:", e);
+      }
+
+      // 4) Feedback (handle partial success)
+      const missed = idsToDelete.length - actuallyDeletedCount;
+      if (missed > 0) {
+        setServerMsg(`⚠️ Deleted ${actuallyDeletedCount}, ${missed} not deleted (server skipped).`);
+      } else {
+        setServerMsg(`🗑️ Deleted ${actuallyDeletedCount} selected (and matching contacts).`);
       }
     } catch (e) {
-      console.error("Bulk contact delete failed:", e);
-      // keep going; lead deletes already applied
-    }
-
-    if (failed.length === 0) {
-      setServerMsg(`🗑️ Deleted ${idsToDelete.length} selected (and matching contacts)`);
-    } else {
-      setServerMsg(`⚠️ ${failed.length} deletion(s) failed. See console for details.`);
+      console.error("Bulk delete fatal:", e);
+      setServerMsg(`⚠️ Delete failed: ${e.message || e}`);
     }
   }
 
@@ -986,20 +1018,14 @@ export default function LeadsPage() {
             onServerMsg={showServerMsg}
           />
 
-          {/* Bulk delete button (only one delete control now) */}
+          {/* Bulk delete button only (per your request) */}
           <button
             onClick={removeSelected}
-            disabled={
-              visible.filter(v => selectedIds.has(String(v.id))).length === 0
-            }
-            className={`rounded-xl border ${
-              visible.filter(v => selectedIds.has(String(v.id))).length
-                ? "border-rose-500/60 bg-rose-500/10"
-                : "border-white/10 bg-white/5"
-            } px-3 py-2 text-sm`}
-            title="Delete selected leads (local + Supabase + Contacts)"
+            disabled={selectedIds.size === 0}
+            className={`rounded-xl border ${selectedIds.size ? "border-rose-500/60 bg-rose-500/10" : "border-white/10 bg-white/5"} px-3 py-2 text-sm`}
+            title="Delete selected leads (Supabase + Contacts)"
           >
-            Delete selected ({visible.filter(v => selectedIds.has(String(v.id))).length})
+            Delete selected ({selectedIds.size})
           </button>
         </div>
       </div>
@@ -1040,10 +1066,7 @@ export default function LeadsPage() {
                 <input
                   type="checkbox"
                   onChange={toggleSelectAll}
-                  checked={
-                    visible.length > 0 &&
-                    visible.every(v => selectedIds.has(String(v.id)))
-                  }
+                  checked={visible.length > 0 && visible.every(v => selectedIds.has(v.id))}
                   aria-label="Select all visible"
                 />
               </Th>
@@ -1062,7 +1085,7 @@ export default function LeadsPage() {
                   <Td>
                     <input
                       type="checkbox"
-                      checked={selectedIds.has(String(p.id))}
+                      checked={selectedIds.has(p.id)}
                       onChange={() => toggleSelect(p.id)}
                       aria-label={`Select ${p.name || p.id}`}
                     />
@@ -1126,7 +1149,7 @@ export default function LeadsPage() {
                       <button
                         onClick={() => removeOne(p.id)}
                         className="rounded-lg border border-rose-500/40 bg-rose-500/10 px-2 py-1 hover:bg-rose-500/20"
-                        title="Delete (local + Supabase + Contact)"
+                        title="Delete (Supabase + Contact)"
                       >
                         Delete
                       </button>
