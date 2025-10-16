@@ -1,5 +1,5 @@
 // netlify/functions/import-batch-send.js
-// Bulk fan-out after CSV import, with DRY RUN + cost preview + Lead Rescue auto-enroll.
+// Bulk fan-out after CSV import, with DRY RUN + cost preview + Lead Rescue auto-enroll + detailed debug logs.
 
 const fetch = require("node-fetch");
 const { getServiceClient } = require("./_supabase");
@@ -250,10 +250,14 @@ exports.handler = async (event) => {
     if (wallet_balance_cents < estimated_cost_cents)
       return json({ stop: "insufficient_balance", needed_cents: estimated_cost_cents, wallet_balance_cents }, 402);
 
-    let ok = 0, errors = 0, skipped = total_candidates - will_send;
+    let ok = 0,
+      errors = 0,
+      skipped = total_candidates - will_send;
 
     for (const item of queue) {
       try {
+        console.log("[import-batch-send] sending for lead", item.lead_id);
+
         const res = await fetch(ABS_SEND_URL, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -265,6 +269,7 @@ exports.handler = async (event) => {
         });
 
         const out = await res.json().catch(() => ({}));
+        console.log("[import-batch-send] messages-send response:", out);
 
         if (res.ok && (out.ok || out.deduped)) {
           ok++;
@@ -272,6 +277,7 @@ exports.handler = async (event) => {
           // Auto-enroll in Lead Rescue
           try {
             let contactId = out?.contact_id;
+            console.log("[import-batch-send] starting enroll step; contact_id =", contactId);
 
             // Fallback lookup if missing
             if (!contactId) {
@@ -292,8 +298,10 @@ exports.handler = async (event) => {
               }
             }
 
+            console.log("[import-batch-send] resolved contactId:", contactId);
+
             if (contactId) {
-              await db.from("lead_rescue_trackers").upsert(
+              const { error: upErr } = await db.from("lead_rescue_trackers").upsert(
                 {
                   user_id: requesterId,
                   contact_id: contactId,
@@ -303,6 +311,7 @@ exports.handler = async (event) => {
                 },
                 { onConflict: "user_id,contact_id,seq_key" }
               );
+              console.log("[import-batch-send] inserted tracker:", upErr || "ok");
             } else {
               console.warn("[import-batch-send] no contact found to enroll for lead", item.lead_id);
             }
@@ -310,9 +319,11 @@ exports.handler = async (event) => {
             console.warn("[import-batch-send] lead_rescue_trackers insert warning:", err.message || err);
           }
         } else {
+          console.warn("[import-batch-send] message send failed:", out);
           errors++;
         }
-      } catch {
+      } catch (err) {
+        console.warn("[import-batch-send] loop catch:", err.message || err);
         errors++;
       }
 
