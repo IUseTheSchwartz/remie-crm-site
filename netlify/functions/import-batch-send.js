@@ -1,5 +1,6 @@
 // netlify/functions/import-batch-send.js
-// Bulk fan-out after CSV import, with DRY RUN + cost preview + Lead Rescue auto-enroll + detailed debug logs.
+// Bulk fan-out after CSV import, with DRY RUN + automatic contact upsert.
+// Lead Rescue enrollment happens automatically via DB trigger.
 
 const fetch = require("node-fetch");
 const { getServiceClient } = require("./_supabase");
@@ -8,7 +9,7 @@ const { getServiceClient } = require("./_supabase");
 const ENV_ENABLED = String(process.env.CSV_IMPORT_AUTOSEND_ENABLED || "false").toLowerCase() === "true";
 const BATCH_CAP = Number(process.env.IMPORT_BATCH_SEND_MAX || 500);
 const THROTTLE_MS = Number(process.env.IMPORT_BATCH_SEND_DELAY_MS || 150);
-const COST_CENTS = 1; // must match messages-send.js
+const COST_CENTS = 1;
 const BYPASS_TFN = String(process.env.CSV_IMPORT_BYPASS_TFN || "false").toLowerCase() === "true";
 
 // Optional absolute override; otherwise use the function path
@@ -32,13 +33,16 @@ function toE164(p) {
 }
 
 function json(body, statusCode = 200) {
-  return { statusCode, headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) };
+  return {
+    statusCode,
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  };
 }
 
 // ---- TFN lookup ----
 async function getAgentTFNStatus(db, user_id) {
   if (BYPASS_TFN) return { status: "verified", e164: null, bypass: true };
-
   try {
     const { data, error } = await db
       .from("toll_free_numbers")
@@ -68,77 +72,51 @@ async function getBalanceCents(db, user_id) {
   return Number(data?.balance_cents ?? 0);
 }
 
-async function getContactByPhone(db, user_id, phoneE164) {
-  const { data, error } = await db
-    .from("message_contacts")
-    .select("id, subscribed, tags")
-    .eq("user_id", user_id)
-    .eq("phone", phoneE164)
-    .maybeSingle();
-  if (error) throw error;
-  return data || null;
-}
-
-// ---- Tolerant lead match ----
-async function findLeadIdByUserAndIdentity(db, user_id, { phone, email }) {
+// ---- Lead + contact helpers ----
+async function findLeadByUserAndIdentity(db, user_id, { phone, email }) {
   const p10 = last10(phone || "");
   const em = S(email).toLowerCase();
 
   if (p10) {
     const variants = [p10, `1${p10}`, `+1${p10}`];
-    try {
-      const { data } = await db
-        .from("leads")
-        .select("id")
-        .eq("user_id", user_id)
-        .in("phone", variants)
-        .order("created_at", { ascending: false })
-        .limit(1);
-      if (data?.length) return data[0].id;
-    } catch (e) {
-      console.warn("[lead match] exact variants error:", e.message || e);
-    }
-
-    try {
-      const { data } = await db
-        .from("leads")
-        .select("id, phone")
-        .eq("user_id", user_id)
-        .ilike("phone", `%${p10}`)
-        .order("created_at", { ascending: false })
-        .limit(1);
-      if (data?.length) return data[0].id;
-    } catch (e) {
-      console.warn("[lead match] suffix ilike error:", e.message || e);
-    }
+    const { data } = await db
+      .from("leads")
+      .select("id, name, phone, military_branch")
+      .eq("user_id", user_id)
+      .in("phone", variants)
+      .order("created_at", { ascending: false })
+      .limit(1);
+    if (data?.length) return data[0];
+    const { data: data2 } = await db
+      .from("leads")
+      .select("id, name, phone, military_branch")
+      .eq("user_id", user_id)
+      .ilike("phone", `%${p10}`)
+      .order("created_at", { ascending: false })
+      .limit(1);
+    if (data2?.length) return data2[0];
   }
 
   if (em) {
-    try {
-      const { data } = await db
-        .from("leads")
-        .select("id")
-        .eq("user_id", user_id)
-        .ilike("email", em)
-        .order("created_at", { ascending: false })
-        .limit(1);
-      if (data?.length) return data[0].id;
-    } catch (e) {
-      console.warn("[lead match] email ilike error:", e.message || e);
-    }
+    const { data } = await db
+      .from("leads")
+      .select("id, name, phone, military_branch")
+      .eq("user_id", user_id)
+      .ilike("email", em)
+      .order("created_at", { ascending: false })
+      .limit(1);
+    if (data?.length) return data[0];
   }
-
   return null;
 }
 
 async function providerMessageIdExists(db, user_id, provider_message_id) {
-  const { data, error } = await db
+  const { data } = await db
     .from("messages")
     .select("id")
     .eq("user_id", user_id)
     .eq("provider_message_id", provider_message_id)
     .limit(1);
-  if (error) throw error;
   return !!(data && data.length);
 }
 
@@ -146,9 +124,7 @@ async function providerMessageIdExists(db, user_id, provider_message_id) {
 exports.handler = async (event) => {
   const db = getServiceClient();
   try {
-    if (!ENV_ENABLED) {
-      return json({ error: "disabled", hint: "CSV_IMPORT_AUTOSEND_ENABLED=false" }, 403);
-    }
+    if (!ENV_ENABLED) return json({ error: "disabled" }, 403);
 
     let body;
     try {
@@ -164,11 +140,7 @@ exports.handler = async (event) => {
 
     if (!requesterId) return json({ error: "missing_requesterId" }, 400);
     if (!people.length) return json({ error: "no_people" }, 400);
-
-    const total_candidates = people.length;
-    if (total_candidates > BATCH_CAP) {
-      return json({ error: "over_cap", cap: BATCH_CAP, total_candidates }, 413);
-    }
+    if (people.length > BATCH_CAP) return json({ error: "over_cap", cap: BATCH_CAP }, 413);
 
     const tfn = await getAgentTFNStatus(db, requesterId);
     const wallet_balance_cents = await getBalanceCents(db, requesterId);
@@ -179,28 +151,18 @@ exports.handler = async (event) => {
       no_lead_match: 0,
       already_deduped: 0,
     };
-
     const queue = [];
 
     for (const p of people) {
       const phoneE164 = toE164(p.phone || "");
       const email = S(p.email).toLowerCase();
-
       if (!phoneE164 && !email) {
         skipped_by_reason.invalid_phone++;
         continue;
       }
 
-      if (phoneE164) {
-        const c = await getContactByPhone(db, requesterId, phoneE164).catch(() => null);
-        if (c && c.subscribed === false) {
-          skipped_by_reason.unsubscribed++;
-          continue;
-        }
-      }
-
-      const lead_id = await findLeadIdByUserAndIdentity(db, requesterId, { phone: phoneE164, email });
-      if (!lead_id) {
+      const lead = await findLeadByUserAndIdentity(db, requesterId, { phone: phoneE164, email });
+      if (!lead) {
         skipped_by_reason.no_lead_match++;
         continue;
       }
@@ -213,13 +175,12 @@ exports.handler = async (event) => {
         continue;
       }
 
-      queue.push({ lead_id, provider_message_id });
+      queue.push({ lead, provider_message_id });
     }
 
     const will_send = queue.length;
     const estimated_cost_cents = will_send * COST_CENTS;
 
-    // Dry run
     if (dryRun) {
       let blocker = null;
       if (!BYPASS_TFN) {
@@ -227,106 +188,81 @@ exports.handler = async (event) => {
         else if (tfn.status !== "verified") blocker = "no_agent_tfn_configured";
       }
       if (wallet_balance_cents < estimated_cost_cents) blocker = "insufficient_balance";
-
       return json({
         mode: "dry_run",
         batch_id: batchId,
-        total_candidates,
         will_send,
         estimated_cost_cents,
         wallet_balance_cents,
         skipped_by_reason,
         blocker,
-        tfn_status: tfn.status,
-        tfn_bypass: BYPASS_TFN,
       });
     }
 
-    // Real run
     if (!BYPASS_TFN) {
       if (tfn.status === "pending") return json({ stop: "tfn_pending_verification" }, 409);
       if (tfn.status !== "verified") return json({ stop: "no_agent_tfn_configured" }, 409);
     }
     if (wallet_balance_cents < estimated_cost_cents)
-      return json({ stop: "insufficient_balance", needed_cents: estimated_cost_cents, wallet_balance_cents }, 402);
+      return json({ stop: "insufficient_balance" }, 402);
 
     let ok = 0,
       errors = 0,
-      skipped = total_candidates - will_send;
+      skipped = people.length - will_send;
 
     for (const item of queue) {
+      const lead = item.lead;
       try {
-        console.log("[import-batch-send] sending for lead", item.lead_id);
+        // --- Upsert into message_contacts (trigger handles Lead Rescue)
+        if (lead.phone) {
+          const e164 = toE164(lead.phone);
+          const tag = S(lead.military_branch) ? "military" : "lead";
+          const { data: existing } = await db
+            .from("message_contacts")
+            .select("id, phone, tags")
+            .eq("user_id", requesterId)
+            .order("created_at", { ascending: false });
 
+          const found = (existing || []).find((r) => onlyDigits(r.phone) === onlyDigits(e164));
+          const base = {
+            user_id: requesterId,
+            phone: e164,
+            full_name: lead.name || null,
+            subscribed: true,
+            meta: { lead_id: lead.id },
+          };
+
+          if (found?.id) {
+            const cur = Array.isArray(found.tags) ? found.tags : [];
+            const nextTags = Array.from(new Set([...cur.filter(t => !["lead","military"].includes(String(t).toLowerCase())), tag]));
+            await db.from("message_contacts").update({ ...base, tags: nextTags }).eq("id", found.id);
+            console.log("[import-batch-send] updated existing contact", found.id);
+          } else {
+            await db.from("message_contacts").insert([{ ...base, tags: [tag] }]);
+            console.log("[import-batch-send] inserted new contact for", e164);
+          }
+        }
+
+        // --- Send message
         const res = await fetch(ABS_SEND_URL, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
             requesterId,
-            lead_id: item.lead_id,
+            lead_id: lead.id,
             provider_message_id: item.provider_message_id,
           }),
         });
-
         const out = await res.json().catch(() => ({}));
-        console.log("[import-batch-send] messages-send response:", out);
-
-        if (res.ok && (out.ok || out.deduped)) {
-          ok++;
-
-          // Auto-enroll in Lead Rescue
-          try {
-            let contactId = out?.contact_id;
-            console.log("[import-batch-send] starting enroll step; contact_id =", contactId);
-
-            // Fallback lookup if missing
-            if (!contactId) {
-              const { data: lead } = await db
-                .from("leads")
-                .select("phone")
-                .eq("id", item.lead_id)
-                .maybeSingle();
-              const phone = lead?.phone;
-              if (phone) {
-                const { data: c } = await db
-                  .from("message_contacts")
-                  .select("id")
-                  .eq("user_id", requesterId)
-                  .ilike("phone", `%${phone.slice(-10)}`)
-                  .maybeSingle();
-                contactId = c?.id || null;
-              }
-            }
-
-            console.log("[import-batch-send] resolved contactId:", contactId);
-
-            if (contactId) {
-              const { error: upErr } = await db.from("lead_rescue_trackers").upsert(
-                {
-                  user_id: requesterId,
-                  contact_id: contactId,
-                  seq_key: "lead_rescue",
-                  current_day: 1,
-                  started_at: new Date().toISOString(),
-                },
-                { onConflict: "user_id,contact_id,seq_key" }
-              );
-              console.log("[import-batch-send] inserted tracker:", upErr || "ok");
-            } else {
-              console.warn("[import-batch-send] no contact found to enroll for lead", item.lead_id);
-            }
-          } catch (err) {
-            console.warn("[import-batch-send] lead_rescue_trackers insert warning:", err.message || err);
-          }
-        } else {
-          console.warn("[import-batch-send] message send failed:", out);
+        if (res.ok && (out.ok || out.deduped)) ok++;
+        else {
           errors++;
+          console.warn("[import-batch-send] message-send failed", out);
         }
       } catch (err) {
-        console.warn("[import-batch-send] loop catch:", err.message || err);
         errors++;
+        console.warn("[import-batch-send] loop error:", err.message || err);
       }
-
       if (THROTTLE_MS > 0) await sleep(THROTTLE_MS);
     }
 
@@ -336,7 +272,6 @@ exports.handler = async (event) => {
       ok,
       skipped,
       errors,
-      total_candidates,
       will_send,
       estimated_cost_cents,
     });
