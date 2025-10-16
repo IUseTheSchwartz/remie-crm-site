@@ -30,9 +30,7 @@ const BROKERAGE_STATS = [
   { value: "29,000+", label: "Professional Agents" },
 ];
 
-/* Gradients
-   - STAT_GRAD: bold, used for big numbers
-   - TEXT_GRAD: softer, used for inline text (name, NPN, phone) */
+/* Gradients (unchanged) */
 const STAT_GRAD =
   "bg-gradient-to-r from-indigo-400 via-fuchsia-400 to-rose-400 bg-clip-text text-transparent";
 const TEXT_GRAD =
@@ -136,29 +134,29 @@ function LeaveReviewModal({ open, onClose, agentId, onSubmitted }) {
 
   return (
     <div className="fixed inset-0 z-40 grid place-items-center bg-black/60 backdrop-blur-sm p-4">
-      <div className="w-full max-w-lg rounded-2xl border border-white/10 bg-neutral-950 p-5 ring-1 ring-white/5">
+      <div className="w-full max-w-lg rounded-2xl border border-neutral-200 bg-white p-5 ring-1 ring-black/5 text-neutral-900">
         <div className="flex items-center justify-between">
           <h3 className="text-lg font-semibold">Leave a Review</h3>
-          <button onClick={onClose} className="rounded-md p-1.5 text-white/70 hover:bg-white/10">
+          <button onClick={onClose} className="rounded-md p-1.5 text-neutral-600 hover:bg-neutral-100">
             <X className="h-5 w-5" />
           </button>
         </div>
 
         {ok ? (
-          <div className="mt-4 rounded-lg border border-emerald-400/30 bg-emerald-500/10 p-3 text-sm text-emerald-200">
+          <div className="mt-4 rounded-lg border border-emerald-200 bg-emerald-50 p-3 text-sm text-emerald-800">
             Thanks! Your review was submitted and will appear after approval.
           </div>
         ) : (
           <>
             {err && (
-              <div className="mt-3 rounded-lg border border-rose-400/30 bg-rose-500/10 p-3 text-sm text-rose-200">
+              <div className="mt-3 rounded-lg border border-rose-200 bg-rose-50 p-3 text-sm text-rose-700">
                 {err}
               </div>
             )}
 
             <div className="mt-4 space-y-4">
               <div>
-                <div className="text-xs text-white/60 mb-1">Rating</div>
+                <div className="text-xs text-neutral-700 mb-1">Rating</div>
                 <div className="inline-flex items-center gap-2">
                   <StarDisplay rating={rating} size="xl" variant="solid" />
                   <div className="inline-flex gap-1">
@@ -167,7 +165,7 @@ function LeaveReviewModal({ open, onClose, agentId, onSubmitted }) {
                         key={i}
                         onClick={() => setRating(i)}
                         className={`rounded-md px-2 py-1 text-xs border ${
-                          rating === i ? "border-white/20 bg-white/10" : "border-white/10 hover:bg-white/5"
+                          rating === i ? "border-neutral-300 bg-neutral-100" : "border-neutral-200 hover:bg-neutral-50"
                         }`}
                       >
                         {i}
@@ -178,29 +176,29 @@ function LeaveReviewModal({ open, onClose, agentId, onSubmitted }) {
               </div>
 
               <div>
-                <div className="text-xs text-white/60 mb-1">Your name (optional)</div>
+                <div className="text-xs text-neutral-700 mb-1">Your name (optional)</div>
                 <input
                   value={name}
                   onChange={(e) => setName(e.target.value)}
                   placeholder="e.g., Maria R."
-                  className="w-full rounded-lg border border-white/10 bg-black/40 px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-indigo-500/40"
+                  className="w-full rounded-lg border border-neutral-200 bg-white px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-indigo-500/30 text-neutral-900 placeholder-neutral-400"
                 />
               </div>
 
               <div>
-                <div className="text-xs text-white/60 mb-1">Comment (optional)</div>
+                <div className="text-xs text-neutral-700 mb-1">Comment (optional)</div>
                 <textarea
                   value={comment}
                   onChange={(e) => setComment(e.target.value.slice(0, 280))}
                   placeholder="Short feedback (max 280 chars)"
-                  className="w-full rounded-lg border border-white/10 bg-black/40 px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-indigo-500/40 min-h-[96px] resize-vertical"
+                  className="w-full rounded-lg border border-neutral-200 bg-white px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-indigo-500/30 min-h-[96px] resize-vertical text-neutral-900 placeholder-neutral-400"
                 />
-                <div className="mt-1 text-[11px] text-white/40">{comment.length}/280</div>
+                <div className="mt-1 text-[11px] text-neutral-500">{comment.length}/280</div>
               </div>
             </div>
 
             <div className="mt-5 flex items-center justify-end gap-2">
-              <button onClick={onClose} className="rounded-lg border border-white/15 bg-white/5 px-3 py-1.5 text-sm hover:bg-white/10">
+              <button onClick={onClose} className="rounded-lg border border-neutral-300 bg-neutral-100 px-3 py-1.5 text-sm hover:bg-neutral-200">
                 Cancel
               </button>
               <button
@@ -208,7 +206,7 @@ function LeaveReviewModal({ open, onClose, agentId, onSubmitted }) {
                 disabled={busy}
                 className="rounded-lg px-3 py-1.5 text-sm font-medium
                            bg-gradient-to-r from-indigo-500 via-purple-500 to-fuchsia-500
-                           ring-1 ring-white/10 hover:ring-white/20 disabled:opacity-60"
+                           text-white ring-1 ring-black/5 hover:opacity-95 disabled:opacity-60"
               >
                 {busy ? "Submitting…" : "Submit Review"}
               </button>
@@ -232,8 +230,9 @@ export default function AgentPublic() {
   const [reviewsLoading, setReviewsLoading] = useState(false);
   const [leaveOpen, setLeaveOpen] = useState(false);
 
+  // Softer, light-friendly halo
   const heroGradient =
-    "bg-gradient-to-br from-indigo-600/20 via-fuchsia-500/10 to-rose-500/10";
+    "bg-gradient-to-br from-indigo-200/40 via-fuchsia-200/30 to-rose-200/30";
 
   useEffect(() => {
     let mounted = true;
@@ -316,18 +315,18 @@ export default function AgentPublic() {
 
   if (loading) {
     return (
-      <div className="min-h-screen bg-neutral-950 text-white grid place-items-center">
-        <div className="text-white/70">Loading…</div>
+      <div className="min-h-screen bg-white text-neutral-900 grid place-items-center">
+        <div className="text-neutral-600">Loading…</div>
       </div>
     );
   }
 
   if (!profile) {
     return (
-      <div className="min-h-screen bg-neutral-950 text-white grid place-items-center">
-        <div className="rounded-xl border border-white/10 bg-white/[0.03] p-6">
+      <div className="min-h-screen bg-white text-neutral-900 grid place-items-center">
+        <div className="rounded-xl border border-neutral-200 bg-white p-6 ring-1 ring-black/5">
           <div className="text-lg font-semibold">Page not found</div>
-          <div className="mt-1 text-sm text-white/70">
+          <div className="mt-1 text-sm text-neutral-600">
             {loadError || "This agent page does not exist or is unpublished."}
           </div>
         </div>
@@ -342,23 +341,23 @@ export default function AgentPublic() {
   const bookHref = profile.calendly_url ? profile.calendly_url : null;
 
   return (
-    <div className="min-h-screen bg-neutral-950 text-white">
+    <div className="min-h-screen bg-white text-neutral-900">
       {/* Top bar */}
-      <header className="sticky top-0 z-30 border-b border-white/10 bg-black/60 backdrop-blur">
+      <header className="sticky top-0 z-30 border-b border-neutral-200 bg-white/70 backdrop-blur">
         <div className="mx-auto flex max-w-6xl items-center justify-between px-4 py-3">
           <div className="flex items-center gap-2">
-            <div className={`h-8 w-8 rounded-2xl ring-1 ring-white/10 grid place-items-center ${heroGradient}`}>
-              <Shield className="h-4 w-4" />
+            <div className={`h-8 w-8 rounded-2xl ring-1 ring-neutral-200 grid place-items-center ${heroGradient}`}>
+              <Shield className="h-4 w-4 text-neutral-700" />
             </div>
             <div className={`text-sm font-semibold tracking-tight ${TEXT_GRAD}`}>
               {profile.full_name}
             </div>
           </div>
-          <nav className="flex items-center gap-4 text-xs text-white/70">
-            <a href="#overview" className="hover:text-white">Overview</a>
-            <a href="#reviews" className="hover:text-white">Reviews</a>
-            <a href="#licenses" className="hover:text-white">Licenses</a>
-            <a href="#contact" className="hover:text-white">Contact</a>
+          <nav className="flex items-center gap-4 text-xs text-neutral-600">
+            <a href="#overview" className="hover:text-neutral-900">Overview</a>
+            <a href="#reviews" className="hover:text-neutral-900">Reviews</a>
+            <a href="#licenses" className="hover:text-neutral-900">Licenses</a>
+            <a href="#contact" className="hover:text-neutral-900">Contact</a>
           </nav>
         </div>
       </header>
@@ -368,11 +367,11 @@ export default function AgentPublic() {
         <div className={`absolute inset-0 ${heroGradient} blur-3xl`} />
         <div className="relative mx-auto grid max-w-6xl gap-6 px-4 py-10 md:grid-cols-[220px_1fr]">
           <div className="flex items-start justify-center md:justify-start">
-            <div className="relative h-40 w-40 overflow-hidden rounded-2xl border border-white/10 bg-white/5 ring-1 ring-white/10">
+            <div className="relative h-40 w-40 overflow-hidden rounded-2xl border border-neutral-200 bg-neutral-50 ring-1 ring-black/5">
               {profile.headshot_url ? (
                 <img src={profile.headshot_url} alt={profile.full_name} className="h-full w-full object-cover" />
               ) : (
-                <div className="grid h-full w-full place-items-center text-white/50 text-xs">No photo</div>
+                <div className="grid h-full w-full place-items-center text-neutral-400 text-xs">No photo</div>
               )}
             </div>
           </div>
@@ -382,7 +381,7 @@ export default function AgentPublic() {
               <span className={TEXT_GRAD}>{profile.full_name}</span>
             </h1>
 
-            <div className="text-white/70">
+            <div className="text-neutral-700">
               Licensed Broker{" "}
               {profile.npn ? (
                 <>
@@ -392,31 +391,31 @@ export default function AgentPublic() {
             </div>
 
             {profile.phone && (
-              <div className="text-white/70">
+              <div className="text-neutral-700">
                 Phone: <span className={`${TEXT_GRAD} font-semibold`}>{phonePretty}</span>
               </div>
             )}
 
             {profile.short_bio && (
-              <p className="text-white/70 max-w-2xl">{profile.short_bio}</p>
+              <p className="text-neutral-700 max-w-2xl">{profile.short_bio}</p>
             )}
 
             <div className="flex flex-wrap gap-3 pt-2">
               {callHref && (
                 <a
                   href={callHref}
-                  className="inline-flex items-center gap-2 rounded-xl border border-white/15 bg-white/[0.04] px-3 py-2 text-sm hover:bg-white/10 focus:outline-none focus:ring-2 focus:ring-indigo-500/30"
+                  className="inline-flex items-center gap-2 rounded-xl border border-neutral-300 bg-white px-3 py-2 text-sm hover:bg-neutral-50 focus:outline-none focus:ring-2 focus:ring-indigo-500/20"
                 >
-                  <Phone className="h-4 w-4" />
+                  <Phone className="h-4 w-4 text-neutral-700" />
                   <span className={`${TEXT_GRAD} font-medium tracking-tight`}>{phonePretty}</span>
                 </a>
               )}
               {mailHref && (
                 <a
                   href={mailHref}
-                  className="inline-flex items-center gap-2 rounded-xl border border-white/15 bg-white/5 px-3 py-2 text-sm hover:bg-white/10"
+                  className="inline-flex items-center gap-2 rounded-xl border border-neutral-300 bg-white px-3 py-2 text-sm hover:bg-neutral-50"
                 >
-                  <Mail className="h-4 w-4" /> Email
+                  <Mail className="h-4 w-4 text-neutral-700" /> Email
                 </a>
               )}
               {bookHref && (
@@ -424,10 +423,10 @@ export default function AgentPublic() {
                   href={bookHref}
                   target="_blank"
                   rel="noreferrer"
-                  className="inline-flex items-center gap-2 rounded-xl border border-white/15 bg-white/5 px-3 py-2 text-sm hover:bg-white/10"
+                  className="inline-flex items-center gap-2 rounded-xl border border-neutral-300 bg-white px-3 py-2 text-sm hover:bg-neutral-50"
                   title="Book an appointment"
                 >
-                  <ExternalLink className="h-4 w-4" /> Book appointment
+                  <ExternalLink className="h-4 w-4 text-neutral-700" /> Book appointment
                 </a>
               )}
             </div>
@@ -437,8 +436,8 @@ export default function AgentPublic() {
 
       {/* Brokerage stats */}
       <section className="mx-auto max-w-6xl px-4 pb-10">
-        <div className="rounded-2xl border border-white/10 bg-white/[0.03] p-6 ring-1 ring-white/5">
-          <div className="text-center text-xs tracking-widest text-white/60 mb-4">
+        <div className="rounded-2xl border border-neutral-200 bg-white p-6 ring-1 ring-black/5">
+          <div className="text-center text-xs tracking-widest text-neutral-500 mb-4">
             OUR BROKERAGE
           </div>
           <div className="grid gap-6 sm:grid-cols-2 lg:grid-cols-4">
@@ -447,7 +446,7 @@ export default function AgentPublic() {
                 <div className={`text-2xl font-extrabold tracking-tight ${STAT_GRAD}`}>
                   {s.value}
                 </div>
-                <div className="mt-1 text-sm text-white/70">{s.label}</div>
+                <div className="mt-1 text-sm text-neutral-700">{s.label}</div>
               </div>
             ))}
           </div>
@@ -456,7 +455,7 @@ export default function AgentPublic() {
 
       {/* Carrier logos */}
       <section className="mx-auto max-w-6xl px-4 pb-12">
-        <h2 className="text-center text-xl font-semibold">
+        <h2 className="text-center text-xl font-semibold text-neutral-900">
           As a broker, we shop multiple A-rated carriers to find your best fit.
         </h2>
         <div className="mt-6 flex justify-center">
@@ -470,20 +469,20 @@ export default function AgentPublic() {
 
       {/* Reviews */}
       <section id="reviews" className="mx-auto max-w-6xl px-4 pb-12">
-        <div className="rounded-3xl border border-white/10 bg-white/[0.04] ring-1 ring-white/5 p-6 sm:p-8">
+        <div className="rounded-3xl border border-neutral-200 bg-white ring-1 ring-black/5 p-6 sm:p-8">
           <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
             <div>
-              <h2 className="text-2xl sm:text-3xl font-semibold">Client Reviews</h2>
+              <h2 className="text-2xl sm:text-3xl font-semibold text-neutral-900">Client Reviews</h2>
               <div className="mt-2 flex items-center gap-3">
                 <StarDisplay
                   rating={reviews.length ? avg : 0}
                   size="xl"
                   variant={reviews.length ? "auto" : "outline"}
                 />
-                <div className="text-sm text-white/70">
+                <div className="text-sm text-neutral-700">
                   {reviews.length ? (
                     <>
-                      <span className="font-medium text-white">{avg}</span> / 5 • {reviews.length} review{reviews.length > 1 ? "s" : ""}
+                      <span className="font-medium text-neutral-900">{avg}</span> / 5 • {reviews.length} review{reviews.length > 1 ? "s" : ""}
                     </>
                   ) : (
                     "No reviews yet"
@@ -496,7 +495,7 @@ export default function AgentPublic() {
               onClick={() => setLeaveOpen(true)}
               className="self-start rounded-2xl px-4 py-2 text-sm font-medium
                          bg-gradient-to-r from-indigo-500 via-purple-500 to-fuchsia-500
-                         ring-1 ring-white/10 hover:ring-white/20"
+                         text-white ring-1 ring-black/5 hover:opacity-95"
             >
               Leave a review
             </button>
@@ -504,21 +503,21 @@ export default function AgentPublic() {
 
           <div className="mt-6">
             {reviewsLoading ? (
-              <div className="text-sm text-white/60">Loading reviews…</div>
+              <div className="text-sm text-neutral-600">Loading reviews…</div>
             ) : reviews.length === 0 ? (
-              <div className="rounded-xl border border-dashed border-white/15 p-6 text-center text-sm text-white/60">
+              <div className="rounded-xl border border-dashed border-neutral-300 p-6 text-center text-sm text-neutral-600">
                 No reviews yet — be the first to share your experience.
               </div>
             ) : (
               <ul className="grid gap-4 md:grid-cols-2">
                 {reviews.map((r) => (
-                  <li key={r.id} className="rounded-2xl border border-white/10 bg-black/30 p-4">
+                  <li key={r.id} className="rounded-2xl border border-neutral-200 bg-neutral-50 p-4">
                     <div className="flex items-center justify-between">
                       <StarDisplay rating={r.rating} size="lg" variant="auto" />
-                      <div className="text-[11px] text-white/50">{new Date(r.created_at).toLocaleDateString()}</div>
+                      <div className="text-[11px] text-neutral-500">{new Date(r.created_at).toLocaleDateString()}</div>
                     </div>
-                    <div className="mt-2 text-sm font-medium">{r.reviewer_name || "Verified Client"}</div>
-                    {r.comment && <p className="mt-1 text-sm text-white/80">{r.comment}</p>}
+                    <div className="mt-2 text-sm font-medium text-neutral-900">{r.reviewer_name || "Verified Client"}</div>
+                    {r.comment && <p className="mt-1 text-sm text-neutral-700">{r.comment}</p>}
                   </li>
                 ))}
               </ul>
@@ -530,14 +529,14 @@ export default function AgentPublic() {
       {/* Licenses */}
       <section id="licenses" className="mx-auto max-w-6xl px-4 pb-12">
         <div className="mb-3 flex items-center justify-between">
-          <h2 className="text-lg font-semibold">Licensed States</h2>
-          <div className="text-xs text-white/50">
+          <h2 className="text-lg font-semibold text-neutral-900">Licensed States</h2>
+          <div className="text-xs text-neutral-500">
             Documents are provided by the agent’s state(s).
           </div>
         </div>
 
         {states.length === 0 ? (
-          <div className="rounded-2xl border border-white/10 bg-white/[0.03] p-4 text-sm text-white/70">
+          <div className="rounded-2xl border border-neutral-200 bg-white p-4 text-sm text-neutral-700">
             No licenses posted yet.
           </div>
         ) : (
@@ -555,18 +554,18 @@ export default function AgentPublic() {
                 return (
                   <div
                     key={code}
-                    className="rounded-2xl border border-white/10 bg-white/[0.03] p-4 ring-1 ring-white/5"
+                    className="rounded-2xl border border-neutral-200 bg-white p-4 ring-1 ring-black/5"
                   >
                     <div className="flex items-center justify-between">
-                      <div className="text-sm font-medium">
-                        {displayName} <span className="text-white/50">({code})</span>
+                      <div className="text-sm font-medium text-neutral-900">
+                        {displayName} <span className="text-neutral-500">({code})</span>
                       </div>
                       {verifyHref && (
                         <a
                           href={verifyHref}
                           target="_blank"
                           rel="noreferrer"
-                          className="text-xs text-indigo-300 hover:underline inline-flex items-center gap-1"
+                          className="text-xs text-indigo-600 hover:underline inline-flex items-center gap-1"
                           title="Verify with the state"
                         >
                           Verify <ExternalLink className="h-3 w-3" />
@@ -574,8 +573,8 @@ export default function AgentPublic() {
                       )}
                     </div>
 
-                    <div className="mt-2 text-xs text-white/70">
-                      License #: <span className="text-white">{s.license_number || "—"}</span>
+                    <div className="mt-2 text-xs text-neutral-700">
+                      License #: <span className="text-neutral-900">{s.license_number || "—"}</span>
                     </div>
 
                     {url ? (
@@ -584,24 +583,24 @@ export default function AgentPublic() {
                           href={url}
                           target="_blank"
                           rel="noreferrer"
-                          className="mt-3 inline-flex items-center gap-2 rounded-lg border border-white/15 bg-white/5 px-3 py-2 text-xs hover:bg-white/10"
+                          className="mt-3 inline-flex items-center gap-2 rounded-lg border border-neutral-300 bg-white px-3 py-2 text-xs hover:bg-neutral-50"
                         >
                           View License PDF <ExternalLink className="h-3.5 w-3.5" />
                         </a>
                       ) : (
-                        <div className="mt-3 overflow-hidden rounded-lg border border-white/10 bg-black/20">
+                        <div className="mt-3 overflow-hidden rounded-lg border border-neutral-200 bg-neutral-50">
                           <img
                             src={url}
                             alt={`${code} license`}
                             className="h-36 w-full object-cover"
                           />
-                          <div className="p-2 text-[11px] text-white/60">
+                          <div className="p-2 text-[11px] text-neutral-600">
                             License image
                           </div>
                         </div>
                       )
                     ) : (
-                      <div className="mt-3 grid h-24 w-32 place-items-center rounded-lg border border-dashed border-white/15 text-xs text-white/50">
+                      <div className="mt-3 grid h-24 w-32 place-items-center rounded-lg border border-dashed border-neutral-300 text-xs text-neutral-500">
                         No document uploaded
                       </div>
                     )}
@@ -613,29 +612,29 @@ export default function AgentPublic() {
       </section>
 
       {/* Contact */}
-      <section id="contact" className="border-t border-white/10 bg-black/40">
+      <section id="contact" className="border-t border-neutral-200 bg-neutral-50/60">
         <div className="mx-auto max-w-6xl px-4 py-10">
-          <div className="rounded-2xl border border-white/10 bg-white/[0.03] p-5">
-            <h3 className="text-base font-semibold">Contact</h3>
-            <div className="mt-2 text-sm text-white/70">
+          <div className="rounded-2xl border border-neutral-200 bg-white p-5 ring-1 ring-black/5">
+            <h3 className="text-base font-semibold text-neutral-900">Contact</h3>
+            <div className="mt-2 text-sm text-neutral-700">
               Have questions about coverage options or scheduling a call?
             </div>
             <div className="mt-4 flex flex-wrap gap-3">
               {callHref && (
                 <a
                   href={callHref}
-                  className="inline-flex items-center gap-2 rounded-xl border border-white/15 bg-white/[0.04] px-3 py-2 text-sm hover:bg-white/10 focus:outline-none focus:ring-2 focus:ring-indigo-500/30"
+                  className="inline-flex items-center gap-2 rounded-xl border border-neutral-300 bg-white px-3 py-2 text-sm hover:bg-neutral-50 focus:outline-none focus:ring-2 focus:ring-indigo-500/20"
                 >
-                  <Phone className="h-4 w-4" />
+                  <Phone className="h-4 w-4 text-neutral-700" />
                   <span className={`${TEXT_GRAD} font-medium tracking-tight`}>{phonePretty}</span>
                 </a>
               )}
               {mailHref && (
                 <a
                   href={mailHref}
-                  className="inline-flex items-center gap-2 rounded-xl border border-white/15 bg-white/5 px-3 py-2 text-sm hover:bg-white/10"
+                  className="inline-flex items-center gap-2 rounded-xl border border-neutral-300 bg-white px-3 py-2 text-sm hover:bg-neutral-50"
                 >
-                  <Mail className="h-4 w-4" /> Email
+                  <Mail className="h-4 w-4 text-neutral-700" /> Email
                 </a>
               )}
               {profile.calendly_url && (
@@ -643,23 +642,23 @@ export default function AgentPublic() {
                   href={profile.calendly_url}
                   target="_blank"
                   rel="noreferrer"
-                  className="inline-flex items-center gap-2 rounded-xl border border-white/15 bg-white/5 px-3 py-2 text-sm hover:bg-white/10"
+                  className="inline-flex items-center gap-2 rounded-xl border border-neutral-300 bg-white px-3 py-2 text-sm hover:bg-neutral-50"
                 >
-                  <ExternalLink className="h-4 w-4" /> Book appointment
+                  <ExternalLink className="h-4 w-4 text-neutral-700" /> Book appointment
                 </a>
               )}
             </div>
           </div>
 
           {/* Footer */}
-          <div className="mt-6 text-center text-[11px] text-white/50 space-y-2">
+          <div className="mt-6 text-center text-[11px] text-neutral-500 space-y-2">
             <div>© {new Date().getFullYear()} Remie CRM — Agent page</div>
             <div className="space-x-3">
-              <Link to="/legal/terms" className="hover:text-white">
+              <Link to="/legal/terms" className="hover:text-neutral-800">
                 Terms of Service
               </Link>
-              <span className="text-white/30">•</span>
-              <Link to="/legal/privacy" className="hover:text-white">
+              <span className="text-neutral-300">•</span>
+              <Link to="/legal/privacy" className="hover:text-neutral-800">
                 Privacy Policy
               </Link>
             </div>
