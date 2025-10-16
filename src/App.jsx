@@ -10,14 +10,14 @@ import {
   ExternalLink,
   StickyNote,
   CheckCircle2,
-  Menu, // mobile hamburger
-  Phone, // used in hero
+  Menu,
+  Phone,
 } from "lucide-react";
 
 import ProtectedRoute from "./components/ProtectedRoute.jsx";
 import { AuthProvider, useAuth } from "./auth.jsx";
 import LoginPage from "./pages/LoginPage.jsx";
-import SignupPage from "./pages/SignupPage.jsx"; // NOTE: If you truly have a separate SignupPage, switch back to "./pages/SignupPage.jsx"
+import SignupPage from "./pages/SignupPage.jsx";
 import AgentPublic from "./pages/AgentPublic.jsx";
 import AcceptInvite from "./pages/AcceptInvite.jsx";
 
@@ -27,14 +27,14 @@ import { supabase } from "./lib/supabaseClient.js";
 // Routes config (component refs, no JSX inside)
 import { routes } from "./routesConfig.js";
 
-// ✅ Legal pages
+// Legal pages
 import TermsPage from "./pages/legal/Terms.jsx";
 import PrivacyPage from "./pages/legal/Privacy.jsx";
 
-// ✅ Logo (tight-cropped PNG)
+// Logo
 import Logo from "./assets/logo-tight.png";
 
-// ✅ Sidebar
+// Sidebar
 import Sidebar from "./components/Sidebar.jsx";
 
 // Brand / theme
@@ -61,12 +61,12 @@ const DEMO_ROWS = [
 ];
 
 const DEMO_STYLE = {
-  no_pickup: "bg-white/10 text-white/80",
-  answered: "bg-sky-500/15 text-sky-300",
-  quoted: "bg-amber-500/15 text-amber-300",
-  app_started: "bg-indigo-500/15 text-indigo-300",
-  app_pending: "bg-fuchsia-500/15 text-fuchsia-300",
-  app_submitted: "bg-emerald-500/15 text-emerald-300",
+  no_pickup: "bg-neutral-200 text-neutral-700",
+  answered: "bg-sky-100 text-sky-700",
+  quoted: "bg-amber-100 text-amber-700",
+  app_started: "bg-indigo-100 text-indigo-700",
+  app_pending: "bg-fuchsia-100 text-fuchsia-700",
+  app_submitted: "bg-emerald-100 text-emerald-700",
 };
 
 function PipelineDemo() {
@@ -115,7 +115,7 @@ function PipelineDemo() {
   const StageBadge = ({ stage }) => (
     <span
       className={`rounded-full px-2 py-0.5 text-xs ${
-        DEMO_STYLE[stage] || "bg-white/10 text-white/80"
+        DEMO_STYLE[stage] || "bg-neutral-200 text-neutral-700"
       }`}
     >
       {DEMO_STAGES.find((s) => s.id === stage)?.label || "No Pickup"}
@@ -123,19 +123,19 @@ function PipelineDemo() {
   );
 
   return (
-    <div className="rounded-3xl border border-white/10 bg-white/[0.04] p-4 ring-1 ring-white/5">
+    <div className="rounded-3xl border border-neutral-200 bg-white p-4 ring-1 ring-black/5">
       <div className="mb-3 flex items-center justify-between">
-        <div className="text-sm font-medium">Pipeline Demo (no signup)</div>
-        <div className="text-xs text-white/60">Try changing stages & adding notes</div>
+        <div className="text-sm font-medium text-neutral-900">Pipeline Demo (no signup)</div>
+        <div className="text-xs text-neutral-600">Try changing stages & adding notes</div>
       </div>
 
       <div className="grid gap-4">
         {DEMO_ROWS.map((row, i) => (
           <div key={i} className="grid gap-4 md:grid-cols-3">
             {row.map((stageId) => (
-              <div key={stageId} className="rounded-2xl border border-white/10 bg-white/[0.03] p-2">
+              <div key={stageId} className="rounded-2xl border border-neutral-200 bg-neutral-50 p-2">
                 <div className="flex items-center justify-between px-2 pb-2">
-                  <div className="text-sm font-medium">
+                  <div className="text-sm font-medium text-neutral-900">
                     {DEMO_STAGES.find((s) => s.id === stageId)?.label}
                   </div>
                 </div>
@@ -147,10 +147,10 @@ function PipelineDemo() {
                         key={c.id}
                         initial={{ opacity: 0, y: 6 }}
                         animate={{ opacity: 1, y: 0 }}
-                        className="rounded-xl border border-white/10 bg-black/40 p-3"
+                        className="rounded-xl border border-neutral-200 bg-white p-3"
                       >
                         <div className="flex items-start justify-between gap-2">
-                          <div className="font-medium truncate">{c.name}</div>
+                          <div className="font-medium truncate text-neutral-900">{c.name}</div>
                           <StageBadge stage={c.stage} />
                         </div>
 
@@ -158,7 +158,7 @@ function PipelineDemo() {
                           <select
                             value={c.stage}
                             onChange={(e) => setStage(c.id, e.target.value)}
-                            className="rounded-md border border-white/10 bg-white/5 px-2 py-1 text-xs"
+                            className="rounded-md border border-neutral-200 bg-white px-2 py-1 text-xs text-neutral-900"
                           >
                             {DEMO_STAGES.map((s) => (
                               <option key={s.id} value={s.id}>
@@ -169,7 +169,7 @@ function PipelineDemo() {
 
                           <button
                             onClick={() => move(c.id, +1)}
-                            className="inline-flex items-center gap-1 rounded-md border border-white/15 px-2 py-1 text-xs hover:bg-white/10"
+                            className="inline-flex items-center gap-1 rounded-md border border-neutral-200 px-2 py-1 text-xs text-neutral-800 hover:bg-neutral-50"
                             title="Move to next stage"
                           >
                             <CheckCircle2 className="h-3.5 w-3.5" />
@@ -178,7 +178,7 @@ function PipelineDemo() {
                         </div>
 
                         <div className="mt-3">
-                          <div className="text-xs text-white/60 mb-1">Add a note</div>
+                          <div className="text-xs text-neutral-600 mb-1">Add a note</div>
                           <div className="flex gap-2">
                             <input
                               value={activeNote[c.id] || ""}
@@ -186,11 +186,11 @@ function PipelineDemo() {
                                 setActiveNote((n) => ({ ...n, [c.id]: e.target.value }))
                               }
                               placeholder="e.g., Sent quote for $45/mo"
-                              className="w-full rounded-lg border border-white/10 bg-black/40 px-2 py-1 text-xs outline-none focus:ring-2 focus:ring-indigo-500/40"
+                              className="w-full rounded-lg border border-neutral-200 bg-white px-2 py-1 text-xs text-neutral-900 outline-none focus:ring-2 focus:ring-indigo-500/20"
                             />
                             <button
                               onClick={() => addNote(c.id)}
-                              className="inline-flex items-center gap-1 rounded-md border border-white/15 px-2 py-1 text-xs hover:bg-white/10"
+                              className="inline-flex items-center gap-1 rounded-md border border-neutral-200 px-2 py-1 text-xs text-neutral-800 hover:bg-neutral-50"
                             >
                               <StickyNote className="h-3.5 w-3.5" />
                               Add
@@ -199,14 +199,14 @@ function PipelineDemo() {
 
                           <div className="mt-2 space-y-1">
                             {c.notes.length === 0 ? (
-                              <div className="text-xs text-white/40">No notes yet.</div>
+                              <div className="text-xs text-neutral-500">No notes yet.</div>
                             ) : (
                               c.notes.map((n, i) => (
-                                <div key={i} className="rounded-md border border-white/10 bg-black/30 p-2">
-                                  <div className="text-[11px] text-white/50 mb-1">
+                                <div key={i} className="rounded-md border border-neutral-200 bg-neutral-50 p-2">
+                                  <div className="text-[11px] text-neutral-500 mb-1">
                                     {new Date(n.ts).toLocaleString()}
                                   </div>
-                                  <div className="text-xs">{n.body}</div>
+                                  <div className="text-xs text-neutral-900">{n.body}</div>
                                 </div>
                               ))
                             )}
@@ -216,7 +216,7 @@ function PipelineDemo() {
                     ))}
 
                   {cards.filter((c) => c.stage === stageId).length === 0 && (
-                    <div className="rounded-xl border border-dashed border-white/10 p-4 text-center text-xs text-white/50">
+                    <div className="rounded-xl border border-dashed border-neutral-300 p-4 text-center text-xs text-neutral-500">
                       No cards in this stage
                     </div>
                   )}
@@ -230,20 +230,20 @@ function PipelineDemo() {
   );
 }
 
-/* ---------------------- Book a Demo CTA (new) ---------------------- */
+/* ---------------------- Book a Demo CTA (light) ---------------------- */
 
 function BookDemoCTA() {
   return (
     <section className="relative z-10 mx-auto max-w-6xl px-6 pb-14">
       <div className="pointer-events-none absolute inset-0 -z-10">
-        <div className="mx-auto h-56 w-[85%] rounded-[2rem] bg-gradient-to-br from-indigo-600/20 via-purple-600/15 to-fuchsia-600/20 blur-2xl" />
+        <div className="mx-auto h-56 w-[85%] rounded-[2rem] bg-gradient-to-br from-indigo-200/40 via-purple-200/30 to-fuchsia-200/40 blur-2xl" />
       </div>
 
-      <div className="rounded-3xl border border-white/10 bg-white/[0.05] p-6 sm:p-8 ring-1 ring-white/5 backdrop-blur">
+      <div className="rounded-3xl border border-neutral-200 bg-white p-6 sm:p-8 ring-1 ring-black/5 backdrop-blur">
         <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
           <div>
-            <h3 className="text-xl sm:text-2xl font-semibold">Book a Live Demo</h3>
-            <p className="mt-1 text-white/70">
+            <h3 className="text-xl sm:text-2xl font-semibold text-neutral-900">Book a Live Demo</h3>
+            <p className="mt-1 text-neutral-700">
               Walk through the CRM with me and ask anything—pipeline, automations, pricing, and more.
             </p>
           </div>
@@ -253,11 +253,10 @@ function BookDemoCTA() {
             target="_blank"
             rel="noopener noreferrer"
             className="group inline-flex items-center gap-2 rounded-2xl px-4 py-2 text-sm font-medium
-                       bg-gradient-to-r from-indigo-500 via-purple-500 to-fuchsia-500
-                       hover:opacity-95 transition
-                       ring-1 ring-white/10"
+                       bg-gradient-to-r from-indigo-500 via-purple-500 to-fuchsia-500 text-white
+                       hover:opacity-95 transition ring-1 ring-black/5"
           >
-            <span className="inline-grid place-items-center rounded-xl p-1.5 ring-1 ring-white/15 bg-white/10">
+            <span className="inline-grid place-items-center rounded-xl p-1.5 ring-1 ring-white/20 bg-white/10">
               <Phone className="h-5 w-5" />
             </span>
             <span className="tracking-tight">Book a Demo</span>
@@ -271,13 +270,12 @@ function BookDemoCTA() {
 /* ------------------------------- Main Landing ------------------------------ */
 
 function LandingPage() {
-  // Monthly-only plan (annual removed)
   const PLANS = [
     {
       name: "Remie CRM",
       blurb: "All-in-one CRM for agents — pipeline, automations, and more.",
-      monthly: 189, // ✅ updated price
-      buyUrl: "https://buy.stripe.com/4gMfZjaX05vM5EGd4U8Ra0e", // ✅ updated link
+      monthly: 189,
+      buyUrl: "https://buy.stripe.com/4gMfZjaX05vM5EGd4U8Ra0e",
       features: [
         "AI rebuttal helper",
         "Automated message system",
@@ -299,13 +297,13 @@ function LandingPage() {
   ];
 
   return (
-    <div className="min-h-screen bg-neutral-950 text-white">
+    <div className="min-h-screen bg-white text-neutral-900">
       <div className="pointer-events-none fixed inset-0 overflow-hidden">
         <div className="absolute -top-56 left-1/2 h-[40rem] w-[40rem] -translate-x-1/2 rounded-full
-                        bg-gradient-to-br from-indigo-500/50 via-fuchsia-500/35 to-rose-500/35 blur-3xl" />
+                        bg-gradient-to-br from-indigo-200/60 via-fuchsia-200/40 to-rose-200/40 blur-3xl" />
       </div>
 
-      <header className="relative z-10 border-b border-white/10 backdrop-blur">
+      <header className="relative z-10 border-b border-neutral-200 backdrop-blur bg-white/70">
         <nav className="mx-auto flex max-w-7xl items-center justify-between px-6 py-4">
           <div className="flex items-centered gap-3">
             <div className="grid h-9 w-9 place-items-center">
@@ -314,17 +312,16 @@ function LandingPage() {
             <span className="font-semibold tracking-tight">Remie CRM</span>
           </div>
           <div className="flex items-center gap-3">
-            <a href="#contact" className="text-sm opacity-80 hover:opacity-100">Contact</a>
+            <a href="#contact" className="text-sm text-neutral-700 hover:text-neutral-900">Contact</a>
             <a
               href="https://calendly.com/jacobprieto/new-meeting"
               target="_blank"
               rel="noopener noreferrer"
-              className="text-sm rounded-xl border border-white/15 bg-white/5 px-3 py-1.5 hover:bg-white/10"
+              className="text-sm rounded-xl border border-neutral-200 bg-white px-3 py-1.5 hover:bg-neutral-50"
             >
               Book a Demo
             </a>
-            <Link to="/login" className="text-sm opacity-80 hover:opacity-100">Log in</Link>
-            {/* ❌ Removed free trial button */}
+            <Link to="/login" className="text-sm text-neutral-700 hover:text-neutral-900">Log in</Link>
           </div>
         </nav>
       </header>
@@ -339,15 +336,18 @@ function LandingPage() {
           >
             Close more policies. Not tabs.
           </motion.h1>
-          <p className="mt-4 text-lg text-white/70">
+          <p className="mt-4 text-lg text-neutral-700">
             Manage your pipeline, automate follow-ups, and keep everything in one place.
           </p>
-          <div className="mt-6 flex items-center justify-center gap-6 text-xs text-white/60">
-            <span className="inline-flex items-center gap-1"><Star className="h-4 w-4" /> Concierge migration (Remie CRM)</span>
-            <span className="inline-flex items-center gap-1"><Phone className="h-4 w-4" /> Power Dialer</span>
+          <div className="mt-6 flex items-center justify-center gap-6 text-xs text-neutral-600">
+            <span className="inline-flex items-center gap-1">
+              <Star className="h-4 w-4" /> Concierge migration (Remie CRM)
+            </span>
+            <span className="inline-flex items-center gap-1">
+              <Phone className="h-4 w-4" /> Power Dialer
+            </span>
           </div>
 
-          {/* Inline primary CTA */}
           <div className="mt-8">
             <a
               href="https://calendly.com/jacobprieto/new-meeting"
@@ -355,7 +355,7 @@ function LandingPage() {
               rel="noopener noreferrer"
               className="inline-flex items-center gap-2 rounded-2xl px-5 py-3 font-medium
                          bg-gradient-to-r from-indigo-500 via-purple-500 to-fuchsia-500
-                         hover:opacity-95 transition ring-1 ring-white/10"
+                         text-white hover:opacity-95 transition ring-1 ring-black/5"
             >
               <Phone className="h-5 w-5" />
               Book a Demo
@@ -368,8 +368,7 @@ function LandingPage() {
       <section id="pricing" className="relative z-10 mx-auto max-w-7xl px-6 py-14">
         <div className="mx-auto max-w-2xl text-center">
           <h2 className="text-3xl font-semibold tracking-tight sm:text-4xl">Straightforward monthly pricing — no contracts</h2>
-          <p className="mt-2 text-white/70">Simple, transparent pricing. Cancel anytime.</p>
-          {/* ❌ Removed monthly/annual toggle */}
+          <p className="mt-2 text-neutral-700">Simple, transparent pricing. Cancel anytime.</p>
         </div>
 
         <div className="mt-10 grid gap-6 md:grid-cols-2 items-start">
@@ -380,23 +379,23 @@ function LandingPage() {
             return (
               <div
                 key={plan.name}
-                className="relative rounded-3xl border border-white/10 bg-white/[0.06] p-6 ring-1 ring-white/5 transition hover:border-white/30 hover:bg-white/[0.08] hover:ring-indigo-400/50"
+                className="relative rounded-3xl border border-neutral-200 bg-white p-6 ring-1 ring-black/5 transition hover:bg-neutral-50"
               >
                 {plan.ctaNote && (
-                  <div className="absolute -top-3 left-6 rounded-full border border-white/15 bg-white/10 px-3 py-1 text-xs font-medium backdrop-blur">
+                  <div className="absolute -top-3 left-6 rounded-full border border-neutral-200 bg-white px-3 py-1 text-xs font-medium">
                     {plan.ctaNote}
                   </div>
                 )}
                 <h3 className="text-xl font-semibold">{plan.name}</h3>
-                <p className="mt-1 text-sm text-white/70">{plan.blurb}</p>
+                <p className="mt-1 text-sm text-neutral-700">{plan.blurb}</p>
                 <div className="mt-5 flex items-baseline gap-2">
                   <span className="text-4xl font-bold">${price}</span>
-                  <span className="text-white/60">/month</span>
+                  <span className="text-neutral-600">/month</span>
                 </div>
-                <ul className="mt-6 space-y-2 text-sm">
+                <ul className="mt-6 space-y-2 text-sm text-neutral-800">
                   {plan.features.map((f) => (
                     <li key={f} className="flex items-start gap-2">
-                      <span className="mt-0.5 rounded-full bg-white/10 p-1 ring-1 ring-white/10">
+                      <span className="mt-0.5 rounded-full bg-neutral-100 p-1 ring-1 ring-neutral-200">
                         <Check className="h-3.5 w-3.5" />
                       </span>
                       <span>{f}</span>
@@ -407,7 +406,7 @@ function LandingPage() {
                   href={href}
                   target="_blank"
                   rel="noreferrer"
-                  className="mt-6 grid w-full place-items-center rounded-2xl border border-white/15 px-4 py-3 font-medium transition bg-white/5 hover:bg-gradient-to-r from-indigo-500 via-purple-500 to-fuchsia-500 hover:text-white"
+                  className="mt-6 grid w-full place-items-center rounded-2xl border border-neutral-200 px-4 py-3 font-medium transition bg-white hover:bg-gradient-to-r from-indigo-500 via-purple-500 to-fuchsia-500 hover:text-white"
                 >
                   <CreditCard className="mr-2 h-5 w-5" /> Buy {plan.name}
                 </a>
@@ -418,38 +417,38 @@ function LandingPage() {
           <PipelineDemo />
         </div>
 
-        <p className="mt-6 text-center text-xs text-white/50">
+        <p className="mt-6 text-center text-xs text-neutral-500">
           Prices in USD. Cancel anytime. No annual commitments.
         </p>
       </section>
 
-      {/* ✅ New: Book a Demo CTA replaces the old Partners sections */}
+      {/* Book a Demo CTA */}
       <BookDemoCTA />
 
       {/* Contact section */}
       <section id="contact" className="relative z-10 mx-auto max-w-7xl px-6 py-12">
-        <div className="rounded-3xl border border-white/10 bg-white/[0.04] p-6 ring-1 ring-white/5">
+        <div className="rounded-3xl border border-neutral-200 bg-white p-6 ring-1 ring-black/5">
           <h2 className="text-2xl font-semibold">Contact</h2>
-          <p className="mt-2 text-white/70">Reach out anytime.</p>
+          <p className="mt-2 text-neutral-700">Reach out anytime.</p>
           <div className="mt-4 grid gap-4 sm:grid-cols-2 lg:grid-cols-3 text-sm">
-            <div className="rounded-xl border border-white/10 bg-black/30 p-4">
-              <div className="text-white/60">Name</div>
+            <div className="rounded-xl border border-neutral-200 bg-white p-4">
+              <div className="text-neutral-600">Name</div>
               <div className="mt-1 font-medium">Jacob Prieto</div>
             </div>
-            <div className="rounded-xl border border-white/10 bg-black/30 p-4">
-              <div className="text-white/60">Email</div>
+            <div className="rounded-xl border border-neutral-200 bg-white p-4">
+              <div className="text-neutral-600">Email</div>
               <a href="mailto:JacobPrieto@gmail.com" className="mt-1 inline-flex items-center gap-1 font-medium hover:underline">
                 JacobPrieto@gmail.com <ExternalLink className="h-3.5 w-3.5" />
               </a>
             </div>
-            <div className="rounded-xl border border-white/10 bg-black/30 p-4">
-              <div className="text-white/60">Phone</div>
+            <div className="rounded-xl border border-neutral-200 bg-white p-4">
+              <div className="text-neutral-600">Phone</div>
               <a href="tel:+19154943286" className="mt-1 inline-flex items-center gap-1 font-medium hover:underline">
                 (915) 494-3286 <ExternalLink className="h-3.5 w-3.5" />
               </a>
             </div>
-            <div className="rounded-xl border border-white/10 bg-black/30 p-4 sm:col-span-2 lg:col-span-1">
-              <div className="text-white/60">Instagram</div>
+            <div className="rounded-xl border border-neutral-200 bg-white p-4 sm:col-span-2 lg:col-span-1">
+              <div className="text-neutral-600">Instagram</div>
               <a
                 href="https://instagram.com/jprietocloses"
                 target="_blank"
@@ -463,14 +462,14 @@ function LandingPage() {
         </div>
       </section>
 
-      <footer className="relative z-10 border-t border-white/10 bg-black/40">
-        <div className="mx-auto max-w-7xl px-6 py-6 text-center text-xs text-white/60 space-y-2">
+      <footer className="relative z-10 border-t border-neutral-200 bg-neutral-50">
+        <div className="mx-auto max-w-7xl px-6 py-6 text-center text-xs text-neutral-500 space-y-2">
           <div>© {new Date().getFullYear()} Remie CRM. All rights reserved.</div>
-          <div className="text-white/60">PRIETO INSURANCE SOLUTIONS LLC</div>
+          <div className="text-neutral-500">PRIETO INSURANCE SOLUTIONS LLC</div>
           <div className="space-x-3">
-            <Link to="/legal/terms" className="hover:text-white">Terms of Service</Link>
-            <span className="text-white/30">•</span>
-            <Link to="/legal/privacy" className="hover:text-white">Privacy Policy</Link>
+            <Link to="/legal/terms" className="hover:text-neutral-800">Terms of Service</Link>
+            <span className="text-neutral-300">•</span>
+            <Link to="/legal/privacy" className="hover:text-neutral-800">Privacy Policy</Link>
           </div>
         </div>
       </footer>
@@ -478,13 +477,12 @@ function LandingPage() {
   );
 }
 
-// ---------- App Layout (independent scrolls + mobile sidebar) ----------
+/* ----------------------- App Layout (still dark) ----------------------- */
 function AppLayout() {
   const { user, logout } = useAuth();
   const nav = useNavigate();
   const [mobileOpen, setMobileOpen] = useState(false);
 
-  // NEW: one-time toast when balance increases (zero-schema; per-device)
   const [walletToast, setWalletToast] = useState(null);
   useEffect(() => {
     let cancelled = false;
@@ -531,7 +529,6 @@ function AppLayout() {
                      px-4 py-3"
         >
           <div className="flex items-center gap-3">
-            {/* Mobile hamburger */}
             <button
               className="md:hidden rounded-md p-2 text-white/80 hover:text-white hover:bg-white/10"
               onClick={() => setMobileOpen(true)}
@@ -555,7 +552,6 @@ function AppLayout() {
           </button>
         </div>
 
-        {/* NEW: Toast for balance increase */}
         {walletToast && (
           <div className="fixed right-4 top-4 z-50 rounded-xl border border-emerald-400/30 bg-emerald-500/10 px-4 py-2 text-sm text-emerald-200 shadow-lg">
             Balance increased by{" "}
@@ -578,7 +574,7 @@ function AppLayout() {
   );
 }
 
-// ---------- App root ----------
+/* ------------------------------ App root ------------------------------ */
 export default function App() {
   return (
     <AuthProvider>
@@ -589,7 +585,7 @@ export default function App() {
         <Route path="/a/:slug" element={<AgentPublic />} />
         <Route path="/invite/:token" element={<AcceptInvite />} />
 
-        {/* ✅ Legal pages are global */}
+        {/* Legal pages are global */}
         <Route path="/legal/terms" element={<TermsPage />} />
         <Route path="/legal/privacy" element={<PrivacyPage />} />
 
