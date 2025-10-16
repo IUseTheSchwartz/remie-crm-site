@@ -11,9 +11,7 @@ import {
   StickyNote,
   CheckCircle2,
   Menu, // mobile hamburger
-  Instagram, // ✅ added
-  Phone,     // ✅ added
-  // PhoneCall // (optional) swap in if you prefer the ringing icon
+  Phone, // used in hero
 } from "lucide-react";
 
 import ProtectedRoute from "./components/ProtectedRoute.jsx";
@@ -232,100 +230,11 @@ function PipelineDemo() {
   );
 }
 
-/* ---------------------- Partners (grid + CTA) ---------------------- */
+/* ---------------------- Book a Demo CTA (new) ---------------------- */
 
-function IGLink({ handle }) {
-  if (!handle) return null;
-  const clean = handle.startsWith("@") ? handle.slice(1) : handle;
-  const href = `https://instagram.com/${clean}`;
+function BookDemoCTA() {
   return (
-    <a
-      href={href}
-      target="_blank"
-      rel="noopener noreferrer"
-      className="inline-flex items-center gap-2 text-sm font-medium text-indigo-300 hover:text-white"
-    >
-      <Instagram className="h-4 w-4" />
-      @{clean}
-    </a>
-  );
-}
-
-function PartnersGrid() {
-  const [partners, setPartners] = useState([]);
-  const [loading, setLoading] = useState(true);
-
-  useEffect(() => {
-    async function load() {
-      setLoading(true);
-      const { data, error } = await supabase
-        .from("partners")
-        .select("*")
-        .eq("active", true)
-        .order("sort_order", { ascending: true, nullsFirst: true })
-        .order("name", { ascending: true });
-      if (!error) setPartners(data || []);
-      setLoading(false);
-    }
-    load();
-  }, []);
-
-  if (loading) {
-    return (
-      <section className="relative z-10 mx-auto max-w-7xl px-6 py-10">
-        <div className="text-center text-white/60">Loading partners…</div>
-      </section>
-    );
-  }
-
-  if (!partners.length) return null;
-
-  return (
-    <section className="relative z-10 mx-auto max-w-7xl px-6 pt-2 pb-8">
-      <header className="text-center mb-10">
-        <h2 className="text-3xl font-semibold">Meet Our Partners</h2>
-        <p className="mt-2 text-white/70 max-w-2xl mx-auto">
-          We partner with top producers, influencers, and leaders who share our standards.
-        </p>
-      </header>
-
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-6">
-        {partners.map((p) => (
-          <article
-            key={p.id}
-            className="rounded-2xl border border-white/10 bg-white/[0.06] p-5 ring-1 ring-white/5 transition hover:border-white/30 hover:bg-white/[0.08]"
-          >
-            <div className="flex items-start gap-4">
-              <img
-                src={p.photo_url || "/assets/partners/placeholder-avatar.png"}
-                alt={`${p.name} headshot`}
-                className="h-16 w-16 rounded-xl object-cover ring-1 ring-white/15"
-                loading="lazy"
-              />
-              <div className="min-w-0">
-                <h3 className="text-lg font-semibold truncate">{p.name}</h3>
-                <p className="text-sm text-white/70">{p.role || "Partner"}</p>
-              </div>
-            </div>
-
-            {p.bio && (
-              <p className="mt-4 text-sm leading-relaxed text-white/80">{p.bio}</p>
-            )}
-
-            <div className="mt-5">
-              <IGLink handle={p.instagram_handle} />
-            </div>
-          </article>
-        ))}
-      </div>
-    </section>
-  );
-}
-
-function PartnerCTA() {
-  return (
-    <section className="relative z-10 mx-auto max-w-5xl px-6 pb-14">
-      {/* subtle background halo */}
+    <section className="relative z-10 mx-auto max-w-6xl px-6 pb-14">
       <div className="pointer-events-none absolute inset-0 -z-10">
         <div className="mx-auto h-56 w-[85%] rounded-[2rem] bg-gradient-to-br from-indigo-600/20 via-purple-600/15 to-fuchsia-600/20 blur-2xl" />
       </div>
@@ -333,29 +242,25 @@ function PartnerCTA() {
       <div className="rounded-3xl border border-white/10 bg-white/[0.05] p-6 sm:p-8 ring-1 ring-white/5 backdrop-blur">
         <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
           <div>
-            <h3 className="text-xl sm:text-2xl font-semibold">Become a Partner</h3>
+            <h3 className="text-xl sm:text-2xl font-semibold">Book a Live Demo</h3>
             <p className="mt-1 text-white/70">
-              Get <span className="font-medium text-white">50% off</span> your subscription.
+              Walk through the CRM with me and ask anything—pipeline, automations, pricing, and more.
             </p>
-            <ul className="mt-3 space-y-1 text-sm text-white/75">
-              <li>• Minimum <span className="font-medium">500 Instagram followers</span></li>
-              <li>• Share the CRM on your story at least <span className="font-medium">2× / month</span></li>
-            </ul>
           </div>
 
           <a
-            href="https://instagram.com/remiecrm"
+            href="https://calendly.com/jacobprieto/new-meeting"
             target="_blank"
             rel="noopener noreferrer"
             className="group inline-flex items-center gap-2 rounded-2xl px-4 py-2 text-sm font-medium
-                       bg-white/5 hover:bg-white/10 transition
-                       ring-1 ring-white/10 hover:ring-white/20"
+                       bg-gradient-to-r from-indigo-500 via-purple-500 to-fuchsia-500
+                       hover:opacity-95 transition
+                       ring-1 ring-white/10"
           >
-            <span className="inline-grid place-items-center rounded-xl p-1.5
-                             ring-1 ring-white/15 bg-gradient-to-br from-indigo-500/20 via-purple-500/20 to-fuchsia-500/20">
-              <Instagram className="h-5 w-5" />
+            <span className="inline-grid place-items-center rounded-xl p-1.5 ring-1 ring-white/15 bg-white/10">
+              <Phone className="h-5 w-5" />
             </span>
-            <span className="tracking-tight">DM “PARTNER” to @remiecrm</span>
+            <span className="tracking-tight">Book a Demo</span>
           </a>
         </div>
       </div>
@@ -410,6 +315,14 @@ function LandingPage() {
           </div>
           <div className="flex items-center gap-3">
             <a href="#contact" className="text-sm opacity-80 hover:opacity-100">Contact</a>
+            <a
+              href="https://calendly.com/jacobprieto/new-meeting"
+              target="_blank"
+              rel="noopener noreferrer"
+              className="text-sm rounded-xl border border-white/15 bg-white/5 px-3 py-1.5 hover:bg-white/10"
+            >
+              Book a Demo
+            </a>
             <Link to="/login" className="text-sm opacity-80 hover:opacity-100">Log in</Link>
             {/* ❌ Removed free trial button */}
           </div>
@@ -432,6 +345,21 @@ function LandingPage() {
           <div className="mt-6 flex items-center justify-center gap-6 text-xs text-white/60">
             <span className="inline-flex items-center gap-1"><Star className="h-4 w-4" /> Concierge migration (Remie CRM)</span>
             <span className="inline-flex items-center gap-1"><Phone className="h-4 w-4" /> Power Dialer</span>
+          </div>
+
+          {/* Inline primary CTA */}
+          <div className="mt-8">
+            <a
+              href="https://calendly.com/jacobprieto/new-meeting"
+              target="_blank"
+              rel="noopener noreferrer"
+              className="inline-flex items-center gap-2 rounded-2xl px-5 py-3 font-medium
+                         bg-gradient-to-r from-indigo-500 via-purple-500 to-fuchsia-500
+                         hover:opacity-95 transition ring-1 ring-white/10"
+            >
+              <Phone className="h-5 w-5" />
+              Book a Demo
+            </a>
           </div>
         </div>
       </section>
@@ -495,9 +423,8 @@ function LandingPage() {
         </p>
       </section>
 
-      {/* ✅ Partners grid & CTA: below pricing/demo, above contact */}
-      <PartnersGrid />
-      <PartnerCTA />
+      {/* ✅ New: Book a Demo CTA replaces the old Partners sections */}
+      <BookDemoCTA />
 
       {/* Contact section */}
       <section id="contact" className="relative z-10 mx-auto max-w-7xl px-6 py-12">
