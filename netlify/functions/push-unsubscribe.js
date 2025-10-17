@@ -1,59 +1,51 @@
 // netlify/functions/push-unsubscribe.js
-// Remove a stored Web Push subscription for the logged-in user/device.
-
-const { getServiceClient } = require("./_supabase");
-
-function json(status, body) {
-  return {
-    statusCode: status,
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(body),
-  };
-}
+const { getServiceClient, getUserFromAuthHeader } = require("./_supabase");
 
 exports.handler = async (event) => {
   if (event.httpMethod !== "POST") {
-    return json(405, { error: "method_not_allowed" });
+    return { statusCode: 405, body: "method_not_allowed" };
   }
 
   try {
-    const supabase = getServiceClient();
-
-    // Require Supabase JWT to ensure only the owner can remove their subscription
-    const auth =
-      event.headers.authorization ||
-      event.headers.Authorization ||
-      "";
-    const token = auth.startsWith("Bearer ") ? auth.slice(7).trim() : null;
-    if (!token) return json(401, { error: "missing_bearer_token" });
-
-    const { data: userRes, error: userErr } = await supabase.auth.getUser(token);
-    if (userErr || !userRes?.user?.id) {
-      return json(401, { error: "invalid_token" });
-    }
-    const user_id = userRes.user.id;
-
-    let body = {};
-    try {
-      body = JSON.parse(event.body || "{}");
-    } catch {
-      return json(400, { error: "invalid_json" });
+    const user = await getUserFromAuthHeader(event);
+    if (!user?.id) {
+      return {
+        statusCode: 401,
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ok: false, error: "unauthorized" }),
+      };
     }
 
+    const body = JSON.parse(event.body || "{}");
     const endpoint = String(body.endpoint || "");
-    if (!endpoint) return json(400, { error: "missing_endpoint" });
+    if (!endpoint) {
+      return {
+        statusCode: 400,
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ok: false, error: "missing_endpoint" }),
+      };
+    }
 
+    const supabase = getServiceClient();
     const { error } = await supabase
       .from("push_subscriptions")
       .delete()
-      .eq("user_id", user_id)
+      .eq("user_id", user.id)
       .eq("endpoint", endpoint);
 
-    if (error) return json(500, { error: "db_error", detail: error.message });
+    if (error) throw error;
 
-    return json(200, { ok: true });
+    return {
+      statusCode: 200,
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ ok: true }),
+    };
   } catch (e) {
     console.error("[push-unsubscribe] error:", e);
-    return json(500, { error: "server_error" });
+    return {
+      statusCode: 500,
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ ok: false, error: e.message || String(e) }),
+    };
   }
 };
