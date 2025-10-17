@@ -10,7 +10,6 @@ function urlB64ToUint8Array(base64String) {
   for (let i = 0; i < rawData.length; ++i) outputArray[i] = rawData.charCodeAt(i);
   return outputArray;
 }
-
 async function authHeader() {
   const { data } = await supabase.auth.getSession();
   const token = data?.session?.access_token;
@@ -18,98 +17,79 @@ async function authHeader() {
 }
 
 export default function EnablePushIOS() {
-  const [log, setLog] = useState([]);
+  const [log, setLog] = useState<string[]>([]);
   const [permission, setPermission] = useState(Notification.permission);
   const [isStandalone, setIsStandalone] = useState(false);
 
-  const addLog = (m) => setLog((l) => [`${m}`, ...l].slice(0, 100));
+  const addLog = (m: any) =>
+    setLog((l) => [`${typeof m === "string" ? m : JSON.stringify(m)}`, ...l].slice(0, 100));
 
   useEffect(() => {
     const media = window.matchMedia("(display-mode: standalone)");
-    setIsStandalone(media.matches || window.navigator.standalone === true);
+    setIsStandalone(media.matches || (window as any).navigator.standalone === true);
   }, []);
 
   async function ensureSW() {
     if (!("serviceWorker" in navigator)) throw new Error("SW not supported");
-    const reg = await navigator.serviceWorker.register("/sw.js");
+    await navigator.serviceWorker.register("/sw.js");
     await navigator.serviceWorker.ready;
     addLog("SW ready ✅");
-    return reg;
   }
 
   async function enableNotifications() {
-    try {
-      const perm = await Notification.requestPermission();
-      setPermission(perm);
-      addLog(`Notification.requestPermission(): ${perm}`);
-      if (perm !== "granted") throw new Error("Permission not granted");
+    const perm = await Notification.requestPermission();
+    setPermission(perm);
+    addLog(`Notification.requestPermission(): ${perm}`);
+    if (perm !== "granted") throw new Error("Permission not granted");
 
-      const reg = await ensureSW();
+    await ensureSW();
+    const reg = await navigator.serviceWorker.ready;
 
-      // Reuse existing subscription if one already exists
-      let sub = await reg.pushManager.getSubscription();
-      if (sub) {
-        addLog("Already subscribed. ✅");
-      } else {
-        const key = import.meta.env.VITE_VAPID_PUBLIC_KEY;
-        if (!key) throw new Error("Missing VITE_VAPID_PUBLIC_KEY");
-        const appServerKey = urlB64ToUint8Array(key);
+    const key = import.meta.env.VITE_VAPID_PUBLIC_KEY;
+    if (!key) throw new Error("Missing VITE_VAPID_PUBLIC_KEY");
+    const appServerKey = urlB64ToUint8Array(key);
 
-        sub = await reg.pushManager.subscribe({
-          userVisibleOnly: true,
-          applicationServerKey: appServerKey,
-        });
-        addLog("Subscribed ✅");
-      }
-
-      const subJSON = sub.toJSON?.() || {};
-      const headers = {
-        "Content-Type": "application/json",
-        ...(await authHeader()),
-      };
-
-      const res = await fetch("/.netlify/functions/push-subscribe", {
-        method: "POST",
-        headers,
-        body: JSON.stringify({
-          endpoint: sub.endpoint,
-          keys: subJSON.keys || { p256dh: subJSON.p256dh, auth: subJSON.auth },
-          platform: /iPhone|iPad|iPod|Mac/i.test(navigator.userAgent) ? "ios" : "web",
-          topics: ["leads", "messages"],
-        }),
-      });
-      addLog(`push-subscribe → ${res.status}`);
-      if (!res.ok) {
-        const j = await res.json().catch(() => ({}));
-        throw new Error(`push-subscribe failed ${res.status}: ${j?.error || ""}`);
-      }
-    } catch (e) {
-      addLog(`Subscribe error: ${e?.message || e}`);
-      throw e;
+    const existing = await reg.pushManager.getSubscription();
+    if (existing) {
+      addLog("Already subscribed. ✅");
     }
+    const sub =
+      existing ||
+      (await reg.pushManager.subscribe({
+        userVisibleOnly: true,
+        applicationServerKey: appServerKey,
+      }));
+
+    addLog("Subscribed ✅");
+
+    // send to server WITH AUTH
+    const headers = { "Content-Type": "application/json", ...(await authHeader()) };
+    const body = {
+      endpoint: sub.endpoint,
+      keys: sub.toJSON().keys,
+      platform: /iPhone|iPad|iPod|Mac/i.test(navigator.userAgent) ? "ios" : "web",
+      topics: ["leads", "messages"],
+    };
+    const res = await fetch("/.netlify/functions/push-subscribe", {
+      method: "POST",
+      headers,
+      body: JSON.stringify(body),
+    });
+    let j: any = {};
+    try {
+      j = await res.json();
+    } catch {}
+    addLog({ "push-subscribe status": res.status, body: j });
+    if (!res.ok) throw new Error(j?.detail || j?.error || `push-subscribe failed ${res.status}`);
   }
 
   async function sendTest() {
-    try {
-      const headers = await authHeader();
-      if (!headers.Authorization) {
-        addLog("No session token (are you logged in?)");
-        return;
-      }
-      const r = await fetch("/.netlify/functions/push-test", {
-        method: "POST",
-        headers,
-      });
-      addLog(`push-test → ${r.status}`);
-      const j = await r.json().catch(() => ({}));
-      if (!r.ok) {
-        addLog(`push-test error: ${j?.error || "unknown"}`);
-      } else {
-        addLog(`push-test result: sent=${j?.sent ?? 0}, removed=${j?.removed ?? 0}`);
-      }
-    } catch (e) {
-      addLog(`push-test fetch error: ${e?.message || e}`);
-    }
+    const headers = await authHeader();
+    const res = await fetch("/.netlify/functions/_push?test=1", { headers });
+    let j: any = {};
+    try { j = await res.json(); } catch {}
+    addLog({ "_push?test=1 status": res.status, body: j });
+    if (!res.ok) throw new Error(j?.error || "test failed");
   }
 
   return (
@@ -132,7 +112,7 @@ export default function EnablePushIOS() {
         <div>Notification permission: {permission}</div>
         <div>Display mode: {isStandalone ? "standalone" : "browser tab"}</div>
         <pre className="mt-2 whitespace-pre-wrap text-xs opacity-90">
-          {log.map((l, i) => `• ${l}`).join("\n")}
+{log.map((l, i) => `• ${l}`).join("\n")}
         </pre>
       </div>
     </div>
