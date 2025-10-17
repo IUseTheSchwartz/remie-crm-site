@@ -145,7 +145,7 @@ export default function MessagingSettings() {
   const [userId, setUserId] = useState(null);
 
   // Custom amount state
-  const [customUsd, setCustomUsd] = useState("");
+  the const [customUsd, setCustomUsd] = useState("");
   const [customMsg, setCustomMsg] = useState("");
   const MIN_CENTS = 100;
   const MAX_CENTS = 50000;
@@ -176,7 +176,7 @@ export default function MessagingSettings() {
     agent_site: "",
   });
 
-  // --- Toll-Free Number state (new flow) ---
+  // --- Messaging Number state (same backend flow, UI hides digits) ---
   const [myTFN, setMyTFN] = useState(null);
   const [tfnVerified, setTfnVerified] = useState(false);
   const [tfnLoading, setTfnLoading] = useState(true);
@@ -320,7 +320,7 @@ export default function MessagingSettings() {
     };
   }, [userId]);
 
-  /* -------- Load TFN status (new flow) -------- */
+  /* -------- Load messaging number status -------- */
   useEffect(() => {
     let mounted = true;
     (async () => {
@@ -333,7 +333,7 @@ export default function MessagingSettings() {
         setTfnVerified(!!s?.verified);
       } catch (e) {
         if (!mounted) return;
-        setTfnError(e.message || "Failed to load toll-free number.");
+        setTfnError(e.message || "Failed to load messaging number.");
       } finally {
         if (mounted) setTfnLoading(false);
       }
@@ -505,7 +505,7 @@ export default function MessagingSettings() {
       {/* Header */}
       <header className="rounded-2xl border border-white/10 bg-white/[0.03] p-4">
         <h1 className="text-lg font-semibold">Messaging Settings</h1>
-        <p className="mt-1 text-sm text-white/70">Manage your text balance, toll-free number, and message templates.</p>
+        <p className="mt-1 text-sm text-white/70">Manage your text balance, messaging number, and message templates.</p>
       </header>
 
       {/* Wallet block */}
@@ -552,7 +552,7 @@ export default function MessagingSettings() {
         </div>
       </section>
 
-      {/* Toll-Free Number (auto-assign from verified pool) */}
+      {/* Messaging Number (auto-assign from verified pool) */}
       <section className="rounded-2xl border border-white/10 bg-white/[0.03] p-4">
         <div className="mb-2 flex items-center justify-between">
           <div className="flex items-center gap-2">
@@ -560,9 +560,9 @@ export default function MessagingSettings() {
               <Phone className="h-5 w-5" />
             </div>
             <div>
-              <h3 className="text-sm font-semibold">Your Toll-Free Number</h3>
+              <h3 className="text-sm font-semibold">Messaging Number</h3>
               <p className="text-xs text-white/60">
-                Messages you send will come from this number. It’s included — no cost to you.
+                We’ll assign a verified messaging number for your outbound texts.
               </p>
             </div>
           </div>
@@ -576,14 +576,14 @@ export default function MessagingSettings() {
         {tfnLoading ? (
           <div className="rounded-lg bg-white/5 p-3 text-sm text-white/70">
             <Loader2 className="mr-2 inline h-4 w-4 animate-spin" />
-            Loading your number…
+            Checking status…
           </div>
         ) : tfnError ? (
           <div className="rounded-lg border border-rose-400/30 bg-rose-400/10 p-3 text-sm text-rose-100">{tfnError}</div>
         ) : !myTFN ? (
           <div className="flex flex-col gap-3">
             <div className="rounded-lg bg-white/5 p-3 text-sm text-white/70">
-              You don’t have a number yet. Click the button below and we’ll assign you a pre-verified toll-free number from our pool.
+              You don’t have a messaging number yet. Click the button below and we’ll assign one from our verified pool.
             </div>
             <div className="flex items-center gap-2">
               <button
@@ -605,7 +605,7 @@ export default function MessagingSettings() {
                 className="inline-flex items-center gap-1 rounded-lg border border-white/15 bg-white/5 px-3 py-2 text-sm hover:bg-white/10 disabled:opacity-60"
               >
                 {tfnAssigning ? <Loader2 className="h-4 w-4 animate-spin" /> : <Phone className="h-4 w-4" />}
-                <span>{tfnAssigning ? "Assigning…" : "Get My Number"}</span>
+                <span>{tfnAssigning ? "Assigning…" : "Get Messaging Number"}</span>
               </button>
               <a href="/support" className="text-xs text-white/60 hover:text-white">
                 Need help? Contact Support
@@ -615,7 +615,7 @@ export default function MessagingSettings() {
         ) : (
           <div className="flex items-center justify-between rounded-lg border border-white/10 bg-white/[0.02] p-3 text-sm">
             <div className="text-white/80">
-              Current: <span className="font-semibold">{prettyE164(myTFN)}</span>
+              <span className="font-semibold">Messaging number is set.</span>
             </div>
             <span
               className={`rounded-md px-2 py-0.5 text-[11px] ${
