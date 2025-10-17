@@ -25,7 +25,7 @@ import {
   Pencil,
   ExternalLink,
   Shield,
-  Star, // ← NEW: for Reviews
+  Star, // ← For Reviews
 } from "lucide-react";
 
 /* --- Gradient stroke helper (indigo → purple → fuchsia) --- */
@@ -52,7 +52,8 @@ const ICONS = {
   Calendar: CalendarIcon,
 
   // Productivity & Communication
-  Dialer: Phone,
+  "Power Dialer": Phone,     // 📞
+  "Smart Dialer": PhoneCall, // ⚡
   "Messaging Settings": SettingsIcon,
   Mailing: Megaphone,
   "AI Rebuttal Helper": Bot,
@@ -67,7 +68,7 @@ const ICONS = {
   // Agent site
   "View My Agent Site": Globe2,
   "Edit Agent Site": Pencil,
-  Reviews: Star, // ← NEW
+  Reviews: Star,
 
   // Teams
   "My Teams": Users,
@@ -99,7 +100,21 @@ function ItemLink({ r, onNavigate }) {
       ) : (
         <span className="w-4" />
       )}
-      <span>{r.label}</span>
+      {/* Add emoji flair */}
+      <span>
+        {r.label === "Power Dialer" && "📞 "}
+        {r.label === "Smart Dialer" && "⚡ "}
+        {r.label === "Lead Rescue" && "🛟 "}
+        {r.label === "Contacts" && "👥 "}
+        {r.label === "Messaging Settings" && "💬 "}
+        {r.label === "Mailing" && "📣 "}
+        {r.label === "AI Rebuttal Helper" && "🤖 "}
+        {r.label === "Call Recorder" && "🎙️ "}
+        {r.label === "Reports" && "📊 "}
+        {r.label === "Agent Tools" && "🧰 "}
+        {r.label === "Reviews" && "⭐ "}
+        {r.label}
+      </span>
     </NavLink>
   );
 }
@@ -161,7 +176,9 @@ function ViewAgentSiteLink() {
 
       return () => {
         isMounted = false;
-        try { supabase.removeChannel?.(channel); } catch {}
+        try {
+          supabase.removeChannel?.(channel);
+        } catch {}
         window.removeEventListener("storage", onStorage);
       };
     })();
@@ -198,7 +215,7 @@ function ViewAgentSiteLink() {
       title={published ? "Open your public agent page" : "Open preview (publish in the wizard)"}
     >
       <ExternalLink className="h-4 w-4" />
-      <span>{published ? "View My Agent Site" : "Preview My Agent Site"}</span>
+      <span>{published ? "🌐 View My Agent Site" : "🧪 Preview My Agent Site"}</span>
     </a>
   );
 }
@@ -268,23 +285,15 @@ function SidebarContent({ onNavigate }) {
 
   const hideAdminOnly = (arr) => arr.filter((r) => !r.adminOnly || isAdmin);
 
-  // Build bottom items
   let bottomItems = hideAdminOnly(sections.bottom);
-
-  // Admin Console for admins
   if (isAdmin) {
     bottomItems = [{ key: "admin-console", path: "/app/admin", label: "Admin Console" }, ...bottomItems];
   }
-
-  // Ensure Support is present
   const hasSupport = bottomItems.some((r) => r.key === "support");
-  if (!hasSupport) {
-    bottomItems.push({ key: "support", path: "/app/support", label: "Support" });
-  }
+  if (!hasSupport) bottomItems.push({ key: "support", path: "/app/support", label: "Support" });
 
   return (
     <>
-      {/* Brand */}
       <a
         href="https://remiecrm.com"
         target="_blank"
@@ -331,18 +340,15 @@ function SidebarContent({ onNavigate }) {
       </div>
 
       <div className="mt-6 border-t border-white/10 p-2">
-        <div className="text-xs uppercase tracking-wide text-white/50 px-3 pb-2">
-          Account &amp; Help
-        </div>
+        <div className="text-xs uppercase tracking-wide text-white/50 px-3 pb-2">Account &amp; Help</div>
         <SimpleList items={bottomItems} onNavigate={onNavigate} />
       </div>
     </>
   );
 }
 
-/* Desktop + Mobile wrappers (now with proper scroll containers) */
+/* Desktop + Mobile wrappers */
 export default function Sidebar({ mobileOpen = false, setMobileOpen = () => {} }) {
-  // ✅ Make aside a flex column and move the scroll to a child with min-h-0
   const desktopAside = (
     <aside className="relative z-10 hidden md:flex md:flex-col border-r border-white/10 bg-black/30 h-screen">
       <div className="flex-1 min-h-0 overflow-y-auto overscroll-contain no-scrollbar">
@@ -361,7 +367,6 @@ export default function Sidebar({ mobileOpen = false, setMobileOpen = () => {} }
         }`}
         onClick={close}
       />
-      {/* ✅ Same fix for mobile drawer */}
       <div
         className={`fixed inset-y-0 left-0 z-50 w-[80%] max-w-[280px] bg-neutral-950 border-r border-white/10 md:hidden
         h-screen flex flex-col transition-transform duration-300 ${
