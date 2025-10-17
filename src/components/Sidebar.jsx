@@ -26,6 +26,7 @@ import {
   ExternalLink,
   Shield,
   Star,
+  Bell, // ← NEW (for Enable Notifications on iOS)
 } from "lucide-react";
 
 /* --- Gradient stroke helper (indigo → purple → fuchsia) --- */
@@ -74,6 +75,7 @@ const ICONS = {
   "My Teams": Users,
 
   // Bottom
+  "Enable Notifications on iOS": Bell, // ← NEW
   Settings: SettingsIcon,
   Support: LifeBuoy,
 
@@ -270,11 +272,23 @@ function SidebarContent({ onNavigate }) {
   const hideAdminOnly = (arr) => arr.filter((r) => !r.adminOnly || isAdmin);
 
   let bottomItems = hideAdminOnly(sections.bottom);
+
+  // If admin, prepend Admin Console
   if (isAdmin) {
     bottomItems = [{ key: "admin-console", path: "/app/admin", label: "Admin Console" }, ...bottomItems];
   }
+
+  // Ensure Support exists
   const hasSupport = bottomItems.some((r) => r.key === "support");
   if (!hasSupport) bottomItems.push({ key: "support", path: "/app/support", label: "Support" });
+
+  // 🔔 Place "Enable Notifications on iOS" directly ABOVE "Settings"
+  const idxEnable = bottomItems.findIndex((r) => r.key === "enable-notifications-ios");
+  const idxSettings = bottomItems.findIndex((r) => r.key === "settings");
+  if (idxEnable !== -1 && idxSettings !== -1 && idxEnable !== idxSettings - 1) {
+    const [enableItem] = bottomItems.splice(idxEnable, 1);
+    bottomItems.splice(idxSettings, 0, enableItem);
+  }
 
   return (
     <>
