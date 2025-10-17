@@ -15,7 +15,7 @@ export default function SmartDialer() {
     if (!d) return "";
     if (d.length === 10) return `+1${d}`;
     if (d.length === 11 && d.startsWith("1")) return `+${d}`;
-    return `+${d}`; // fall back; tel: tolerates most digit-only values
+    return `+${d}`; // fallback; tel: tolerates digit-only
   };
   const humanPhone = (phone) => {
     const d = String(phone || "").replace(/\D+/g, "");
@@ -29,9 +29,9 @@ export default function SmartDialer() {
     setDevice(detectDevice());
   }, []);
 
-  /* ---------------- Load leads belonging to logged-in user ---------------- */
+  /* ---------------- Load ALL leads for logged-in user, oldest -> newest ---------------- */
   useEffect(() => {
-    async function loadLeads() {
+    async function loadLeadsAll() {
       try {
         setLoading(true);
         const { data: auth } = await supabase.auth.getUser();
@@ -42,24 +42,41 @@ export default function SmartDialer() {
           return;
         }
 
-        // Only the logged-in user's leads
-        const { data, error } = await supabase
-          .from("leads")
-          .select("id, name, phone, state, status, created_at")
-          .eq("user_id", uid)
-          .order("created_at", { ascending: false })
-          .limit(50);
+        // Fetch in chunks so we never miss any (no hard 50 limit).
+        const PAGE_SIZE = 1000;
+        let from = 0;
+        let all = [];
 
-        if (error) throw error;
-        setLeads(data || []);
+        // Keep import order: first -> last
+        // If you import without created_at, adjust to your “imported_at” column here.
+        // NOTE: RLS/ownership: we keep .eq('user_id', uid)
+        // If some leads were imported under a different user_id/null, they won't appear for this user.
+        // (You can reassign those in the DB if needed.)
+        for (;;) {
+          const { data, error } = await supabase
+            .from("leads")
+            .select("id, name, phone, state, status, created_at")
+            .eq("user_id", uid)
+            .order("created_at", { ascending: true })
+            .range(from, from + PAGE_SIZE - 1);
+
+          if (error) throw error;
+          const batch = data || [];
+          all = all.concat(batch);
+          if (batch.length < PAGE_SIZE) break; // done
+          from += PAGE_SIZE;
+        }
+
+        setLeads(all);
       } catch (err) {
         console.error("Failed to load leads:", err);
+        setLeads([]);
       } finally {
         setLoading(false);
       }
     }
 
-    loadLeads();
+    loadLeadsAll();
   }, []);
 
   /* ---------------- Setup Wizard UI ---------------- */
