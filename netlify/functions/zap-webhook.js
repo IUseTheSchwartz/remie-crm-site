@@ -12,7 +12,7 @@
 const crypto = require("crypto");
 const fetch = require("node-fetch"); // ensure fetch exists in function runtime
 const { getServiceClient } = require("./_supabase");
-const { sendPushToUser } = require("./_push"); // <-- added
+const { sendPushToUser } = require("../lib/_push"); // <-- added
 
 const supabase = getServiceClient();
 
