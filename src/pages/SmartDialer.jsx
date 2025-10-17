@@ -14,13 +14,21 @@ export default function SmartDialer() {
   const [q, setQ] = useState("");
   const [selectedState, setSelectedState] = useState("");
 
+  // Apple-only capability for FaceTime Audio
+  const isFaceTimeCapable = useMemo(() => {
+    if (typeof navigator === "undefined") return false;
+    const ua = (navigator.userAgent || "").toLowerCase();
+    // iPhone, iPad, iPod, and macOS; Chrome on macOS also hands off to FaceTime
+    return /iphone|ipad|ipod|macintosh|mac os x/.test(ua);
+  }, []);
+
   // ---------- helpers ----------
   const toE164 = (phone) => {
     const d = String(phone || "").replace(/\D+/g, "");
     if (!d) return "";
     if (d.length === 10) return `+1${d}`;
     if (d.length === 11 && d.startsWith("1")) return `+${d}`;
-    return `+${d}`; // fallback; tel: tolerates digit-only
+    return `+${d}`;
   };
   const humanPhone = (phone) => {
     const d = String(phone || "").replace(/\D+/g, "");
@@ -103,7 +111,6 @@ export default function SmartDialer() {
       const st = String(lead.state || "").toLowerCase();
       const phoneDigits = String(lead.phone || "").replace(/\D+/g, "");
 
-      // match if query appears in name, state, or digits appear in phone
       return (
         name.includes(qLower) ||
         st.includes(qLower) ||
@@ -257,14 +264,24 @@ export default function SmartDialer() {
                     {lead.state ? <>State: <span className="text-white/80">{lead.state}</span></> : "State: —"}
                   </div>
 
-                  <div className="mt-4">
+                  <div className="mt-4 grid grid-cols-1 gap-2 sm:grid-cols-2">
                     {lead.phone ? (
-                      <a
-                        href={`tel:${tel}`}
-                        className="block w-full rounded-xl bg-gradient-to-br from-indigo-500/90 to-fuchsia-500/90 hover:from-indigo-500 hover:to-fuchsia-500 text-center font-medium py-2"
-                      >
-                        Call {humanPhone(lead.phone)}
-                      </a>
+                      <>
+                        <a
+                          href={`tel:${tel}`}
+                          className="block w-full rounded-xl bg-gradient-to-br from-indigo-500/90 to-fuchsia-500/90 hover:from-indigo-500 hover:to-fuchsia-500 text-center font-medium py-2"
+                        >
+                          Call {humanPhone(lead.phone)}
+                        </a>
+                        {isFaceTimeCapable && (
+                          <a
+                            href={`facetime-audio://${tel}`}
+                            className="block w-full rounded-xl border border-white/15 bg-white/5 hover:bg-white/10 text-center font-medium py-2"
+                          >
+                            FaceTime Audio
+                          </a>
+                        )}
+                      </>
                     ) : (
                       <span className="block w-full rounded-xl bg-white/10 text-center text-white/50 py-2">
                         No phone on file
@@ -289,26 +306,39 @@ export default function SmartDialer() {
                 </tr>
               </thead>
               <tbody>
-                {filteredLeads.map((lead) => (
-                  <tr key={lead.id} className="border-t border-white/10 hover:bg-white/5">
-                    <td className="px-4 py-2">{lead.name || "—"}</td>
-                    <td className="px-4 py-2 font-mono">{humanPhone(lead.phone)}</td>
-                    <td className="px-4 py-2">{lead.state || "—"}</td>
-                    <td className="px-4 py-2 text-white/70 capitalize">{lead.status || "lead"}</td>
-                    <td className="px-4 py-2">
-                      {lead.phone ? (
-                        <a
-                          href={`tel:${toE164(lead.phone)}`}
-                          className="inline-flex items-center justify-center rounded-lg bg-gradient-to-r from-indigo-500 via-purple-500 to-pink-500 px-3 py-1.5 text-white text-xs font-medium"
-                        >
-                          Call
-                        </a>
-                      ) : (
-                        <span className="text-white/40 text-xs">No Phone</span>
-                      )}
-                    </td>
-                  </tr>
-                ))}
+                {filteredLeads.map((lead) => {
+                  const tel = toE164(lead.phone);
+                  return (
+                    <tr key={lead.id} className="border-t border-white/10 hover:bg-white/5">
+                      <td className="px-4 py-2">{lead.name || "—"}</td>
+                      <td className="px-4 py-2 font-mono">{humanPhone(lead.phone)}</td>
+                      <td className="px-4 py-2">{lead.state || "—"}</td>
+                      <td className="px-4 py-2 text-white/70 capitalize">{lead.status || "lead"}</td>
+                      <td className="px-4 py-2">
+                        {lead.phone ? (
+                          <div className="flex items-center gap-2">
+                            <a
+                              href={`tel:${tel}`}
+                              className="inline-flex items-center justify-center rounded-lg bg-gradient-to-r from-indigo-500 via-purple-500 to-pink-500 px-3 py-1.5 text-white text-xs font-medium"
+                            >
+                              Call
+                            </a>
+                            {isFaceTimeCapable && (
+                              <a
+                                href={`facetime-audio://${tel}`}
+                                className="inline-flex items-center justify-center rounded-lg border border-white/15 bg-white/5 px-3 py-1.5 text-xs hover:bg-white/10"
+                              >
+                                FaceTime Audio
+                              </a>
+                            )}
+                          </div>
+                        ) : (
+                          <span className="text-white/40 text-xs">No Phone</span>
+                        )}
+                      </td>
+                    </tr>
+                  );
+                })}
               </tbody>
             </table>
           </div>
