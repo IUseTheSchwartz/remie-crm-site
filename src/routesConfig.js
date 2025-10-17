@@ -49,6 +49,9 @@ import SmartDialerPage from "./pages/SmartDialer.jsx"; // ← NEW
 // ---- Reviews ----
 import ReviewsManager from "./pages/ReviewsManager.jsx";
 
+// ---- Push / Notifications (iOS enable flow) ----
+import PushDebug from "./pages/PushDebug.jsx"; // ← NEW
+
 export const routes = [
   // Top-level
   { key: "home", path: "/app", label: "Home", component: DashboardHome, index: true, showInSidebar: true, section: "top" },
@@ -83,6 +86,9 @@ export const routes = [
   // Bottom (Account & Help)
   { key: "settings", path: "/app/settings", label: "Settings", component: SettingsPage, showInSidebar: true, section: "bottom" },
   { key: "support", path: "/app/support", label: "Support", component: SupportPage, showInSidebar: true, section: "bottom" },
+
+  // ⚡ Push/Notifications helper (iOS)
+  { key: "enable-notifications-ios", path: "/app/enable-notifications-ios", label: "Enable Notifications on iOS", component: PushDebug, showInSidebar: true, section: "bottom" }, // ← NEW
 
   // Admin-only (hidden)
   { key: "support-inbox", path: "/app/support-inbox", label: "Support Inbox", component: AdminSupportInbox, showInSidebar: false, section: "hidden" },
