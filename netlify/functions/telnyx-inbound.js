@@ -5,7 +5,7 @@
 const { getServiceClient } = require("./_supabase");
 const fetch = require("node-fetch");
 const { AbortController } = require("abort-controller");
-const { sendPushToUser } = require("./_push"); // <-- added
+const { sendPushToUser } = require("../lib/_push"); // <-- added
 
 /* ---------------- HTTP helpers ---------------- */
 function ok(body) {
