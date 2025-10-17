@@ -12,6 +12,7 @@
 const crypto = require("crypto");
 const fetch = require("node-fetch"); // ensure fetch exists in function runtime
 const { getServiceClient } = require("./_supabase");
+const { sendPushToUser } = require("./_push"); // <-- added
 
 const supabase = getServiceClient();
 
@@ -46,7 +47,7 @@ const toE164 = (p) => {
 
 // Exclusive contact status tag
 const normalizeTag = (s) => String(s ?? "").trim().toLowerCase().replace(/\s+/g, "_");
-const uniqTags = (arr) => Array.from(new Set((arr || []).map(normalizeTag))).filter(Boolean);
+const uniqTags = (arr) => Array.from(new Set((arr || []).map(normalizeTag))).filter(Boolean();
 
 // ---- tiny date normalizer for dob (optional) ----
 function toMDY(v) {
@@ -77,7 +78,7 @@ function toMDY(v) {
   const d = new Date(s);
   if (!Number.isNaN(d.getTime())) {
     const mm = String(d.getMonth() + 1).padStart(2, "0");
-    const dd = String(d.getDate()).padStart(2, "0");
+    const dd = String(d.getDate(), 10).padStart(2, "0");
     const yy = d.getFullYear();
     return `${mm}/${dd}/${yy}`;
   }
@@ -228,6 +229,25 @@ exports.handler = async (event) => {
       .from("user_inbound_webhooks")
       .update({ last_used_at: new Date().toISOString() })
       .eq("id", webhookId);
+
+    /* ---- Fire phone push: "New lead" (phones already subscribed) ---- */
+    try {
+      const who = S(lead.name) || S(lead.email) || S(lead.phone) || "New lead";
+      const parts = [];
+      if (S(lead.phone)) parts.push(S(lead.phone));
+      if (S(lead.state)) parts.push(S(lead.state));
+      const bodyText = parts.join(" • ");
+
+      await sendPushToUser(hook.user_id, {
+        title: `New lead: ${who}`,
+        body: bodyText || "Tap to view",
+        url: "/app",
+        tag: `lead-${insertedId}`,
+        renotify: false,
+      });
+    } catch (e) {
+      console.warn("[zap-webhook] push notify warn:", e?.message || e);
+    }
 
     /* =========================
      * Upsert Contact + status tag
