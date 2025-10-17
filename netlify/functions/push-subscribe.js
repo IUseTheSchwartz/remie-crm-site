@@ -1,7 +1,9 @@
 // netlify/functions/push-subscribe.js
+// Saves a browser/device push subscription for the logged-in user.
+
 const { getServiceClient, getUserFromAuthHeader } = require("./_supabase");
 
-function j(status, body) {
+function json(status, body) {
   return {
     statusCode: status,
     headers: { "Content-Type": "application/json" },
@@ -10,81 +12,86 @@ function j(status, body) {
 }
 
 exports.handler = async (event) => {
-  if (event.httpMethod !== "POST") return j(405, { ok: false, error: "method_not_allowed" });
+  const supabase = getServiceClient();
 
+  // CORS for safety (Netlify runs same-origin, but keep this handy)
+  if (event.httpMethod === "OPTIONS") {
+    return {
+      statusCode: 200,
+      headers: {
+        "Access-Control-Allow-Origin": "*",
+        "Access-Control-Allow-Headers": "authorization,content-type",
+        "Access-Control-Allow-Methods": "POST,OPTIONS",
+      },
+      body: "",
+    };
+  }
+
+  if (event.httpMethod !== "POST") {
+    return json(405, { error: "method_not_allowed" });
+  }
+
+  // Auth: pull the Supabase user from the Bearer token the app sends
+  let user;
   try {
-    const user = await getUserFromAuthHeader(event);
-    if (!user?.id) return j(401, { ok: false, error: "unauthorized" });
+    user = await getUserFromAuthHeader(event);
+  } catch (e) {
+    console.error("[push-subscribe] auth parse error:", e?.message || e);
+    return json(401, { error: "unauthorized", detail: "No/invalid Authorization header" });
+  }
+  if (!user?.id) {
+    return json(401, { error: "unauthorized", detail: "No user in token" });
+  }
 
-    let body = {};
-    try { body = JSON.parse(event.body || "{}"); }
-    catch { return j(400, { ok: false, error: "bad_json" }); }
+  // Parse body
+  let body = {};
+  try {
+    body = JSON.parse(event.body || "{}");
+  } catch (e) {
+    return json(400, { error: "invalid_json", detail: e?.message || String(e) });
+  }
 
-    const endpoint = String(body.endpoint || "");
-    const keys = body.keys || {};
-    const platform = String(body.platform || "web");
-    const topics = Array.isArray(body.topics) ? body.topics : [];
-    const user_agent = event.headers["user-agent"] || event.headers["User-Agent"] || "";
+  const endpoint = body?.endpoint || "";
+  const p256dh = body?.keys?.p256dh || "";
+  const auth = body?.keys?.auth || "";
+  const platform = body?.platform || "web";
+  const topics = Array.isArray(body?.topics) ? body.topics : ["leads", "messages"];
 
-    if (!endpoint || !keys.p256dh || !keys.auth) {
-      return j(400, { ok: false, error: "missing_fields", got: { endpoint: !!endpoint, p256dh: !!keys.p256dh, auth: !!keys.auth } });
-    }
+  if (!endpoint || !p256dh || !auth) {
+    return json(400, {
+      error: "bad_request",
+      detail: "Missing endpoint/keys",
+      got: { endpoint: !!endpoint, p256dh: !!p256dh, auth: !!auth },
+    });
+  }
 
-    const supabase = getServiceClient();
-
-    // Try to update by endpoint, else insert
-    const { data: existing, error: selErr } = await supabase
+  // Upsert by (user_id, endpoint)
+  try {
+    const { data, error } = await supabase
       .from("push_subscriptions")
-      .select("id")
-      .eq("endpoint", endpoint)
-      .limit(1);
-
-    if (selErr) {
-      console.error("[push-subscribe] select error:", selErr);
-      return j(500, { ok: false, error: "db_select_error", detail: selErr.message });
-    }
-
-    if (existing && existing.length) {
-      const id = existing[0].id;
-      const { error: updErr } = await supabase
-        .from("push_subscriptions")
-        .update({
+      .upsert(
+        {
           user_id: user.id,
-          p256dh: keys.p256dh,
-          auth: keys.auth,
+          endpoint,
+          p256dh,
+          auth,
           platform,
           topics,
-          is_active: true,
-          user_agent,
-        })
-        .eq("id", id);
+          created_at: new Date().toISOString(),
+        },
+        { onConflict: "user_id,endpoint" }
+      )
+      .select("id")
+      .single();
 
-      if (updErr) {
-        console.error("[push-subscribe] update error:", updErr);
-        return j(500, { ok: false, error: "db_update_error", detail: updErr.message });
-      }
-      return j(200, { ok: true, updated: 1 });
+    if (error) {
+      console.error("[push-subscribe] db upsert error:", error.message);
+      return json(500, { error: "db_insert_error", detail: error.message });
     }
 
-    const { error: insErr } = await supabase.from("push_subscriptions").insert([{
-      user_id: user.id,
-      endpoint,
-      p256dh: keys.p256dh,
-      auth: keys.auth,
-      platform,
-      topics,
-      is_active: true,
-      user_agent,
-    }]);
-
-    if (insErr) {
-      console.error("[push-subscribe] insert error:", insErr);
-      return j(500, { ok: false, error: "db_insert_error", detail: insErr.message });
-    }
-
-    return j(200, { ok: true, inserted: 1 });
+    return json(200, { ok: true, id: data?.id || null });
   } catch (e) {
-    console.error("[push-subscribe] unhandled:", e);
-    return j(500, { ok: false, error: "server_error", detail: e.message || String(e) });
+    console.error("[push-subscribe] unhandled error:", e?.message || e);
+    return json(500, { error: "server_error", detail: e?.message || String(e) });
   }
 };
