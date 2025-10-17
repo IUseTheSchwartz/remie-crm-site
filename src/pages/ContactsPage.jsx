@@ -11,7 +11,6 @@ import {
   Minus,
   CheckCircle2,
   ChevronsUpDown,
-  Bug,
 } from "lucide-react";
 
 /* ---------------- Templates catalog (global enable switches) ---------------- */
@@ -99,76 +98,10 @@ function eligibleTemplatesForContact({ tags = [], subscribed }, enabledMap) {
   return elig;
 }
 
-/* ---------------- Diagnostic panel (drop-in) ---------------- */
-function SupabaseDiag({ userId, supabaseClient }) {
-  const [out, setOut] = useState(null);
-  const [open, setOpen] = useState(true);
-
-  const clientUrl = supabaseClient?.supabaseUrl || "";
-  const clientRef =
-    (clientUrl.match(/https?:\/\/([^.]+)\.supabase\.co/i) || [null, "unknown"])[1];
-
-  async function run() {
-    try {
-      const qs = userId ? `?user_id=${encodeURIComponent(userId)}` : "";
-      const res = await fetch(`/.netlify/functions/diag-supabase${qs}`);
-      const json = await res.json();
-      setOut(json);
-      // Also echo to console for visibility
-      console.groupCollapsed("%c[Contacts] Supabase Diagnostic", "color:#00e5ff");
-      console.log("Client project ref:", clientRef);
-      console.log("Client URL:", clientUrl);
-      console.log("Server diag:", json);
-      console.groupEnd();
-    } catch (e) {
-      setOut({ ok: false, error: String(e?.message || e) });
-      console.error("[Contacts] diag error:", e);
-    }
-  }
-
-  return (
-    <div className="rounded-2xl border border-white/10 bg-[rgb(25,7,7)] p-3">
-      <button
-        className="mb-2 inline-flex items-center gap-2 rounded-lg border border-white/15 bg-white/5 px-2 py-1 text-xs hover:bg-white/10"
-        onClick={() => setOpen((s) => !s)}
-      >
-        <Bug className="h-3.5 w-3.5 text-rose-300" />
-        {open ? "Hide diagnostic" : "Show diagnostic"}
-      </button>
-
-      {open && (
-        <>
-          <div className="text-xs text-white/80 mb-2">
-            <div>Client project: <code className="text-rose-200">{clientRef}</code></div>
-            <div>Client URL:&nbsp;
-              <code className="text-rose-200 break-all">{clientUrl || "—"}</code>
-            </div>
-            <div>User ID: <code className="text-rose-200">{userId || "—"}</code></div>
-          </div>
-
-          <button
-            onClick={run}
-            className="inline-flex items-center gap-2 rounded-lg border border-rose-400/30 bg-rose-500/15 px-3 py-1.5 text-xs text-rose-200 hover:bg-rose-500/25"
-          >
-            <Bug className="h-4 w-4" /> Run Supabase Check
-          </button>
-
-          {out && (
-            <pre className="mt-2 max-h-64 overflow-auto whitespace-pre-wrap rounded-lg border border-white/10 bg-black/50 p-2 text-[11px] text-white/80">
-{JSON.stringify(out, null, 2)}
-            </pre>
-          )}
-        </>
-      )}
-    </div>
-  );
-}
-
 export default function ContactsPage() {
   const [loading, setLoading] = useState(true);
   const [contacts, setContacts] = useState([]);
   const [enabledMap, setEnabledMap] = useState({ ...DEFAULT_ENABLED });
-  const [userId, setUserId] = useState(null); // <-- added for diag & queries
 
   const [q, setQ] = useState("");
   const [confirm, setConfirm] = useState({
@@ -193,7 +126,6 @@ export default function ContactsPage() {
       // 1) Auth
       const { data: sessionData } = await supabase.auth.getSession();
       const uid = sessionData?.session?.user?.id || null;
-      setUserId(uid);
       if (!uid) {
         setLoading(false);
         return;
@@ -229,7 +161,6 @@ export default function ContactsPage() {
         console.error("[Contacts] fetch error:", error);
         setContacts([]);
       } else {
-        console.log("[Contacts] fetched rows:", rows?.length || 0, rows);
         const normalized = (rows || []).map((c) => ({
           ...c,
           tags: uniqueTags(c.tags || []),
@@ -390,9 +321,6 @@ export default function ContactsPage() {
 
   return (
     <div className="space-y-6">
-      {/* 🔧 Diagnostic panel */}
-      <SupabaseDiag userId={userId} supabaseClient={supabase} />
-
       {/* Header */}
       <header className="rounded-2xl border border-white/10 bg-white/[0.03] p-4">
         <div className="flex items-center gap-3">
