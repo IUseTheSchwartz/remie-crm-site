@@ -1,5 +1,5 @@
 // File: src/routesConfig.js
-// Adds `section` for sidebar grouping and renames "Tools" -> "Agent Tools" (UI label only)
+// Adds Smart Dialer + renames Dialer → Power Dialer
 
 import DashboardHome from "./pages/DashboardHome.jsx";
 import LeadsPage from "./pages/LeadsPage.jsx";
@@ -24,8 +24,8 @@ import TeamDashboard from "./pages/TeamDashboard.jsx";
 // ---- Admin-only Support Inbox ----
 import AdminSupportInbox from "./pages/AdminSupportInbox.jsx";
 
-// ---- Admin Console (NEW) ----
-import AdminConsole from "./pages/AdminConsole.jsx"; // ← NEW
+// ---- Admin Console ----
+import AdminConsole from "./pages/AdminConsole.jsx";
 
 // ---- AI Rebuttal Helper ----
 import RebuttalChat from "./pages/RebuttalChat.jsx";
@@ -33,72 +33,65 @@ import RebuttalChat from "./pages/RebuttalChat.jsx";
 // ---- Call Recorder ----
 import CallRecorder from "./pages/CallRecorder.jsx";
 
-// ---- Contacts (NEW) ----
+// ---- Contacts ----
 import ContactsPage from "./pages/ContactsPage.jsx";
 
-// ---- Message Lab (PRIVATE) ----
-import MessageTestPage from "./pages/MessageTestPage.jsx"; // <— NEW
+// ---- Message Lab ----
+import MessageTestPage from "./pages/MessageTestPage.jsx";
 
-// ---- Lead Rescue (NEW) ----
-import LeadRescuePage from "./pages/LeadRescuePage.jsx"; // <— NEW
+// ---- Lead Rescue ----
+import LeadRescuePage from "./pages/LeadRescuePage.jsx";
 
-// ---- Dialer (NEW) ----
-import DialerPage from "./pages/DialerPage.jsx"; // <— NEW
+// ---- Dialers ----
+import DialerPage from "./pages/DialerPage.jsx";
+import SmartDialerPage from "./pages/SmartDialer.jsx"; // ← NEW
 
-// ---- Reviews Manager (NEW) ----
-import ReviewsManager from "./pages/ReviewsManager.jsx"; // <— NEW
-
-// Sidebar sections:
-// "top" → Top-Level (Most Used Daily)
-// "productivity" → Productivity & Communication
-// "insights_tools" → Insights & Tools
-// "agent_site" → Agent Site Management
-// "teams" → Teams
-// "bottom" → Account & Help (fixed bottom area)
-// "hidden" → not shown
+// ---- Reviews ----
+import ReviewsManager from "./pages/ReviewsManager.jsx";
 
 export const routes = [
   // Top-level
-  { key: "home",     path: "/app",          label: "Home",     component: DashboardHome, index: true, showInSidebar: true, section: "top" },
-  { key: "leads",    path: "/app/leads",    label: "Leads",    component: LeadsPage,                 showInSidebar: true, section: "top" },
-  { key: "pipeline", path: "/app/pipeline", label: "Pipeline", component: PipelinePage,              showInSidebar: true, section: "top" },
-  { key: "messages", path: "/app/messages", label: "Messages", component: MessagesPage,              showInSidebar: true, section: "top" },
-  { key: "calendar", path: "/app/calendar", label: "Calendar", component: CalendarPage,              showInSidebar: true, section: "top" },
+  { key: "home", path: "/app", label: "Home", component: DashboardHome, index: true, showInSidebar: true, section: "top" },
+  { key: "leads", path: "/app/leads", label: "Leads", component: LeadsPage, showInSidebar: true, section: "top" },
+  { key: "pipeline", path: "/app/pipeline", label: "Pipeline", component: PipelinePage, showInSidebar: true, section: "top" },
+  { key: "messages", path: "/app/messages", label: "Messages", component: MessagesPage, showInSidebar: true, section: "top" },
+  { key: "calendar", path: "/app/calendar", label: "Calendar", component: CalendarPage, showInSidebar: true, section: "top" },
 
   // Productivity & Communication
-  { key: "dialer",        path: "/app/dialer",        label: "Dialer",              component: DialerPage,       showInSidebar: true, section: "productivity" }, // NEW
-  { key: "contacts",      path: "/app/contacts",           label: "Contacts",           component: ContactsPage,     showInSidebar: true, section: "productivity" },
-  { key: "lead-rescue",   path: "/app/lead-rescue",        label: "Lead Rescue",        component: LeadRescuePage,   showInSidebar: true, section: "productivity" },
-  { key: "msgSettings",   path: "/app/messaging-settings", label: "Messaging Settings", component: MessagingSettings, showInSidebar: true, section: "productivity" },
-  { key: "mailing",       path: "/app/mailing",            label: "Mailing",            component: MailingPage,      showInSidebar: true, section: "productivity" },
-  { key: "rebuttal",      path: "/app/rebuttal",           label: "AI Rebuttal Helper", component: RebuttalChat,     showInSidebar: true, section: "productivity" },
-  { key: "call-recorder", path: "/app/call-recorder",      label: "Call Recorder",      component: CallRecorder,     showInSidebar: true, section: "productivity" },
+  { key: "dialer", path: "/app/dialer", label: "Power Dialer", component: DialerPage, showInSidebar: true, section: "productivity" },
+  { key: "smart-dialer", path: "/app/smart-dialer", label: "Smart Dialer", component: SmartDialerPage, showInSidebar: true, section: "productivity" }, // ← NEW
+  { key: "contacts", path: "/app/contacts", label: "Contacts", component: ContactsPage, showInSidebar: true, section: "productivity" },
+  { key: "lead-rescue", path: "/app/lead-rescue", label: "Lead Rescue", component: LeadRescuePage, showInSidebar: true, section: "productivity" },
+  { key: "msgSettings", path: "/app/messaging-settings", label: "Messaging Settings", component: MessagingSettings, showInSidebar: true, section: "productivity" },
+  { key: "mailing", path: "/app/mailing", label: "Mailing", component: MailingPage, showInSidebar: true, section: "productivity" },
+  { key: "rebuttal", path: "/app/rebuttal", label: "AI Rebuttal Helper", component: RebuttalChat, showInSidebar: true, section: "productivity" },
+  { key: "call-recorder", path: "/app/call-recorder", label: "Call Recorder", component: CallRecorder, showInSidebar: true, section: "productivity" },
 
   // Insights & Tools
-  { key: "reports", path: "/app/reports", label: "Reports",     component: ReportsPage, showInSidebar: true, section: "insights_tools" },
-  { key: "tools",   path: "/app/tools",   label: "Agent Tools", component: ToolsPage,   showInSidebar: true, section: "insights_tools" },
+  { key: "reports", path: "/app/reports", label: "Reports", component: ReportsPage, showInSidebar: true, section: "insights_tools" },
+  { key: "tools", path: "/app/tools", label: "Agent Tools", component: ToolsPage, showInSidebar: true, section: "insights_tools" },
 
   // Agent Site Management
   { key: "agentShowcase", path: "/app/agent/showcase", label: "Edit Agent Site", component: AgentShowcase, showInSidebar: true, section: "agent_site" },
-  { key: "reviews",       path: "/app/reviews",        label: "Reviews",         component: ReviewsManager, showInSidebar: true, section: "agent_site" }, // ← NEW
+  { key: "reviews", path: "/app/reviews", label: "Reviews", component: ReviewsManager, showInSidebar: true, section: "agent_site" },
 
   // Teams
-  { key: "my-teams",       path: "/app/teams",                  label: "My Teams",       component: MyTeams,        showInSidebar: true,  section: "teams" },
-  { key: "team-manage",    path: "/app/team/manage/:teamId",    label: "Manage Team",    component: TeamManagement, showInSidebar: false, section: "hidden" },
-  { key: "team-dashboard", path: "/app/team/:teamId/dashboard", label: "Team Dashboard", component: TeamDashboard,  showInSidebar: false, section: "hidden" },
+  { key: "my-teams", path: "/app/teams", label: "My Teams", component: MyTeams, showInSidebar: true, section: "teams" },
+  { key: "team-manage", path: "/app/team/manage/:teamId", label: "Manage Team", component: TeamManagement, showInSidebar: false, section: "hidden" },
+  { key: "team-dashboard", path: "/app/team/:teamId/dashboard", label: "Team Dashboard", component: TeamDashboard, showInSidebar: false, section: "hidden" },
 
   // Bottom (Account & Help)
   { key: "settings", path: "/app/settings", label: "Settings", component: SettingsPage, showInSidebar: true, section: "bottom" },
-  { key: "support",  path: "/app/support",  label: "Support",  component: SupportPage,  showInSidebar: true, section: "bottom" },
+  { key: "support", path: "/app/support", label: "Support", component: SupportPage, showInSidebar: true, section: "bottom" },
 
   // Admin-only (hidden)
   { key: "support-inbox", path: "/app/support-inbox", label: "Support Inbox", component: AdminSupportInbox, showInSidebar: false, section: "hidden" },
-  { key: "admin-console", path: "/app/admin",          label: "Admin Console", component: AdminConsole,      showInSidebar: false, section: "hidden", adminOnly: true },
+  { key: "admin-console", path: "/app/admin", label: "Admin Console", component: AdminConsole, showInSidebar: false, section: "hidden", adminOnly: true },
 
-  // PRIVATE: Message Lab (hidden)
+  // Private
   { key: "message-lab", path: "/app/message-lab", label: "Message Lab", component: MessageTestPage, showInSidebar: false, section: "hidden" },
 
-  // Legal (hidden)
-  { key: "terms",   path: "/legal/terms",   label: "Terms of Service", component: TermsPage,   showInSidebar: false, section: "hidden" },
-  { key: "privacy", path: "/legal/privacy", label: "Privacy Policy",   component: PrivacyPage, showInSidebar: false, section: "hidden" },
+  // Legal
+  { key: "terms", path: "/legal/terms", label: "Terms of Service", component: TermsPage, showInSidebar: false, section: "hidden" },
+  { key: "privacy", path: "/legal/privacy", label: "Privacy Policy", component: PrivacyPage, showInSidebar: false, section: "hidden" },
 ];
