@@ -25,7 +25,7 @@ import {
   Pencil,
   ExternalLink,
   Shield,
-  Star, // ← For Reviews
+  Star,
 } from "lucide-react";
 
 /* --- Gradient stroke helper (indigo → purple → fuchsia) --- */
@@ -52,8 +52,8 @@ const ICONS = {
   Calendar: CalendarIcon,
 
   // Productivity & Communication
-  "Power Dialer": Phone,     // 📞
-  "Smart Dialer": PhoneCall, // ⚡
+  "Power Dialer": Phone,
+  "Smart Dialer": PhoneCall,
   "Messaging Settings": SettingsIcon,
   Mailing: Megaphone,
   "AI Rebuttal Helper": Bot,
@@ -100,21 +100,7 @@ function ItemLink({ r, onNavigate }) {
       ) : (
         <span className="w-4" />
       )}
-      {/* Add emoji flair */}
-      <span>
-        {r.label === "Power Dialer" && "📞 "}
-        {r.label === "Smart Dialer" && "⚡ "}
-        {r.label === "Lead Rescue" && "🛟 "}
-        {r.label === "Contacts" && "👥 "}
-        {r.label === "Messaging Settings" && "💬 "}
-        {r.label === "Mailing" && "📣 "}
-        {r.label === "AI Rebuttal Helper" && "🤖 "}
-        {r.label === "Call Recorder" && "🎙️ "}
-        {r.label === "Reports" && "📊 "}
-        {r.label === "Agent Tools" && "🧰 "}
-        {r.label === "Reviews" && "⭐ "}
-        {r.label}
-      </span>
+      <span>{r.label}</span>
     </NavLink>
   );
 }
@@ -176,9 +162,7 @@ function ViewAgentSiteLink() {
 
       return () => {
         isMounted = false;
-        try {
-          supabase.removeChannel?.(channel);
-        } catch {}
+        try { supabase.removeChannel?.(channel); } catch {}
         window.removeEventListener("storage", onStorage);
       };
     })();
@@ -215,7 +199,7 @@ function ViewAgentSiteLink() {
       title={published ? "Open your public agent page" : "Open preview (publish in the wizard)"}
     >
       <ExternalLink className="h-4 w-4" />
-      <span>{published ? "🌐 View My Agent Site" : "🧪 Preview My Agent Site"}</span>
+      <span>{published ? "View My Agent Site" : "Preview My Agent Site"}</span>
     </a>
   );
 }
@@ -266,7 +250,7 @@ function SimpleList({ items, onNavigate }) {
   );
 }
 
-/* Content of the sidebar (used by desktop + mobile) */
+/* Sidebar Content */
 function SidebarContent({ onNavigate }) {
   const { isAdmin } = useIsAdminAllowlist();
 
@@ -294,6 +278,7 @@ function SidebarContent({ onNavigate }) {
 
   return (
     <>
+      {/* Brand */}
       <a
         href="https://remiecrm.com"
         target="_blank"
@@ -340,7 +325,9 @@ function SidebarContent({ onNavigate }) {
       </div>
 
       <div className="mt-6 border-t border-white/10 p-2">
-        <div className="text-xs uppercase tracking-wide text-white/50 px-3 pb-2">Account &amp; Help</div>
+        <div className="text-xs uppercase tracking-wide text-white/50 px-3 pb-2">
+          Account &amp; Help
+        </div>
         <SimpleList items={bottomItems} onNavigate={onNavigate} />
       </div>
     </>
