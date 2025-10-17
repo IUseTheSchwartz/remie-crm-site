@@ -5,22 +5,23 @@
 const webpush = require("web-push");
 const { getServiceClient } = require("./_supabase");
 
-// Configure web-push (VAPID)
+// --- VAPID / App origin ---
 const VAPID_PUBLIC_KEY = process.env.VAPID_PUBLIC_KEY;
 const VAPID_PRIVATE_KEY = process.env.VAPID_PRIVATE_KEY;
-const APP_ORIGIN = process.env.APP_ORIGIN || "";
+const APP_ORIGIN = process.env.APP_ORIGIN || process.env.SITE_URL || process.env.URL || "";
 
+// Configure web-push
 if (!VAPID_PUBLIC_KEY || !VAPID_PRIVATE_KEY) {
   console.warn("[_push] Missing VAPID keys; push disabled");
 } else {
-  webpush.setVapidDetails(`mailto:support@remiecrm.com`, VAPID_PUBLIC_KEY, VAPID_PRIVATE_KEY);
+  webpush.setVapidDetails("mailto:support@remiecrm.com", VAPID_PUBLIC_KEY, VAPID_PRIVATE_KEY);
 }
 
 /**
  * Send a push notification to every subscription for the given user.
  * @param {string} user_id - Auth user id
  * @param {Object} payload - { title, body, url, tag?, icon?, badge?, renotify? }
- * @returns {Promise<{ok:true, sent:number, removed:number}>}
+ * @returns {Promise<{ok:boolean, sent?:number, removed?:number, reason?:string}>}
  */
 async function sendPushToUser(user_id, payload) {
   if (!VAPID_PUBLIC_KEY || !VAPID_PRIVATE_KEY) {
@@ -29,6 +30,8 @@ async function sendPushToUser(user_id, payload) {
   if (!user_id) return { ok: false, reason: "missing_user" };
 
   const supabase = getServiceClient();
+
+  // Fetch subscriptions
   const { data: subs, error } = await supabase
     .from("push_subscriptions")
     .select("id, endpoint, p256dh, auth")
@@ -38,22 +41,23 @@ async function sendPushToUser(user_id, payload) {
     console.error("[_push] db error:", error.message);
     return { ok: false, reason: "db_error" };
   }
+
   const list = subs || [];
   if (list.length === 0) return { ok: true, sent: 0, removed: 0 };
-
-  let sent = 0;
-  let removed = 0;
 
   // Normalize URL to absolute (good practice for SW click open)
   const absoluteUrl = (() => {
     try {
       const u = payload?.url || "/app";
-      return new URL(u, APP_ORIGIN || "https://example.com").toString();
+      // ensure origin present so SW can openWindow()
+      const base = APP_ORIGIN || "https://example.com";
+      return new URL(u, base).toString();
     } catch {
       return payload?.url || "/app";
     }
   })();
 
+  // Build payload, keep well under 4KB
   const jsonPayload = JSON.stringify({
     title: payload?.title || "Remie CRM",
     body: payload?.body || "",
@@ -64,13 +68,24 @@ async function sendPushToUser(user_id, payload) {
     renotify: !!payload?.renotify,
   });
 
-  for (const s of list) {
+  // Delivery options (optional but nice)
+  const options = { TTL: 60, urgency: "high" };
+
+  // De-dupe endpoints just in case
+  const uniqueByEndpoint = new Map();
+  for (const s of list) uniqueByEndpoint.set(s.endpoint, s);
+
+  let sent = 0;
+  let removed = 0;
+
+  for (const s of uniqueByEndpoint.values()) {
     const subscription = {
       endpoint: s.endpoint,
       keys: { p256dh: s.p256dh, auth: s.auth },
     };
+
     try {
-      await webpush.sendNotification(subscription, jsonPayload);
+      await webpush.sendNotification(subscription, jsonPayload, options);
       sent++;
     } catch (e) {
       const status = e?.statusCode || e?.status || 0;
