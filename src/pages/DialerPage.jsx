@@ -42,11 +42,11 @@ export default function DialerPage() {
   /* ===== Early return for maintenance (add-only) ===== */
   if (DIALER_UNDER_MAINTENANCE) {
     return (
-      <div className="relative min-h-[70vh]">
+      <div className="relative min-h-[70vh] overflow-x-hidden">
         {/* subtle hero gradient (matches your style) */}
         <div className="pointer-events-none absolute inset-0 -z-10">
           <div
-            className="absolute -top-24 left-1/2 h-72 w-[48rem] -translate-x-1/2 rounded-full blur-3xl opacity-40"
+            className="absolute -top-24 left-1/2 h-72 w-[48rem] -translate-x-1/2 rounded-full blur-3xl opacity-40 max-w-[120vw]"
             style={{
               background:
                 "radial-gradient(40rem 20rem at 30% 30%, rgba(99,102,241,.35), transparent), radial-gradient(40rem 20rem at 70% 40%, rgba(217,70,239,.25), transparent)",
@@ -55,21 +55,21 @@ export default function DialerPage() {
         </div>
 
         <div className="grid place-items-center h-full py-16">
-          <div className="text-center max-w-xl">
+          <div className="text-center max-w-xl px-4">
             <h1 className="text-2xl font-semibold mb-2">Sorry — Under Maintenance</h1>
             <p className="text-white/70 mb-6">
               The Dialer page is temporarily unavailable while we make updates.
             </p>
-            <div className="flex items-center justify-center gap-3">
+            <div className="flex flex-col sm:flex-row items-center justify-center gap-3">
               <button
                 onClick={() => window.history.back()}
-                className="rounded-xl border border-white/15 bg-white/10 px-4 py-2 text-sm hover:bg-white/15"
+                className="rounded-xl border border-white/15 bg-white/10 px-4 py-2 text-sm hover:bg-white/15 w-full sm:w-auto"
               >
                 Go Back
               </button>
               <button
                 onClick={() => window.location.reload()}
-                className="rounded-xl text-white bg-gradient-to-br from-indigo-500/90 to-fuchsia-500/90 hover:from-indigo-500 hover:to-fuchsia-500 px-4 py-2 text-sm shadow-lg shadow-fuchsia-500/10"
+                className="rounded-xl text-white bg-gradient-to-br from-indigo-500/90 to-fuchsia-500/90 hover:from-indigo-500 hover:to-fuchsia-500 px-4 py-2 text-sm shadow-lg shadow-fuchsia-500/10 w-full sm:w-auto"
               >
                 Refresh
               </button>
@@ -283,11 +283,11 @@ export default function DialerPage() {
 
   /* ---------- UI ---------- */
   return (
-    <div className="relative">
+    <div className="relative overflow-x-hidden">
       {/* subtle hero gradient */}
       <div className="pointer-events-none absolute inset-0 -z-10">
         <div
-          className="absolute -top-24 left-1/2 h-72 w-[48rem] -translate-x-1/2 rounded-full blur-3xl opacity-40"
+          className="absolute -top-24 left-1/2 h-72 w-[48rem] -translate-x-1/2 rounded-full blur-3xl opacity-40 max-w-[120vw]"
           style={{
             background:
               "radial-gradient(40rem 20rem at 30% 30%, rgba(99,102,241,.35), transparent), radial-gradient(40rem 20rem at 70% 40%, rgba(217,70,239,.25), transparent)",
@@ -335,16 +335,16 @@ export default function DialerPage() {
       <div className="grid grid-cols-1 gap-6 lg:grid-cols-3">
         {/* left: call composer */}
         <section className="lg:col-span-2 rounded-2xl border border-white/10 bg-white/5 backdrop-blur-xl p-5 shadow-[0_8px_30px_rgba(0,0,0,0.12)]">
-          <div className="flex items-center justify-between mb-4">
+          <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 mb-4">
             <h2 className="text-lg font-medium">Call composer</h2>
-            <div className="flex items-center gap-2 text-xs text-white/50">
-              <Shield className="h-4 w-4" /> STIR/SHAKEN attested via your Telnyx DIDs
+            <div className="flex items-center gap-2 text-xs text-white/60">
+              <Shield className="h-4 w-4" /> Caller ID attested (STIR/SHAKEN)
             </div>
           </div>
 
           <div className="grid gap-4 sm:grid-cols-5">
             <div className="sm:col-span-5">
-              <div className="flex items-end gap-2">
+              <div className="flex flex-col sm:flex-row sm:items-end gap-2">
                 <div className="flex-1">
                   <Label>Your phone (we call you first)</Label>
                   <Input
@@ -355,7 +355,7 @@ export default function DialerPage() {
                   />
                 </div>
                 {/* save state */}
-                <div className="pb-1 text-xs min-w-[110px] text-right">
+                <div className="pb-1 text-xs sm:text-right">
                   {savingPhone ? (
                     <span className="inline-flex items-center gap-1 text-white/70">
                       <Loader2 className="h-3.5 w-3.5 animate-spin" /> Saving…
@@ -431,7 +431,7 @@ export default function DialerPage() {
               >
                 <div className="flex items-center gap-3">
                   <BadgeCheck className="h-4 w-4 text-emerald-300/80" />
-                  <div className="font-mono text-sm">{n.telnyx_number}</div>
+                  <div className="font-mono text-sm break-all">{n.telnyx_number}</div>
                 </div>
                 <span className="rounded-md bg-white/10 px-2 py-0.5 text-xs text-white/70">
                   NPA {n.area_code}{n.is_free ? " • free" : ""}
@@ -459,48 +459,83 @@ export default function DialerPage() {
         {logs.length === 0 ? (
           <EmptyCard text="No calls yet." />
         ) : (
-          <div className="overflow-hidden rounded-xl border border-white/10">
-            <table className="min-w-full text-sm">
-              <thead className="bg-white/5 text-white/70">
-                <tr>
-                  <Th>To</Th>
-                  <Th>From (caller ID)</Th>
-                  <Th>Status</Th>
-                  <Th>Started</Th>
-                  <Th>Duration</Th>
-                  <Th>Charge</Th>
-                  <Th>Recording</Th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-white/10 bg-black/20">
-                {logs.map((c) => {
-                  const status = (c.status || "").toLowerCase();
-                  const billable = status === "completed" || status === "answered" || status === "bridged";
-                  const cents = billable && c.duration_seconds > 0
-                    ? startedMinuteSegments(c.duration_seconds) * COST_PER_SEGMENT_CENTS
-                    : null;
+          <>
+            {/* Mobile: card list */}
+            <div className="space-y-3 md:hidden">
+              {logs.map((c) => {
+                const status = (c.status || "").toLowerCase();
+                const billable = status === "completed" || status === "answered" || status === "bridged";
+                const cents = billable && c.duration_seconds > 0
+                  ? startedMinuteSegments(c.duration_seconds) * COST_PER_SEGMENT_CENTS
+                  : null;
+                return (
+                  <div key={c.id} className="rounded-xl border border-white/10 bg-black/20 p-3">
+                    <div className="flex items-center justify-between gap-2">
+                      <div className="font-mono text-sm break-all">{c.to_number}</div>
+                      <StatusBadge status={c.status} />
+                    </div>
+                    <div className="mt-2 grid grid-cols-2 gap-2 text-xs text-white/70">
+                      <div><span className="text-white/50">From:</span> <span className="font-mono break-all">{c.from_number}</span></div>
+                      <div><span className="text-white/50">Started:</span> {fmt(c.started_at)}</div>
+                      <div><span className="text-white/50">Duration:</span> {c.duration_seconds ? `${c.duration_seconds}s` : "-"}</div>
+                      <div><span className="text-white/50">Charge:</span> {cents != null ? formatUSD(cents) : "-"}</div>
+                    </div>
+                    <div className="mt-2 text-sm">
+                      {c.recording_url ? (
+                        <a className="underline" href={c.recording_url} target="_blank" rel="noreferrer" download={`call-${c.id || "recording"}.mp3`}>
+                          Listen
+                        </a>
+                      ) : <span className="text-white/60">Recording: -</span>}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
 
-                  return (
-                    <tr key={c.id} className="hover:bg-white/5">
-                      <Td mono>{c.to_number}</Td>
-                      <Td mono>{c.from_number}</Td>
-                      <Td><StatusBadge status={c.status} /></Td>
-                      <Td>{fmt(c.started_at)}</Td>
-                      <Td>{c.duration_seconds ? `${c.duration_seconds}s` : "-"}</Td>
-                      <Td>{cents != null ? formatUSD(cents) : "-"}</Td>
-                      <Td>
-                        {c.recording_url ? (
-                          <a className="underline" href={c.recording_url} target="_blank" rel="noreferrer" download={`call-${c.id || "recording"}.mp3`}>
-                            Listen
-                          </a>
-                        ) : "-"}
-                      </Td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-          </div>
+            {/* Desktop: table */}
+            <div className="hidden md:block overflow-x-auto rounded-xl border border-white/10">
+              <table className="min-w-full text-sm">
+                <thead className="bg-white/5 text-white/70">
+                  <tr>
+                    <Th>To</Th>
+                    <Th>From (caller ID)</Th>
+                    <Th>Status</Th>
+                    <Th>Started</Th>
+                    <Th>Duration</Th>
+                    <Th>Charge</Th>
+                    <Th>Recording</Th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-white/10 bg-black/20">
+                  {logs.map((c) => {
+                    const status = (c.status || "").toLowerCase();
+                    const billable = status === "completed" || status === "answered" || status === "bridged";
+                    const cents = billable && c.duration_seconds > 0
+                      ? startedMinuteSegments(c.duration_seconds) * COST_PER_SEGMENT_CENTS
+                      : null;
+
+                    return (
+                      <tr key={c.id} className="hover:bg-white/5">
+                        <Td mono>{c.to_number}</Td>
+                        <Td mono>{c.from_number}</Td>
+                        <Td><StatusBadge status={c.status} /></Td>
+                        <Td>{fmt(c.started_at)}</Td>
+                        <Td>{c.duration_seconds ? `${c.duration_seconds}s` : "-"}</Td>
+                        <Td>{cents != null ? formatUSD(cents) : "-"}</Td>
+                        <Td>
+                          {c.recording_url ? (
+                            <a className="underline" href={c.recording_url} target="_blank" rel="noreferrer" download={`call-${c.id || "recording"}.mp3`}>
+                              Listen
+                            </a>
+                          ) : "-"}
+                        </Td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          </>
         )}
       </section>
 
@@ -508,7 +543,7 @@ export default function DialerPage() {
       {openBuy && (
         <Modal onClose={() => setOpenBuy(false)} title="Buy a number">
           <div className="space-y-3">
-            <div className="flex items-end gap-2">
+            <div className="flex flex-col sm:flex-row sm:items-end gap-2">
               <div className="flex-1">
                 <Label>Search by area code</Label>
                 <Input
@@ -526,7 +561,7 @@ export default function DialerPage() {
             <div className="grid gap-2 sm:grid-cols-2">
               {results.map((num) => (
                 <div key={num} className="flex items-center justify-between rounded-xl border border-white/10 bg-black/30 px-3 py-2">
-                  <div className="font-mono">{num}</div>
+                  <div className="font-mono break-all">{num}</div>
                   <Button
                     onClick={() => { setSelectedNum(num); setConfirmOpen(true); }}
                     intent="secondary"
@@ -548,14 +583,14 @@ export default function DialerPage() {
       {confirmOpen && (
         <Modal onClose={() => setConfirmOpen(false)} title="Confirm purchase">
           <div className="space-y-3 text-sm">
-            <div className="rounded-xl border border-white/10 bg-black/20 p-3 font-mono">{selectedNum}</div>
+            <div className="rounded-xl border border-white/10 bg-black/20 p-3 font-mono break-all">{selectedNum}</div>
 
             <PurchaseDetails
               myNumbers={myNumbers}
               balanceCents={balanceCents}
             />
 
-            <div className="flex gap-2 pt-2">
+            <div className="flex flex-col sm:flex-row gap-2 pt-2">
               <Button
                 onClick={confirmPurchase}
                 disabled={busy}
@@ -608,8 +643,8 @@ function Button({ children, intent = "primary", size = "md", className = "", ...
     </button>
   );
 }
-function Th({ children }) { return <th className="px-3 py-2 text-left font-medium">{children}</th>; }
-function Td({ children, mono = false }) { return <td className={`px-3 py-2 ${mono ? "font-mono" : ""}`}>{children}</td>; }
+function Th({ children }) { return <th className="px-3 py-2 text-left font-medium whitespace-nowrap">{children}</th>; }
+function Td({ children, mono = false }) { return <td className={`px-3 py-2 ${mono ? "font-mono" : ""} align-top`}>{children}</td>; }
 function StatusBadge({ status }) {
   const s = (status || "").toLowerCase();
   const styles = {
@@ -620,7 +655,7 @@ function StatusBadge({ status }) {
     failed: "bg-rose-500/15 text-rose-300",
   };
   const cls = styles[s] || "bg-white/10 text-white/70";
-  return <span className={`rounded-md px-2 py-0.5 text-xs ${cls}`}>{status || "-"}</span>;
+  return <span className={`rounded-md px-2 py-0.5 text-xs ${cls} whitespace-nowrap`}>{status || "-"}</span>;
 }
 function Modal({ title, children, onClose }) {
   return (
