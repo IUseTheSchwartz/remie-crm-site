@@ -5,6 +5,7 @@
 const { getServiceClient } = require("./_supabase");
 const fetch = require("node-fetch");
 const { AbortController } = require("abort-controller");
+const { sendPushToUser } = require("./_push"); // <-- added
 
 /* ---------------- HTTP helpers ---------------- */
 function ok(body) {
@@ -198,8 +199,22 @@ exports.handler = async (event) => {
     return ok({ ok: true, action: "resubscribed" });
   }
 
-  if (!text) {
-    console.log("[inbound] empty text body; skipping ai-dispatch");
+  // Only push when there's actual text and it's not a STOP/START keyword
+  if (text) {
+    try {
+      const who = contact?.full_name || from;
+      await sendPushToUser(user_id, {
+        title: `New message from ${who}`,
+        body: text.slice(0, 120),
+        url: "/app",
+        tag: `msg-${providerSid}`,
+        renotify: false,
+      });
+    } catch (e) {
+      console.warn("[inbound] push notify warn:", e?.message || e);
+    }
+  } else {
+    console.log("[inbound] empty text body; skipping ai-dispatch + push");
     return ok({ ok: true, note: "empty_text_skipped" });
   }
 
