@@ -1,5 +1,5 @@
 // File: src/pages/SmartDialer.jsx
-import { useState, useEffect } from "react";
+import { useState, useEffect, useMemo } from "react";
 import { supabase } from "../lib/supabaseClient.js";
 import { detectDevice } from "../lib/device.js";
 
@@ -8,6 +8,11 @@ export default function SmartDialer() {
   const [setupDone, setSetupDone] = useState(false);
   const [leads, setLeads] = useState([]);
   const [loading, setLoading] = useState(true);
+
+  // ---------- search UI state ----------
+  const [tempQ, setTempQ] = useState("");
+  const [q, setQ] = useState("");
+  const [selectedState, setSelectedState] = useState("");
 
   // ---------- helpers ----------
   const toE164 = (phone) => {
@@ -42,16 +47,10 @@ export default function SmartDialer() {
           return;
         }
 
-        // Fetch in chunks so we never miss any (no hard 50 limit).
         const PAGE_SIZE = 1000;
         let from = 0;
         let all = [];
 
-        // Keep import order: first -> last
-        // If you import without created_at, adjust to your “imported_at” column here.
-        // NOTE: RLS/ownership: we keep .eq('user_id', uid)
-        // If some leads were imported under a different user_id/null, they won't appear for this user.
-        // (You can reassign those in the DB if needed.)
         for (;;) {
           const { data, error } = await supabase
             .from("leads")
@@ -63,7 +62,7 @@ export default function SmartDialer() {
           if (error) throw error;
           const batch = data || [];
           all = all.concat(batch);
-          if (batch.length < PAGE_SIZE) break; // done
+          if (batch.length < PAGE_SIZE) break;
           from += PAGE_SIZE;
         }
 
@@ -78,6 +77,40 @@ export default function SmartDialer() {
 
     loadLeadsAll();
   }, []);
+
+  // ---------- derived: state list + filtered results ----------
+  const availableStates = useMemo(() => {
+    const s = new Set();
+    for (const lead of leads) {
+      const st = String(lead.state || "").trim();
+      if (st) s.add(st);
+    }
+    return Array.from(s).sort((a, b) => a.localeCompare(b));
+  }, [leads]);
+
+  const filteredLeads = useMemo(() => {
+    if (!q && !selectedState) return leads;
+
+    const qDigits = q.replace(/\D+/g, "");
+    const qLower = q.toLowerCase().trim();
+
+    return leads.filter((lead) => {
+      if (selectedState && String(lead.state || "") !== selectedState) return false;
+
+      if (!qLower) return true;
+
+      const name = String(lead.name || "").toLowerCase();
+      const st = String(lead.state || "").toLowerCase();
+      const phoneDigits = String(lead.phone || "").replace(/\D+/g, "");
+
+      // match if query appears in name, state, or digits appear in phone
+      return (
+        name.includes(qLower) ||
+        st.includes(qLower) ||
+        (qDigits && phoneDigits.includes(qDigits))
+      );
+    });
+  }, [leads, q, selectedState]);
 
   /* ---------------- Setup Wizard UI ---------------- */
   if (!setupDone) {
@@ -142,17 +175,66 @@ export default function SmartDialer() {
         Tap a lead to call using your own phone line. Only your personal leads are displayed.
       </p>
 
+      {/* Search / filter bar */}
+      <div className="mb-4 rounded-2xl border border-white/10 bg-white/[0.04] p-3">
+        <div className="flex flex-col gap-3 md:flex-row md:items-center md:gap-3">
+          <div className="flex-1 flex items-center gap-2">
+            <input
+              value={tempQ}
+              onChange={(e) => setTempQ(e.target.value)}
+              onKeyDown={(e) => { if (e.key === "Enter") setQ(tempQ); }}
+              placeholder="Search name, phone, or state…"
+              className="flex-1 rounded-xl border border-white/15 bg-white/5 px-3 py-2 text-sm outline-none focus:ring-1 focus:ring-indigo-400/40"
+            />
+            <button
+              onClick={() => setQ(tempQ)}
+              className="rounded-xl border border-white/15 bg-white/5 px-3 py-2 text-sm hover:bg-white/10"
+            >
+              Search
+            </button>
+            {(q || selectedState) && (
+              <button
+                onClick={() => { setTempQ(""); setQ(""); setSelectedState(""); }}
+                className="rounded-xl border border-white/15 bg-white/5 px-3 py-2 text-sm hover:bg-white/10"
+              >
+                Clear
+              </button>
+            )}
+          </div>
+
+          <div className="flex items-center gap-2">
+            <label className="text-xs text-white/60">State:</label>
+            <select
+              value={selectedState}
+              onChange={(e) => setSelectedState(e.target.value)}
+              className="rounded-xl border border-white/15 bg-white/5 px-3 py-2 text-sm outline-none focus:ring-1 focus:ring-indigo-400/40"
+            >
+              <option value="">All</option>
+              {availableStates.map((st) => (
+                <option value={st} key={st}>{st}</option>
+              ))}
+            </select>
+          </div>
+        </div>
+
+        <div className="mt-2 text-[11px] text-white/50">
+          Showing {filteredLeads.length} of {leads.length} lead{leads.length === 1 ? "" : "s"}
+          {q ? <> (filtered by “{q}”)</> : null}
+          {selectedState ? <> {q ? "and" : ""} state “{selectedState}”</> : null}
+        </div>
+      </div>
+
       {loading ? (
         <div className="text-center text-white/60 py-10">Loading your leads...</div>
-      ) : leads.length === 0 ? (
+      ) : filteredLeads.length === 0 ? (
         <div className="text-center text-white/60 py-10">
-          No leads found. Add new leads to begin calling.
+          No leads found with your current filters.
         </div>
       ) : (
         <>
           {/* Mobile: Card list */}
           <div className="space-y-3 md:hidden">
-            {leads.map((lead) => {
+            {filteredLeads.map((lead) => {
               const tel = toE164(lead.phone);
               return (
                 <div
@@ -207,7 +289,7 @@ export default function SmartDialer() {
                 </tr>
               </thead>
               <tbody>
-                {leads.map((lead) => (
+                {filteredLeads.map((lead) => (
                   <tr key={lead.id} className="border-t border-white/10 hover:bg-white/5">
                     <td className="px-4 py-2">{lead.name || "—"}</td>
                     <td className="px-4 py-2 font-mono">{humanPhone(lead.phone)}</td>
