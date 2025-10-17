@@ -145,7 +145,7 @@ export default function MessagingSettings() {
   const [userId, setUserId] = useState(null);
 
   // Custom amount state
-  the const [customUsd, setCustomUsd] = useState("");
+  const [customUsd, setCustomUsd] = useState("");
   const [customMsg, setCustomMsg] = useState("");
   const MIN_CENTS = 100;
   const MAX_CENTS = 50000;
