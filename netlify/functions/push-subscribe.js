@@ -1,95 +1,93 @@
 // netlify/functions/push-subscribe.js
-// Save (upsert) a Web Push subscription for the logged-in user/device.
-
-const { getServiceClient } = require("./_supabase");
-
-function json(status, body) {
-  return {
-    statusCode: status,
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(body),
-  };
-}
+const { getServiceClient, getUserFromAuthHeader } = require("./_supabase");
 
 exports.handler = async (event) => {
   if (event.httpMethod !== "POST") {
-    return json(405, { error: "method_not_allowed" });
+    return { statusCode: 405, body: "method_not_allowed" };
   }
 
   try {
+    const user = await getUserFromAuthHeader(event);
+    if (!user?.id) {
+      return {
+        statusCode: 401,
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ok: false, error: "unauthorized" }),
+      };
+    }
+
+    const body = JSON.parse(event.body || "{}");
+    const endpoint = String(body.endpoint || "");
+    const keys = body.keys || {};
+    const platform = String(body.platform || "web");
+    const topics = Array.isArray(body.topics) ? body.topics : [];
+    const user_agent = event.headers["user-agent"] || event.headers["User-Agent"] || "";
+
+    if (!endpoint || !keys.p256dh || !keys.auth) {
+      return {
+        statusCode: 400,
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ok: false, error: "missing_fields" }),
+      };
+    }
+
     const supabase = getServiceClient();
 
-    // --- Authenticate: require a Supabase JWT from the client
-    const auth =
-      event.headers.authorization ||
-      event.headers.Authorization ||
-      "";
-    const token = auth.startsWith("Bearer ") ? auth.slice(7).trim() : null;
-    if (!token) return json(401, { error: "missing_bearer_token" });
-
-    // Verify token and get the user
-    const { data: userRes, error: userErr } = await supabase.auth.getUser(token);
-    if (userErr || !userRes?.user?.id) {
-      return json(401, { error: "invalid_token" });
-    }
-    const user_id = userRes.user.id;
-
-    // Parse body
-    let body = {};
-    try {
-      body = JSON.parse(event.body || "{}");
-    } catch {
-      return json(400, { error: "invalid_json" });
-    }
-
-    const { subscription, userAgent } = body || {};
-    if (!subscription || !subscription.endpoint || !subscription.keys) {
-      return json(400, { error: "missing_subscription" });
-    }
-
-    const endpoint = String(subscription.endpoint);
-    const p256dh = String(subscription.keys.p256dh || "");
-    const authKey = String(subscription.keys.auth || "");
-    const ua = String(userAgent || "");
-
-    // Ensure table exists in your DB:
-    // CREATE TABLE IF NOT EXISTS push_subscriptions (
-    //   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-    //   user_id uuid NOT NULL REFERENCES auth.users(id) ON DELETE CASCADE,
-    //   endpoint text UNIQUE NOT NULL,
-    //   p256dh text NOT NULL,
-    //   auth text NOT NULL,
-    //   user_agent text,
-    //   created_at timestamptz NOT NULL DEFAULT now(),
-    //   last_seen_at timestamptz NOT NULL DEFAULT now()
-    // );
-    // CREATE INDEX IF NOT EXISTS idx_push_subscriptions_user ON push_subscriptions(user_id);
-
-    // Upsert by endpoint (one row per device)
-    const now = new Date().toISOString();
-    const { data, error } = await supabase
+    // Try update by endpoint; if none updated, insert new
+    const { data: existing, error: selErr } = await supabase
       .from("push_subscriptions")
-      .upsert(
+      .select("id")
+      .eq("endpoint", endpoint)
+      .limit(1);
+
+    if (selErr) throw selErr;
+
+    if (existing && existing.length) {
+      const id = existing[0].id;
+      const { error: updErr } = await supabase
+        .from("push_subscriptions")
+        .update({
+          user_id: user.id,
+          p256dh: keys.p256dh,
+          auth: keys.auth,
+          platform,
+          topics,
+          is_active: true,
+          user_agent,
+        })
+        .eq("id", id);
+      if (updErr) throw updErr;
+      return {
+        statusCode: 200,
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ok: true, updated: 1 }),
+      };
+    } else {
+      const { error: insErr } = await supabase.from("push_subscriptions").insert([
         {
-          user_id,
+          user_id: user.id,
           endpoint,
-          p256dh: p256dh,
-          auth: authKey,
-          user_agent: ua,
-          last_seen_at: now,
+          p256dh: keys.p256dh,
+          auth: keys.auth,
+          platform,
+          topics,
+          is_active: true,
+          user_agent,
         },
-        { onConflict: "endpoint" }
-      )
-      .select("id, user_id, endpoint")
-      .maybeSingle();
-
-    if (error) {
-      return json(500, { error: "db_error", detail: error.message });
+      ]);
+      if (insErr) throw insErr;
+      return {
+        statusCode: 200,
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ok: true, inserted: 1 }),
+      };
     }
-
-    return json(200, { ok: true, id: data?.id || null });
   } catch (e) {
     console.error("[push-subscribe] error:", e);
-    return json(500, { error: "server_error" });
+    return {
+      statusCode: 500,
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ ok: false, error: e.message || String(e) }),
+    };
   }
 };
