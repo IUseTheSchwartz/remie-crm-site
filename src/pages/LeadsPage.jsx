@@ -1,5 +1,5 @@
 // File: src/pages/LeadsPage.jsx
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState, useRef } from "react";
 import {
   loadLeads, saveLeads,
   loadClients, saveClients,
@@ -56,6 +56,16 @@ function labelForStage(id) {
   };
   return m[id] || "No Pickup";
 }
+
+// >>> STAGE DROPDOWN: stages in desired order
+const STAGE_IDS = [
+  "no_pickup",
+  "answered",
+  "quoted",
+  "app_started",
+  "app_pending",
+  "app_submitted",
+];
 
 /* ------------------------ Small normalizers used here ----------------------- */
 const onlyDigits = (s) => String(s || "").replace(/\D+/g, "");
@@ -500,6 +510,10 @@ export default function LeadsPage() {
   // selection for mass actions
   const [selectedIds, setSelectedIds] = useState(new Set());
 
+  // >>> STAGE DROPDOWN: track which row is being edited
+  const [editingStageId, setEditingStageId] = useState(null);
+  const stageSelectRef = useRef(null);
+
   useEffect(() => {
     setLeads(loadLeads());
     setClients(loadClients());
@@ -526,6 +540,29 @@ export default function LeadsPage() {
     })();
   }, []);
 
+  // Click-to-call from Leads page with graceful prompt if agent phone is missing
+  async function onCallLead(leadNumber, contactId) {
+    try {
+      const to = toE164(leadNumber);
+      if (!to) return alert("Invalid lead phone.");
+
+      let fromAgent = agentPhone;
+      if (!fromAgent) {
+        const p = prompt("Enter your phone (we call you first):", "+1 ");
+        if (!p) return; // user cancelled
+        const e164 = toE164(p);
+        if (!e164) return alert("That phone doesn’t look valid. Use +1XXXXXXXXXX");
+        await saveAgentPhone(e164);
+        fromAgent = e164;
+      }
+
+      await startCall({ agentNumber: fromAgent, leadNumber: to, contactId });
+      setServerMsg("📞 Calling…");
+    } catch (e) {
+      alert(e.message || "Failed to start call");
+    }
+  }
+
   // Helper to save agent phone if user enters it here
   async function saveAgentPhone(newPhone) {
     const phone = (newPhone || "").trim();
@@ -550,29 +587,6 @@ export default function LeadsPage() {
     } catch (e) {
       console.error("saveAgentPhone failed", e);
       alert("Could not save your phone. Try again on the Dialer page.");
-    }
-  }
-
-  // Click-to-call from Leads page with graceful prompt if agent phone is missing
-  async function onCallLead(leadNumber, contactId) {
-    try {
-      const to = toE164(leadNumber);
-      if (!to) return alert("Invalid lead phone.");
-
-      let fromAgent = agentPhone;
-      if (!fromAgent) {
-        const p = prompt("Enter your phone (we call you first):", "+1 ");
-        if (!p) return; // user cancelled
-        const e164 = toE164(p);
-        if (!e164) return alert("That phone doesn’t look valid. Use +1XXXXXXXXXX");
-        await saveAgentPhone(e164);
-        fromAgent = e164;
-      }
-
-      await startCall({ agentNumber: fromAgent, leadNumber: to, contactId });
-      setServerMsg("📞 Calling…");
-    } catch (e) {
-      alert(e.message || "Failed to start call");
     }
   }
 
@@ -721,100 +735,42 @@ export default function LeadsPage() {
     }
   }
 
-  async function saveSoldInfo(id, soldPayload) {
-    let list = [...allClients];
-    const idx = list.findIndex(x => x.id === id);
-    const base = idx >= 0 ? list[idx] : normalizePerson({ id });
-
-    // normalize email to lowercase so it aligns with DB unique (user_id, lower(email))
-    const emailLower = (soldPayload.email || base.email || "").trim().toLowerCase();
-
-    const updated = {
-      ...base,
-      status: "sold",
-      sold: {
-        carrier: soldPayload.carrier || "",
-        faceAmount: soldPayload.faceAmount || "",
-        premium: soldPayload.premium || "",           // AP stored here
-        monthlyPayment: soldPayload.monthlyPayment || "",
-        policyNumber: soldPayload.policyNumber || "",
-        startDate: soldPayload.startDate || "",
-        name: soldPayload.name || base.name || "",
-        phone: soldPayload.phone || base.phone || "",
-        email: emailLower,
-      },
-      name: soldPayload.name || base.name || "",
-      phone: soldPayload.phone || base.phone || "",
-      email: emailLower,
-
-      // Keep only bday/holiday toggle
-      automationPrefs: {
-        bdayHolidayTexts: !!soldPayload.enableBdayHolidayTexts,
-      },
+  // >>> STAGE DROPDOWN: optimistic local update + server persist
+  function patchLocalLead(id, patch) {
+    const upd = (arr) => {
+      const idx = arr.findIndex(x => x.id === id);
+      if (idx === -1) return arr;
+      const base = arr[idx] || {};
+      const next = { ...base, ...patch, pipeline: { ...(base.pipeline || {}) } };
+      const copy = [...arr];
+      copy[idx] = next;
+      return copy;
     };
-
-    // Optimistic local write
-    const nextClients = upsert(clients, updated);
-    const nextLeads   = upsert(leads, updated);
+    const nextClients = upd(clients);
+    const nextLeads   = upd(leads);
     saveClients(nextClients);
     saveLeads(nextLeads);
     setClients(nextClients);
     setLeads(nextLeads);
+  }
 
-    setSelected(null);
-    setTab("sold");
-
-    // --- Save to Supabase and capture id (reusing existing row if same email)
-    let savedId = null;
+  async function saveStageChange(id, newStage) {
     try {
-      setServerMsg("Syncing SOLD to Supabase…");
+      const nowISO = new Date().toISOString();
+      // optimistic local
+      patchLocalLead(id, { stage: newStage, stage_changed_at: nowISO });
 
-      const { data: authData } = await supabase.auth.getUser();
-      const userId = authData?.user?.id || null;
-
-      if (userId && updated.email) {
-        const existingId = await findLeadIdByUserAndEmailCI(userId, updated.email);
-        if (existingId && existingId !== updated.id) {
-          updated.id = existingId; // ensure server takes UPDATE path
-        }
-      }
-
-      savedId = await upsertLeadServer(updated);
-      setServerMsg("✅ SOLD synced");
+      // persist (merge with server via upsert)
+      const current = [...clients, ...leads].find(x => x.id === id) || { id };
+      const payload = { ...current, stage: newStage, stage_changed_at: nowISO };
+      setServerMsg("Updating stage…");
+      await upsertLeadServer(payload);
+      setServerMsg("✅ Stage updated");
     } catch (e) {
-      console.error("SOLD sync error:", e);
-      setServerMsg(`⚠️ SOLD sync failed: ${e.message || e}`);
-    }
-
-    // --- Reflect to contacts (tags) ---
-    try {
-      const { data: authData } = await supabase.auth.getUser();
-      const userId = authData?.user?.id;
-      if (userId) {
-        await upsertSoldContact({
-          userId,
-          phone: updated.phone,
-          fullName: updated.name,
-          addBdayHoliday: !!soldPayload.enableBdayHolidayTexts,
-          addPaymentReminder: Boolean((soldPayload.startDate || "").trim()),
-        });
-      }
-    } catch (err) {
-      console.error("Contact tag sync (sold) failed:", err);
-    }
-
-    // --- Auto-send SOLD text (tries multiple template keys incl. "sold") ---
-    try {
-      if (savedId) {
-        console.log("[sold-auto] initiating send for lead", savedId);
-        await sendSoldAutoText({ leadId: savedId, person: updated });
-        setServerMsg("📨 Sold policy text queued");
-      } else {
-        console.warn("[sold-auto] no saved lead id; skipping");
-      }
-    } catch (e) {
-      console.error("Sold policy send error:", e);
-      setServerMsg(`⚠️ Sold text error: ${e.message || e}`);
+      console.error("Stage save failed:", e);
+      setServerMsg(`⚠️ Stage update failed: ${e.message || e}`);
+    } finally {
+      setEditingStageId(null);
     }
   }
 
@@ -977,6 +933,20 @@ export default function LeadsPage() {
   const baseHeaders = ["Name","Phone","Email","DOB","State","Beneficiary","Beneficiary Name","Gender","Military Branch","Stage"];
   const colCount = baseHeaders.length + 2; // + Select checkbox + Actions
 
+  // close stage select if clicking outside
+  useEffect(() => {
+    function onDocClick(e) {
+      if (!stageSelectRef.current) return;
+      if (!stageSelectRef.current.contains(e.target)) {
+        setEditingStageId(null);
+      }
+    }
+    if (editingStageId) {
+      document.addEventListener("mousedown", onDocClick);
+    }
+    return () => document.removeEventListener("mousedown", onDocClick);
+  }, [editingStageId]);
+
   return (
     <div className="space-y-6 min-w-0 overflow-x-hidden">
       {/* Toolbar */}
@@ -1080,6 +1050,8 @@ export default function LeadsPage() {
               const stageId = p.stage || "no_pickup";
               const stageLabel = labelForStage(stageId);
               const stageClass = STAGE_STYLE[stageId] || "bg-white/10 text-white/80";
+              const isEditingThis = editingStageId === p.id;
+
               return (
                 <tr key={p.id} className="border-t border-white/10">
                   <Td>
@@ -1116,15 +1088,37 @@ export default function LeadsPage() {
                   <Td>{p.beneficiary_name || "—"}</Td>
                   <Td>{p.gender || "—"}</Td>
                   <Td>{p.military_branch || "—"}</Td>
+
+                  {/* >>> STAGE DROPDOWN cell */}
                   <Td>
                     {isSold ? (
                       <span className="rounded-full bg-emerald-500/15 px-2 py-0.5 text-xs text-emerald-300">
                         Sold
                       </span>
                     ) : (
-                      <span className={`rounded-full px-2 py-0.5 text-xs ${stageClass}`}>
-                        {stageLabel}
-                      </span>
+                      <div ref={isEditingThis ? stageSelectRef : null} className="relative inline-block">
+                        {!isEditingThis ? (
+                          <button
+                            onClick={() => setEditingStageId(p.id)}
+                            className={`rounded-full px-2 py-0.5 text-xs ${stageClass}`}
+                            title="Click to change stage"
+                          >
+                            {stageLabel}
+                          </button>
+                        ) : (
+                          <select
+                            autoFocus
+                            value={stageId}
+                            onChange={(e) => saveStageChange(p.id, e.target.value)}
+                            onBlur={() => setEditingStageId(null)}
+                            className="rounded-full border border-white/15 bg-black/60 px-2 py-1 text-xs outline-none"
+                          >
+                            {STAGE_IDS.map(sid => (
+                              <option key={sid} value={sid}>{labelForStage(sid)}</option>
+                            ))}
+                          </select>
+                        )}
+                      </div>
                     )}
                   </Td>
 
