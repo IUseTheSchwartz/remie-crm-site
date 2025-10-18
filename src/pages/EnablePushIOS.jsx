@@ -14,7 +14,6 @@ function urlB64ToUint8Array(base64String) {
 async function getFreshJwt() {
   let { data: sess } = await supabase.auth.getSession();
   let token = sess?.session?.access_token || null;
-
   if (!token) {
     try { await supabase.auth.refreshSession(); } catch {}
     const again = await supabase.auth.getSession();
@@ -23,14 +22,9 @@ async function getFreshJwt() {
   return token;
 }
 
-async function getUserId() {
+async function getUserIdNow() {
   const { data } = await supabase.auth.getUser();
   return data?.user?.id || null;
-}
-
-async function authHeader() {
-  const jwt = await getFreshJwt();
-  return jwt ? { Authorization: `Bearer ${jwt}` } : {};
 }
 
 export default function EnablePushIOS() {
@@ -40,12 +34,12 @@ export default function EnablePushIOS() {
   const [jwtLen, setJwtLen] = useState(0);
   const [uid, setUid] = useState(null);
 
-  const addLog = (m) => setLog((l) => [`${m}`, ...l].slice(0, 80));
+  const addLog = (m) => setLog((l) => [`${m}`, ...l].slice(0, 120));
 
   useEffect(() => {
     const media = window.matchMedia("(display-mode: standalone)");
     setIsStandalone(media.matches || window.navigator.standalone === true);
-    (async () => setUid(await getUserId()))();
+    (async () => setUid(await getUserIdNow()))();
   }, []);
 
   async function ensureSW() {
@@ -54,7 +48,7 @@ export default function EnablePushIOS() {
     await navigator.serviceWorker.ready;
     addLog("SW ready ✅");
     return reg;
-  }
+    }
 
   async function enableNotifications() {
     const perm = await Notification.requestPermission();
@@ -72,11 +66,13 @@ export default function EnablePushIOS() {
       userVisibleOnly: true,
       applicationServerKey: appServerKey,
     });
-
     addLog("Subscribed ✅");
 
+    // force fresh user + jwt RIGHT NOW
     const token = await getFreshJwt();
+    const userIdNow = await getUserIdNow();
     setJwtLen(token ? token.length : 0);
+    setUid(userIdNow);
 
     const headers = {
       "Content-Type": "application/json",
@@ -88,10 +84,11 @@ export default function EnablePushIOS() {
       keys: sub.toJSON().keys,
       platform: /iPhone|iPad|iPod|Mac/i.test(navigator.userAgent) ? "ios" : "web",
       topics: ["leads", "messages"],
-      jwt: token || null,     // fallback for iOS PWA
-      user_id: uid || null,   // NEW: server can verify this if no JWT arrives
+      jwt: token || null,      // fallback for iOS PWA
+      user_id: userIdNow || null, // **always** send
     };
 
+    addLog(`POST body: has user_id=${!!body.user_id}, has jwt=${!!body.jwt}`);
     const res = await fetch("/.netlify/functions/push-subscribe", {
       method: "POST",
       headers,
@@ -99,13 +96,15 @@ export default function EnablePushIOS() {
     });
     addLog(`push-subscribe → ${res.status}`);
     if (!res.ok) {
-      const j = await res.json().catch(() => null);
+      let j = {};
+      try { j = await res.json(); } catch {}
       throw new Error(`push-subscribe failed ${res.status}${j?.error ? `: ${j.error}` : ""}`);
     }
   }
 
   async function sendTest() {
-    const headers = await authHeader();
+    const token = await getFreshJwt();
+    const headers = token ? { Authorization: `Bearer ${token}` } : {};
     const res = await fetch("/.netlify/functions/_push?test=1", { headers });
     addLog(`_push?test=1 → ${res.status}`);
     if (!res.ok) {
