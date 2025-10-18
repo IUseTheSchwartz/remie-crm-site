@@ -1,7 +1,23 @@
 // File: src/pages/SmartDialer.jsx
-import { useState, useEffect, useMemo } from "react";
+import { useState, useEffect, useMemo, useRef } from "react";
 import { supabase } from "../lib/supabaseClient.js";
 import { detectDevice } from "../lib/device.js";
+
+/* Pretty labels for stages (fallback -> Title Case) */
+const STAGE_LABELS = {
+  no_pickup: "No Pickup",
+  answered: "Answered",
+  quoted: "Quoted",
+  app_started: "App Started",
+  app_pending: "App Pending",
+  app_submitted: "App Submitted",
+};
+const stageLabel = (s) => {
+  const k = String(s || "").trim().toLowerCase();
+  if (STAGE_LABELS[k]) return STAGE_LABELS[k];
+  if (!k) return "—";
+  return k.replace(/[_-]+/g, " ").replace(/\b\w/g, (m) => m.toUpperCase());
+};
 
 export default function SmartDialer() {
   const [device, setDevice] = useState("unknown");
@@ -16,6 +32,9 @@ export default function SmartDialer() {
 
   // ---------- dial tracking ----------
   const [dialsToday, setDialsToday] = useState(0);
+
+  // cache JWT so we can send it instantly during onClick (no awaits)
+  const jwtRef = useRef("");
 
   // Apple-only capability for FaceTime Audio
   const isFaceTimeCapable = useMemo(() => {
@@ -44,6 +63,29 @@ export default function SmartDialer() {
     setDevice(detectDevice());
   }, []);
 
+  /* ---------------- Keep a fresh JWT in memory ---------------- */
+  useEffect(() => {
+    let mounted = true;
+
+    async function getJwt() {
+      const { data } = await supabase.auth.getSession();
+      if (!mounted) return;
+      jwtRef.current = data?.session?.access_token || "";
+    }
+    getJwt();
+
+    const { data: sub } = supabase.auth.onAuthStateChange(async () => {
+      const { data } = await supabase.auth.getSession();
+      if (!mounted) return;
+      jwtRef.current = data?.session?.access_token || "";
+    });
+
+    return () => {
+      mounted = false;
+      try { sub?.subscription?.unsubscribe?.(); } catch {}
+    };
+  }, []);
+
   /* ---------------- Load ALL leads for logged-in user, oldest -> newest ---------------- */
   useEffect(() => {
     async function loadLeadsAll() {
@@ -64,7 +106,7 @@ export default function SmartDialer() {
         for (;;) {
           const { data, error } = await supabase
             .from("leads")
-            .select("id, name, phone, state, status, created_at")
+            .select("id, name, phone, state, stage, created_at") // ← include stage
             .eq("user_id", uid)
             .order("created_at", { ascending: true })
             .range(from, from + PAGE_SIZE - 1);
@@ -92,11 +134,9 @@ export default function SmartDialer() {
   useEffect(() => {
     (async () => {
       try {
-        const { data: sess } = await supabase.auth.getSession();
-        const jwt = sess?.session?.access_token || null;
         const res = await fetch("/.netlify/functions/track-dial", {
           method: "GET",
-          headers: jwt ? { Authorization: `Bearer ${jwt}` } : {},
+          headers: jwtRef.current ? { Authorization: `Bearer ${jwtRef.current}` } : {},
         });
         const j = await res.json().catch(() => ({}));
         if (res.ok && Number.isFinite(j.count)) setDialsToday(j.count);
@@ -130,55 +170,53 @@ export default function SmartDialer() {
       const name = String(lead.name || "").toLowerCase();
       const st = String(lead.state || "").toLowerCase();
       const phoneDigits = String(lead.phone || "").replace(/\D+/g, "");
+      const stage = String(lead.stage || "").toLowerCase();
 
       return (
         name.includes(qLower) ||
         st.includes(qLower) ||
+        stage.includes(qLower) ||
         (qDigits && phoneDigits.includes(qDigits))
       );
     });
   }, [leads, q, selectedState]);
 
-  /* ---------------- dial recorder (sendBeacon/keepalive) ---------------- */
-  async function recordDial(lead, method) {
+  /* ---------------- dial recorder: CLICK ONLY (fast, non-blocking) ---------------- */
+  function recordDialClick(lead, method) {
     try {
       const payload = {
         lead_id: lead?.id || null,
         phone: toE164(lead?.phone),
         method, // "tel" | "facetime"
+        jwt: jwtRef.current || undefined, // include if we have it
       };
+      const body = JSON.stringify(payload);
 
-      // Try to include JWT (helps if Authorization header is dropped by iOS)
-      const { data: sess } = await supabase.auth.getSession();
-      const jwt = sess?.session?.access_token || "";
-      const body = JSON.stringify(jwt ? { ...payload, jwt } : payload);
+      // 1) Try sendBeacon (fires even if we navigate away)
+      let sent = false;
+      try {
+        if (navigator.sendBeacon) {
+          const blob = new Blob([body], { type: "application/json" });
+          sent = navigator.sendBeacon("/.netlify/functions/track-dial", blob);
+        }
+      } catch {}
 
-      // Prefer sendBeacon so it survives the page leaving for tel:/facetime:
-      if (navigator.sendBeacon) {
-        const blob = new Blob([body], { type: "application/json" });
-        const ok = navigator.sendBeacon("/.netlify/functions/track-dial", blob);
-        if (!ok) {
-          // Fallback
-          await fetch("/.netlify/functions/track-dial", {
+      // 2) Fallback: fire-and-forget fetch (keepalive, no await)
+      if (!sent) {
+        try {
+          fetch("/.netlify/functions/track-dial", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body,
             keepalive: true,
           });
-        }
-      } else {
-        await fetch("/.netlify/functions/track-dial", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body,
-          keepalive: true,
-        });
+        } catch {}
       }
 
-      // Optimistic local bump so UI feels instant
+      // Optimistic UI bump
       setDialsToday((n) => n + 1);
     } catch (e) {
-      console.warn("recordDial failed", e);
+      console.warn("recordDialClick failed", e);
     }
   }
 
@@ -267,7 +305,7 @@ export default function SmartDialer() {
               value={tempQ}
               onChange={(e) => setTempQ(e.target.value)}
               onKeyDown={(e) => { if (e.key === "Enter") setQ(tempQ); }}
-              placeholder="Search name, phone, or state…"
+              placeholder="Search name, phone, state, or stage…"
               className="flex-1 rounded-xl border border-white/15 bg-white/5 px-3 py-2 text-sm outline-none focus:ring-1 focus:ring-indigo-400/40"
             />
             <button
@@ -332,8 +370,8 @@ export default function SmartDialer() {
                         {humanPhone(lead.phone)}
                       </div>
                     </div>
-                    <span className="shrink-0 rounded-md bg-white/10 px-2 py-0.5 text-[11px] capitalize">
-                      {lead.status || "lead"}
+                    <span className="shrink-0 rounded-md bg-white/10 px-2 py-0.5 text-[11px]">
+                      {stageLabel(lead.stage)}
                     </span>
                   </div>
 
@@ -346,8 +384,7 @@ export default function SmartDialer() {
                       <>
                         <a
                           href={`tel:${tel}`}
-                          onMouseDown={() => recordDial(lead, "tel")}
-                          onTouchStart={() => recordDial(lead, "tel")}
+                          onClick={() => recordDialClick(lead, "tel")}
                           className="block w-full rounded-xl bg-gradient-to-br from-indigo-500/90 to-fuchsia-500/90 hover:from-indigo-500 hover:to-fuchsia-500 text-center font-medium py-2"
                         >
                           Call {humanPhone(lead.phone)}
@@ -355,8 +392,7 @@ export default function SmartDialer() {
                         {isFaceTimeCapable && (
                           <a
                             href={`facetime-audio://${tel}`}
-                            onMouseDown={() => recordDial(lead, "facetime")}
-                            onTouchStart={() => recordDial(lead, "facetime")}
+                            onClick={() => recordDialClick(lead, "facetime")}
                             className="block w-full rounded-xl border border-white/15 bg-white/5 hover:bg-white/10 text-center font-medium py-2"
                           >
                             FaceTime Audio
@@ -382,7 +418,7 @@ export default function SmartDialer() {
                   <th className="text-left px-4 py-2">Name</th>
                   <th className="text-left px-4 py-2">Phone</th>
                   <th className="text-left px-4 py-2">State</th>
-                  <th className="text-left px-4 py-2">Status</th>
+                  <th className="text-left px-4 py-2">Stage</th>
                   <th className="text-left px-4 py-2">Action</th>
                 </tr>
               </thead>
@@ -394,14 +430,13 @@ export default function SmartDialer() {
                       <td className="px-4 py-2">{lead.name || "—"}</td>
                       <td className="px-4 py-2 font-mono">{humanPhone(lead.phone)}</td>
                       <td className="px-4 py-2">{lead.state || "—"}</td>
-                      <td className="px-4 py-2 text-white/70 capitalize">{lead.status || "lead"}</td>
+                      <td className="px-4 py-2 text-white/80">{stageLabel(lead.stage)}</td>
                       <td className="px-4 py-2">
                         {lead.phone ? (
                           <div className="flex items-center gap-2">
                             <a
                               href={`tel:${tel}`}
-                              onMouseDown={() => recordDial(lead, "tel")}
-                              onTouchStart={() => recordDial(lead, "tel")}
+                              onClick={() => recordDialClick(lead, "tel")}
                               className="inline-flex items-center justify-center rounded-lg bg-gradient-to-r from-indigo-500 via-purple-500 to-pink-500 px-3 py-1.5 text-white text-xs font-medium"
                             >
                               Call
@@ -409,8 +444,7 @@ export default function SmartDialer() {
                             {isFaceTimeCapable && (
                               <a
                                 href={`facetime-audio://${tel}`}
-                                onMouseDown={() => recordDial(lead, "facetime")}
-                                onTouchStart={() => recordDial(lead, "facetime")}
+                                onClick={() => recordDialClick(lead, "facetime")}
                                 className="inline-flex items-center justify-center rounded-lg border border-white/15 bg-white/5 px-3 py-1.5 text-xs hover:bg-white/10"
                               >
                                 FaceTime Audio
