@@ -2,7 +2,7 @@
 import { useEffect, useRef, useState } from "react";
 import { supabase } from "../lib/supabaseClient";
 
-const VERSION = "push-ios-v3.2"; // <-- bump this every change so you can see what’s live
+const VERSION = "push-ios-v3.3"; // bump each change so you can see what’s live
 
 function urlB64ToUint8Array(base64String) {
   const padding = "=".repeat((4 - (base64String.length % 4)) % 4);
@@ -181,10 +181,10 @@ export default function EnablePushIOS() {
   async function sendTest() {
     try {
       const jwt = await getJwt();
-      const res = await fetch("/.netlify/functions/_push?test=1", {
+      const res = await fetch("/.netlify/functions/push-test", {
         headers: jwt ? { Authorization: `Bearer ${jwt}` } : {},
       });
-      addLog(`_push?test=1 → ${res.status}`);
+      addLog(`push-test → ${res.status}`);
       const j = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(j?.error || "test failed");
       addLog(`test result: ${JSON.stringify(j)}`);
