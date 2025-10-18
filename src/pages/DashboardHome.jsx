@@ -1,5 +1,5 @@
 // File: src/pages/DashboardHome.jsx
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import NumberCard from "../components/NumberCard.jsx";
 import { dashboardSnapshot, refreshDashboardSnapshot } from "../lib/stats.js";
 import { supabase } from "../lib/supabaseClient.js";
@@ -20,22 +20,47 @@ function Card({ title, right, children }) {
 export default function DashboardHome() {
   const { user } = useAuth();
 
-  // --- Welcome video settings ---
-  const YT_VIDEO_ID = "h4hUVnDB_SU"; // your actual video ID
+  // --- Discord: invite + deep link helpers ---
+  const INVITE = useMemo(
+    () => import.meta.env?.VITE_DISCORD_INVITE_URL || "https://discord.gg/your-invite-code",
+    []
+  );
 
-  const [showVideo, setShowVideo] = useState(() => {
+  const deepLink = useMemo(() => {
     try {
-      return localStorage.getItem("remiecrm_welcome_video_dismissed") !== "1";
+      const url = new URL(INVITE);
+      const code =
+        url.hostname.includes("discord.gg")
+          ? url.pathname.replace("/", "")
+          : url.pathname.split("/").pop();
+      return code ? `discord://invite/${code}` : INVITE;
+    } catch {
+      return INVITE;
+    }
+  }, [INVITE]);
+
+  const [copied, setCopied] = useState(false);
+  async function copyInvite() {
+    try {
+      await navigator.clipboard.writeText(INVITE);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1500);
+    } catch {}
+  }
+
+  // Optional: allow dismissing the Discord panel (mirrors previous video UX)
+  const [showDiscordPanel, setShowDiscordPanel] = useState(() => {
+    try {
+      return localStorage.getItem("remiecrm_discord_panel_dismissed") !== "1";
     } catch {
       return true;
     }
   });
-
-  function dismissVideo() {
+  function dismissDiscordPanel() {
     try {
-      localStorage.setItem("remiecrm_welcome_video_dismissed", "1");
+      localStorage.setItem("remiecrm_discord_panel_dismissed", "1");
     } catch {}
-    setShowVideo(false);
+    setShowDiscordPanel(false);
   }
 
   // snapshot + refresh logic
@@ -163,45 +188,53 @@ export default function DashboardHome() {
         </Card>
       </div>
 
-      {/* Getting Started Video (bottom) */}
-      {showVideo && YT_VIDEO_ID && (
+      {/* Discord Panel (replaces video) */}
+      {showDiscordPanel && (
         <Card
-          title="Getting Started"
+          title="Join our Discord"
           right={
             <button
-              onClick={dismissVideo}
+              onClick={dismissDiscordPanel}
               className="rounded-lg px-2 py-1 border border-white/10 bg-white/5 hover:bg-white/10"
-              title="Hide this video"
+              title="Hide this panel"
             >
               Dismiss
             </button>
           }
         >
           <div className="mb-3 text-white/70">
-            Watch this quick walkthrough to set up your account, connect messaging, and book your first appointments.
+            We’ve moved onboarding videos and support to Discord. Join to watch step-by-step
+            setup, get updates, and chat with the team.
           </div>
-          <div className="relative w-full overflow-hidden rounded-2xl border border-white/10 bg-black pt-[56.25%]">
-            <iframe
-              className="absolute inset-0 h-full w-full"
-              src={`https://www.youtube-nocookie.com/embed/${YT_VIDEO_ID}?rel=0&modestbranding=1`}
-              title="Getting Started with RemieCRM"
-              frameBorder="0"
-              referrerPolicy="strict-origin-when-cross-origin"
-              allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share"
-              allowFullScreen
-            />
-          </div>
-          <div className="mt-2 text-xs text-white/60">
-            Prefer YouTube?{" "}
+
+          <div className="flex flex-wrap items-center gap-3">
             <a
-              href={`https://www.youtube.com/watch?v=${YT_VIDEO_ID}`}
+              href={INVITE}
               target="_blank"
               rel="noreferrer"
-              className="underline hover:text-white"
+              className="inline-flex items-center rounded-xl bg-white text-black px-4 py-2 font-medium hover:bg-white/90"
             >
-              Open the video in a new tab
+              Join Discord
             </a>
-            .
+
+            <a
+              href={deepLink}
+              className="inline-flex items-center rounded-xl border border-white/15 bg-white/5 px-4 py-2 text-sm hover:bg-white/10"
+            >
+              Open in Discord app
+            </a>
+
+            <button
+              type="button"
+              onClick={copyInvite}
+              className="inline-flex items-center rounded-xl border border-white/15 bg-white/5 px-4 py-2 text-sm hover:bg-white/10"
+            >
+              {copied ? "Copied!" : "Copy invite link"}
+            </button>
+          </div>
+
+          <div className="mt-2 text-xs text-white/50">
+            Tip: If the app link doesn’t open, use the Join button or paste the invite into Discord.
           </div>
         </Card>
       )}
