@@ -22,7 +22,7 @@ export default function DashboardHome() {
 
   // --- Discord: invite + deep link helpers ---
   const INVITE = useMemo(
-    () => import.meta.env?.VITE_DISCORD_INVITE_URL || "https://discord.gg/your-invite-code",
+    () => import.meta.env?.VITE_DISCORD_INVITE_URL || "https://discord.gg/zkcja6FX5H",
     []
   );
 
