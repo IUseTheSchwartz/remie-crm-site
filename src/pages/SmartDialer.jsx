@@ -14,11 +14,13 @@ export default function SmartDialer() {
   const [q, setQ] = useState("");
   const [selectedState, setSelectedState] = useState("");
 
+  // ---------- dial tracking ----------
+  const [dialsToday, setDialsToday] = useState(0);
+
   // Apple-only capability for FaceTime Audio
   const isFaceTimeCapable = useMemo(() => {
     if (typeof navigator === "undefined") return false;
     const ua = (navigator.userAgent || "").toLowerCase();
-    // iPhone, iPad, iPod, and macOS; Chrome on macOS also hands off to FaceTime
     return /iphone|ipad|ipod|macintosh|mac os x/.test(ua);
   }, []);
 
@@ -86,6 +88,24 @@ export default function SmartDialer() {
     loadLeadsAll();
   }, []);
 
+  /* ---------------- Fetch today's dial count ---------------- */
+  useEffect(() => {
+    (async () => {
+      try {
+        const { data: sess } = await supabase.auth.getSession();
+        const jwt = sess?.session?.access_token || null;
+        const res = await fetch("/.netlify/functions/track-dial", {
+          method: "GET",
+          headers: jwt ? { Authorization: `Bearer ${jwt}` } : {},
+        });
+        const j = await res.json().catch(() => ({}));
+        if (res.ok && Number.isFinite(j.count)) setDialsToday(j.count);
+      } catch (e) {
+        console.warn("dial count fetch failed", e);
+      }
+    })();
+  }, []);
+
   // ---------- derived: state list + filtered results ----------
   const availableStates = useMemo(() => {
     const s = new Set();
@@ -119,11 +139,61 @@ export default function SmartDialer() {
     });
   }, [leads, q, selectedState]);
 
+  /* ---------------- dial recorder (sendBeacon/keepalive) ---------------- */
+  async function recordDial(lead, method) {
+    try {
+      const payload = {
+        lead_id: lead?.id || null,
+        phone: toE164(lead?.phone),
+        method, // "tel" | "facetime"
+      };
+
+      // Try to include JWT (helps if Authorization header is dropped by iOS)
+      const { data: sess } = await supabase.auth.getSession();
+      const jwt = sess?.session?.access_token || "";
+      const body = JSON.stringify(jwt ? { ...payload, jwt } : payload);
+
+      // Prefer sendBeacon so it survives the page leaving for tel:/facetime:
+      if (navigator.sendBeacon) {
+        const blob = new Blob([body], { type: "application/json" });
+        const ok = navigator.sendBeacon("/.netlify/functions/track-dial", blob);
+        if (!ok) {
+          // Fallback
+          await fetch("/.netlify/functions/track-dial", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body,
+            keepalive: true,
+          });
+        }
+      } else {
+        await fetch("/.netlify/functions/track-dial", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body,
+          keepalive: true,
+        });
+      }
+
+      // Optimistic local bump so UI feels instant
+      setDialsToday((n) => n + 1);
+    } catch (e) {
+      console.warn("recordDial failed", e);
+    }
+  }
+
   /* ---------------- Setup Wizard UI ---------------- */
   if (!setupDone) {
     return (
       <div className="p-6 max-w-3xl mx-auto text-white overflow-x-hidden">
-        <h1 className="text-2xl font-semibold mb-4">📞 Smart Dialer Setup</h1>
+        <h1 className="text-2xl font-semibold mb-1">📞 Smart Dialer Setup</h1>
+
+        <div className="text-sm text-white/70 mb-4">
+          <span className="inline-block rounded-lg bg-white/10 px-2 py-1">
+            Dials today: <b>{dialsToday}</b>
+          </span>
+        </div>
+
         <p className="text-white/70 mb-6">
           Before calling leads, let’s make sure your device can place calls using your own phone number.
         </p>
@@ -177,13 +247,20 @@ export default function SmartDialer() {
   /* ---------------- Main Dialer Page ---------------- */
   return (
     <div className="p-6 text-white overflow-x-hidden">
-      <h1 className="text-2xl font-semibold mb-2">⚡ Smart Dialer</h1>
-      <p className="text-white/70 mb-6">
-        Tap a lead to call using your own phone line. Only your personal leads are displayed.
-      </p>
+      <div className="flex items-center justify-between gap-3">
+        <div>
+          <h1 className="text-2xl font-semibold mb-1">⚡ Smart Dialer</h1>
+          <p className="text-white/70">
+            Tap a lead to call using your own phone line. Only your personal leads are displayed.
+          </p>
+        </div>
+        <div className="shrink-0 rounded-lg bg-white/10 px-3 py-1.5 text-sm">
+          Dials today: <b>{dialsToday}</b>
+        </div>
+      </div>
 
       {/* Search / filter bar */}
-      <div className="mb-4 rounded-2xl border border-white/10 bg-white/[0.04] p-3">
+      <div className="mt-4 mb-4 rounded-2xl border border-white/10 bg-white/[0.04] p-3">
         <div className="flex flex-col gap-3 md:flex-row md:items-center md:gap-3">
           <div className="flex-1 flex items-center gap-2">
             <input
@@ -269,6 +346,8 @@ export default function SmartDialer() {
                       <>
                         <a
                           href={`tel:${tel}`}
+                          onMouseDown={() => recordDial(lead, "tel")}
+                          onTouchStart={() => recordDial(lead, "tel")}
                           className="block w-full rounded-xl bg-gradient-to-br from-indigo-500/90 to-fuchsia-500/90 hover:from-indigo-500 hover:to-fuchsia-500 text-center font-medium py-2"
                         >
                           Call {humanPhone(lead.phone)}
@@ -276,6 +355,8 @@ export default function SmartDialer() {
                         {isFaceTimeCapable && (
                           <a
                             href={`facetime-audio://${tel}`}
+                            onMouseDown={() => recordDial(lead, "facetime")}
+                            onTouchStart={() => recordDial(lead, "facetime")}
                             className="block w-full rounded-xl border border-white/15 bg-white/5 hover:bg-white/10 text-center font-medium py-2"
                           >
                             FaceTime Audio
@@ -319,6 +400,8 @@ export default function SmartDialer() {
                           <div className="flex items-center gap-2">
                             <a
                               href={`tel:${tel}`}
+                              onMouseDown={() => recordDial(lead, "tel")}
+                              onTouchStart={() => recordDial(lead, "tel")}
                               className="inline-flex items-center justify-center rounded-lg bg-gradient-to-r from-indigo-500 via-purple-500 to-pink-500 px-3 py-1.5 text-white text-xs font-medium"
                             >
                               Call
@@ -326,6 +409,8 @@ export default function SmartDialer() {
                             {isFaceTimeCapable && (
                               <a
                                 href={`facetime-audio://${tel}`}
+                                onMouseDown={() => recordDial(lead, "facetime")}
+                                onTouchStart={() => recordDial(lead, "facetime")}
                                 className="inline-flex items-center justify-center rounded-lg border border-white/15 bg-white/5 px-3 py-1.5 text-xs hover:bg-white/10"
                               >
                                 FaceTime Audio
