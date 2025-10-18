@@ -1,5 +1,6 @@
 // File: src/routesConfig.js
 // Adds Smart Dialer + renames Dialer → Power Dialer
+// + NEW: Enable Notifications (iOS) route
 
 import DashboardHome from "./pages/DashboardHome.jsx";
 import LeadsPage from "./pages/LeadsPage.jsx";
@@ -49,8 +50,8 @@ import SmartDialerPage from "./pages/SmartDialer.jsx"; // ← NEW
 // ---- Reviews ----
 import ReviewsManager from "./pages/ReviewsManager.jsx";
 
-// ---- Push / Notifications (iOS enable flow) ----
-import PushDebug from "./pages/PushDebug.jsx"; // ← NEW
+// ---- NEW: Enable Notifications (iOS) ----
+import EnablePushIOS from "./pages/EnablePushIOS.jsx";
 
 export const routes = [
   // Top-level
@@ -84,11 +85,10 @@ export const routes = [
   { key: "team-dashboard", path: "/app/team/:teamId/dashboard", label: "Team Dashboard", component: TeamDashboard, showInSidebar: false, section: "hidden" },
 
   // Bottom (Account & Help)
+  // Put Enable Notifications (iOS) ABOVE Settings:
+  { key: "enable-ios-push", path: "/app/enable-ios-push", label: "Enable Notifications (iOS)", component: EnablePushIOS, showInSidebar: true, section: "bottom" },
   { key: "settings", path: "/app/settings", label: "Settings", component: SettingsPage, showInSidebar: true, section: "bottom" },
   { key: "support", path: "/app/support", label: "Support", component: SupportPage, showInSidebar: true, section: "bottom" },
-
-  // ⚡ Push/Notifications helper (iOS)
-  { key: "enable-notifications-ios", path: "/app/enable-notifications-ios", label: "Enable Notifications on iOS", component: PushDebug, showInSidebar: true, section: "bottom" }, // ← NEW
 
   // Admin-only (hidden)
   { key: "support-inbox", path: "/app/support-inbox", label: "Support Inbox", component: AdminSupportInbox, showInSidebar: false, section: "hidden" },
