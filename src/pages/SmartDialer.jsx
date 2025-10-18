@@ -36,6 +36,9 @@ export default function SmartDialer() {
   // cache JWT so we can send it instantly during onClick (no awaits)
   const jwtRef = useRef("");
 
+  // keep one consistent IANA timezone string for this session
+  const tzRef = useRef(Intl.DateTimeFormat().resolvedOptions().timeZone || "America/Chicago");
+
   // Apple-only capability for FaceTime Audio
   const isFaceTimeCapable = useMemo(() => {
     if (typeof navigator === "undefined") return false;
@@ -111,7 +114,7 @@ export default function SmartDialer() {
             .order("created_at", { ascending: false }) // ⬅️ NEWEST FIRST
             .range(from, from + PAGE_SIZE - 1);
 
-          if (error) throw error;
+        if (error) throw error;
           const batch = data || [];
           all = all.concat(batch);
           if (batch.length < PAGE_SIZE) break;
@@ -130,11 +133,12 @@ export default function SmartDialer() {
     loadLeadsAll();
   }, []);
 
-  /* ---------------- Fetch today's dial count ---------------- */
+  /* ---------------- Fetch today's dial count (pass tz) ---------------- */
   useEffect(() => {
     (async () => {
       try {
-        const res = await fetch("/.netlify/functions/track-dial", {
+        const tz = tzRef.current;
+        const res = await fetch(`/.netlify/functions/track-dial?tz=${encodeURIComponent(tz)}`, {
           method: "GET",
           headers: jwtRef.current ? { Authorization: `Bearer ${jwtRef.current}` } : {},
         });
@@ -181,7 +185,7 @@ export default function SmartDialer() {
     });
   }, [leads, q, selectedState]);
 
-  /* ---------------- dial recorder ---------------- */
+  /* ---------------- dial recorder (send tz + jwt) ---------------- */
   function recordDialClick(lead, method) {
     try {
       const payload = {
@@ -189,6 +193,7 @@ export default function SmartDialer() {
         phone: toE164(lead?.phone),
         method, // "tel" | "facetime"
         jwt: jwtRef.current || undefined, // include if we have it (helps iOS PWA)
+        tz: tzRef.current,                // <-- IMPORTANT: matches your dial_counts PK
       };
       const body = JSON.stringify(payload);
 
