@@ -1,7 +1,4 @@
-// File: netlify/functions/track-dial.js
-// GET  -> returns today's dial count for the authed user
-// POST -> records a dial event and returns updated count
-
+// netlify/functions/track-dial.js
 const { getServiceClient, getUserFromRequest } = require("./_supabase");
 
 function json(status, body) {
@@ -12,72 +9,77 @@ function json(status, body) {
   };
 }
 
-function todayRangeUTC() {
-  const now = new Date();
-  const start = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), 0, 0, 0));
-  const end = new Date(start.getTime() + 24 * 60 * 60 * 1000);
-  return { start: start.toISOString(), end: end.toISOString() };
-}
-
 exports.handler = async (event) => {
-  const db = getServiceClient();
+  try {
+    const db = getServiceClient();
 
-  // Identify the user (Authorization: Bearer … OR body.jwt fallback)
-  let user = await getUserFromRequest(event);
-  if (!user && event.httpMethod === "POST") {
-    try {
-      const body = JSON.parse(event.body || "{}");
-      if (body.jwt && typeof body.jwt === "string") {
-        // Validate JWT via service client
-        const { data, error } = await db.auth.getUser(body.jwt);
-        if (!error) user = data?.user || null;
+    // ---- Auth: header bearer OR body.jwt
+    let user = await getUserFromRequest(event);
+    if (!user) {
+      if (event.httpMethod !== "GET") {
+        try {
+          const body = JSON.parse(event.body || "{}");
+          if (body?.jwt) {
+            // decode via supabase to get user
+            const { data, error } = await db.auth.getUser(body.jwt);
+            if (!error) user = data?.user || null;
+          }
+        } catch {}
       }
-    } catch {}
+    }
+    if (!user?.id) {
+      if (event.httpMethod === "GET") {
+        // return zero (don’t throw) so the UI can still render
+        return json(200, { ok: true, count: 0, unauthenticated: true });
+      }
+      return json(401, { ok: false, error: "unauthorized" });
+    }
+
+    if (event.httpMethod === "GET") {
+      // return today’s count for this user
+      const { data, error } = await db
+        .from("dial_events")
+        .select("id", { count: "exact", head: true })
+        .eq("user_id", user.id)
+        .eq("day", new Date().toISOString().slice(0, 10)); // YYYY-MM-DD
+
+      if (error) return json(500, { ok: false, error: error.message });
+      return json(200, { ok: true, count: data.length ? data.length : 0 });
+    }
+
+    if (event.httpMethod === "POST") {
+      let body = {};
+      try { body = JSON.parse(event.body || "{}"); } catch {}
+      const { lead_id, phone, method } = body;
+
+      if (!method || !["tel", "facetime"].includes(method)) {
+        return json(400, { ok: false, error: "invalid_method" });
+      }
+
+      const ins = await db.from("dial_events").insert([{
+        user_id: user.id,
+        lead_id: lead_id || null,
+        phone: phone || null,
+        method,
+      }]).select("id").single();
+
+      if (ins.error) return json(500, { ok: false, error: ins.error.message });
+
+      // Return updated count for today (nice for optimistic UI sanity)
+      const { data, error } = await db
+        .from("dial_events")
+        .select("id", { count: "exact", head: true })
+        .eq("user_id", user.id)
+        .eq("day", new Date().toISOString().slice(0, 10));
+
+      if (error) return json(200, { ok: true, id: ins.data.id, count: null });
+
+      return json(200, { ok: true, id: ins.data.id, count: data.length ? data.length : 0 });
+    }
+
+    return json(405, { ok: false, error: "method_not_allowed" });
+  } catch (e) {
+    console.error("[track-dial] unhandled:", e);
+    return json(500, { ok: false, error: "server_error" });
   }
-  if (!user) return json(401, { error: "unauthorized" });
-
-  const uid = user.id;
-  const { start, end } = todayRangeUTC();
-
-  if (event.httpMethod === "GET") {
-    // count today's dials
-    const { data, error } = await db
-      .from("dial_events")
-      .select("id", { count: "exact", head: true })
-      .eq("user_id", uid)
-      .gte("created_at", start)
-      .lt("created_at", end);
-
-    if (error) return json(500, { error: error.message });
-    return json(200, { ok: true, count: data?.length ?? 0 });
-  }
-
-  if (event.httpMethod === "POST") {
-    let body = {};
-    try { body = JSON.parse(event.body || "{}"); } catch {}
-
-    const row = {
-      user_id: uid,
-      lead_id: body.lead_id ?? null,
-      phone: body.phone ?? null,
-      method: body.method === "facetime" ? "facetime" : "tel",
-      created_at: new Date().toISOString(),
-    };
-
-    const ins = await db.from("dial_events").insert([row]);
-    if (ins.error) return json(500, { error: ins.error.message });
-
-    // return fresh count
-    const { data, error } = await db
-      .from("dial_events")
-      .select("id", { count: "exact", head: true })
-      .eq("user_id", uid)
-      .gte("created_at", start)
-      .lt("created_at", end);
-
-    if (error) return json(500, { error: error.message });
-    return json(200, { ok: true, count: data?.length ?? 0 });
-  }
-
-  return json(405, { error: "method_not_allowed" });
 };
