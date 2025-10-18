@@ -114,7 +114,7 @@ export default function SmartDialer() {
             .order("created_at", { ascending: false }) // ⬅️ NEWEST FIRST
             .range(from, from + PAGE_SIZE - 1);
 
-        if (error) throw error;
+          if (error) throw error;
           const batch = data || [];
           all = all.concat(batch);
           if (batch.length < PAGE_SIZE) break;
@@ -133,21 +133,44 @@ export default function SmartDialer() {
     loadLeadsAll();
   }, []);
 
-  /* ---------------- Fetch today's dial count (pass tz) ---------------- */
+  /* ---------------- Fetch today's dial count (wait for JWT + refetch on auth change) ---------------- */
   useEffect(() => {
-    (async () => {
+    let mounted = true;
+
+    async function fetchCount() {
       try {
         const tz = tzRef.current;
+        const { data } = await supabase.auth.getSession();
+        const token = data?.session?.access_token || "";
+        if (!mounted) return;
+
         const res = await fetch(`/.netlify/functions/track-dial?tz=${encodeURIComponent(tz)}`, {
           method: "GET",
-          headers: jwtRef.current ? { Authorization: `Bearer ${jwtRef.current}` } : {},
+          headers: token ? { Authorization: `Bearer ${token}` } : {},
         });
+
         const j = await res.json().catch(() => ({}));
-        if (res.ok && Number.isFinite(j.count)) setDialsToday(j.count);
+        if (!mounted) return;
+        if (res.ok && Number.isFinite(j.count)) {
+          setDialsToday(j.count);
+        }
       } catch (e) {
         console.warn("dial count fetch failed", e);
       }
-    })();
+    }
+
+    // initial fetch once session is available
+    fetchCount();
+
+    // refetch whenever auth state changes (e.g., session restored)
+    const { data: sub } = supabase.auth.onAuthStateChange(() => {
+      fetchCount();
+    });
+
+    return () => {
+      mounted = false;
+      try { sub?.subscription?.unsubscribe?.(); } catch {}
+    };
   }, []);
 
   // ---------- derived: state list + filtered results ----------
