@@ -12,33 +12,25 @@ function urlB64ToUint8Array(base64String) {
 }
 
 async function getFreshJwt() {
-  // Try normal session first
   let { data: sess } = await supabase.auth.getSession();
   let token = sess?.session?.access_token || null;
 
-  // If missing, force a refresh attempt
   if (!token) {
-    try {
-      await supabase.auth.refreshSession();
-    } catch {}
+    try { await supabase.auth.refreshSession(); } catch {}
     const again = await supabase.auth.getSession();
     token = again?.data?.session?.access_token || null;
   }
-
-  // Final fallback: getUser() (forces network)
-  if (!token) {
-    try {
-      const { data: u } = await supabase.auth.getUser();
-      token = u?.session?.access_token || null; // (not always present)
-    } catch {}
-  }
-
   return token;
 }
 
+async function getUserId() {
+  const { data } = await supabase.auth.getUser();
+  return data?.user?.id || null;
+}
+
 async function authHeader() {
-  const token = await getFreshJwt();
-  return token ? { Authorization: `Bearer ${token}` } : {};
+  const jwt = await getFreshJwt();
+  return jwt ? { Authorization: `Bearer ${jwt}` } : {};
 }
 
 export default function EnablePushIOS() {
@@ -46,12 +38,14 @@ export default function EnablePushIOS() {
   const [permission, setPermission] = useState(Notification.permission);
   const [isStandalone, setIsStandalone] = useState(false);
   const [jwtLen, setJwtLen] = useState(0);
+  const [uid, setUid] = useState(null);
 
   const addLog = (m) => setLog((l) => [`${m}`, ...l].slice(0, 80));
 
   useEffect(() => {
     const media = window.matchMedia("(display-mode: standalone)");
     setIsStandalone(media.matches || window.navigator.standalone === true);
+    (async () => setUid(await getUserId()))();
   }, []);
 
   async function ensureSW() {
@@ -81,7 +75,6 @@ export default function EnablePushIOS() {
 
     addLog("Subscribed ✅");
 
-    // get JWT (robust)
     const token = await getFreshJwt();
     setJwtLen(token ? token.length : 0);
 
@@ -90,17 +83,19 @@ export default function EnablePushIOS() {
       ...(token ? { Authorization: `Bearer ${token}` } : {}),
     };
 
+    const body = {
+      endpoint: sub.endpoint,
+      keys: sub.toJSON().keys,
+      platform: /iPhone|iPad|iPod|Mac/i.test(navigator.userAgent) ? "ios" : "web",
+      topics: ["leads", "messages"],
+      jwt: token || null,     // fallback for iOS PWA
+      user_id: uid || null,   // NEW: server can verify this if no JWT arrives
+    };
+
     const res = await fetch("/.netlify/functions/push-subscribe", {
       method: "POST",
       headers,
-      body: JSON.stringify({
-        endpoint: sub.endpoint,
-        keys: sub.toJSON().keys,
-        platform: /iPhone|iPad|iPod|Mac/i.test(navigator.userAgent) ? "ios" : "web",
-        topics: ["leads", "messages"],
-        // 🔁 Fallback so server can auth if header gets stripped in iOS standalone
-        jwt: token || null,
-      }),
+      body: JSON.stringify(body),
     });
     addLog(`push-subscribe → ${res.status}`);
     if (!res.ok) {
@@ -113,8 +108,10 @@ export default function EnablePushIOS() {
     const headers = await authHeader();
     const res = await fetch("/.netlify/functions/_push?test=1", { headers });
     addLog(`_push?test=1 → ${res.status}`);
-    const j = await res.json().catch(() => ({}));
-    if (!res.ok) throw new Error(j?.error || "test failed");
+    if (!res.ok) {
+      const j = await res.json().catch(() => ({}));
+      throw new Error(j?.error || "test failed");
+    }
   }
 
   return (
@@ -137,6 +134,7 @@ export default function EnablePushIOS() {
         <div>Notification permission: {permission}</div>
         <div>Display mode: {isStandalone ? "standalone" : "browser tab"}</div>
         <div>JWT length (client): {jwtLen}</div>
+        <div>User ID (client): {uid || "—"}</div>
         <pre className="mt-2 whitespace-pre-wrap text-xs opacity-90">
           {log.map((l, i) => `• ${l}`).join("\n")}
         </pre>
