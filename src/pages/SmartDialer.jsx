@@ -86,7 +86,7 @@ export default function SmartDialer() {
     };
   }, []);
 
-  /* ---------------- Load ALL leads for logged-in user, oldest -> newest ---------------- */
+  /* ---------------- Load ALL leads for logged-in user, newest -> oldest ---------------- */
   useEffect(() => {
     async function loadLeadsAll() {
       try {
@@ -106,9 +106,9 @@ export default function SmartDialer() {
         for (;;) {
           const { data, error } = await supabase
             .from("leads")
-            .select("id, name, phone, state, stage, created_at") // include stage
+            .select("id, name, phone, state, stage, created_at")
             .eq("user_id", uid)
-            .order("created_at", { ascending: true })
+            .order("created_at", { ascending: false }) // ⬅️ NEWEST FIRST
             .range(from, from + PAGE_SIZE - 1);
 
           if (error) throw error;
