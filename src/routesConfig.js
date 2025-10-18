@@ -22,9 +22,6 @@ import MyTeams from "./pages/MyTeams.jsx";
 import TeamManagement from "./pages/TeamManagement.jsx";
 import TeamDashboard from "./pages/TeamDashboard.jsx";
 
-// ---- Admin-only Support Inbox ----
-import AdminSupportInbox from "./pages/AdminSupportInbox.jsx";
-
 // ---- Admin Console ----
 import AdminConsole from "./pages/AdminConsole.jsx";
 
@@ -91,7 +88,6 @@ export const routes = [
   { key: "support", path: "/app/support", label: "Support", component: SupportPage, showInSidebar: true, section: "bottom" },
 
   // Admin-only (hidden)
-  { key: "support-inbox", path: "/app/support-inbox", label: "Support Inbox", component: AdminSupportInbox, showInSidebar: false, section: "hidden" },
   { key: "admin-console", path: "/app/admin", label: "Admin Console", component: AdminConsole, showInSidebar: false, section: "hidden", adminOnly: true },
 
   // Private
