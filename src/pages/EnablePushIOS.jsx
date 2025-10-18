@@ -2,6 +2,7 @@
 import { useEffect, useState } from "react";
 import { supabase } from "../lib/supabaseClient";
 
+// base64url -> Uint8Array
 function urlB64ToUint8Array(base64String) {
   const padding = "=".repeat((4 - (base64String.length % 4)) % 4);
   const base64 = (base64String + padding).replace(/-/g, "+").replace(/_/g, "/");
@@ -11,106 +12,101 @@ function urlB64ToUint8Array(base64String) {
   return outputArray;
 }
 
-async function authHeader() {
-  const { data } = await supabase.auth.getSession();
-  const token = data?.session?.access_token;
-  return token ? { Authorization: `Bearer ${token}` } : {};
-}
-
 export default function EnablePushIOS() {
   const [log, setLog] = useState([]);
-  const [permission, setPermission] = useState(Notification.permission);
+  const [permission, setPermission] = useState(
+    typeof Notification !== "undefined" ? Notification.permission : "unsupported"
+  );
   const [isStandalone, setIsStandalone] = useState(false);
 
-  const addLog = (m) => setLog((l) => [`${new Date().toLocaleTimeString()}  ${m}`, ...l].slice(0, 80));
+  const addLog = (m) =>
+    setLog((l) => [`${new Date().toLocaleTimeString()}  ${m}`, ...l].slice(0, 120));
 
   useEffect(() => {
-    const media = window.matchMedia("(display-mode: standalone)");
-    setIsStandalone(media.matches || window.navigator.standalone === true);
+    const media = window.matchMedia?.("(display-mode: standalone)");
+    setIsStandalone((media && media.matches) || window.navigator.standalone === true);
 
-    // Helpful diagnostics around SW control + reload expectation
     if ("serviceWorker" in navigator) {
       if (navigator.serviceWorker.controller) {
-        addLog("Service worker is already controlling this page ✅");
+        addLog("SW is controlling this page ✅");
       } else {
-        addLog("No service worker controller yet (first run)");
+        addLog("No SW controller yet (first run)");
       }
-
       navigator.serviceWorker.addEventListener("controllerchange", () => {
-        addLog("controllerchange fired — a new SW took control (Safari may reload once)");
+        addLog("controllerchange — new SW took control (iOS may reload once)");
       });
     }
+
+    // Catch hard runtime errors to avoid “white screen without info”
+    window.addEventListener("error", (e) => addLog(`window.onerror: ${e.message}`));
+    window.addEventListener("unhandledrejection", (e) =>
+      addLog(`unhandledrejection: ${e.reason?.message || String(e.reason)}`)
+    );
   }, []);
 
   async function ensureSW() {
-    if (!("serviceWorker" in navigator)) throw new Error("Service Workers not supported on this device");
+    if (!("serviceWorker" in navigator)) throw new Error("Service Workers not supported");
 
-    // Reuse existing registration if present to avoid churn/reloads
+    // Reuse existing registration if present; do not call reg.update() to avoid extra reloads
     let reg = await navigator.serviceWorker.getRegistration();
     if (!reg) {
       addLog("Registering /sw.js …");
       reg = await navigator.serviceWorker.register("/sw.js", { updateViaCache: "none" });
+      addLog("Registered /sw.js");
     } else {
-      addLog("Existing SW registration found");
-      // Proactively check for updates, but don’t force reloads here
-      try {
-        await reg.update();
-        addLog("Checked for SW updates");
-      } catch {}
+      addLog("Using existing SW registration");
     }
 
     await navigator.serviceWorker.ready;
-    addLog("Service worker ready ✅");
+    addLog("SW ready ✅");
     return reg;
   }
 
-  async function enableNotifications(e) {
-    e?.preventDefault?.();
-
-    const perm = await Notification.requestPermission();
-    setPermission(perm);
-    addLog(`Notification.requestPermission(): ${perm}`);
-    if (perm !== "granted") throw new Error("Permission not granted");
-
-    const reg = await ensureSW();
-
-    const key = import.meta.env.VITE_VAPID_PUBLIC_KEY;
-    if (!key) throw new Error("Missing VITE_VAPID_PUBLIC_KEY (check Netlify env)");
-
-    const appServerKey = urlB64ToUint8Array(key);
-
-    const existing = await reg.pushManager.getSubscription();
-    if (existing) {
-      addLog("Already subscribed to push (reusing current subscription)");
-      await saveSubscription(existing);
-      return;
+  async function enablePush() {
+    // 1) Must be logged in inside the PWA context
+    const { data: sess } = await supabase.auth.getSession();
+    const jwt = sess?.session?.access_token || null;
+    addLog(`Supabase session present: ${jwt ? "yes" : "no"}`);
+    if (!jwt) {
+      addLog("Please log in inside the installed app first (open /login in the PWA).");
+      throw new Error("Not logged in");
     }
 
-    const sub = await reg.pushManager.subscribe({
-      userVisibleOnly: true,
-      applicationServerKey: appServerKey,
-    });
+    // 2) Ask permission
+    const perm = await Notification.requestPermission();
+    setPermission(perm);
+    addLog(`Notification.requestPermission() → ${perm}`);
+    if (perm !== "granted") throw new Error("Permission not granted");
 
-    addLog("Push subscribed ✅");
-    await saveSubscription(sub);
-  }
+    // 3) Ensure SW
+    const reg = await ensureSW();
 
-  async function saveSubscription(sub) {
-    const headers = {
-      "Content-Type": "application/json",
-      ...(await authHeader()),
-    };
+    // 4) Subscribe or reuse
+    const vapid = import.meta.env.VITE_VAPID_PUBLIC_KEY;
+    if (!vapid) throw new Error("Missing VITE_VAPID_PUBLIC_KEY env");
+    const appServerKey = urlB64ToUint8Array(vapid);
+
+    let sub = await reg.pushManager.getSubscription();
+    if (!sub) {
+      addLog("Subscribing to push …");
+      sub = await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: appServerKey });
+      addLog("Push subscribed ✅");
+    } else {
+      addLog("Reusing existing push subscription");
+    }
+
+    // 5) Save subscription — ALWAYS include JWT in body (PWA often drops Authorization header)
     const body = {
       endpoint: sub.endpoint,
       keys: sub.toJSON().keys,
       platform: /iPhone|iPad|iPod|Mac/i.test(navigator.userAgent) ? "ios" : "web",
       topics: ["leads", "messages"],
+      jwt, // <— important
     };
 
-    addLog("Sending subscription to server …");
     const res = await fetch("/.netlify/functions/push-subscribe", {
       method: "POST",
-      headers,
+      headers: { "Content-Type": "application/json" }, // no Authorization header needed
       body: JSON.stringify(body),
     });
     addLog(`push-subscribe → ${res.status}`);
@@ -118,44 +114,47 @@ export default function EnablePushIOS() {
       const j = await res.json().catch(() => ({}));
       throw new Error(j?.error || `push-subscribe failed ${res.status}`);
     }
+
+    addLog("Subscription saved on server ✅");
   }
 
-  async function sendTest(e) {
-    e?.preventDefault?.();
-    const headers = await authHeader();
-    const res = await fetch("/.netlify/functions/_push?test=1", { headers });
+  async function sendTest() {
+    // test sender: will try with Authorization (if present) but server usually doesn’t require it for test=1
+    const { data: sess } = await supabase.auth.getSession();
+    const jwt = sess?.session?.access_token || null;
+
+    const res = await fetch("/.netlify/functions/_push?test=1", {
+      headers: jwt ? { Authorization: `Bearer ${jwt}` } : {},
+    });
     addLog(`_push?test=1 → ${res.status}`);
     const j = await res.json().catch(() => ({}));
     if (!res.ok) throw new Error(j?.error || "test failed");
     addLog(`test result: ${JSON.stringify(j)}`);
   }
 
-  async function registerSWClick(e) {
-    e?.preventDefault?.();
-    try {
-      await ensureSW();
-    } catch (err) {
-      addLog(`SW error: ${err.message || err}`);
-    }
-  }
-
   return (
     <div className="p-6 max-w-2xl mx-auto text-white">
       <h1 className="text-xl font-semibold mb-2">Enable Notifications on iOS</h1>
       <p className="text-sm text-white/70 mb-3">
-        If the screen refreshes once on the first click, that’s normal — the new service worker takes control.
-        After it reloads, tap “Enable Notifications”.
+        If you see a one-time refresh after the first tap, that’s normal — the service worker took control.
+        After it reloads, tap the button again.
       </p>
 
       <div className="flex flex-wrap gap-2 mb-4">
-        <button type="button" className="rounded-lg border border-white/15 bg-white/5 px-3 py-2" onClick={registerSWClick}>
-          1) Register SW
+        <button
+          type="button"
+          className="rounded-lg border border-white/15 bg-white/5 px-3 py-2"
+          onClick={() => enablePush().catch((e) => addLog(e.message || String(e)))}
+        >
+          Enable Notifications
         </button>
-        <button type="button" className="rounded-lg border border-white/15 bg-white/5 px-3 py-2" onClick={enableNotifications}>
-          2) Enable Notifications
-        </button>
-        <button type="button" className="rounded-lg border border-white/15 bg-white/5 px-3 py-2" onClick={sendTest}>
-          3) Send Test Push
+
+        <button
+          type="button"
+          className="rounded-lg border border-white/15 bg-white/5 px-3 py-2"
+          onClick={() => sendTest().catch((e) => addLog(e.message || String(e)))}
+        >
+          Send Test Push
         </button>
       </div>
 
@@ -164,7 +163,7 @@ export default function EnablePushIOS() {
         <div>Notification permission: {permission}</div>
         <div>Display mode: {isStandalone ? "standalone" : "browser tab"}</div>
         <pre className="mt-2 whitespace-pre-wrap text-xs opacity-90">
-          {log.map((l, i) => `• ${l}`).join("\n")}
+          {log.map((l) => `• ${l}`).join("\n")}
         </pre>
       </div>
     </div>
