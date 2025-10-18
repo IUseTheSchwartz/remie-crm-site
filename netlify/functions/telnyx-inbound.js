@@ -1,11 +1,11 @@
 // File: netlify/functions/telnyx-inbound.js
 // Minimal inbound: store inbound SMS, handle STOP/START, pause sequences,
-// then await ai-dispatch for the reply logic (with robust URL + logging).
+// send a push to the agent, then (best-effort) call ai-dispatch.
 
 const { getServiceClient } = require("./_supabase");
 const fetch = require("node-fetch");
 const { AbortController } = require("abort-controller");
-const { sendPushToUser } = require("../lib/_push"); // <-- added
+const { sendPushToUser } = require("../lib/_push");
 
 /* ---------------- HTTP helpers ---------------- */
 function ok(body) {
@@ -146,6 +146,7 @@ exports.handler = async (event) => {
     return ok({ ok: true, note: "missing_fields" });
   }
 
+  // dedupe by Telnyx message id
   const { data: dupe } = await db
     .from("messages")
     .select("id")
@@ -199,22 +200,23 @@ exports.handler = async (event) => {
     return ok({ ok: true, action: "resubscribed" });
   }
 
-  // Only push when there's actual text and it's not a STOP/START keyword
+  // Push only for real text (not STOP/START)
   if (text) {
     try {
       const who = contact?.full_name || from;
+      const deepLink = `/app/messages?contact_id=${contact?.id || ""}`;
       await sendPushToUser(user_id, {
         title: `New message from ${who}`,
-        body: text.slice(0, 120),
-        url: "/app",
-        tag: `msg-${providerSid}`,
+        body: text.slice(0, 140),
+        url: deepLink,            // takes them straight to Messages
+        tag: `msg-${providerSid}`,// lets notifications coalesce
         renotify: false,
       });
     } catch (e) {
       console.warn("[inbound] push notify warn:", e?.message || e);
     }
   } else {
-    console.log("[inbound] empty text body; skipping ai-dispatch + push");
+    console.log("[inbound] empty text; skipping push and dispatch");
     return ok({ ok: true, note: "empty_text_skipped" });
   }
 
