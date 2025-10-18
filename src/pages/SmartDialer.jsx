@@ -106,7 +106,7 @@ export default function SmartDialer() {
         for (;;) {
           const { data, error } = await supabase
             .from("leads")
-            .select("id, name, phone, state, stage, created_at") // ← include stage
+            .select("id, name, phone, state, stage, created_at") // include stage
             .eq("user_id", uid)
             .order("created_at", { ascending: true })
             .range(from, from + PAGE_SIZE - 1);
@@ -181,14 +181,14 @@ export default function SmartDialer() {
     });
   }, [leads, q, selectedState]);
 
-  /* ---------------- dial recorder: CLICK ONLY (fast, non-blocking) ---------------- */
+  /* ---------------- dial recorder ---------------- */
   function recordDialClick(lead, method) {
     try {
       const payload = {
         lead_id: lead?.id || null,
         phone: toE164(lead?.phone),
         method, // "tel" | "facetime"
-        jwt: jwtRef.current || undefined, // include if we have it
+        jwt: jwtRef.current || undefined, // include if we have it (helps iOS PWA)
       };
       const body = JSON.stringify(payload);
 
@@ -218,6 +218,48 @@ export default function SmartDialer() {
     } catch (e) {
       console.warn("recordDialClick failed", e);
     }
+  }
+
+  /* ---------------- gesture guard (prevents swipe-overs from counting) ---------------- */
+  // We consider a "true click" only if:
+  // - pointerdown → pointerup movement is under 10px
+  // - total press duration < 800ms
+  function gestureGuard(onTrueClick) {
+    let startX = 0, startY = 0, startT = 0;
+
+    return {
+      onPointerDown: (e) => {
+        startX = e.clientX ?? 0;
+        startY = e.clientY ?? 0;
+        startT = performance.now();
+      },
+      onPointerUp: async (e) => {
+        const dx = Math.abs((e.clientX ?? 0) - startX);
+        const dy = Math.abs((e.clientY ?? 0) - startY);
+        const dt = performance.now() - startT;
+        const smallMove = dx < 10 && dy < 10;
+        const quick = dt < 800;
+        if (smallMove && quick) {
+          try { await onTrueClick(e); } catch {}
+        }
+      },
+    };
+  }
+
+  function handleCall(lead, tel) {
+    return gestureGuard(async (e) => {
+      e.preventDefault?.();
+      recordDialClick(lead, "tel");
+      window.location.href = `tel:${tel}`;
+    });
+  }
+
+  function handleFaceTime(lead, tel) {
+    return gestureGuard(async (e) => {
+      e.preventDefault?.();
+      recordDialClick(lead, "facetime");
+      window.location.href = `facetime-audio://${tel}`;
+    });
   }
 
   /* ---------------- Setup Wizard UI ---------------- */
@@ -382,21 +424,21 @@ export default function SmartDialer() {
                   <div className="mt-4 grid grid-cols-1 gap-2 sm:grid-cols-2">
                     {lead.phone ? (
                       <>
-                        <a
-                          href={`tel:${tel}`}
-                          onClick={() => recordDialClick(lead, "tel")}
+                        <button
+                          type="button"
+                          {...handleCall(lead, tel)}
                           className="block w-full rounded-xl bg-gradient-to-br from-indigo-500/90 to-fuchsia-500/90 hover:from-indigo-500 hover:to-fuchsia-500 text-center font-medium py-2"
                         >
                           Call {humanPhone(lead.phone)}
-                        </a>
+                        </button>
                         {isFaceTimeCapable && (
-                          <a
-                            href={`facetime-audio://${tel}`}
-                            onClick={() => recordDialClick(lead, "facetime")}
+                          <button
+                            type="button"
+                            {...handleFaceTime(lead, tel)}
                             className="block w-full rounded-xl border border-white/15 bg-white/5 hover:bg-white/10 text-center font-medium py-2"
                           >
                             FaceTime Audio
-                          </a>
+                          </button>
                         )}
                       </>
                     ) : (
@@ -434,21 +476,21 @@ export default function SmartDialer() {
                       <td className="px-4 py-2">
                         {lead.phone ? (
                           <div className="flex items-center gap-2">
-                            <a
-                              href={`tel:${tel}`}
-                              onClick={() => recordDialClick(lead, "tel")}
+                            <button
+                              type="button"
+                              {...handleCall(lead, tel)}
                               className="inline-flex items-center justify-center rounded-lg bg-gradient-to-r from-indigo-500 via-purple-500 to-pink-500 px-3 py-1.5 text-white text-xs font-medium"
                             >
                               Call
-                            </a>
+                            </button>
                             {isFaceTimeCapable && (
-                              <a
-                                href={`facetime-audio://${tel}`}
-                                onClick={() => recordDialClick(lead, "facetime")}
+                              <button
+                                type="button"
+                                {...handleFaceTime(lead, tel)}
                                 className="inline-flex items-center justify-center rounded-lg border border-white/15 bg-white/5 px-3 py-1.5 text-xs hover:bg-white/10"
                               >
                                 FaceTime Audio
-                              </a>
+                              </button>
                             )}
                           </div>
                         ) : (
