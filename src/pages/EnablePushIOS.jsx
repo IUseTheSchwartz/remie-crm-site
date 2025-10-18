@@ -19,42 +19,93 @@ async function getSession() {
   return { user, jwt };
 }
 
+async function ensureSW(addLog) {
+  if (!("serviceWorker" in navigator)) throw new Error("Service Worker not supported");
+  const reg = await navigator.serviceWorker.register("/sw.js");
+  await navigator.serviceWorker.ready;
+  addLog?.("SW ready ✅");
+  return reg;
+}
+
 export default function EnablePushIOS() {
   const [log, setLog] = useState([]);
   const [permission, setPermission] = useState(Notification.permission);
   const [isStandalone, setIsStandalone] = useState(false);
   const [user, setUser] = useState(null);
   const [jwt, setJwt] = useState("");
+  const [hasSub, setHasSub] = useState(null); // null=unknown, true/false after check
 
-  const addLog = (m) => setLog((l) => [`${new Date().toLocaleTimeString()} — ${m}`, ...l].slice(0, 80));
+  const addLog = (m) =>
+    setLog((l) => [`${new Date().toLocaleTimeString()} — ${m}`, ...l].slice(0, 120));
 
   useEffect(() => {
     const media = window.matchMedia("(display-mode: standalone)");
     setIsStandalone(media.matches || window.navigator.standalone === true);
-
     (async () => {
       const { user: u, jwt: j } = await getSession();
       setUser(u);
       setJwt(j);
-      addLog(`Session: user=${u?.id ? u.id : "none"} jwt=${j ? "present" : "missing"}`);
+      addLog(`Session: user=${u?.id ?? "none"} jwt=${j ? "present" : "missing"}`);
+      try {
+        const reg = await ensureSW();
+        const sub = await reg.pushManager.getSubscription();
+        setHasSub(!!sub);
+        addLog(`Existing subscription: ${sub ? "yes" : "no"}`);
+      } catch (e) {
+        addLog(`SW error: ${e?.message || e}`);
+      }
     })();
   }, []);
 
-  async function ensureSW() {
-    if (!("serviceWorker" in navigator)) throw new Error("Service Worker not supported");
-    const reg = await navigator.serviceWorker.register("/sw.js");
-    await navigator.serviceWorker.ready;
-    addLog("SW ready ✅");
-    return reg;
+  async function checkSubscription() {
+    const reg = await ensureSW(addLog);
+    const sub = await reg.pushManager.getSubscription();
+    setHasSub(!!sub);
+    addLog(`Check → subscription: ${sub ? "yes" : "no"}`);
   }
 
-  async function enableNotifications() {
-    // Make sure we’re logged in (in the PWA storage)
+  async function unsubscribeLocal() {
+    const reg = await ensureSW(addLog);
+    const sub = await reg.pushManager.getSubscription();
+    if (!sub) {
+      addLog("No local subscription to remove.");
+      setHasSub(false);
+      return;
+    }
+    await sub.unsubscribe();
+    addLog("Local subscription removed.");
+    setHasSub(false);
+  }
+
+  async function wipeServer() {
     const { user: u, jwt: j } = await getSession();
     setUser(u);
     setJwt(j);
     if (!u || !j) {
-      addLog("Not logged in in this context. Go to /login inside the PWA and sign in.");
+      addLog("Not logged in. Open /login in the PWA and sign in first.");
+      throw new Error("Not logged in");
+    }
+    const res = await fetch("/.netlify/functions/push-unsubscribe", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        ...(j ? { Authorization: `Bearer ${j}` } : {}),
+      },
+      body: JSON.stringify({ user_id: u.id }),
+    });
+    addLog(`push-unsubscribe → ${res.status}`);
+    if (!res.ok) {
+      const js = await res.json().catch(() => ({}));
+      throw new Error(js?.error || "wipe server failed");
+    }
+  }
+
+  async function enableNotifications() {
+    const { user: u, jwt: j } = await getSession();
+    setUser(u);
+    setJwt(j);
+    if (!u || !j) {
+      addLog("Not logged in. Open /login in the PWA and sign in.");
       throw new Error("Not logged in");
     }
 
@@ -63,7 +114,7 @@ export default function EnablePushIOS() {
     addLog(`Notification.requestPermission(): ${perm}`);
     if (perm !== "granted") throw new Error("Permission not granted");
 
-    const reg = await ensureSW();
+    const reg = await ensureSW(addLog);
 
     const key = import.meta.env.VITE_VAPID_PUBLIC_KEY;
     if (!key) {
@@ -78,18 +129,17 @@ export default function EnablePushIOS() {
     });
 
     addLog("PushManager.subscribe() → OK");
+    setHasSub(true);
 
     // Send to server with BOTH header + body auth
     const res = await fetch("/.netlify/functions/push-subscribe", {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        // header auth (function will try this first)
-        ...(jwt ? { Authorization: `Bearer ${jwt}` } : {}),
+        ...(j ? { Authorization: `Bearer ${j}` } : {}),
       },
       body: JSON.stringify({
-        // body auth (function will fall back to this)
-        jwt,
+        jwt: j,
         user_id: u.id,
         endpoint: sub.endpoint,
         keys: sub.toJSON().keys,
@@ -99,13 +149,19 @@ export default function EnablePushIOS() {
     });
 
     addLog(`push-subscribe → ${res.status}`);
-    if (!res.ok) {
-      const j = await res.json().catch(() => ({}));
-      addLog(`push-subscribe error: ${j?.error || res.status}`);
-      throw new Error(j?.error || `push-subscribe failed ${res.status}`);
-    } else {
-      const j = await res.json().catch(() => ({}));
-      addLog(`push-subscribe ok: ${JSON.stringify(j)}`);
+    const js = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(js?.error || `push-subscribe failed ${res.status}`);
+    addLog(`push-subscribe ok: ${JSON.stringify(js)}`);
+  }
+
+  async function forceResubscribe() {
+    try {
+      await unsubscribeLocal();      // remove old browser sub
+      await wipeServer();            // clear server rows for this user
+      await enableNotifications();   // re-subscribe cleanly with auth
+      addLog("Force re-subscribe complete ✅");
+    } catch (e) {
+      addLog(`Force re-subscribe error: ${e?.message || e}`);
     }
   }
 
@@ -137,17 +193,30 @@ export default function EnablePushIOS() {
         <div>Display mode: {isStandalone ? "standalone (PWA)" : "browser tab"}</div>
         <div>Notification permission: {permission}</div>
         <div>VAPID key present: {import.meta.env.VITE_VAPID_PUBLIC_KEY ? "yes" : "no"}</div>
+        <div>Local subscription: {hasSub === null ? "unknown" : hasSub ? "yes" : "no"}</div>
       </div>
 
       <div className="flex flex-wrap gap-2">
-        <button className="rounded-lg border border-white/15 bg-white/5 px-3 py-2" onClick={ensureSW}>
-          1) Register SW
+        <button className="rounded-lg border border-white/15 bg-white/5 px-3 py-2" onClick={() => ensureSW(addLog)}>
+          Register SW
+        </button>
+        <button className="rounded-lg border border-white/15 bg-white/5 px-3 py-2" onClick={checkSubscription}>
+          Check Subscription
+        </button>
+        <button className="rounded-lg border border-white/15 bg-white/5 px-3 py-2" onClick={unsubscribeLocal}>
+          Unsubscribe (Local)
+        </button>
+        <button className="rounded-lg border border-white/15 bg-white/5 px-3 py-2" onClick={wipeServer}>
+          Wipe Server Subs
         </button>
         <button className="rounded-lg border border-white/15 bg-white/5 px-3 py-2" onClick={enableNotifications}>
-          2) Enable Notifications
+          Enable Notifications
+        </button>
+        <button className="rounded-lg border border-white/15 bg-white/5 px-3 py-2" onClick={forceResubscribe}>
+          Force Re-subscribe
         </button>
         <button className="rounded-lg border border-white/15 bg-white/5 px-3 py-2" onClick={sendTest}>
-          3) Send Test Push
+          Send Test Push
         </button>
         <button className="rounded-lg border border-white/15 bg-white/5 px-3 py-2" onClick={refreshSession}>
           Refresh Session
