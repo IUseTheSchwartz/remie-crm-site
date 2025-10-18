@@ -11,35 +11,42 @@ function urlB64ToUint8Array(base64String) {
   return outputArray;
 }
 
-async function getFreshJwt() {
-  let { data: sess } = await supabase.auth.getSession();
-  let token = sess?.session?.access_token || null;
-  if (!token) {
-    try { await supabase.auth.refreshSession(); } catch {}
-    const again = await supabase.auth.getSession();
-    token = again?.data?.session?.access_token || null;
-  }
-  return token;
-}
+async function getAuthStuff() {
+  const [{ data: userData }, { data: sessionData }] = await Promise.all([
+    supabase.auth.getUser(),
+    supabase.auth.getSession(),
+  ]);
+  const userId = userData?.user?.id || null;
+  let jwt = sessionData?.session?.access_token || null;
 
-async function getUserIdNow() {
-  const { data } = await supabase.auth.getUser();
-  return data?.user?.id || null;
+  // best-effort refresh
+  if (!jwt) {
+    try {
+      const { data: refreshed } = await supabase.auth.refreshSession();
+      jwt = refreshed?.session?.access_token || jwt;
+    } catch {}
+  }
+
+  return { userId, jwt };
 }
 
 export default function EnablePushIOS() {
-  const [log, setLog] = useState([]);
+  const [log, setLog] = useState<string[]>([]);
   const [permission, setPermission] = useState(Notification.permission);
   const [isStandalone, setIsStandalone] = useState(false);
-  const [jwtLen, setJwtLen] = useState(0);
-  const [uid, setUid] = useState(null);
+  const [userId, setUserId] = useState<string | null>(null);
 
-  const addLog = (m) => setLog((l) => [`${m}`, ...l].slice(0, 120));
+  const addLog = (m: string) => setLog((l) => [`${m}`, ...l].slice(0, 80));
 
   useEffect(() => {
     const media = window.matchMedia("(display-mode: standalone)");
-    setIsStandalone(media.matches || window.navigator.standalone === true);
-    (async () => setUid(await getUserIdNow()))();
+    setIsStandalone(media.matches || (window as any).navigator?.standalone === true);
+
+    (async () => {
+      const { userId } = await getAuthStuff();
+      setUserId(userId || null);
+      addLog(`Client user id: ${userId || "—"}`);
+    })();
   }, []);
 
   async function ensureSW() {
@@ -48,9 +55,17 @@ export default function EnablePushIOS() {
     await navigator.serviceWorker.ready;
     addLog("SW ready ✅");
     return reg;
-    }
+    // NOTE: make sure sw.js is at /public/sw.js and served at /sw.js
+  }
 
   async function enableNotifications() {
+    const { userId, jwt } = await getAuthStuff();
+    if (!userId) {
+      addLog("No Supabase user — make sure you’re logged in.");
+      throw new Error("Not logged in");
+    }
+    addLog(`Using user ${userId.slice(0, 6)}…`);
+
     const perm = await Notification.requestPermission();
     setPermission(perm);
     addLog(`Notification.requestPermission(): ${perm}`);
@@ -66,59 +81,60 @@ export default function EnablePushIOS() {
       userVisibleOnly: true,
       applicationServerKey: appServerKey,
     });
+
     addLog("Subscribed ✅");
 
-    // force fresh user + jwt RIGHT NOW
-    const token = await getFreshJwt();
-    const userIdNow = await getUserIdNow();
-    setJwtLen(token ? token.length : 0);
-    setUid(userIdNow);
-
-    const headers = {
-      "Content-Type": "application/json",
-      ...(token ? { Authorization: `Bearer ${token}` } : {}),
-    };
+    // Send to server — include BOTH Bearer header and body fallbacks
+    const headers: Record<string, string> = { "Content-Type": "application/json" };
+    if (jwt) headers.Authorization = `Bearer ${jwt}`;
 
     const body = {
       endpoint: sub.endpoint,
-      keys: sub.toJSON().keys,
+      keys: sub.toJSON().keys, // { p256dh, auth }
       platform: /iPhone|iPad|iPod|Mac/i.test(navigator.userAgent) ? "ios" : "web",
       topics: ["leads", "messages"],
-      jwt: token || null,      // fallback for iOS PWA
-      user_id: userIdNow || null, // **always** send
+
+      // critical fallbacks
+      user_id: userId,
+      jwt,
     };
 
-    addLog(`POST body: has user_id=${!!body.user_id}, has jwt=${!!body.jwt}`);
+    addLog(`Sending subscribe with header: ${jwt ? "Bearer present" : "no header"} and body user_id`);
+
     const res = await fetch("/.netlify/functions/push-subscribe", {
       method: "POST",
       headers,
       body: JSON.stringify(body),
     });
-    addLog(`push-subscribe → ${res.status}`);
-    if (!res.ok) {
-      let j = {};
-      try { j = await res.json(); } catch {}
-      throw new Error(`push-subscribe failed ${res.status}${j?.error ? `: ${j.error}` : ""}`);
-    }
+
+    const txt = await res.text().catch(() => "");
+    addLog(`push-subscribe → ${res.status} ${txt ? `(${txt.slice(0, 140)}…)` : ""}`);
+    if (!res.ok) throw new Error(`push-subscribe failed ${res.status}`);
   }
 
   async function sendTest() {
-    const token = await getFreshJwt();
-    const headers = token ? { Authorization: `Bearer ${token}` } : {};
+    const { jwt } = await getAuthStuff();
+    const headers: Record<string, string> = {};
+    if (jwt) headers.Authorization = `Bearer ${jwt}`;
     const res = await fetch("/.netlify/functions/_push?test=1", { headers });
     addLog(`_push?test=1 → ${res.status}`);
     if (!res.ok) {
-      const j = await res.json().catch(() => ({}));
-      throw new Error(j?.error || "test failed");
+      const txt = await res.text().catch(() => "");
+      throw new Error(txt || "test failed");
     }
   }
 
   return (
     <div className="p-6 max-w-2xl mx-auto text-white">
-      <h1 className="text-xl font-semibold mb-2">Push Debug</h1>
+      <h1 className="text-xl font-semibold mb-2">Enable Notifications on iOS</h1>
+
+      <div className="mb-3 text-sm text-white/80">
+        Make sure you’re logged in, added to Home Screen, then tap the steps below.
+      </div>
+
       <div className="flex flex-wrap gap-2 mb-4">
         <button className="rounded-lg border border-white/15 bg-white/5 px-3 py-2" onClick={ensureSW}>
-          1) Register SW
+          1) Register Service Worker
         </button>
         <button className="rounded-lg border border-white/15 bg-white/5 px-3 py-2" onClick={enableNotifications}>
           2) Enable Notifications
@@ -132,8 +148,7 @@ export default function EnablePushIOS() {
         <div>VAPID key present: {import.meta.env.VITE_VAPID_PUBLIC_KEY ? "yes" : "no"}</div>
         <div>Notification permission: {permission}</div>
         <div>Display mode: {isStandalone ? "standalone" : "browser tab"}</div>
-        <div>JWT length (client): {jwtLen}</div>
-        <div>User ID (client): {uid || "—"}</div>
+        <div>User ID (client): {userId || "—"}</div>
         <pre className="mt-2 whitespace-pre-wrap text-xs opacity-90">
           {log.map((l, i) => `• ${l}`).join("\n")}
         </pre>
