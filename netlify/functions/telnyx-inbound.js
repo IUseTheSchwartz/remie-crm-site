@@ -92,15 +92,15 @@ function parseKeyword(textIn) {
 }
 
 /* ---------------- Lead Rescue integration ---------------- */
-async function stopLeadRescueOnReply(db, user_id, contact_id) {
+async function pauseLeadRescue(db, user_id, contact_id, reason) {
   const now = new Date().toISOString();
   const { error } = await db
     .from("lead_rescue_trackers")
     .update({
-      responded: true,
       paused: true,
-      stop_reason: "responded",
-      responded_at: now,
+      stop_reason: reason,
+      ...(reason === "replied" ? { responded: true, responded_at: now } : {}),
+      updated_at: now,
     })
     .eq("user_id", user_id)
     .eq("contact_id", contact_id);
@@ -184,19 +184,29 @@ exports.handler = async (event) => {
     return ok({ ok: false, error: ins.error.message });
   }
 
-  try { await stopLeadRescueOnReply(db, user_id, contact.id); } catch (e) {
-    console.warn("[inbound] stopLeadRescueOnReply warn:", e?.message || e);
+  // Any inbound reply should pause the Lead Rescue with reason "replied"
+  try { await pauseLeadRescue(db, user_id, contact.id, "replied"); } catch (e) {
+    console.warn("[inbound] pauseLeadRescue(replied) warn:", e?.message || e);
   }
 
   const action = parseKeyword(text);
+
+  // STOP: unsubscribe + pause rescue with reason "opted_out"
   if (action === "STOP") {
-    await db.from("message_contacts").update({ subscribed: false }).eq("id", contact.id);
-    console.log("[inbound] contact unsubscribed", contact.id);
+    try {
+      await db.from("message_contacts").update({ subscribed: false }).eq("id", contact.id);
+      await pauseLeadRescue(db, user_id, contact.id, "opted_out");
+      console.log("[inbound] contact unsubscribed and rescue paused", contact.id);
+    } catch (e) {
+      console.warn("[inbound] STOP handling warn:", e?.message || e);
+    }
     return ok({ ok: true, action: "unsubscribed" });
   }
+
+  // START: resubscribe only (do NOT auto-resume rescue)
   if (action === "START") {
     await db.from("message_contacts").update({ subscribed: true }).eq("id", contact.id);
-    console.log("[inbound] contact resubscribed", contact.id);
+    console.log("[inbound] contact resubscribed (rescue remains paused until manual resume)", contact.id);
     return ok({ ok: true, action: "resubscribed" });
   }
 
@@ -246,7 +256,7 @@ exports.handler = async (event) => {
           method: "POST",
           headers: {
             "Content-Type": "application/json",
-            "accept": "application/json",
+            accept: "application/json",
           },
           body: JSON.stringify(out),
           signal: controller.signal,
