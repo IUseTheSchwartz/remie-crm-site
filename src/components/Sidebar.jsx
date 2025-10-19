@@ -27,6 +27,7 @@ import {
   Shield,
   Star,
   Bell as BellIcon,
+  Wallet as WalletIcon, // ← NEW
 } from "lucide-react";
 
 /* --- Gradient stroke helper (indigo → purple → fuchsia) --- */
@@ -51,6 +52,7 @@ const ICONS = {
   Pipeline: PipelineIcon,
   Messages: MessageSquare,
   Calendar: CalendarIcon,
+  Wallet: WalletIcon, // ← NEW
 
   // Productivity & Communication
   "Power Dialer": Phone,
