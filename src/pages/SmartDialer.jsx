@@ -111,11 +111,11 @@ export default function SmartDialer() {
             .from("leads")
             .select("id, name, phone, state, stage, created_at")
             .eq("user_id", uid)
-            .order("created_at", { ascending: false })
+            .order("created_at", { ascending: false }) // ⬅️ NEWEST FIRST
             .range(from, from + PAGE_SIZE - 1);
 
           if (error) throw error;
-          const batch = (data || []);
+          const batch = data || [];
           all = all.concat(batch);
           if (batch.length < PAGE_SIZE) break;
           from += PAGE_SIZE;
@@ -133,7 +133,7 @@ export default function SmartDialer() {
     loadLeadsAll();
   }, []);
 
-  /* ---------------- Fetch today's dial count ---------------- */
+  /* ---------------- Fetch today's dial count (wait for JWT + refetch on auth change) ---------------- */
   useEffect(() => {
     let mounted = true;
 
@@ -159,8 +159,13 @@ export default function SmartDialer() {
       }
     }
 
+    // initial fetch once session is available
     fetchCount();
-    const { data: sub } = supabase.auth.onAuthStateChange(() => { fetchCount(); });
+
+    // refetch whenever auth state changes (e.g., session restored)
+    const { data: sub } = supabase.auth.onAuthStateChange(() => {
+      fetchCount();
+    });
 
     return () => {
       mounted = false;
@@ -186,6 +191,7 @@ export default function SmartDialer() {
 
     return leads.filter((lead) => {
       if (selectedState && String(lead.state || "") !== selectedState) return false;
+
       if (!qLower) return true;
 
       const name = String(lead.name || "").toLowerCase();
@@ -202,18 +208,19 @@ export default function SmartDialer() {
     });
   }, [leads, q, selectedState]);
 
-  /* ---------------- dial recorder ---------------- */
+  /* ---------------- dial recorder (send tz + jwt) ---------------- */
   function recordDialClick(lead, method) {
     try {
       const payload = {
         lead_id: lead?.id || null,
         phone: toE164(lead?.phone),
-        method, // "tel" | "facetime" | "gmeet"
-        jwt: jwtRef.current || undefined,
-        tz: tzRef.current,
+        method, // "tel" | "facetime"
+        jwt: jwtRef.current || undefined, // include if we have it (helps iOS PWA)
+        tz: tzRef.current,                // <-- IMPORTANT: matches your dial_counts PK
       };
       const body = JSON.stringify(payload);
 
+      // 1) Try sendBeacon (fires even if we navigate away)
       let sent = false;
       try {
         if (navigator.sendBeacon) {
@@ -222,6 +229,7 @@ export default function SmartDialer() {
         }
       } catch {}
 
+      // 2) Fallback: fire-and-forget fetch (keepalive, no await)
       if (!sent) {
         try {
           fetch("/.netlify/functions/track-dial", {
@@ -233,15 +241,20 @@ export default function SmartDialer() {
         } catch {}
       }
 
+      // Optimistic UI bump
       setDialsToday((n) => n + 1);
     } catch (e) {
       console.warn("recordDialClick failed", e);
     }
   }
 
-  /* ---------------- gesture guard ---------------- */
+  /* ---------------- gesture guard (prevents swipe-overs from counting) ---------------- */
+  // We consider a "true click" only if:
+  // - pointerdown → pointerup movement is under 10px
+  // - total press duration < 800ms
   function gestureGuard(onTrueClick) {
     let startX = 0, startY = 0, startT = 0;
+
     return {
       onPointerDown: (e) => {
         startX = e.clientX ?? 0;
@@ -274,15 +287,6 @@ export default function SmartDialer() {
       e.preventDefault?.();
       recordDialClick(lead, "facetime");
       window.location.href = `facetime-audio://${tel}`;
-    });
-  }
-
-  // Google Meet launcher (MOBILE ONLY; counts as a dial)
-  function handleGoogleMeet(lead) {
-    return gestureGuard(async (e) => {
-      e.preventDefault?.();
-      recordDialClick(lead, "gmeet");
-      window.open("https://meet.google.com/new", "_blank", "noopener,noreferrer");
     });
   }
 
@@ -445,7 +449,7 @@ export default function SmartDialer() {
                     {lead.state ? <>State: <span className="text-white/80">{lead.state}</span></> : "State: —"}
                   </div>
 
-                  <div className="mt-4 grid grid-cols-1 gap-2 sm:grid-cols-3">
+                  <div className="mt-4 grid grid-cols-1 gap-2 sm:grid-cols-2">
                     {lead.phone ? (
                       <>
                         <button
@@ -455,7 +459,6 @@ export default function SmartDialer() {
                         >
                           Call {humanPhone(lead.phone)}
                         </button>
-
                         {isFaceTimeCapable && (
                           <button
                             type="button"
@@ -463,17 +466,6 @@ export default function SmartDialer() {
                             className="block w-full rounded-xl border border-white/15 bg-white/5 hover:bg-white/10 text-center font-medium py-2"
                           >
                             FaceTime Audio
-                          </button>
-                        )}
-
-                        {/* Google Meet: MOBILE-ONLY */}
-                        {device === "mobile" && (
-                          <button
-                            type="button"
-                            {...handleGoogleMeet(lead)}
-                            className="block w-full rounded-xl border border-white/15 bg-white/5 hover:bg-white/10 text-center font-medium py-2"
-                          >
-                            Google Meet
                           </button>
                         )}
                       </>
@@ -511,7 +503,7 @@ export default function SmartDialer() {
                       <td className="px-4 py-2 text-white/80">{stageLabel(lead.stage)}</td>
                       <td className="px-4 py-2">
                         {lead.phone ? (
-                          <div className="flex items-center gap-2 flex-wrap">
+                          <div className="flex items-center gap-2">
                             <button
                               type="button"
                               {...handleCall(lead, tel)}
@@ -519,7 +511,6 @@ export default function SmartDialer() {
                             >
                               Call
                             </button>
-
                             {isFaceTimeCapable && (
                               <button
                                 type="button"
@@ -529,8 +520,6 @@ export default function SmartDialer() {
                                 FaceTime Audio
                               </button>
                             )}
-
-                            {/* No Google Meet button on desktop/tablet */}
                           </div>
                         ) : (
                           <span className="text-white/40 text-xs">No Phone</span>
