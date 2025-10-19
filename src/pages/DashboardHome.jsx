@@ -20,12 +20,10 @@ function Card({ title, right, children }) {
 export default function DashboardHome() {
   const { user } = useAuth();
 
-  // --- Discord: invite + deep link helpers ---
-  const INVITE = useMemo(
-    () => import.meta.env?.VITE_DISCORD_INVITE_URL || "https://discord.gg/zkcja6FX5H",
-    []
-  );
+  // --- Hard-coded Discord invite ---
+  const INVITE = "https://discord.gg/zkcja6FX5H";
 
+  // Try to build a native invite deep link (works on devices with the app)
   const deepLink = useMemo(() => {
     try {
       const url = new URL(INVITE);
@@ -37,7 +35,7 @@ export default function DashboardHome() {
     } catch {
       return INVITE;
     }
-  }, [INVITE]);
+  }, []);
 
   const [copied, setCopied] = useState(false);
   async function copyInvite() {
@@ -48,7 +46,7 @@ export default function DashboardHome() {
     } catch {}
   }
 
-  // Optional: allow dismissing the Discord panel (mirrors previous video UX)
+  // Optional: allow dismissing the panel
   const [showDiscordPanel, setShowDiscordPanel] = useState(() => {
     try {
       return localStorage.getItem("remiecrm_discord_panel_dismissed") !== "1";
@@ -188,10 +186,10 @@ export default function DashboardHome() {
         </Card>
       </div>
 
-      {/* Discord Panel (replaces video) */}
+      {/* Concierge Onboarding Panel (replaces video) */}
       {showDiscordPanel && (
         <Card
-          title="Join our Discord"
+          title="Get Onboarded"
           right={
             <button
               onClick={dismissDiscordPanel}
@@ -203,8 +201,8 @@ export default function DashboardHome() {
           }
         >
           <div className="mb-3 text-white/70">
-            We’ve moved onboarding videos and support to Discord. Join to watch step-by-step
-            setup, get updates, and chat with the team.
+            Skip the setup stress. Join our Discord, go to <span className="font-medium">#get-onboarded</span>,
+            and fill the short form. We’ll set up messaging, imports, and your dialer for you.
           </div>
 
           <div className="flex flex-wrap items-center gap-3">
@@ -214,7 +212,7 @@ export default function DashboardHome() {
               rel="noreferrer"
               className="inline-flex items-center rounded-xl bg-white text-black px-4 py-2 font-medium hover:bg-white/90"
             >
-              Join Discord
+              Get Onboarded → Join Discord
             </a>
 
             <a
@@ -234,7 +232,7 @@ export default function DashboardHome() {
           </div>
 
           <div className="mt-2 text-xs text-white/50">
-            Tip: If the app link doesn’t open, use the Join button or paste the invite into Discord.
+            After joining, open <span className="font-medium">#get-onboarded</span> in the server and submit the form.
           </div>
         </Card>
       )}
