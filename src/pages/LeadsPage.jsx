@@ -113,7 +113,7 @@ async function deleteContactsByPhones(userId, phones) {
 const FN_BASE = import.meta.env?.VITE_FUNCTIONS_BASE || "/.netlify/functions";
 
 /* -------------------- SOLD auto-text (tries common keys) -------------------- */
-async function sendSoldAutoText({ leadId, person }) {
+async function sendSoldAutoText({ leadId }) {
   try {
     const [{ data: authUser }, { data: sess }] = await Promise.all([
       supabase.auth.getUser(),
@@ -140,16 +140,13 @@ async function sendSoldAutoText({ leadId, person }) {
 
 /* =============================================================================
    Inbound Webhook Drawer Panel
-   - Username = the row.id from your webhook table
-   - Password = row.secret
-   - Endpoint + Steps + email helpers
+   - Fetches/creates via /.netlify/functions/user-webhook (GET)
+   - Rotates via POST { rotate: true }
+   - Username = response.id ; Password = response.secret
 ============================================================================= */
 function InboundWebhookPanel() {
-  // 🔧 If your table/cols differ, change here:
-  const PREF = { table: "user_inbound_webhooks", idCol: "id", secretCol: "secret" };
-
-  const [username, setUsername] = useState(""); // this will be row.id from PREF.table
-  const [secret, setSecret] = useState("");
+  const [username, setUsername] = useState(""); // webhook row id
+  const [secret, setSecret] = useState("");     // webhook secret
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
   const [copied, setCopied] = useState({ u: false, p: false, e: false, addr: false });
@@ -157,48 +154,28 @@ function InboundWebhookPanel() {
   const ENDPOINT = import.meta.env?.VITE_LEADS_INBOUND_URL || "/.netlify/functions/inbound-leads";
   const LEADS_EMAIL = "remiecrmleads@gmail.com";
 
+  // Load (and create if missing) using your Netlify function
   useEffect(() => {
     (async () => {
       try {
         setLoading(true);
-        const { data: auth } = await supabase.auth.getUser();
-        const uid = auth?.user?.id;
-        if (!uid) {
-          setUsername("");
-          setSecret("");
+        const { data: sess } = await supabase.auth.getSession();
+        const token = sess?.session?.access_token;
+        if (!token) {
+          setUsername(""); setSecret("");
           return;
         }
-
-        // 1) Try to fetch the webhook row for this user
-        let row = null;
-        try {
-          const { data, error } = await supabase
-            .from(PREF.table)
-            .select(`${PREF.idCol}, ${PREF.secretCol}`)
-            .eq("user_id", uid)
-            .maybeSingle();
-
-          if (!error && data) row = data;
-        } catch {
-          // table might not exist in non-prod environments
+        const res = await fetch("/.netlify/functions/user-webhook", {
+          method: "GET",
+          headers: { Authorization: `Bearer ${token}` },
+        });
+        const json = await res.json().catch(() => ({}));
+        if (!res.ok || !json?.id) {
+          setUsername(""); setSecret("");
+          return;
         }
-
-        // 2) If no row yet, create one (to get the generated id)
-        if (!row) {
-          try {
-            const { data, error } = await supabase
-              .from(PREF.table)
-              .insert([{ user_id: uid }])
-              .select(`${PREF.idCol}, ${PREF.secretCol}`)
-              .single();
-            if (!error && data) row = data;
-          } catch {
-            // if insert fails, leave it blank but don't crash UI
-          }
-        }
-
-        setUsername(row?.[PREF.idCol] || "");   // <-- Username is the generated id
-        setSecret(row?.[PREF.secretCol] || "");
+        setUsername(json.id);
+        setSecret(json.secret || "");
       } finally {
         setLoading(false);
       }
@@ -213,26 +190,23 @@ function InboundWebhookPanel() {
     } catch {}
   }
 
-  async function genOrRotate() {
-    // Optional: your Netlify/Edge function to create/rotate secret
+  async function rotateSecret() {
     try {
       setBusy(true);
       const { data: sess } = await supabase.auth.getSession();
-      const res = await fetch("/.netlify/functions/user-webhook-secret", {
+      const token = sess?.session?.access_token;
+      const res = await fetch("/.netlify/functions/user-webhook", {
         method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          ...(sess?.session?.access_token
-            ? { Authorization: `Bearer ${sess.session.access_token}` }
-            : {}),
-        },
-        body: JSON.stringify({ action: secret ? "rotate" : "generate" }),
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ rotate: true }),
       });
       const json = await res.json().catch(() => ({}));
-      if (!res.ok || !json?.ok || !json?.secret) throw new Error(json?.error || "Request failed");
+      if (!res.ok || !json?.secret) throw new Error(json?.error || "Rotate failed");
+      // API returns the same id (active row), with a new secret
+      setUsername(json.id || username);
       setSecret(json.secret);
     } catch (e) {
-      alert(e.message || "Could not update password.");
+      alert(e.message || "Could not rotate password.");
     } finally {
       setBusy(false);
     }
@@ -244,23 +218,20 @@ function InboundWebhookPanel() {
   -H 'Content-Type: application/json' \\
   -d '{"name":"Jane Doe","phone":"(555) 123-4567","email":"jane@example.com","state":"TX"}'`;
 
-  // Compose email helper with your requested fields
-  const subject = encodeURIComponent("Auto-Import Leads setup");
-  const body = encodeURIComponent(
+  const mailtoHref = `mailto:${LEADS_EMAIL}?subject=${encodeURIComponent("Auto-Import Leads setup")}&body=${encodeURIComponent(
     [
       "Hi — please set up auto-import for my Google Sheet.",
       "",
       "Lead type(s): (e.g., FEX, Veteran, EG)",
       "CRM login email: ",
       `Username: ${username || "<will appear after login>"}`,
-      `Password: ${secret ? secret : "<generate/rotate and paste here>"}`,
+      `Password: ${secret ? secret : "<rotate and paste here>"}`,
       `Endpoint: ${endpointUrl}`,
       "Google Sheet name + link: ",
       "",
       "Thanks!",
     ].join("\n")
-  );
-  const mailtoHref = `mailto:${LEADS_EMAIL}?subject=${subject}&body=${body}`;
+  )}`;
 
   return (
     <div className="rounded-2xl border border-white/15 bg-white/[0.03] p-4">
@@ -311,12 +282,12 @@ function InboundWebhookPanel() {
           {!!username && (
             <button
               type="button"
-              onClick={genOrRotate}
+              onClick={rotateSecret}
               disabled={busy}
               className="rounded-lg border border-white/15 bg-white/5 px-3 py-2 text-xs hover:bg-white/10"
-              title={secret ? "Rotate password" : "Generate password"}
+              title="Rotate password"
             >
-              {busy ? "Working…" : secret ? "Rotate" : "Generate"}
+              {busy ? "Working…" : "Rotate"}
             </button>
           )}
         </div>
@@ -373,20 +344,7 @@ function InboundWebhookPanel() {
             {copied.addr ? "Copied!" : "Copy email address"}
           </button>
           <a
-            href={`mailto:${LEADS_EMAIL}?subject=${encodeURIComponent("Auto-Import Leads setup")}&body=${encodeURIComponent(
-              [
-                "Hi — please set up auto-import for my Google Sheet.",
-                "",
-                "Lead type(s): (e.g., FEX, Veteran, EG)",
-                "CRM login email: ",
-                `Username: ${username || "<will appear after login>"}`,
-                `Password: ${secret ? secret : "<generate/rotate and paste here>"}`,
-                `Endpoint: ${endpointUrl}`,
-                "Google Sheet name + link: ",
-                "",
-                "Thanks!",
-              ].join("\n")
-            )}`}
+            href={mailtoHref}
             className="rounded-lg bg-white px-3 py-2 text-sm font-medium text-black hover:bg-white/90"
           >
             Compose email
@@ -712,7 +670,7 @@ export default function LeadsPage() {
         console.warn("[sold] contact upsert failed:", e?.message || e);
       }
 
-      try { await sendSoldAutoText({ leadId: id, person: payload }); } catch {}
+      try { await sendSoldAutoText({ leadId: id }); } catch {}
       setServerMsg("✅ Saved SOLD info");
       setSelected(null);
     } catch (e) {
