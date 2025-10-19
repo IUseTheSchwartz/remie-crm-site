@@ -7,8 +7,8 @@ import { startCall } from "../lib/calls";
 // Optional server helpers (kept so your existing functions continue to work)
 import { upsertLeadServer, deleteLeadServer } from "../lib/supabaseLeads.js";
 
-// Auto-import setup panel (kept; it should write into Supabase; realtime will reflect here)
-import ZapierEmbed from "../components/autoimport/ZapierEmbed.jsx";
+// ❌ removed: ZapierEmbed
+// import ZapierEmbed from "../components/autoimport/ZapierEmbed.jsx";
 
 // Controls (assumed to write to Supabase; realtime will update this page)
 import AddLeadControl from "../components/leads/AddLeadControl.jsx";
@@ -142,7 +142,194 @@ async function sendSoldAutoText({ leadId, person }) {
 }
 
 /* =============================================================================
-   Component
+   Inbound Webhook Drawer Panel
+   - Shows Username (user_id) + Password (existing secret) + Endpoint
+   - Copy buttons; optional Generate / Rotate via Netlify function if present
+============================================================================= */
+function InboundWebhookPanel() {
+  const [username, setUsername] = useState("");
+  const [secret, setSecret] = useState("");
+  const [loading, setLoading] = useState(true);
+  const [busy, setBusy] = useState(false);
+  const [copied, setCopied] = useState({ u: false, p: false, e: false });
+  const ENDPOINT =
+    import.meta.env?.VITE_LEADS_INBOUND_URL ||
+    "/.netlify/functions/inbound-leads";
+
+  useEffect(() => {
+    (async () => {
+      try {
+        setLoading(true);
+        const [{ data: auth }, { data: sess }] = await Promise.all([
+          supabase.auth.getUser(),
+          supabase.auth.getSession(),
+        ]);
+        const uid = auth?.user?.id || "";
+        setUsername(uid);
+
+        // Try to read the user's secret from likely tables (we'll fail soft and try next).
+        // Adjust the order/names to match your actual table — code tolerates missing tables.
+        const tryTables = [
+          { table: "user_inbound_webhooks", col: "secret" },
+          { table: "user_webhook_secrets", col: "secret" },
+          { table: "webhook_secrets", col: "secret" },
+        ];
+
+        let found = "";
+        for (const t of tryTables) {
+          try {
+            const { data, error } = await supabase
+              .from(t.table)
+              .select(`${t.col}`)
+              .eq("user_id", uid)
+              .maybeSingle();
+            if (!error && data?.[t.col]) {
+              found = data[t.col];
+              break;
+            }
+          } catch {
+            // table might not exist; ignore and continue
+          }
+        }
+        setSecret(found || "");
+      } finally {
+        setLoading(false);
+      }
+    })();
+  }, []);
+
+  function copy(val, k) {
+    try {
+      navigator.clipboard.writeText(val);
+      setCopied((c) => ({ ...c, [k]: true }));
+      setTimeout(() => setCopied((c) => ({ ...c, [k]: false })), 1200);
+    } catch {}
+  }
+
+  async function genOrRotate() {
+    // Optional: call a Netlify function you already have to create/rotate a secret.
+    // If you don't have one yet, keep the button hidden (we show it only when username exists).
+    try {
+      setBusy(true);
+      const { data: sess } = await supabase.auth.getSession();
+      const res = await fetch("/.netlify/functions/user-webhook-secret", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          ...(sess?.session?.access_token
+            ? { Authorization: `Bearer ${sess.session.access_token}` }
+            : {}),
+        },
+        body: JSON.stringify({ action: secret ? "rotate" : "generate" }),
+      });
+      const json = await res.json().catch(() => ({}));
+      if (!res.ok || !json?.ok || !json?.secret) {
+        throw new Error(json?.error || "Request failed");
+      }
+      setSecret(json.secret);
+    } catch (e) {
+      alert(e.message || "Could not update secret.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  const curl = `curl -X POST '${window.location.origin}${ENDPOINT}' \\
+  -u '${username}:${secret || "<password>"}' \\
+  -H 'Content-Type: application/json' \\
+  -d '{"name":"Jane Doe","phone":"(555) 123-4567","email":"jane@example.com","state":"TX"}'`;
+
+  return (
+    <div className="rounded-2xl border border-white/15 bg-white/[0.03] p-4">
+      <div className="mb-2 text-base font-semibold">User Inbound Webhook</div>
+      <p className="mb-4 text-sm text-white/70">
+        Send leads directly from your source into Remie CRM. Authenticate with <b>Basic Auth</b> using the Username/Password below.
+      </p>
+
+      <div className="grid gap-3 md:grid-cols-[160px_1fr_auto] items-center">
+        <div className="text-xs text-white/60">Username</div>
+        <div className="flex items-center gap-2">
+          <input
+            readOnly
+            value={loading ? "Loading…" : username || "—"}
+            className="w-full rounded-lg border border-white/15 bg-black/40 px-3 py-2 text-sm outline-none"
+          />
+          <button
+            type="button"
+            onClick={() => copy(username, "u")}
+            className="rounded-lg border border-white/15 bg-white/5 px-3 py-2 text-xs hover:bg-white/10"
+            disabled={!username}
+          >
+            {copied.u ? "Copied!" : "Copy"}
+          </button>
+        </div>
+        <div />
+
+        <div className="text-xs text-white/60">Password</div>
+        <div className="flex items-center gap-2">
+          <input
+            readOnly
+            type="password"
+            value={loading ? "" : secret}
+            placeholder={loading ? "Loading…" : secret ? "********" : "No password yet"}
+            className="w-full rounded-lg border border-white/15 bg-black/40 px-3 py-2 text-sm outline-none"
+          />
+          <button
+            type="button"
+            onClick={() => copy(secret, "p")}
+            className="rounded-lg border border-white/15 bg-white/5 px-3 py-2 text-xs hover:bg-white/10"
+            disabled={!secret}
+          >
+            {copied.p ? "Copied!" : "Copy"}
+          </button>
+        </div>
+        <div className="flex gap-2">
+          {!!username && (
+            <button
+              type="button"
+              onClick={genOrRotate}
+              disabled={busy}
+              className="rounded-lg border border-white/15 bg-white/5 px-3 py-2 text-xs hover:bg-white/10"
+              title={secret ? "Rotate password" : "Generate password"}
+            >
+              {busy ? "Working…" : secret ? "Rotate" : "Generate"}
+            </button>
+          )}
+        </div>
+
+        <div className="text-xs text-white/60 mt-3 md:mt-0">Endpoint</div>
+        <div className="flex items-center gap-2">
+          <input
+            readOnly
+            value={`${window.location.origin}${ENDPOINT}`}
+            className="w-full rounded-lg border border-white/15 bg-black/40 px-3 py-2 text-sm outline-none"
+          />
+          <button
+            type="button"
+            onClick={() => copy(`${window.location.origin}${ENDPOINT}`, "e")}
+            className="rounded-lg border border-white/15 bg-white/5 px-3 py-2 text-xs hover:bg-white/10"
+          >
+            {copied.e ? "Copied!" : "Copy"}
+          </button>
+        </div>
+        <div />
+
+        <div className="md:col-span-3">
+          <div className="mt-4 rounded-xl border border-white/10 bg-black/40 p-3 text-xs">
+            <div className="mb-1 font-medium text-white/80">Example</div>
+            <pre className="whitespace-pre-wrap break-all text-white/70">{curl}</pre>
+            <p className="mt-2 text-white/50">
+              Your integration should <b>POST JSON</b> to the endpoint with Basic Auth. On rotate, update your integration with the new password.
+            </p>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* =============================================================================
+   Main Component
 ============================================================================= */
 export default function LeadsPage() {
   const [tab, setTab] = useState("clients"); // 'clients' | 'sold'
@@ -200,7 +387,6 @@ export default function LeadsPage() {
             { event: "INSERT", schema: "public", table: "leads", filter: `user_id=eq.${userId}` },
             (payload) => {
               setRows((prev) => {
-                // avoid dup if already present
                 if (prev.some((r) => r.id === payload.new.id)) return prev;
                 return [payload.new, ...prev];
               });
@@ -546,7 +732,8 @@ export default function LeadsPage() {
 
       {showConnector && (
         <div id="auto-import-panel" className="my-4 rounded-2xl border border-white/15 bg-white/[0.03] p-4">
-          <ZapierEmbed />
+          {/* 🔁 Replaced <ZapierEmbed /> with this: */}
+          <InboundWebhookPanel />
         </div>
       )}
 
