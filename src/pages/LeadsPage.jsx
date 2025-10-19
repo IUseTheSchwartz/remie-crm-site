@@ -7,9 +7,6 @@ import { startCall } from "../lib/calls";
 // Optional server helpers (kept so your existing functions continue to work)
 import { upsertLeadServer, deleteLeadServer } from "../lib/supabaseLeads.js";
 
-// ❌ removed: ZapierEmbed
-// import ZapierEmbed from "../components/autoimport/ZapierEmbed.jsx";
-
 // Controls (assumed to write to Supabase; realtime will update this page)
 import AddLeadControl from "../components/leads/AddLeadControl.jsx";
 import CsvImportControl from "../components/leads/CsvImportControl.jsx";
@@ -143,54 +140,65 @@ async function sendSoldAutoText({ leadId, person }) {
 
 /* =============================================================================
    Inbound Webhook Drawer Panel
-   - Username (user_id) + Password (existing secret) + Endpoint
-   - Steps list + email helpers (copy/compose)
+   - Username = the row.id from your webhook table
+   - Password = row.secret
+   - Endpoint + Steps + email helpers
 ============================================================================= */
 function InboundWebhookPanel() {
-  const [username, setUsername] = useState("");
+  // 🔧 If your table/cols differ, change here:
+  const PREF = { table: "user_inbound_webhooks", idCol: "id", secretCol: "secret" };
+
+  const [username, setUsername] = useState(""); // this will be row.id from PREF.table
   const [secret, setSecret] = useState("");
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
   const [copied, setCopied] = useState({ u: false, p: false, e: false, addr: false });
-  const ENDPOINT =
-    import.meta.env?.VITE_LEADS_INBOUND_URL ||
-    "/.netlify/functions/inbound-leads";
+
+  const ENDPOINT = import.meta.env?.VITE_LEADS_INBOUND_URL || "/.netlify/functions/inbound-leads";
   const LEADS_EMAIL = "remiecrmleads@gmail.com";
 
   useEffect(() => {
     (async () => {
       try {
         setLoading(true);
-        const [{ data: auth }] = await Promise.all([
-          supabase.auth.getUser(),
-        ]);
-        const uid = auth?.user?.id || "";
-        setUsername(uid);
+        const { data: auth } = await supabase.auth.getUser();
+        const uid = auth?.user?.id;
+        if (!uid) {
+          setUsername("");
+          setSecret("");
+          return;
+        }
 
-        // Find existing secret from your preferred table(s)
-        const tryTables = [
-          { table: "user_inbound_webhooks", col: "secret" },
-          { table: "user_webhook_secrets", col: "secret" },
-          { table: "webhook_secrets", col: "secret" },
-        ];
+        // 1) Try to fetch the webhook row for this user
+        let row = null;
+        try {
+          const { data, error } = await supabase
+            .from(PREF.table)
+            .select(`${PREF.idCol}, ${PREF.secretCol}`)
+            .eq("user_id", uid)
+            .maybeSingle();
 
-        let found = "";
-        for (const t of tryTables) {
+          if (!error && data) row = data;
+        } catch {
+          // table might not exist in non-prod environments
+        }
+
+        // 2) If no row yet, create one (to get the generated id)
+        if (!row) {
           try {
             const { data, error } = await supabase
-              .from(t.table)
-              .select(`${t.col}`)
-              .eq("user_id", uid)
-              .maybeSingle();
-            if (!error && data?.[t.col]) {
-              found = data[t.col];
-              break;
-            }
+              .from(PREF.table)
+              .insert([{ user_id: uid }])
+              .select(`${PREF.idCol}, ${PREF.secretCol}`)
+              .single();
+            if (!error && data) row = data;
           } catch {
-            // table may not exist; continue
+            // if insert fails, leave it blank but don't crash UI
           }
         }
-        setSecret(found || "");
+
+        setUsername(row?.[PREF.idCol] || "");   // <-- Username is the generated id
+        setSecret(row?.[PREF.secretCol] || "");
       } finally {
         setLoading(false);
       }
@@ -206,6 +214,7 @@ function InboundWebhookPanel() {
   }
 
   async function genOrRotate() {
+    // Optional: your Netlify/Edge function to create/rotate secret
     try {
       setBusy(true);
       const { data: sess } = await supabase.auth.getSession();
@@ -220,9 +229,7 @@ function InboundWebhookPanel() {
         body: JSON.stringify({ action: secret ? "rotate" : "generate" }),
       });
       const json = await res.json().catch(() => ({}));
-      if (!res.ok || !json?.ok || !json?.secret) {
-        throw new Error(json?.error || "Request failed");
-      }
+      if (!res.ok || !json?.ok || !json?.secret) throw new Error(json?.error || "Request failed");
       setSecret(json.secret);
     } catch (e) {
       alert(e.message || "Could not update password.");
@@ -233,24 +240,24 @@ function InboundWebhookPanel() {
 
   const endpointUrl = `${window.location.origin}${ENDPOINT}`;
   const curl = `curl -X POST '${endpointUrl}' \\
-  -u '${username}:${secret || "<password>"}' \\
+  -u '${username || "<username>"}:${secret || "<password>"}' \\
   -H 'Content-Type: application/json' \\
   -d '{"name":"Jane Doe","phone":"(555) 123-4567","email":"jane@example.com","state":"TX"}'`;
 
-  // Compose email helper
+  // Compose email helper with your requested fields
   const subject = encodeURIComponent("Auto-Import Leads setup");
   const body = encodeURIComponent(
     [
       "Hi — please set up auto-import for my Google Sheet.",
       "",
-      "Lead type(s): ",
+      "Lead type(s): (e.g., FEX, Veteran, EG)",
       "CRM login email: ",
       `Username: ${username || "<will appear after login>"}`,
-      `Password: ${secret ? secret : "<generate and paste>"} `,
+      `Password: ${secret ? secret : "<generate/rotate and paste here>"}`,
       `Endpoint: ${endpointUrl}`,
       "Google Sheet name + link: ",
       "",
-      "Thanks!"
+      "Thanks!",
     ].join("\n")
   );
   const mailtoHref = `mailto:${LEADS_EMAIL}?subject=${subject}&body=${body}`;
@@ -338,7 +345,7 @@ function InboundWebhookPanel() {
         <pre className="whitespace-pre-wrap break-all text-white/70">{curl}</pre>
       </div>
 
-      {/* Steps (matches your flow) */}
+      {/* Steps */}
       <div className="mt-5 rounded-xl border border-white/10 bg-gradient-to-r from-black/40 to-black/10 p-4">
         <div className="font-medium mb-2">Steps:</div>
         <ol className="list-decimal space-y-2 pl-5 text-sm">
@@ -351,9 +358,7 @@ function InboundWebhookPanel() {
             <ul className="mt-2 list-disc space-y-1 pl-5">
               <li>Lead type(s) — e.g., FEX, Veteran, EG</li>
               <li>CRM login email</li>
-              <li>
-                <b>Username</b> &amp; <b>Password</b> (shown above)
-              </li>
+              <li><b>Username</b> &amp; <b>Password</b> (shown above)</li>
               <li>Google Sheet name + link</li>
             </ul>
           </li>
@@ -368,7 +373,20 @@ function InboundWebhookPanel() {
             {copied.addr ? "Copied!" : "Copy email address"}
           </button>
           <a
-            href={mailtoHref}
+            href={`mailto:${LEADS_EMAIL}?subject=${encodeURIComponent("Auto-Import Leads setup")}&body=${encodeURIComponent(
+              [
+                "Hi — please set up auto-import for my Google Sheet.",
+                "",
+                "Lead type(s): (e.g., FEX, Veteran, EG)",
+                "CRM login email: ",
+                `Username: ${username || "<will appear after login>"}`,
+                `Password: ${secret ? secret : "<generate/rotate and paste here>"}`,
+                `Endpoint: ${endpointUrl}`,
+                "Google Sheet name + link: ",
+                "",
+                "Thanks!",
+              ].join("\n")
+            )}`}
             className="rounded-lg bg-white px-3 py-2 text-sm font-medium text-black hover:bg-white/90"
           >
             Compose email
@@ -780,7 +798,7 @@ export default function LeadsPage() {
       </div>
 
       {serverMsg && (
-        <div className="rounded-xl border border-white/10 bg-white/[0.04] px-3 py-2 text-sm text-white/80">
+        <div className="rounded-2xl border border-white/10 bg-white/[0.04] px-3 py-2 text-sm text-white/80">
           {serverMsg}
         </div>
       )}
@@ -971,7 +989,7 @@ function PolicyViewer({ person, onClose }) {
           <Field label="Phone"><div className="ro">{s.phone || person?.phone || "—"}</div></Field>
           <Field label="Email"><div className="ro break-all">{s.email || person?.email || "—"}</div></Field>
 
-        <Field label="Carrier"><div className="ro">{s.carrier || "—"}</div></Field>
+          <Field label="Carrier"><div className="ro">{s.carrier || "—"}</div></Field>
           <Field label="Face Amount"><div className="ro">{s.faceAmount || "—"}</div></Field>
           <Field label="AP (Annual premium)"><div className="ro">{s.premium || "—"}</div></Field>
           <Field label="Monthly Payment"><div className="ro">{s.monthlyPayment || "—"}</div></Field>
