@@ -50,6 +50,9 @@ import ReviewsManager from "./pages/ReviewsManager.jsx";
 // ---- NEW: Enable Notifications (iOS) ----
 import EnablePushIOS from "./pages/EnablePushIOS.jsx";
 
+// ---- NEW: Wallet ----
+import WalletPage from "./pages/Wallet.jsx"; // ← NEW
+
 export const routes = [
   // Top-level
   { key: "home", path: "/app", label: "Home", component: DashboardHome, index: true, showInSidebar: true, section: "top" },
@@ -57,6 +60,9 @@ export const routes = [
   { key: "pipeline", path: "/app/pipeline", label: "Pipeline", component: PipelinePage, showInSidebar: true, section: "top" },
   { key: "messages", path: "/app/messages", label: "Messages", component: MessagesPage, showInSidebar: true, section: "top" },
   { key: "calendar", path: "/app/calendar", label: "Calendar", component: CalendarPage, showInSidebar: true, section: "top" },
+
+  // ↓↓↓ NEW Wallet (placed immediately after Calendar) ↓↓↓
+  { key: "wallet", path: "/app/wallet", label: "Wallet", component: WalletPage, showInSidebar: true, section: "top" }, // ← NEW
 
   // Productivity & Communication
   { key: "dialer", path: "/app/dialer", label: "Power Dialer", component: DialerPage, showInSidebar: true, section: "productivity" },
