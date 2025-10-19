@@ -10,6 +10,54 @@
 
 const { createClient } = require("@supabase/supabase-js");
 
+// ---------- NEW: basic SMS cost estimator (env overrideable) ----------
+const DEFAULT_SMS_COST_CENTS = Number.parseInt(process.env.SMS_COST_CENTS || "1", 10); // default 1¢ per segment
+
+function isUnicode(str) {
+  // rough: if any char code > 127, treat as UCS-2/Unicode (70 chars per segment)
+  for (let i = 0; i < str.length; i++) {
+    if (str.charCodeAt(i) > 127) return true;
+  }
+  return false;
+}
+function estimateSmsSegments(body) {
+  if (!body) return 1;
+  const unicode = isUnicode(body);
+  const perSeg = unicode ? 70 : 160;
+  const concatPerSeg = unicode ? 67 : 153; // concatenated segments reduce per segment payload
+  if (body.length <= perSeg) return 1;
+  return Math.ceil(body.length / concatPerSeg);
+}
+function estimateSmsCostCents(body) {
+  const segs = estimateSmsSegments(body);
+  return segs * DEFAULT_SMS_COST_CENTS;
+}
+
+// ---------- NEW: wallet preflight (non-atomic) ----------
+async function getWalletCents(db, user_id) {
+  const { data, error } = await db
+    .from("user_wallets")
+    .select("balance_cents")
+    .eq("user_id", user_id)
+    .maybeSingle();
+  if (error) throw error;
+  return Number.parseInt(data?.balance_cents || 0, 10);
+}
+
+async function pauseForInsufficientFunds(db, user_id, contact_id) {
+  const nowIso = new Date().toISOString();
+  await db
+    .from("lead_rescue_trackers")
+    .update({
+      paused: true,
+      stop_reason: "skipped due to insufficient funds",
+      updated_at: nowIso,
+    })
+    .eq("user_id", user_id)
+    .eq("contact_id", contact_id)
+    .eq("seq_key", "lead_rescue");
+}
+
 const DEFAULT_TZ = "America/Chicago";
 const DEFAULT_HOUR = 9;
 
@@ -105,7 +153,7 @@ exports.handler = async (event) => {
 
     let tQuery = db
       .from("lead_rescue_trackers")
-      .select("contact_id, current_day, last_attempt_at, responded, paused, started_at, updated_at, next_run_at")
+      .select("contact_id, current_day, last_attempt_at, responded, paused, started_at, updated_at, next_run_at, seq_key")
       .eq("user_id", s.user_id)
       .eq("seq_key", "lead_rescue")
       .eq("responded", false);
@@ -125,11 +173,11 @@ exports.handler = async (event) => {
       continue;
     }
 
-    // 3) Contacts for these trackers
+    // 3) Contacts for these trackers (include subscribed)
     const ids = active.map(a => a.contact_id);
     const { data: contacts, error: cErr } = await db
       .from("message_contacts")
-      .select("id, user_id, tags, created_at")
+      .select("id, user_id, tags, created_at, subscribed")
       .in("id", ids);
 
     if (cErr) {
@@ -179,6 +227,15 @@ exports.handler = async (event) => {
 
     let sentForUser = 0;
 
+    // ---------- NEW: prefetch wallet once per user ----------
+    let walletCents = 0;
+    try {
+      walletCents = await getWalletCents(db, s.user_id);
+    } catch (e) {
+      results.push({ user: s.user_id, error: "wallet_load_failed", detail: e.message || String(e) });
+      // Proceed anyway; we'll mark insufficient on per-contact check if needed
+    }
+
     // 6) Who should get a message now?
     for (const tr of active) {
       const c = contactById.get(tr.contact_id);
@@ -187,6 +244,9 @@ exports.handler = async (event) => {
       // Must still be lead/military
       const tags = Array.isArray(c.tags) ? c.tags.map(t=>String(t).toLowerCase()) : [];
       if (!tags.includes("lead") && !tags.includes("military")) continue;
+
+      // Must be subscribed (avoid texting STOPed contacts)
+      if (c.subscribed === false) continue;
 
       // Stop if inbound since lead created
       const history = msgsByContact.get(tr.contact_id) || [];
@@ -217,9 +277,27 @@ exports.handler = async (event) => {
         continue;
       }
 
-      // Send & advance to the *actual* computed day
+      // ---------- NEW: Wallet check BEFORE sending ----------
+      const estimatedCost = estimateSmsCostCents(body);
+      if (!Number.isFinite(walletCents)) walletCents = 0;
+
+      if (walletCents < estimatedCost) {
+        // Pause this tracker and record the human reason. Do not send.
+        try {
+          await pauseForInsufficientFunds(db, s.user_id, tr.contact_id);
+        } catch (e) {
+          // even if pause update fails, we don't send
+          console.warn("[followup-daily] pauseForInsufficientFunds warn:", e?.message || e);
+        }
+        continue;
+      }
+
+      // If we made it here, we *intend* to send; messages-send should still do the REAL atomic debit.
       try {
         await sendBody(tr.contact_id, body, { day_number: dayNumber });
+
+        // Optimistically decrement our local wallet tracker so we don't overshoot in this loop
+        walletCents -= estimatedCost;
 
         // Advance to this day and compute next_run_at on the DB side
         const { error: advErr } = await db.rpc("lead_rescue_advance_after_send", {
