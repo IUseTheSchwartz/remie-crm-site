@@ -269,6 +269,24 @@ exports.handler = async (event) => {
 
     if (error) throw error;
 
+    /* 🔒 Minimal enforcement: if NOT active, release the messaging number.
+       We also treat "active but expired" as inactive to be safe. */
+    const isActive = String(status) === "active";
+    const notExpired =
+      currentPeriodEnd ? new Date(currentPeriodEnd) > new Date() : false;
+
+    if (!(isActive && notExpired)) {
+      // Unassign any number for this user (idempotent)
+      const { error: unassignErr } = await supabase
+        .from("agent_messaging_numbers")
+        .update({ user_id: null })
+        .eq("user_id", userId);
+
+      if (unassignErr) {
+        console.warn("[stripe-webhook] number unassign warn:", unassignErr.message || unassignErr);
+      }
+    }
+
     return { statusCode: 200, body: "ok" };
   } catch (err) {
     console.error("stripe-webhook error:", err);
