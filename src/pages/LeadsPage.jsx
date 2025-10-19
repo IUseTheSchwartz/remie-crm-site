@@ -143,32 +143,31 @@ async function sendSoldAutoText({ leadId, person }) {
 
 /* =============================================================================
    Inbound Webhook Drawer Panel
-   - Shows Username (user_id) + Password (existing secret) + Endpoint
-   - Copy buttons; optional Generate / Rotate via Netlify function if present
+   - Username (user_id) + Password (existing secret) + Endpoint
+   - Steps list + email helpers (copy/compose)
 ============================================================================= */
 function InboundWebhookPanel() {
   const [username, setUsername] = useState("");
   const [secret, setSecret] = useState("");
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
-  const [copied, setCopied] = useState({ u: false, p: false, e: false });
+  const [copied, setCopied] = useState({ u: false, p: false, e: false, addr: false });
   const ENDPOINT =
     import.meta.env?.VITE_LEADS_INBOUND_URL ||
     "/.netlify/functions/inbound-leads";
+  const LEADS_EMAIL = "remiecrmleads@gmail.com";
 
   useEffect(() => {
     (async () => {
       try {
         setLoading(true);
-        const [{ data: auth }, { data: sess }] = await Promise.all([
+        const [{ data: auth }] = await Promise.all([
           supabase.auth.getUser(),
-          supabase.auth.getSession(),
         ]);
         const uid = auth?.user?.id || "";
         setUsername(uid);
 
-        // Try to read the user's secret from likely tables (we'll fail soft and try next).
-        // Adjust the order/names to match your actual table — code tolerates missing tables.
+        // Find existing secret from your preferred table(s)
         const tryTables = [
           { table: "user_inbound_webhooks", col: "secret" },
           { table: "user_webhook_secrets", col: "secret" },
@@ -188,7 +187,7 @@ function InboundWebhookPanel() {
               break;
             }
           } catch {
-            // table might not exist; ignore and continue
+            // table may not exist; continue
           }
         }
         setSecret(found || "");
@@ -207,8 +206,6 @@ function InboundWebhookPanel() {
   }
 
   async function genOrRotate() {
-    // Optional: call a Netlify function you already have to create/rotate a secret.
-    // If you don't have one yet, keep the button hidden (we show it only when username exists).
     try {
       setBusy(true);
       const { data: sess } = await supabase.auth.getSession();
@@ -228,24 +225,44 @@ function InboundWebhookPanel() {
       }
       setSecret(json.secret);
     } catch (e) {
-      alert(e.message || "Could not update secret.");
+      alert(e.message || "Could not update password.");
     } finally {
       setBusy(false);
     }
   }
 
-  const curl = `curl -X POST '${window.location.origin}${ENDPOINT}' \\
+  const endpointUrl = `${window.location.origin}${ENDPOINT}`;
+  const curl = `curl -X POST '${endpointUrl}' \\
   -u '${username}:${secret || "<password>"}' \\
   -H 'Content-Type: application/json' \\
   -d '{"name":"Jane Doe","phone":"(555) 123-4567","email":"jane@example.com","state":"TX"}'`;
 
+  // Compose email helper
+  const subject = encodeURIComponent("Auto-Import Leads setup");
+  const body = encodeURIComponent(
+    [
+      "Hi — please set up auto-import for my Google Sheet.",
+      "",
+      "Lead type(s): ",
+      "CRM login email: ",
+      `Username: ${username || "<will appear after login>"}`,
+      `Password: ${secret ? secret : "<generate and paste>"} `,
+      `Endpoint: ${endpointUrl}`,
+      "Google Sheet name + link: ",
+      "",
+      "Thanks!"
+    ].join("\n")
+  );
+  const mailtoHref = `mailto:${LEADS_EMAIL}?subject=${subject}&body=${body}`;
+
   return (
     <div className="rounded-2xl border border-white/15 bg-white/[0.03] p-4">
-      <div className="mb-2 text-base font-semibold">User Inbound Webhook</div>
+      <div className="mb-2 text-base font-semibold">Auto-Import Leads</div>
       <p className="mb-4 text-sm text-white/70">
-        Send leads directly from your source into Remie CRM. Authenticate with <b>Basic Auth</b> using the Username/Password below.
+        Send leads straight into Remie via webhook. Authenticate with <b>Basic Auth</b> using your Username &amp; Password.
       </p>
 
+      {/* Credentials */}
       <div className="grid gap-3 md:grid-cols-[160px_1fr_auto] items-center">
         <div className="text-xs text-white/60">Username</div>
         <div className="flex items-center gap-2">
@@ -301,28 +318,66 @@ function InboundWebhookPanel() {
         <div className="flex items-center gap-2">
           <input
             readOnly
-            value={`${window.location.origin}${ENDPOINT}`}
+            value={endpointUrl}
             className="w-full rounded-lg border border-white/15 bg-black/40 px-3 py-2 text-sm outline-none"
           />
           <button
             type="button"
-            onClick={() => copy(`${window.location.origin}${ENDPOINT}`, "e")}
+            onClick={() => copy(endpointUrl, "e")}
             className="rounded-lg border border-white/15 bg-white/5 px-3 py-2 text-xs hover:bg-white/10"
           >
             {copied.e ? "Copied!" : "Copy"}
           </button>
         </div>
         <div />
+      </div>
 
-        <div className="md:col-span-3">
-          <div className="mt-4 rounded-xl border border-white/10 bg-black/40 p-3 text-xs">
-            <div className="mb-1 font-medium text-white/80">Example</div>
-            <pre className="whitespace-pre-wrap break-all text-white/70">{curl}</pre>
-            <p className="mt-2 text-white/50">
-              Your integration should <b>POST JSON</b> to the endpoint with Basic Auth. On rotate, update your integration with the new password.
-            </p>
-          </div>
+      {/* Example */}
+      <div className="mt-4 rounded-xl border border-white/10 bg-black/40 p-3 text-xs">
+        <div className="mb-1 font-medium text-white/80">Example</div>
+        <pre className="whitespace-pre-wrap break-all text-white/70">{curl}</pre>
+      </div>
+
+      {/* Steps (matches your flow) */}
+      <div className="mt-5 rounded-xl border border-white/10 bg-gradient-to-r from-black/40 to-black/10 p-4">
+        <div className="font-medium mb-2">Steps:</div>
+        <ol className="list-decimal space-y-2 pl-5 text-sm">
+          <li>
+            Share your Google Sheet with{" "}
+            <span className="font-mono">remiecrmleads@gmail.com</span>.
+          </li>
+          <li>
+            Email me the details:
+            <ul className="mt-2 list-disc space-y-1 pl-5">
+              <li>Lead type(s) — e.g., FEX, Veteran, EG</li>
+              <li>CRM login email</li>
+              <li>
+                <b>Username</b> &amp; <b>Password</b> (shown above)
+              </li>
+              <li>Google Sheet name + link</li>
+            </ul>
+          </li>
+        </ol>
+
+        <div className="mt-3 flex flex-wrap items-center gap-2">
+          <button
+            type="button"
+            onClick={() => copy(LEADS_EMAIL, "addr")}
+            className="rounded-lg border border-white/15 bg-white/5 px-3 py-2 text-sm hover:bg-white/10"
+          >
+            {copied.addr ? "Copied!" : "Copy email address"}
+          </button>
+          <a
+            href={mailtoHref}
+            className="rounded-lg bg-white px-3 py-2 text-sm font-medium text-black hover:bg-white/90"
+          >
+            Compose email
+          </a>
         </div>
+
+        <p className="mt-2 text-xs text-white/50">
+          I’ll complete setup and email you when it’s done. After that, new rows in your sheet will auto-import into Remie.
+        </p>
       </div>
     </div>
   );
@@ -732,7 +787,6 @@ export default function LeadsPage() {
 
       {showConnector && (
         <div id="auto-import-panel" className="my-4 rounded-2xl border border-white/15 bg-white/[0.03] p-4">
-          {/* 🔁 Replaced <ZapierEmbed /> with this: */}
           <InboundWebhookPanel />
         </div>
       )}
@@ -917,7 +971,7 @@ function PolicyViewer({ person, onClose }) {
           <Field label="Phone"><div className="ro">{s.phone || person?.phone || "—"}</div></Field>
           <Field label="Email"><div className="ro break-all">{s.email || person?.email || "—"}</div></Field>
 
-          <Field label="Carrier"><div className="ro">{s.carrier || "—"}</div></Field>
+        <Field label="Carrier"><div className="ro">{s.carrier || "—"}</div></Field>
           <Field label="Face Amount"><div className="ro">{s.faceAmount || "—"}</div></Field>
           <Field label="AP (Annual premium)"><div className="ro">{s.premium || "—"}</div></Field>
           <Field label="Monthly Payment"><div className="ro">{s.monthlyPayment || "—"}</div></Field>
