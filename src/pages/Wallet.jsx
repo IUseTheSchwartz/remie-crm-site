@@ -28,7 +28,7 @@ export default function WalletPage() {
   const [autoAmountUsd, setAutoAmountUsd] = useState("");
   const [autoMsg, setAutoMsg] = useState("");
 
-  // Minimum top-up is now $10
+  // Minimum top-up is $10
   const MIN_CENTS = 1000;
   const MAX_CENTS = 50000;
 
@@ -45,7 +45,7 @@ export default function WalletPage() {
       if (!mounted) return;
       setUserId(uid);
 
-      // Load wallet balance
+      // Load wallet + subscription data
       const { data: wallet } = await supabase
         .from("user_wallets")
         .select(
@@ -53,17 +53,29 @@ export default function WalletPage() {
         )
         .eq("user_id", uid)
         .maybeSingle();
+
+      const { data: subscription } = await supabase
+        .from("subscriptions")
+        .select("auto_recharge_threshold_cents, auto_recharge_amount_cents")
+        .eq("user_id", uid)
+        .maybeSingle();
+
+      const threshold =
+        subscription?.auto_recharge_threshold_cents ??
+        wallet?.auto_recharge_threshold_cents ??
+        0;
+      const amount =
+        subscription?.auto_recharge_amount_cents ??
+        wallet?.auto_recharge_amount_cents ??
+        0;
+
       if (!mounted) return;
       setBalanceCents(wallet?.balance_cents || 0);
-      if (wallet) {
-        setAutoTriggerUsd(
-          (wallet.auto_recharge_threshold_cents || 0) / 100 || ""
-        );
-        setAutoAmountUsd((wallet.auto_recharge_amount_cents || 0) / 100 || "");
-      }
+      setAutoTriggerUsd((threshold || 0) / 100);
+      setAutoAmountUsd((amount || 0) / 100);
       setLoading(false);
 
-      // Realtime updates
+      // Realtime balance updates
       const ch = supabase
         .channel("wallet_rt_ui")
         .on(
@@ -77,7 +89,6 @@ export default function WalletPage() {
         )
         .subscribe();
 
-      // Initial transactions load
       await loadTransactions(uid);
 
       return () => {
@@ -177,17 +188,25 @@ export default function WalletPage() {
 
   async function saveAutoRecharge() {
     const trigger = Math.max(0, Math.round(Number(autoTriggerUsd || 0) * 100));
-    const amount = Math.max(MIN_CENTS, Math.round(Number(autoAmountUsd || 0) * 100));
+    const amount = Math.max(0, Math.round(Number(autoAmountUsd || 0) * 100));
 
-    const { error } = await supabase
+    // Update both wallet and subscription if present
+    const updates = {
+      auto_recharge_threshold_cents: trigger,
+      auto_recharge_amount_cents: amount,
+    };
+
+    const { error: wErr } = await supabase
       .from("user_wallets")
-      .update({
-        auto_recharge_threshold_cents: trigger,
-        auto_recharge_amount_cents: amount,
-      })
+      .update(updates)
       .eq("user_id", userId);
 
-    if (error) {
+    const { error: sErr } = await supabase
+      .from("subscriptions")
+      .update(updates)
+      .eq("user_id", userId);
+
+    if (wErr && sErr) {
       setAutoMsg("Failed to save settings.");
     } else {
       setAutoMsg("Auto-recharge settings saved.");
@@ -254,126 +273,66 @@ export default function WalletPage() {
               </button>
             </div>
 
-            <div className="flex items-center gap-2">
-              <label className="text-xs text-white/60">Custom:</label>
-              <div className="flex items-center gap-2">
-                <div className="relative">
-                  <span className="pointer-events-none absolute left-2 top-1.5 text-sm text-white/50">
-                    $
-                  </span>
-                  <input
-                    type="number"
-                    inputMode="decimal"
-                    min="10"
-                    max="500"
-                    step="1"
-                    value={customUsd}
-                    onChange={(e) => setCustomUsd(e.target.value)}
-                    placeholder="e.g. 25"
-                    className="w-24 rounded-lg bg-white/5 px-4 py-1 text-sm border border-white/15 text-white"
-                  />
-                </div>
-                <button
-                  onClick={addCustom}
-                  disabled={topping}
-                  className="inline-flex items-center gap-1 rounded-lg border border-white/15 bg-white/5 px-2 py-1 text-sm hover:bg-white/10 disabled:opacity-50"
-                >
-                  <PlusCircle className="h-4 w-4" /> Add
-                </button>
-              </div>
+            {/* Custom amount */}
+            <div className="flex items-center gap-2 mt-2">
+              <input
+                type="number"
+                placeholder="Custom $"
+                className="w-24 rounded-lg border border-white/10 bg-white/5 px-2 py-1 text-sm text-white"
+                value={customUsd}
+                onChange={(e) => setCustomUsd(e.target.value)}
+              />
+              <button
+                type="button"
+                onClick={addCustom}
+                className="rounded-lg border border-white/15 bg-white/5 px-3 py-1 text-sm hover:bg-white/10"
+              >
+                <PlusCircle className="h-4 w-4 inline" /> Add
+              </button>
             </div>
-
             {customMsg && (
-              <p className="text-xs text-red-400 mt-1">{customMsg}</p>
+              <div className="text-xs text-red-400 mt-1">{customMsg}</div>
             )}
           </div>
         </div>
       </section>
 
-      {/* Auto-Recharge Settings */}
+      {/* Auto-Recharge */}
       <section className="rounded-2xl border border-white/10 bg-white/[0.03] p-4">
-        <h2 className="text-base font-semibold mb-2 flex items-center gap-2">
-          <RefreshCcw className="h-4 w-4" /> Auto-Recharge
-        </h2>
-        <p className="text-sm text-white/60 mb-4">
-          Automatically add funds when your wallet drops below a chosen amount.
-        </p>
-
-        <div className="flex flex-col md:flex-row md:items-end gap-3">
+        <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-4">
           <div>
-            <label className="text-xs text-white/60 block mb-1">
-              Trigger Below ($)
-            </label>
+            <div className="font-semibold mb-1">Auto-Recharge Settings</div>
+            <p className="text-sm text-white/60 max-w-sm">
+              When your balance drops below the trigger amount, the wallet will
+              automatically top up by the set amount.
+            </p>
+          </div>
+          <div className="flex flex-wrap gap-2 items-center">
             <input
               type="number"
-              min="5"
-              step="1"
+              placeholder="Trigger ($)"
+              className="w-28 rounded-lg border border-white/10 bg-white/5 px-2 py-1 text-sm text-white"
               value={autoTriggerUsd}
               onChange={(e) => setAutoTriggerUsd(e.target.value)}
-              className="w-32 rounded-lg bg-white/5 px-2 py-1 text-sm border border-white/15 text-white"
-              placeholder="e.g. 10"
             />
-          </div>
-
-          <div>
-            <label className="text-xs text-white/60 block mb-1">
-              Recharge Amount ($)
-            </label>
             <input
               type="number"
-              min="10"
-              step="1"
+              placeholder="Recharge ($)"
+              className="w-28 rounded-lg border border-white/10 bg-white/5 px-2 py-1 text-sm text-white"
               value={autoAmountUsd}
               onChange={(e) => setAutoAmountUsd(e.target.value)}
-              className="w-32 rounded-lg bg-white/5 px-2 py-1 text-sm border border-white/15 text-white"
-              placeholder="e.g. 20"
             />
+            <button
+              type="button"
+              onClick={saveAutoRecharge}
+              className="inline-flex items-center gap-1 rounded-lg border border-white/15 bg-white/5 px-3 py-1 text-sm hover:bg-white/10"
+            >
+              <RefreshCcw className="h-4 w-4" /> Save
+            </button>
           </div>
-
-          <button
-            onClick={saveAutoRecharge}
-            className="inline-flex items-center gap-1 rounded-lg border border-white/15 bg-white/5 px-3 py-2 text-sm hover:bg-white/10 disabled:opacity-50"
-          >
-            <Check className="h-4 w-4" /> Save
-          </button>
         </div>
-
-        {autoMsg && <p className="text-xs text-green-400 mt-2">{autoMsg}</p>}
-      </section>
-
-      {/* Transactions */}
-      <section className="rounded-2xl border border-white/10 bg-white/[0.03] p-4">
-        <h2 className="text-base font-semibold mb-2 flex items-center gap-2">
-          <CreditCard className="h-4 w-4" /> Recent Transactions
-        </h2>
-        {txLoading ? (
-          <div className="text-sm text-white/60 flex items-center gap-2">
-            <Loader2 className="h-4 w-4 animate-spin" /> Loading…
-          </div>
-        ) : txError ? (
-          <p className="text-sm text-white/60">{txError}</p>
-        ) : transactions.length === 0 ? (
-          <p className="text-sm text-white/60">No transactions yet.</p>
-        ) : (
-          <ul className="text-sm divide-y divide-white/10">
-            {transactions.map((tx) => (
-              <li key={tx.id} className="py-2 flex justify-between items-center">
-                <span className="text-white/80">
-                  {tx.description || tx.type}
-                </span>
-                <span
-                  className={
-                    tx.amount_cents > 0
-                      ? "text-green-400"
-                      : "text-red-400"
-                  }
-                >
-                  {tx.amount_cents > 0 ? "+" : "-"}$
-                  {(Math.abs(tx.amount_cents) / 100).toFixed(2)}
-                </span>
-              </li>
-            ))}
-          </ul>
+        {autoMsg && (
+          <div className="text-xs text-green-400 mt-2">{autoMsg}</div>
         )}
       </section>
     </div>
