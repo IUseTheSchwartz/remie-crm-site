@@ -187,30 +187,41 @@ export default function WalletPage() {
   }
 
   async function saveAutoRecharge() {
-    const trigger = Math.max(0, Math.round(Number(autoTriggerUsd || 0) * 100));
-    const amount = Math.max(0, Math.round(Number(autoAmountUsd || 0) * 100));
+    if (!userId) return;
 
-    // Update both wallet and subscription if present
+    const trigger = Math.max(0, Math.round(Number(autoTriggerUsd || 0) * 100));
+    let amount = Math.round(Number(autoAmountUsd || 0) * 100);
+
+    if (amount < MIN_CENTS) {
+      setAutoMsg("Recharge amount must be at least $10.");
+      return;
+    }
+
     const updates = {
       auto_recharge_threshold_cents: trigger,
       auto_recharge_amount_cents: amount,
     };
 
-    const { error: wErr } = await supabase
-      .from("user_wallets")
-      .update(updates)
-      .eq("user_id", userId);
+    try {
+      const { error: wErr } = await supabase
+        .from("user_wallets")
+        .update(updates)
+        .eq("user_id", userId);
 
-    const { error: sErr } = await supabase
-      .from("subscriptions")
-      .update(updates)
-      .eq("user_id", userId);
+      const { error: sErr } = await supabase
+        .from("subscriptions")
+        .update(updates)
+        .eq("user_id", userId);
 
-    if (wErr && sErr) {
+      if (wErr && sErr) {
+        setAutoMsg("Failed to save settings.");
+      } else {
+        setAutoMsg("Auto-recharge settings saved.");
+        setTimeout(() => setAutoMsg(""), 3000);
+      }
+    } catch (e) {
+      console.error(e);
       setAutoMsg("Failed to save settings.");
-    } else {
-      setAutoMsg("Auto-recharge settings saved.");
-      setTimeout(() => setAutoMsg(""), 3000);
     }
   }
 
@@ -298,60 +309,61 @@ export default function WalletPage() {
       </section>
 
       {/* Auto-Recharge Settings */}
-<section className="rounded-2xl border border-white/10 bg-white/[0.03] p-4 space-y-4">
-  <h2 className="text-base font-semibold flex items-center gap-2">
-    <RefreshCcw className="h-4 w-4" /> Auto-Recharge
-  </h2>
-  <p className="text-sm text-white/60">
-    Automatically add funds when your wallet balance drops below a certain amount.
-  </p>
+      <section className="rounded-2xl border border-white/10 bg-white/[0.03] p-4 space-y-4">
+        <h2 className="text-base font-semibold flex items-center gap-2">
+          <RefreshCcw className="h-4 w-4" /> Auto-Recharge
+        </h2>
+        <p className="text-sm text-white/60">
+          Automatically add funds when your wallet balance drops below a certain amount.
+        </p>
 
-  <div className="grid gap-3 sm:grid-cols-2">
-    <div>
-      <label className="block text-xs text-white/60 mb-1">
-        Trigger when balance below ($)
-      </label>
-      <input
-        type="number"
-        min="0"
-        step="1"
-        placeholder="e.g. 5"
-        value={autoTriggerUsd}
-        onChange={(e) => setAutoTriggerUsd(e.target.value)}
-        className="w-full rounded-lg border border-white/15 bg-white/5 px-3 py-2 text-sm text-white focus:outline-none focus:ring-1 focus:ring-white/20"
-      />
+        <div className="grid gap-3 sm:grid-cols-2">
+          <div>
+            <label className="block text-xs text-white/60 mb-1">
+              Trigger when balance below ($)
+            </label>
+            <input
+              type="number"
+              min="0"
+              step="1"
+              placeholder="e.g. 5"
+              value={autoTriggerUsd}
+              onChange={(e) => setAutoTriggerUsd(e.target.value)}
+              className="w-full rounded-lg border border-white/15 bg-white/5 px-3 py-2 text-sm text-white focus:outline-none focus:ring-1 focus:ring-white/20"
+            />
+          </div>
+
+          <div>
+            <label className="block text-xs text-white/60 mb-1">
+              Recharge amount ($10 minimum)
+            </label>
+            <input
+              type="number"
+              min="10"
+              step="1"
+              placeholder="e.g. 25"
+              value={autoAmountUsd}
+              onChange={(e) => setAutoAmountUsd(e.target.value)}
+              className="w-full rounded-lg border border-white/15 bg-white/5 px-3 py-2 text-sm text-white focus:outline-none focus:ring-1 focus:ring-white/20"
+            />
+          </div>
+        </div>
+
+        <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
+          <button
+            type="button"
+            onClick={saveAutoRecharge}
+            className="inline-flex items-center gap-2 rounded-lg border border-white/15 bg-white/5 px-3 py-2 text-sm hover:bg-white/10"
+          >
+            <Check className="h-4 w-4" /> Save Settings
+          </button>
+          {autoMsg && (
+            <div className="text-sm text-white/70 flex items-center gap-1">
+              <Check className="h-4 w-4 text-green-400" /> {autoMsg}
+            </div>
+          )}
+        </div>
+      </section>
     </div>
-
-    <div>
-      <label className="block text-xs text-white/60 mb-1">
-        Recharge amount ($10 minimum)
-      </label>
-      <input
-        type="number"
-        min="10"
-        step="1"
-        placeholder="e.g. 25"
-        value={autoAmountUsd}
-        onChange={(e) => setAutoAmountUsd(e.target.value)}
-        className="w-full rounded-lg border border-white/15 bg-white/5 px-3 py-2 text-sm text-white focus:outline-none focus:ring-1 focus:ring-white/20"
-      />
-    </div>
-  </div>
-
-  <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
-    <button
-      type="button"
-      onClick={saveAutoRecharge}
-      className="inline-flex items-center gap-2 rounded-lg border border-white/15 bg-white/5 px-3 py-2 text-sm hover:bg-white/10"
-    >
-      <Check className="h-4 w-4" /> Save Settings
-    </button>
-    {autoMsg && (
-      <div className="text-sm text-white/70 flex items-center gap-1">
-        <Check className="h-4 w-4 text-green-400" /> {autoMsg}
-      </div>
-    )}
-  </div>
-</section>
   );
 }
