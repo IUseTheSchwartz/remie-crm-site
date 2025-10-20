@@ -1,7 +1,13 @@
 // File: src/pages/Wallet.jsx
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 import { supabase } from "../lib/supabaseClient";
-import { CreditCard, Loader2, Check, PlusCircle, RefreshCcw } from "lucide-react";
+import {
+  CreditCard,
+  Loader2,
+  Check,
+  PlusCircle,
+  RefreshCcw,
+} from "lucide-react";
 
 export default function WalletPage() {
   const [loading, setLoading] = useState(true);
@@ -17,7 +23,13 @@ export default function WalletPage() {
   const [customUsd, setCustomUsd] = useState("");
   const [customMsg, setCustomMsg] = useState("");
 
-  const MIN_CENTS = 100;
+  // Auto-recharge settings
+  const [autoTriggerUsd, setAutoTriggerUsd] = useState("");
+  const [autoAmountUsd, setAutoAmountUsd] = useState("");
+  const [autoMsg, setAutoMsg] = useState("");
+
+  // Minimum top-up is now $10
+  const MIN_CENTS = 1000;
   const MAX_CENTS = 50000;
 
   useEffect(() => {
@@ -33,14 +45,22 @@ export default function WalletPage() {
       if (!mounted) return;
       setUserId(uid);
 
-      // Load balance
+      // Load wallet balance
       const { data: wallet } = await supabase
         .from("user_wallets")
-        .select("balance_cents")
+        .select(
+          "balance_cents, auto_recharge_threshold_cents, auto_recharge_amount_cents"
+        )
         .eq("user_id", uid)
         .maybeSingle();
       if (!mounted) return;
       setBalanceCents(wallet?.balance_cents || 0);
+      if (wallet) {
+        setAutoTriggerUsd(
+          (wallet.auto_recharge_threshold_cents || 0) / 100 || ""
+        );
+        setAutoAmountUsd((wallet.auto_recharge_amount_cents || 0) / 100 || "");
+      }
       setLoading(false);
 
       // Realtime updates
@@ -61,7 +81,9 @@ export default function WalletPage() {
       await loadTransactions(uid);
 
       return () => {
-        try { supabase.removeChannel?.(ch); } catch {}
+        try {
+          supabase.removeChannel?.(ch);
+        } catch {}
       };
     })();
 
@@ -70,7 +92,7 @@ export default function WalletPage() {
       setTxLoading(true);
       try {
         const { data, error } = await supabase
-          .from("wallet_transactions") // if you use a different table name, change here
+          .from("wallet_transactions")
           .select("id, type, amount_cents, created_at, description")
           .eq("user_id", uid)
           .order("created_at", { ascending: false })
@@ -78,7 +100,6 @@ export default function WalletPage() {
         if (error) throw error;
         setTransactions(data || []);
       } catch (e) {
-        // If the table doesn't exist yet, fail silently with a friendly message
         setTxError("No transaction history available yet.");
         setTransactions([]);
       } finally {
@@ -89,7 +110,13 @@ export default function WalletPage() {
 
   const balanceDollars = (balanceCents / 100).toFixed(2);
 
-  async function startStripeTopUp({ userId, netTopUpCents, clientRef, coverFees = true, returnTo }) {
+  async function startStripeTopUp({
+    userId,
+    netTopUpCents,
+    clientRef,
+    coverFees = true,
+    returnTo,
+  }) {
     const res = await fetch("/.netlify/functions/create-checkout-session", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -99,8 +126,10 @@ export default function WalletPage() {
         netTopUpCents,
         clientRef,
         coverFees,
-        successUrl: returnTo || window.location.origin + "/app/wallet?success=1",
-        cancelUrl: returnTo || window.location.origin + "/app/wallet?canceled=1",
+        successUrl:
+          returnTo || window.location.origin + "/app/wallet?success=1",
+        cancelUrl:
+          returnTo || window.location.origin + "/app/wallet?canceled=1",
       }),
     });
     if (!res.ok) {
@@ -140,10 +169,30 @@ export default function WalletPage() {
     }
     const cents = Math.round(n * 100);
     if (cents < MIN_CENTS || cents > MAX_CENTS) {
-      setCustomMsg("Amount must be between $1 and $500.");
+      setCustomMsg("Amount must be between $10 and $500.");
       return;
     }
     topUpStripe(cents);
+  }
+
+  async function saveAutoRecharge() {
+    const trigger = Math.max(0, Math.round(Number(autoTriggerUsd || 0) * 100));
+    const amount = Math.max(MIN_CENTS, Math.round(Number(autoAmountUsd || 0) * 100));
+
+    const { error } = await supabase
+      .from("user_wallets")
+      .update({
+        auto_recharge_threshold_cents: trigger,
+        auto_recharge_amount_cents: amount,
+      })
+      .eq("user_id", userId);
+
+    if (error) {
+      setAutoMsg("Failed to save settings.");
+    } else {
+      setAutoMsg("Auto-recharge settings saved.");
+      setTimeout(() => setAutoMsg(""), 3000);
+    }
   }
 
   if (loading) {
@@ -161,7 +210,9 @@ export default function WalletPage() {
       {/* Header */}
       <header className="rounded-2xl border border-white/10 bg-white/[0.03] p-4">
         <h1 className="text-lg font-semibold">Wallet</h1>
-        <p className="mt-1 text-sm text-white/70">Manage your messaging funds and view recent wallet activity.</p>
+        <p className="mt-1 text-sm text-white/70">
+          Manage your messaging funds and view recent wallet activity.
+        </p>
       </header>
 
       {/* Balance & Add Funds */}
@@ -170,123 +221,159 @@ export default function WalletPage() {
           <div>
             <div className="text-sm text-white/60">Current Balance</div>
             <div className="text-2xl font-semibold">${balanceDollars}</div>
-            <div className="mt-1 text-xs text-white/50">Texts are billed per segment.</div>
+            <div className="mt-1 text-xs text-white/50">
+              Texts are billed per segment.
+            </div>
           </div>
 
           <div className="flex flex-col gap-2 md:items-end">
             <div className="flex flex-wrap gap-2">
-              <button type="button" onClick={() => topUpStripe(500)} disabled={topping} className="inline-flex items-center gap-1 rounded-lg border border-white/15 bg-white/5 px-3 py-2 text-sm hover:bg-white/10 disabled:opacity-50"><CreditCard className="h-4 w-4" /> +$5</button>
-              <button type="button" onClick={() => topUpStripe(1000)} disabled={topping} className="inline-flex items-center gap-1 rounded-lg border border-white/15 bg-white/5 px-3 py-2 text-sm hover:bg-white/10 disabled:opacity-50"><CreditCard className="h-4 w-4" /> +$10</button>
-              <button type="button" onClick={() => topUpStripe(2000)} disabled={topping} className="inline-flex items-center gap-1 rounded-lg border border-white/15 bg-white/5 px-3 py-2 text-sm hover:bg-white/10 disabled:opacity-50"><CreditCard className="h-4 w-4" /> +$20</button>
-              <button type="button" onClick={() => topUpStripe(5000)} disabled={topping} className="inline-flex items-center gap-1 rounded-lg border border-white/15 bg-white/5 px-3 py-2 text-sm hover:bg-white/10 disabled:opacity-50"><CreditCard className="h-4 w-4" /> +$50</button>
+              <button
+                type="button"
+                onClick={() => topUpStripe(1000)}
+                disabled={topping}
+                className="inline-flex items-center gap-1 rounded-lg border border-white/15 bg-white/5 px-3 py-2 text-sm hover:bg-white/10 disabled:opacity-50"
+              >
+                <CreditCard className="h-4 w-4" /> +$10
+              </button>
+              <button
+                type="button"
+                onClick={() => topUpStripe(2000)}
+                disabled={topping}
+                className="inline-flex items-center gap-1 rounded-lg border border-white/15 bg-white/5 px-3 py-2 text-sm hover:bg-white/10 disabled:opacity-50"
+              >
+                <CreditCard className="h-4 w-4" /> +$20
+              </button>
+              <button
+                type="button"
+                onClick={() => topUpStripe(5000)}
+                disabled={topping}
+                className="inline-flex items-center gap-1 rounded-lg border border-white/15 bg-white/5 px-3 py-2 text-sm hover:bg-white/10 disabled:opacity-50"
+              >
+                <CreditCard className="h-4 w-4" /> +$50
+              </button>
             </div>
 
             <div className="flex items-center gap-2">
               <label className="text-xs text-white/60">Custom:</label>
               <div className="flex items-center gap-2">
                 <div className="relative">
-                  <span className="pointer-events-none absolute left-2 top-1.5 text-sm text-white/50">$</span>
+                  <span className="pointer-events-none absolute left-2 top-1.5 text-sm text-white/50">
+                    $
+                  </span>
                   <input
                     type="number"
                     inputMode="decimal"
-                    min="1"
+                    min="10"
                     max="500"
                     step="1"
                     value={customUsd}
                     onChange={(e) => setCustomUsd(e.target.value)}
-                    placeholder="e.g. 7"
-                    className="w-24 rounded-lg border border-white/15 bg-white/5 pl-5 pr-3 py-2 text-sm outline-none focus:ring-1 focus:ring-indigo-400/50"
+                    placeholder="e.g. 25"
+                    className="w-24 rounded-lg bg-white/5 px-4 py-1 text-sm border border-white/15 text-white"
                   />
                 </div>
-                <button type="button" onClick={addCustom} disabled={topping} className="inline-flex items-center gap-1 rounded-lg border border-white/15 bg-white/5 px-3 py-2 text-sm hover:bg-white/10 disabled:opacity-50"><PlusCircle className="h-4 w-4" /> Add</button>
+                <button
+                  onClick={addCustom}
+                  disabled={topping}
+                  className="inline-flex items-center gap-1 rounded-lg border border-white/15 bg-white/5 px-2 py-1 text-sm hover:bg-white/10 disabled:opacity-50"
+                >
+                  <PlusCircle className="h-4 w-4" /> Add
+                </button>
               </div>
-              {customMsg && <div className="text-xs text-amber-300">{customMsg}</div>}
             </div>
 
-            <div className="text-[11px] text-white/40">Allowed custom range: $1–$500</div>
+            {customMsg && (
+              <p className="text-xs text-red-400 mt-1">{customMsg}</p>
+            )}
           </div>
         </div>
       </section>
 
-      {/* Transactions */}
+      {/* Auto-Recharge Settings */}
       <section className="rounded-2xl border border-white/10 bg-white/[0.03] p-4">
-        <div className="mb-2 flex items-center justify-between">
-          <h3 className="text-sm font-semibold">Recent Activity</h3>
+        <h2 className="text-base font-semibold mb-2 flex items-center gap-2">
+          <RefreshCcw className="h-4 w-4" /> Auto-Recharge
+        </h2>
+        <p className="text-sm text-white/60 mb-4">
+          Automatically add funds when your wallet drops below a chosen amount.
+        </p>
+
+        <div className="flex flex-col md:flex-row md:items-end gap-3">
+          <div>
+            <label className="text-xs text-white/60 block mb-1">
+              Trigger Below ($)
+            </label>
+            <input
+              type="number"
+              min="5"
+              step="1"
+              value={autoTriggerUsd}
+              onChange={(e) => setAutoTriggerUsd(e.target.value)}
+              className="w-32 rounded-lg bg-white/5 px-2 py-1 text-sm border border-white/15 text-white"
+              placeholder="e.g. 10"
+            />
+          </div>
+
+          <div>
+            <label className="text-xs text-white/60 block mb-1">
+              Recharge Amount ($)
+            </label>
+            <input
+              type="number"
+              min="10"
+              step="1"
+              value={autoAmountUsd}
+              onChange={(e) => setAutoAmountUsd(e.target.value)}
+              className="w-32 rounded-lg bg-white/5 px-2 py-1 text-sm border border-white/15 text-white"
+              placeholder="e.g. 20"
+            />
+          </div>
+
           <button
-            type="button"
-            onClick={async () => {
-              if (!userId) return;
-              try {
-                setTxError("");
-                setTxLoading(true);
-                const { data, error } = await supabase
-                  .from("wallet_transactions")
-                  .select("id, type, amount_cents, created_at, description")
-                  .eq("user_id", userId)
-                  .order("created_at", { ascending: false })
-                  .limit(50);
-                if (error) throw error;
-                setTransactions(data || []);
-              } catch (e) {
-                setTxError("No transaction history available yet.");
-                setTransactions([]);
-              } finally {
-                setTxLoading(false);
-              }
-            }}
-            className="inline-flex items-center gap-1 rounded-md border border-white/15 bg-white/5 px-2 py-1 text-[11px] hover:bg-white/10"
+            onClick={saveAutoRecharge}
+            className="inline-flex items-center gap-1 rounded-lg border border-white/15 bg-white/5 px-3 py-2 text-sm hover:bg-white/10 disabled:opacity-50"
           >
-            <RefreshCcw className="h-3.5 w-3.5" /> Refresh
+            <Check className="h-4 w-4" /> Save
           </button>
         </div>
 
+        {autoMsg && <p className="text-xs text-green-400 mt-2">{autoMsg}</p>}
+      </section>
+
+      {/* Transactions */}
+      <section className="rounded-2xl border border-white/10 bg-white/[0.03] p-4">
+        <h2 className="text-base font-semibold mb-2 flex items-center gap-2">
+          <CreditCard className="h-4 w-4" /> Recent Transactions
+        </h2>
         {txLoading ? (
-          <div className="rounded-lg bg-white/5 p-3 text-sm text-white/70">
-            <Loader2 className="mr-2 inline h-4 w-4 animate-spin" />
-            Loading activity…
+          <div className="text-sm text-white/60 flex items-center gap-2">
+            <Loader2 className="h-4 w-4 animate-spin" /> Loading…
           </div>
         ) : txError ? (
-          <div className="rounded-lg border border-white/10 bg-black/30 p-3 text-sm text-white/60">
-            {txError}
-          </div>
+          <p className="text-sm text-white/60">{txError}</p>
         ) : transactions.length === 0 ? (
-          <div className="rounded-lg border border-white/10 bg-black/30 p-3 text-sm text-white/60">
-            No activity yet.
-          </div>
+          <p className="text-sm text-white/60">No transactions yet.</p>
         ) : (
-          <div className="overflow-x-auto rounded-xl border border-white/10">
-            <table className="min-w-[640px] w-full border-collapse text-sm">
-              <thead className="bg-white/[0.04] text-white/70">
-                <tr>
-                  <th className="px-3 py-2 text-left font-medium">Date</th>
-                  <th className="px-3 py-2 text-left font-medium">Type</th>
-                  <th className="px-3 py-2 text-left font-medium">Description</th>
-                  <th className="px-3 py-2 text-right font-medium">Amount</th>
-                </tr>
-              </thead>
-              <tbody>
-                {transactions.map((t) => {
-                  const sign = t.amount_cents >= 0 ? "+" : "−";
-                  const abs = Math.abs(t.amount_cents || 0);
-                  const dollars = (abs / 100).toFixed(2);
-                  const dt = new Date(t.created_at);
-                  const dateStr = dt.toLocaleString();
-                  return (
-                    <tr key={t.id} className="border-t border-white/10">
-                      <td className="px-3 py-2">{dateStr}</td>
-                      <td className="px-3 py-2 capitalize">{String(t.type || "").replace(/_/g, " ") || "—"}</td>
-                      <td className="px-3 py-2">{t.description || "—"}</td>
-                      <td className="px-3 py-2 text-right">
-                        <span className={t.amount_cents >= 0 ? "text-emerald-300" : "text-rose-300"}>
-                          {sign}${dollars}
-                        </span>
-                      </td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-          </div>
+          <ul className="text-sm divide-y divide-white/10">
+            {transactions.map((tx) => (
+              <li key={tx.id} className="py-2 flex justify-between items-center">
+                <span className="text-white/80">
+                  {tx.description || tx.type}
+                </span>
+                <span
+                  className={
+                    tx.amount_cents > 0
+                      ? "text-green-400"
+                      : "text-red-400"
+                  }
+                >
+                  {tx.amount_cents > 0 ? "+" : "-"}$
+                  {(Math.abs(tx.amount_cents) / 100).toFixed(2)}
+                </span>
+              </li>
+            ))}
+          </ul>
         )}
       </section>
     </div>
