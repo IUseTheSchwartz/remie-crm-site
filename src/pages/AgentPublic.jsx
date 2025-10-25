@@ -84,7 +84,49 @@ function StarDisplay({ rating = 0, size = "lg", variant = "auto" }) {
   );
 }
 
-/* “Leave a review” modal (no captcha) */
+/* Clickable star input (for leaving a review) */
+function StarInput({ value = 5, onChange, size = "xl" }) {
+  const [hover, setHover] = useState(0);
+  const cls = { lg: "h-6 w-6", xl: "h-7 w-7" }[size] || "h-6 w-6";
+  const active = hover || value;
+
+  return (
+    <div className="inline-flex items-center gap-1" onMouseLeave={() => setHover(0)}>
+      <svg width="0" height="0" aria-hidden>
+        <defs>
+          <linearGradient id="star-grad" x1="0" y1="0" x2="1" y2="1">
+            <stop offset="0%" stopColor="#6366f1" />
+            <stop offset="50%" stopColor="#a855f7" />
+            <stop offset="100%" stopColor="#d946ef" />
+          </linearGradient>
+        </defs>
+      </svg>
+      {Array.from({ length: 5 }).map((_, i) => {
+        const filled = i < active;
+        return (
+          <button
+            key={i}
+            type="button"
+            aria-label={`${i + 1} star${i ? "s" : ""}`}
+            onMouseEnter={() => setHover(i + 1)}
+            onFocus={() => setHover(i + 1)}
+            onClick={() => onChange?.(i + 1)}
+            className="p-0.5 rounded-md focus:outline-none focus:ring-2 focus:ring-indigo-500/30"
+            title={`${i + 1}`}
+          >
+            <Star
+              className={cls}
+              style={filled ? { fill: "url(#star-grad)" } : {}}
+              stroke={filled ? "none" : "url(#star-grad)"}
+            />
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
+/* “Leave a review” modal (stars are clickable now) */
 function LeaveReviewModal({ open, onClose, agentId, onSubmitted }) {
   const [rating, setRating] = useState(5);
   const [name, setName] = useState("");
@@ -144,7 +186,7 @@ function LeaveReviewModal({ open, onClose, agentId, onSubmitted }) {
 
         {ok ? (
           <div className="mt-4 rounded-lg border border-emerald-200 bg-emerald-50 p-3 text-sm text-emerald-800">
-            Thanks! Your review was submitted and will appear after approval.
+            Thanks! Your review was submitted.
           </div>
         ) : (
           <>
@@ -157,21 +199,9 @@ function LeaveReviewModal({ open, onClose, agentId, onSubmitted }) {
             <div className="mt-4 space-y-4">
               <div>
                 <div className="text-xs text-neutral-700 mb-1">Rating</div>
-                <div className="inline-flex items-center gap-2">
-                  <StarDisplay rating={rating} size="xl" variant="solid" />
-                  <div className="inline-flex gap-1">
-                    {[1, 2, 3, 4, 5].map((i) => (
-                      <button
-                        key={i}
-                        onClick={() => setRating(i)}
-                        className={`rounded-md px-2 py-1 text-xs border ${
-                          rating === i ? "border-neutral-300 bg-neutral-100" : "border-neutral-200 hover:bg-neutral-50"
-                        }`}
-                      >
-                        {i}
-                      </button>
-                    ))}
-                  </div>
+                <div className="inline-flex items-center gap-3">
+                  <StarInput value={rating} onChange={setRating} size="xl" />
+                  <div className="text-xs text-neutral-600">{rating}/5</div>
                 </div>
               </div>
 
@@ -279,7 +309,7 @@ export default function AgentPublic() {
       }
     })();
 
-    return () => { mounted = false; };
+    return () => { let _ = false; /* noop unmount */ };
   }, [slug]);
 
   // Fetch public reviews
