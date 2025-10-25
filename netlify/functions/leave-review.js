@@ -18,7 +18,7 @@ function json(statusCode, body) {
 }
 
 exports.handler = async (event) => {
-  // Handle preflight if needed
+  // Optional CORS preflight
   if (event.httpMethod === "OPTIONS") {
     return {
       statusCode: 204,
@@ -64,8 +64,8 @@ exports.handler = async (event) => {
       rating: r,
       reviewer_name: safeName,
       comment: safeComment,
-      // Insert hidden; will only show after approval (your front-end filters is_public = true)
-      is_public: false,
+      // 🔥 Make public immediately
+      is_public: true,
     });
 
     if (error) {
