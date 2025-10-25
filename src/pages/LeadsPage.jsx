@@ -250,7 +250,7 @@ function InboundWebhookPanel() {
               <li>Lead type(s) — e.g., FEX, Veteran, EG</li>
               <li>CRM login email</li>
               <li><b>Username</b> &amp; <b>Password</b> (shown above)</li>
-              <li>Google Sheet name + link</li>
+              <li>Google Sheet name</li>
             </ul>
           </li>
         </ol>
