@@ -148,10 +148,8 @@ function InboundWebhookPanel() {
   const [username, setUsername] = useState(""); // webhook row id
   const [secret, setSecret] = useState("");     // webhook secret
   const [loading, setLoading] = useState(true);
-  const [busy, setBusy] = useState(false);
-  const [copied, setCopied] = useState({ u: false, p: false, e: false, addr: false });
+  const [copied, setCopied] = useState({ u: false, p: false, addr: false });
 
-  const ENDPOINT = import.meta.env?.VITE_LEADS_INBOUND_URL || "/.netlify/functions/inbound-leads";
   const LEADS_EMAIL = "remiecrmleads@gmail.com";
 
   // Load (and create if missing) using your Netlify function
@@ -189,49 +187,6 @@ function InboundWebhookPanel() {
       setTimeout(() => setCopied((c) => ({ ...c, [k]: false })), 1200);
     } catch {}
   }
-
-  async function rotateSecret() {
-    try {
-      setBusy(true);
-      const { data: sess } = await supabase.auth.getSession();
-      const token = sess?.session?.access_token;
-      const res = await fetch("/.netlify/functions/user-webhook", {
-        method: "POST",
-        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
-        body: JSON.stringify({ rotate: true }),
-      });
-      const json = await res.json().catch(() => ({}));
-      if (!res.ok || !json?.secret) throw new Error(json?.error || "Rotate failed");
-      // API returns the same id (active row), with a new secret
-      setUsername(json.id || username);
-      setSecret(json.secret);
-    } catch (e) {
-      alert(e.message || "Could not rotate password.");
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  const endpointUrl = `${window.location.origin}${ENDPOINT}`;
-  const curl = `curl -X POST '${endpointUrl}' \\
-  -u '${username || "<username>"}:${secret || "<password>"}' \\
-  -H 'Content-Type: application/json' \\
-  -d '{"name":"Jane Doe","phone":"(555) 123-4567","email":"jane@example.com","state":"TX"}'`;
-
-  const mailtoHref = `mailto:${LEADS_EMAIL}?subject=${encodeURIComponent("Auto-Import Leads setup")}&body=${encodeURIComponent(
-    [
-      "Hi — please set up auto-import for my Google Sheet.",
-      "",
-      "Lead type(s): (e.g., FEX, Veteran, EG)",
-      "CRM login email: ",
-      `Username: ${username || "<will appear after login>"}`,
-      `Password: ${secret ? secret : "<rotate and paste here>"}`,
-      `Endpoint: ${endpointUrl}`,
-      "Google Sheet name + link: ",
-      "",
-      "Thanks!",
-    ].join("\n")
-  )}`;
 
   return (
     <div className="rounded-2xl border border-white/15 bg-white/[0.03] p-4">
@@ -278,45 +233,10 @@ function InboundWebhookPanel() {
             {copied.p ? "Copied!" : "Copy"}
           </button>
         </div>
-        <div className="flex gap-2">
-          {!!username && (
-            <button
-              type="button"
-              onClick={rotateSecret}
-              disabled={busy}
-              className="rounded-lg border border-white/15 bg-white/5 px-3 py-2 text-xs hover:bg-white/10"
-              title="Rotate password"
-            >
-              {busy ? "Working…" : "Rotate"}
-            </button>
-          )}
-        </div>
-
-        <div className="text-xs text-white/60 mt-3 md:mt-0">Endpoint</div>
-        <div className="flex items-center gap-2">
-          <input
-            readOnly
-            value={endpointUrl}
-            className="w-full rounded-lg border border-white/15 bg-black/40 px-3 py-2 text-sm outline-none"
-          />
-          <button
-            type="button"
-            onClick={() => copy(endpointUrl, "e")}
-            className="rounded-lg border border-white/15 bg-white/5 px-3 py-2 text-xs hover:bg-white/10"
-          >
-            {copied.e ? "Copied!" : "Copy"}
-          </button>
-        </div>
-        <div />
+        <div /> {/* rotate button removed */}
       </div>
 
-      {/* Example */}
-      <div className="mt-4 rounded-xl border border-white/10 bg-black/40 p-3 text-xs">
-        <div className="mb-1 font-medium text-white/80">Example</div>
-        <pre className="whitespace-pre-wrap break-all text-white/70">{curl}</pre>
-      </div>
-
-      {/* Steps */}
+      {/* Steps (simplified) */}
       <div className="mt-5 rounded-xl border border-white/10 bg-gradient-to-r from-black/40 to-black/10 p-4">
         <div className="font-medium mb-2">Steps:</div>
         <ol className="list-decimal space-y-2 pl-5 text-sm">
@@ -343,12 +263,6 @@ function InboundWebhookPanel() {
           >
             {copied.addr ? "Copied!" : "Copy email address"}
           </button>
-          <a
-            href={mailtoHref}
-            className="rounded-lg bg-white px-3 py-2 text-sm font-medium text-black hover:bg-white/90"
-          >
-            Compose email
-          </a>
         </div>
 
         <p className="mt-2 text-xs text-white/50">
