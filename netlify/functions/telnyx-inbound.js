@@ -1,4 +1,4 @@
-// File: netlify/functions/telnyx-inbound.js
+// netlify/functions/telnyx-inbound.js
 // Minimal inbound: store inbound SMS, handle STOP/START, pause sequences,
 // send a push to the agent, then (best-effort) call ai-dispatch.
 
@@ -28,29 +28,53 @@ function toE164(p) {
 }
 
 /* ---------------- Agent resolution ---------------- */
+/**
+ * Order:
+ *  1) toll_free_numbers.number == telnyxToE164 -> assigned_to
+ *  2) agent_messaging_numbers.e164 == telnyxToE164 -> user_id (legacy/secondary)
+ *  3) most recent messages.from_number == telnyxToE164 -> user_id (last-resort)
+ *  4) fallback env
+ */
 async function resolveUserId(db, telnyxToE164) {
-  const { data: owner } = await db
-    .from("agent_messaging_numbers")
-    .select("user_id")
-    .eq("e164", telnyxToE164)
-    .maybeSingle();
-  if (owner?.user_id) return owner.user_id;
+  // 1) Primary: toll_free_numbers (handoff spec)
+  try {
+    const { data: tfn } = await db
+      .from("toll_free_numbers")
+      .select("assigned_to")
+      .eq("number", telnyxToE164)
+      .maybeSingle();
+    if (tfn?.assigned_to) return tfn.assigned_to;
+  } catch (_) {}
 
-  const { data: m } = await db
-    .from("messages")
-    .select("user_id")
-    .eq("from_number", telnyxToE164)
-    .order("created_at", { ascending: false })
-    .limit(1);
-  if (m && m[0]?.user_id) return m[0].user_id;
+  // 2) Secondary: agent_messaging_numbers (existing repo)
+  try {
+    const { data: owner } = await db
+      .from("agent_messaging_numbers")
+      .select("user_id")
+      .eq("e164", telnyxToE164)
+      .maybeSingle();
+    if (owner?.user_id) return owner.user_id;
+  } catch (_) {}
 
+  // 3) Last sent message using this telnyx number (heuristic)
+  try {
+    const { data: m } = await db
+      .from("messages")
+      .select("user_id")
+      .eq("from_number", telnyxToE164)
+      .order("created_at", { ascending: false })
+      .limit(1);
+    if (m && m[0]?.user_id) return m[0].user_id;
+  } catch (_) {}
+
+  // 4) Fallback env
   const SHARED =
     process.env.TELNYX_FROM ||
     process.env.TELNYX_FROM_NUMBER ||
     process.env.DEFAULT_FROM_NUMBER ||
     null;
   if (SHARED && SHARED === telnyxToE164) {
-    // optional shared routing
+    // optional: route to a shared inbox user
   }
 
   return process.env.INBOUND_FALLBACK_USER_ID || process.env.DEFAULT_USER_ID || null;
@@ -169,7 +193,7 @@ exports.handler = async (event) => {
   const row = {
     user_id,
     contact_id: contact?.id || null,
-    direction: "incoming",
+    direction: "incoming",       // keep as-is to match your UI
     provider: "telnyx",
     from_number: from,
     to_number: to,
@@ -254,10 +278,7 @@ exports.handler = async (event) => {
       try {
         r = await fetch(dispatchUrl, {
           method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            accept: "application/json",
-          },
+          headers: { "Content-Type": "application/json", accept: "application/json" },
           body: JSON.stringify(out),
           signal: controller.signal,
         });
