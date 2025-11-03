@@ -285,8 +285,6 @@ function LandingPage() {
         "Easy to use pipeline",
         "Power Dialer",
         "Agent tools",
-        "Automated client mail(coming soon)",
-        "Pay per text $.01",
         "Team integration (create your own team)",
         "Personal stat tracker",
         "Team stat tracker+leaderboard",
