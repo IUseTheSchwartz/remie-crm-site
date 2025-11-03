@@ -55,6 +55,68 @@ function useIsMobile() {
   return isMobile;
 }
 
+/* ---------------- Usage helpers (inline, no external files) ---------------- */
+
+const SMS_TOTAL_DEFAULT = 5000; // segments per month
+
+function monthWindow(d = new Date()) {
+  const start = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), 1, 0, 0, 0));
+  const end = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth() + 1, 1, 0, 0, 0));
+  return { period_start: start.toISOString(), period_end: end.toISOString() };
+}
+
+// Rough-but-safe GSM-7 vs UCS-2 segment counter
+function countSmsSegments(text = "") {
+  const s = String(text);
+  // Allow typical GSM-7 chars; if anything outside, treat as UCS-2
+  const gsm7 =
+    /^[\n\r\t\0\x0B\x0C\x1B\x20-\x7E€£¥èéùìòÇØøÅåΔ_ΦΓΛΩΠΨΣΘΞÆæßÉ^{}[\]~|\\]*$/.test(s);
+  if (gsm7) {
+    const singleLimit = 160, concatLimit = 153;
+    if (s.length <= singleLimit) return 1;
+    return Math.ceil(s.length / concatLimit);
+  } else {
+    const singleLimit = 70, concatLimit = 67;
+    if (s.length <= singleLimit) return 1;
+    return Math.ceil(s.length / concatLimit);
+  }
+}
+
+async function resolveAccountId(user_id) {
+  const { data, error } = await supabase
+    .from("subscriptions")
+    .select("account_id, status")
+    .eq("user_id", user_id)
+    .eq("status", "active")
+    .limit(1);
+  if (!error && data && data[0]?.account_id) return data[0].account_id;
+  return user_id;
+}
+
+async function fetchSmsUsageForCurrentMonth(user_id) {
+  if (!user_id) {
+    return { sms_used: 0, sms_total: SMS_TOTAL_DEFAULT };
+  }
+  const account_id = await resolveAccountId(user_id);
+  const { period_start, period_end } = monthWindow();
+
+  const { data, error } = await supabase
+    .from("usage_counters")
+    .select("free_sms_used, free_sms_total")
+    .eq("account_id", account_id)
+    .eq("period_start", period_start)
+    .eq("period_end", period_end)
+    .maybeSingle();
+
+  if (error || !data) {
+    return { sms_used: 0, sms_total: SMS_TOTAL_DEFAULT };
+  }
+  return {
+    sms_used: Number(data.free_sms_used ?? 0),
+    sms_total: Number(data.free_sms_total ?? SMS_TOTAL_DEFAULT),
+  };
+}
+
 /* ---------------- Main page ---------------- */
 
 export default function MessagesPage() {
@@ -69,6 +131,13 @@ export default function MessagesPage() {
     () => (balanceCents / 100).toFixed(2),
     [balanceCents]
   );
+
+  // Free SMS usage
+  const [usageLoading, setUsageLoading] = useState(true);
+  const [smsUsed, setSmsUsed] = useState(0);
+  const [smsTotal, setSmsTotal] = useState(SMS_TOTAL_DEFAULT);
+  const smsLeft = Math.max(0, smsTotal - smsUsed);
+  const smsPct = Math.min(100, Math.round((smsUsed / Math.max(1, smsTotal)) * 100));
 
   // Threads & conversation
   const [threads, setThreads] = useState([]);
@@ -93,6 +162,15 @@ export default function MessagesPage() {
       .eq("user_id", user.id)
       .maybeSingle();
     if (data) setBalanceCents(data.balance_cents || 0);
+  }
+
+  async function fetchUsage() {
+    if (!user?.id) return;
+    setUsageLoading(true);
+    const u = await fetchSmsUsageForCurrentMonth(user.id);
+    setSmsUsed(u.sms_used);
+    setSmsTotal(u.sms_total || SMS_TOTAL_DEFAULT);
+    setUsageLoading(false);
   }
 
   async function fetchNameMap() {
@@ -132,7 +210,6 @@ export default function MessagesPage() {
         partnerNumber: partner,
         lastMessage: m.body,
         lastAt: m.created_at,
-        // (optional) you could keep m.sent_by_ai here if you want to tag thread preview
       });
     }
     setThreads(grouped);
@@ -235,6 +312,7 @@ export default function MessagesPage() {
       setConversation([]);
       if (activeNumber === partnerNumberE164) setActiveNumber(null);
       await fetchThreads();
+      await fetchUsage(); // usage may change if deletions affect views later (not required, but keeps visuals in sync)
     } catch (e) {
       console.error(e);
       alert("Could not remove conversation.");
@@ -247,7 +325,7 @@ export default function MessagesPage() {
     let mounted = true;
     (async () => {
       setLoading(true);
-      await Promise.all([fetchWallet(), fetchNameMap(), fetchThreads()]);
+      await Promise.all([fetchWallet(), fetchUsage(), fetchNameMap(), fetchThreads()]);
       setLoading(false);
     })();
 
@@ -310,10 +388,17 @@ export default function MessagesPage() {
 
   async function handleSend() {
     if (!text.trim() || !activeNumber) return;
-    if (balanceCents <= 0) {
-      alert("Your text balance is $0. Add funds to send messages.");
+
+    // Estimate segments to decide if free pool allows send despite $0 wallet
+    const segments = countSmsSegments(text);
+    const hasFree = smsLeft > 0; // conservative: at least 1 segment free
+    const needsWallet = !hasFree; // if no free left, wallet must cover
+
+    if (needsWallet && balanceCents <= 0) {
+      alert("You're out of free messages and your wallet is $0. Add funds to send.");
       return;
     }
+
     setSending(true);
     try {
       const { data: session } = await supabase.auth.getSession();
@@ -336,7 +421,7 @@ export default function MessagesPage() {
       }
       setText("");
       scrollerRef.current?.scrollTo({ top: scrollerRef.current.scrollHeight, behavior: "smooth" });
-      fetchWallet();
+      await Promise.all([fetchWallet(), fetchUsage()]);
       await fetchConversation(toE164);
       setActiveNumber(toE164);
     } catch (e) {
@@ -359,6 +444,13 @@ export default function MessagesPage() {
     );
   }
 
+  const sendDisabled =
+    !activeNumber ||
+    !text.trim() ||
+    sending ||
+    // Allow send if either free pool remains OR wallet has funds
+    (smsLeft <= 0 && balanceCents <= 0);
+
   return (
     <div className="h-[100dvh]">
       {/* --- MOBILE: iOS-style two-screen nav --- */}
@@ -367,6 +459,9 @@ export default function MessagesPage() {
           <MobileThreads
             threads={threads}
             balanceDollars={balanceDollars}
+            smsUsed={smsUsed}
+            smsTotal={smsTotal}
+            smsPct={smsPct}
             onNew={() => {
               const raw = prompt("Text a new number.\nEnter any format (e.g., 915-494-3286 or +19154943286):");
               if (!raw) return;
@@ -377,6 +472,7 @@ export default function MessagesPage() {
             onOpen={(n) => setActiveNumber(n)}
             displayForNumber={displayForNumber}
             smallPhoneForNumber={smallPhoneForNumber}
+            usageLoading={usageLoading}
           />
         ) : (
           <MobileChat
@@ -393,21 +489,38 @@ export default function MessagesPage() {
             onRename={() => renameConversation(activeNumber)}
             onRemove={() => removeConversation(activeNumber)}
             onSend={handleSend}
+            sendDisabled={sendDisabled}
           />
         )}
       </div>
 
-      {/* --- DESKTOP: keep your existing two-panel layout --- */}
+      {/* --- DESKTOP: two-panel layout --- */}
       <div className="hidden md:grid h-full grid-cols-[320px_1fr] gap-4">
         {/* Left: threads */}
         <aside className="flex flex-col rounded-2xl border border-white/10 bg-white/[0.03]">
-          {/* Wallet (display only) */}
-          <div className="flex items-center justify-between border-b border-white/10 p-3">
+          {/* Usage + Wallet */}
+          <div className="border-b border-white/10 p-3 space-y-2">
             <div className="text-sm">
-              <div className="text-white/60">Text Balance</div>
+              <div className="text-white/60">Free SMS this month</div>
+              <div className="mt-1">
+                <div className="h-2 w-full rounded-full bg-white/10 overflow-hidden">
+                  <div
+                    className="h-full rounded-full"
+                    style={{
+                      width: `${smsPct}%`,
+                      background: "linear-gradient(90deg, #6b8cff, #9b5cff)",
+                    }}
+                  />
+                </div>
+                <div className="mt-1 text-xs text-white/70">
+                  {usageLoading ? "Loading…" : `${smsUsed}/${smsTotal} segments used • ${Math.max(0, smsTotal - smsUsed)} left`}
+                </div>
+              </div>
+            </div>
+            <div className="text-sm">
+              <div className="text-white/60">Wallet Balance</div>
               <div className="text-lg font-semibold">${balanceDollars}</div>
             </div>
-            {/* No top-up buttons here anymore */}
           </div>
 
           {/* Threads header */}
@@ -545,20 +658,26 @@ export default function MessagesPage() {
               />
               <button
                 onClick={handleSend}
-                disabled={!activeNumber || !text.trim() || sending || balanceCents <= 0}
+                disabled={sendDisabled}
                 className={classNames(
                   "inline-flex h-[44px] items-center gap-2 rounded-xl border px-4 font-medium",
                   "border-white/15 bg-white/5 hover:bg-white/10",
-                  (!activeNumber || !text.trim() || sending || balanceCents <= 0) && "opacity-50 cursor-not-allowed"
+                  sendDisabled && "opacity-50 cursor-not-allowed"
                 )}
               >
                 {sending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Send className="h-4 w-4" />}
                 Send
               </button>
             </div>
-            {balanceCents <= 0 && (
-              <div className="mt-2 text-xs text-amber-300/90">Your balance is $0. Add funds to send messages.</div>
-            )}
+            {(smsLeft <= 0 && balanceCents <= 0) ? (
+              <div className="mt-2 text-xs text-amber-300/90">
+                You’re out of free messages and your wallet is $0. Add funds to send.
+              </div>
+            ) : balanceCents <= 0 ? (
+              <div className="mt-2 text-xs text-emerald-300/90">
+                Wallet is $0, but you still have free messages left.
+              </div>
+            ) : null}
           </div>
         </section>
       </div>
@@ -571,22 +690,37 @@ export default function MessagesPage() {
 function MobileThreads({
   threads,
   balanceDollars,
+  smsUsed,
+  smsTotal,
+  smsPct,
   onNew,
   onOpen,
   displayForNumber,
   smallPhoneForNumber,
+  usageLoading,
 }) {
   return (
     <div className="h-full flex flex-col bg-white/[0.02]">
       {/* Header */}
       <div className="px-4 pt-[12px] pb-2 border-b border-white/10">
         <div className="text-lg font-semibold">Messages</div>
-        <div className="mt-1 flex items-center justify-between">
+        <div className="mt-1">
+          <div className="text-xs text-white/60 mb-1">Free SMS this month</div>
+          <div className="h-2 w-full rounded-full bg-white/10 overflow-hidden">
+            <div
+              className="h-full rounded-full"
+              style={{ width: `${smsPct}%`, background: "linear-gradient(90deg, #6b8cff, #9b5cff)" }}
+            />
+          </div>
+          <div className="mt-1 text-xs text-white/70">
+            {usageLoading ? "Loading…" : `${smsUsed}/${smsTotal} used • ${Math.max(0, smsTotal - smsUsed)} left`}
+          </div>
+        </div>
+        <div className="mt-2 flex items-center justify-between">
           <div className="text-sm">
-            <span className="text-white/60">Text Balance</span>{" "}
+            <span className="text-white/60">Wallet</span>{" "}
             <span className="font-semibold">${balanceDollars}</span>
           </div>
-          {/* No top-up buttons on mobile either */}
         </div>
 
         <div className="mt-2 flex items-center gap-2">
@@ -662,6 +796,7 @@ function MobileChat({
   onRename,
   onRemove,
   onSend,
+  sendDisabled,
 }) {
   return (
     <div className="h-full flex flex-col">
@@ -753,20 +888,22 @@ function MobileChat({
           />
           <button
             onClick={onSend}
-            disabled={!text.trim() || sending || balanceCents <= 0}
+            disabled={sendDisabled}
             className={classNames(
               "inline-flex h-[44px] items-center gap-2 rounded-xl border px-4 font-medium",
               "border-white/15 bg-white/5 hover:bg-white/10",
-              (!text.trim() || sending || balanceCents <= 0) && "opacity-50 cursor-not-allowed"
+              sendDisabled && "opacity-50 cursor-not-allowed"
             )}
           >
             {sending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Send className="h-4 w-4" />}
             Send
           </button>
         </div>
-        {balanceCents <= 0 && (
-          <div className="mt-2 text-xs text-amber-300/90">
-            Your balance is $0. Add funds to send messages.
+        {(balanceCents <= 0) && (
+          <div className="mt-2 text-xs text-white/70">
+            {sendDisabled
+              ? "You’re out of free messages and your wallet is $0. Add funds to send."
+              : "Wallet is $0, but you still have free messages left."}
           </div>
         )}
       </div>
