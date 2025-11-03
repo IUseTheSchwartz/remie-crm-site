@@ -8,7 +8,7 @@ let llmReply = async () => ({ text: "", confidence: 0, reasons: [] });
 try {
   const helper = require("./ai-brain-llm-helper");
   if (helper.llmClassify) llmClassify = helper.llmClassify;
-  if (helper.llmReply) llmReply = helper.llmReply; // optional; add if you enable LLM replies
+  if (helper.llmReply) llmReply = helper.llmReply; // optional; safe if missing
 } catch {}
 
 const DEFAULT_TZ = "America/Chicago";
@@ -29,7 +29,11 @@ const withinOffice = (hours = DEFAULT_HOURS, hour) =>
 function detectSpanish(t = "") {
   const s = String(t).toLowerCase();
   if (/[ñáéíóúü¿¡]/.test(s)) return true;
-  const hints = ["cuánto","cuanto","precio","costo","seguro","vida","mañana","manana","tarde","noche","quien","quién","numero","número","equivocado","esposo","esposa","si","sí","vale","claro","buenas","hola","cotización","cotizacion","cotizaciones"];
+  const hints = [
+    "cuánto","cuanto","precio","costo","seguro","vida","mañana","manana",
+    "tarde","noche","quien","quién","numero","número","equivocado","esposo",
+    "esposa","si","sí","vale","claro","buenas","hola","cotización","cotizacion","cotizaciones"
+  ];
   let score = 0; for (const w of hints) if (s.includes(w)) score++;
   return score >= 2;
 }
@@ -181,25 +185,33 @@ function planNext({ intent, text, es, link, name, context }) {
   if (isAMPMOnly(text) && context?.promptedHour) {
     const ampm = /p/i.test(text) ? "PM" : "AM";
     const label = `${context.promptedHour} ${ampm}`;
-    return { text: T.timeConfirm(es, label, link), intent: "confirm_time", meta: { route: "context_am_pm", context_patch: { promptedHour: null } } };
+    return {
+      text: T.timeConfirm(es, label, link),
+      intent: "confirm_time",
+      meta: { route: "context_am_pm", context_patch: { promptedHour: null, last_intent: "confirm_time" } }
+    };
   }
 
   // Specific clock time & "noon"
   if (/\bnoon\b/i.test(text)) {
-    return { text: T.timeConfirm(es, "12 PM", link), intent: "confirm_time", meta: { route: "deterministic" } };
+    return { text: T.timeConfirm(es, "12 PM", link), intent: "confirm_time", meta: { route: "deterministic", context_patch: { promptedHour: null, last_intent: "confirm_time" } } };
   }
   if (intent === "time_specific") {
     const m =
       String(text).match(/\b(1?\d(?::\d{2})?\s?(a\.?m\.?|p\.?m\.?|am|pm))\b/i) ||
       String(text).match(/\b(1?\d:\d{2})\b/);
     const label = m ? m[1].toUpperCase().replace(/\s+/g, " ") : "the time we discussed";
-    return { text: T.timeConfirm(es, label, link), intent: "confirm_time", meta: { route: "deterministic", context_patch: { promptedHour: null } } };
+    return { text: T.timeConfirm(es, label, link), intent: "confirm_time", meta: { route: "deterministic", context_patch: { promptedHour: null, last_intent: "confirm_time" } } };
   }
 
   // Bare hour → clarify AM/PM and remember
   if (hasAmbiguousBareHour(text)) {
     const h = String(text).match(/\b([1-9]|1[0-2])\b/)[1];
-    return { text: T.clarifyTime(es, h), intent: "clarify_time", meta: { route: "deterministic", prompt_hour: h, context_patch: { promptedHour: h } } };
+    return {
+      text: T.clarifyTime(es, h),
+      intent: "clarify_time",
+      meta: { route: "deterministic", prompt_hour: h, context_patch: { promptedHour: h, last_intent: "clarify_time" } }
+    };
   }
 
   // Time window → ask for a specific time
@@ -209,29 +221,29 @@ function planNext({ intent, text, es, link, name, context }) {
         ? `Esa franja me funciona.${T.linkLine(es, link)} ¿Qué hora específica le queda mejor?`
         : `That window works for me.${T.linkLine(es, link)} What specific time is best for you?`,
       intent: "time_window_ack",
-      meta: { route: "deterministic" },
+      meta: { route: "deterministic", context_patch: { last_intent: "time_window_ack" } },
     };
   }
 
   // Directs
-  if (intent === "stop")       return { text: "", intent: "stop", meta: { route: "deterministic" }, action: "opt_out" };
-  if (intent === "wrong")      return { text: T.wrong(es), intent: "wrong", meta: { route: "deterministic" }, action: "tag_wrong_number" };
-  if (intent === "greet")      return { text: T.greetGeneral(es, name, link), intent: "greet", meta: { route: "deterministic" } };
-  if (intent === "courtesy_greet") return { text: T.courtesy(es, name, link), intent: "courtesy_greet", meta: { route: "deterministic" } };
-  if (intent === "who")        return { text: T.who(es, name, link), intent: "who", meta: { route: "deterministic" } };
-  if (intent === "price")      return { text: T.price(es, link), intent: "price", meta: { route: "deterministic" } };
-  if (intent === "covered")    return { text: T.covered(es, link), intent: "covered", meta: { route: "deterministic" } };
-  if (intent === "brushoff")   return { text: T.brushoff(es, link), intent: "brushoff", meta: { route: "deterministic" } };
-  if (intent === "spouse")     return { text: T.spouse(es, link), intent: "spouse", meta: { route: "deterministic" } };
-  if (intent === "callme")     return { text: T.greetGeneral(es, name, link), intent: "callme", meta: { route: "deterministic" } };
-  if (intent === "agree")      return { text: T.agree(es, link), intent: "agree", meta: { route: "deterministic" } };
-  if (intent === "info")       return { text: T.info(es, link), intent: "info", meta: { route: "deterministic" } };
-  if (intent === "cant_talk")  return { text: T.cant_talk(es, link), intent: "cant_talk", meta: { route: "deterministic" } };
-  if (intent === "how_long")   return { text: T.how_long(es, link), intent: "how_long", meta: { route: "deterministic" } };
-  if (intent === "verify")     return { text: T.verify(es, name, link), intent: "verify", meta: { route: "deterministic" } };
+  if (intent === "stop")       return { text: "", intent: "stop", meta: { route: "deterministic", context_patch: { last_intent: "stop" } }, action: "opt_out" };
+  if (intent === "wrong")      return { text: T.wrong(es), intent: "wrong", meta: { route: "deterministic", context_patch: { last_intent: "wrong" } }, action: "tag_wrong_number" };
+  if (intent === "greet")      return { text: T.greetGeneral(es, name, link), intent: "greet", meta: { route: "deterministic", context_patch: { last_intent: "greet" } } };
+  if (intent === "courtesy_greet") return { text: T.courtesy(es, name, link), intent: "courtesy_greet", meta: { route: "deterministic", context_patch: { last_intent: "courtesy_greet" } } };
+  if (intent === "who")        return { text: T.who(es, name, link), intent: "who", meta: { route: "deterministic", context_patch: { last_intent: "who" } } };
+  if (intent === "price")      return { text: T.price(es, link), intent: "price", meta: { route: "deterministic", context_patch: { last_intent: "price" } } };
+  if (intent === "covered")    return { text: T.covered(es, link), intent: "covered", meta: { route: "deterministic", context_patch: { last_intent: "covered" } } };
+  if (intent === "brushoff")   return { text: T.brushoff(es, link), intent: "brushoff", meta: { route: "deterministic", context_patch: { last_intent: "brushoff" } } };
+  if (intent === "spouse")     return { text: T.spouse(es, link), intent: "spouse", meta: { route: "deterministic", context_patch: { last_intent: "spouse" } } };
+  if (intent === "callme")     return { text: T.greetGeneral(es, name, link), intent: "callme", meta: { route: "deterministic", context_patch: { last_intent: "callme" } } };
+  if (intent === "agree")      return { text: T.agree(es, link), intent: "agree", meta: { route: "deterministic", context_patch: { last_intent: "agree" } } };
+  if (intent === "info")       return { text: T.info(es, link), intent: "info", meta: { route: "deterministic", context_patch: { last_intent: "info" } } };
+  if (intent === "cant_talk")  return { text: T.cant_talk(es, link), intent: "cant_talk", meta: { route: "deterministic", context_patch: { last_intent: "cant_talk" } } };
+  if (intent === "how_long")   return { text: T.how_long(es, link), intent: "how_long", meta: { route: "deterministic", context_patch: { last_intent: "how_long" } } };
+  if (intent === "verify")     return { text: T.verify(es, name, link), intent: "verify", meta: { route: "deterministic", context_patch: { last_intent: "verify" } } };
 
   // fallback
-  return { text: T.greetGeneral(es, name, link), intent: "greet", meta: { route: "fallback" } };
+  return { text: T.greetGeneral(es, name, link), intent: "greet", meta: { route: "fallback", context_patch: { last_intent: "greet" } } };
 }
 
 /* ---------------- decide ---------------- */
@@ -255,7 +267,9 @@ async function decide({
   const intentDet = classify(text);
 
   // hard-stop paths
-  if (intentDet === "stop") return { text: "", intent: "stop", meta: { route: "deterministic" }, action: "opt_out" };
+  if (intentDet === "stop") {
+    return { text: "", intent: "stop", meta: { route: "deterministic", context_patch: { last_intent: "stop" } }, action: "opt_out" };
+  }
 
   // Ask/confirm times & map basics
   let best = planNext({ intent: intentDet, text, es, link, name, context });
@@ -277,7 +291,10 @@ async function decide({
           name,
           context
         });
-        best = { ...detFromLLM, meta: { ...(detFromLLM.meta || {}), llm_cls_conf: cls.confidence, llm_intent: cls.intent } };
+        best = {
+          ...detFromLLM,
+          meta: { ...(detFromLLM.meta || {}), llm_cls_conf: cls.confidence, llm_intent: cls.intent }
+        };
       }
     } catch {}
   }
@@ -306,7 +323,12 @@ async function decide({
         return {
           text: gen.text,
           intent: best.intent,
-          meta: { ...(best.meta || {}), route: "llm_reply", llm_gen_conf: gen.confidence || null, llm_gen_reasons: gen.reasons || [] }
+          meta: {
+            ...(best.meta || {}),
+            route: "llm_reply",
+            llm_gen_conf: gen.confidence || null,
+            llm_gen_reasons: gen.reasons || []
+          }
         };
       }
     } catch {}
