@@ -25,6 +25,17 @@ const normalize = (t = "") => String(t).trim().toLowerCase().replace(/\s+/g, " "
 const withinOffice = (hours = DEFAULT_HOURS, hour) =>
   hour >= Number(hours.start ?? 9) && hour <= Number(hours.end ?? 21);
 
+function shortDateTodayInTZ(tz = DEFAULT_TZ, es = false) {
+  // e.g., "Nov 3" / "3 nov"
+  const d = new Date();
+  const fmt = new Intl.DateTimeFormat(es ? "es-US" : "en-US", {
+    timeZone: tz,
+    month: "short",
+    day: "numeric",
+  });
+  return fmt.format(d);
+}
+
 /* ---------------- language ---------------- */
 function detectSpanish(t = "") {
   const s = String(t).toLowerCase();
@@ -168,9 +179,18 @@ const T = {
     es ? `Solo 5–7 minutos para salud básica, presupuesto y beneficiario, y darle opciones claras.${T.linkLine(es, link)} ¿Qué hora le conviene?`
        : `Just 5–7 minutes to cover basic health, budget, and beneficiary so we can show clear options.${T.linkLine(es, link)} What time works for you?`,
 
-  timeConfirm: (es, label, link) =>
-    es ? `Perfecto, le llamo a las ${label}. Lo mantengo breve.${link ? ` Si prefiere, confirme o reprograme aquí: ${link}` : ""}`
-       : `Perfect, I’ll call you at ${label}. I’ll keep it quick.${link ? ` If you’d like reminders or to reschedule: ${link}` : ""}`,
+  // UPDATED: confirmation copy with date + reschedule by text + credentials website
+  timeConfirm: (es, label, link, tz) => {
+    const d = shortDateTodayInTZ(tz, es);
+    const verifyLine = link
+      ? (es
+          ? ` Mientras tanto, si desea verificar mis credenciales, puede visitar mi sitio: ${link}`
+          : ` In the meantime, if you’d like to verify my credentials, you can visit my website: ${link}`)
+      : "";
+    return es
+      ? `Para confirmar—le llamo a las ${label} hoy (${d}). Si necesita reprogramar, envíeme un texto 30–60 minutos antes de nuestra cita.${verifyLine}`
+      : `Just to make sure—I’ll call you at ${label} today (${d}). If you need to reschedule, just text me 30–60 minutes before our appointment.${verifyLine}`;
+  },
 
   clarifyTime: (es, h) => es ? `¿Le queda mejor ${h} AM o ${h} PM?` : `Does ${h} work better AM or PM?`,
 
@@ -180,28 +200,49 @@ const T = {
 };
 
 /* ---------------- planner ---------------- */
-function planNext({ intent, text, es, link, name, context }) {
+function planNext({ intent, text, es, link, name, context, tz }) {
   // AM/PM follow-up from last turn
   if (isAMPMOnly(text) && context?.promptedHour) {
     const ampm = /p/i.test(text) ? "PM" : "AM";
     const label = `${context.promptedHour} ${ampm}`;
     return {
-      text: T.timeConfirm(es, label, link),
+      text: T.timeConfirm(es, label, link, tz),
       intent: "confirm_time",
-      meta: { route: "context_am_pm", context_patch: { promptedHour: null, last_intent: "confirm_time" } }
+      meta: {
+        route: "context_am_pm",
+        time_label: label,
+        context_patch: { promptedHour: null, last_intent: "confirm_time" },
+      }
     };
   }
 
   // Specific clock time & "noon"
   if (/\bnoon\b/i.test(text)) {
-    return { text: T.timeConfirm(es, "12 PM", link), intent: "confirm_time", meta: { route: "deterministic", context_patch: { promptedHour: null, last_intent: "confirm_time" } } };
+    const label = "12 PM";
+    return {
+      text: T.timeConfirm(es, label, link, tz),
+      intent: "confirm_time",
+      meta: {
+        route: "deterministic",
+        time_label: label,
+        context_patch: { promptedHour: null, last_intent: "confirm_time" },
+      }
+    };
   }
   if (intent === "time_specific") {
     const m =
       String(text).match(/\b(1?\d(?::\d{2})?\s?(a\.?m\.?|p\.?m\.?|am|pm))\b/i) ||
       String(text).match(/\b(1?\d:\d{2})\b/);
     const label = m ? m[1].toUpperCase().replace(/\s+/g, " ") : "the time we discussed";
-    return { text: T.timeConfirm(es, label, link), intent: "confirm_time", meta: { route: "deterministic", context_patch: { promptedHour: null, last_intent: "confirm_time" } } };
+    return {
+      text: T.timeConfirm(es, label, link, tz),
+      intent: "confirm_time",
+      meta: {
+        route: "deterministic",
+        time_label: label,
+        context_patch: { promptedHour: null, last_intent: "confirm_time" },
+      }
+    };
   }
 
   // Bare hour → clarify AM/PM and remember
@@ -272,7 +313,7 @@ async function decide({
   }
 
   // Ask/confirm times & map basics
-  let best = planNext({ intent: intentDet, text, es, link, name, context });
+  let best = planNext({ intent: intentDet, text, es, link, name, context, tz });
 
   // 2) Optional: LLM classification override
   const wantLLM = typeof useLLM === "boolean" ? useLLM : LLM_ENABLED;
@@ -282,14 +323,14 @@ async function decide({
     try {
       const cls = await llmClassify(text);
       if (cls && Number(cls.confidence || 0) >= minConf) {
-        // If classifier found a stronger intent, re-plan with it
         const detFromLLM = planNext({
           intent: cls.intent || intentDet,
           text,
           es: /es/i.test(cls.lang || "") || es,
           link,
           name,
-          context
+          context,
+          tz,
         });
         best = {
           ...detFromLLM,
