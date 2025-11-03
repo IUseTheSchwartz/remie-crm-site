@@ -12,6 +12,7 @@ import {
   Shield,
   BadgeCheck,
   CheckCircle2,
+  RefreshCcw,
 } from "lucide-react";
 import { listMyNumbers, searchNumbersByAreaCode, purchaseNumber } from "../lib/numbers";
 import { startCall, listMyCallLogs } from "../lib/calls";
@@ -27,6 +28,8 @@ const FREE_NUMBERS = 5;                  // first 5 numbers are free
 const COST_PER_SEGMENT_CENTS =
   Number(import.meta.env?.VITE_COST_PER_SEGMENT_CENTS ?? 1); // default 1¢ per started min
 
+const FREE_CALL_MINUTES_TOTAL = 6000;    // 100 hours/month = 6,000 minutes
+
 const rateLabel = `$${(COST_PER_SEGMENT_CENTS / 100).toFixed(2)}/min (per started min)`;
 
 const fmt = (s) => { try { return new Date(s).toLocaleString(); } catch { return s || ""; } };
@@ -37,6 +40,60 @@ const normUS = (s) => {
   return s;
 };
 const startedMinuteSegments = (seconds) => Math.max(1, Math.ceil((Number(seconds) || 0) / 60));
+
+/* ---------- NEW: usage helpers ---------- */
+function monthWindow(d = new Date()) {
+  const start = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), 1, 0, 0, 0));
+  const end = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth() + 1, 1, 0, 0, 0));
+  return { period_start: start.toISOString(), period_end: end.toISOString() };
+}
+
+async function resolveAccountId(user_id) {
+  const { data, error } = await supabase
+    .from("subscriptions")
+    .select("account_id, status")
+    .eq("user_id", user_id)
+    .eq("status", "active")
+    .limit(1);
+  if (!error && data && data[0]?.account_id) return data[0].account_id;
+  return user_id;
+}
+
+/** Reads this month's free call usage. Supports either:
+ *  - minutes columns: free_call_minutes_used, free_call_minutes_total
+ *  - seconds columns: free_call_seconds_used, free_call_seconds_total (converted to minutes, ceiling)
+ */
+async function fetchCallUsageForCurrentMonth(user_id) {
+  if (!user_id) return { used: 0, total: FREE_CALL_MINUTES_TOTAL };
+  const account_id = await resolveAccountId(user_id);
+  const { period_start, period_end } = monthWindow();
+
+  const { data, error } = await supabase
+    .from("usage_counters")
+    .select(
+      "free_call_minutes_used, free_call_minutes_total, free_call_seconds_used, free_call_seconds_total"
+    )
+    .eq("account_id", account_id)
+    .eq("period_start", period_start)
+    .eq("period_end", period_end)
+    .maybeSingle();
+
+  if (error || !data) return { used: 0, total: FREE_CALL_MINUTES_TOTAL };
+
+  if (typeof data.free_call_minutes_used === "number" || typeof data.free_call_minutes_total === "number") {
+    return {
+      used: Math.max(0, Number(data.free_call_minutes_used || 0)),
+      total: Math.max(1, Number(data.free_call_minutes_total || FREE_CALL_MINUTES_TOTAL)),
+    };
+  }
+
+  // Fallback: seconds → started minutes
+  const secUsed = Number(data.free_call_seconds_used || 0);
+  const secTotal = Number(data.free_call_seconds_total || 0);
+  const usedMin = Math.max(0, Math.ceil(secUsed / 60));
+  const totalMin = Math.max(1, Math.ceil(secTotal / 60) || FREE_CALL_MINUTES_TOTAL);
+  return { used: usedMin, total: totalMin };
+}
 
 export default function DialerPage() {
   /* ===== Early return for maintenance (add-only) ===== */
@@ -108,6 +165,13 @@ export default function DialerPage() {
   const [recordEnabled, setRecordEnabled] = useState(false);
   const [savingRecordPref, setSavingRecordPref] = useState(false);
 
+  // NEW: usage state
+  const [usageLoading, setUsageLoading] = useState(true);
+  const [minutesUsed, setMinutesUsed] = useState(0);
+  const [minutesTotal, setMinutesTotal] = useState(FREE_CALL_MINUTES_TOTAL);
+  const minutesLeft = Math.max(0, minutesTotal - minutesUsed);
+  const minutesPct = Math.min(100, Math.round((minutesUsed / Math.max(1, minutesTotal)) * 100));
+
   /* ---------- computed ---------- */
   const freebiesLeft = Math.max(0, FREE_NUMBERS - (myNumbers?.length || 0));
   const hasNumber = (myNumbers?.length || 0) > 0;
@@ -119,7 +183,33 @@ export default function DialerPage() {
     loadAgentPhone();
     refreshBalance();
     loadRecordingPref();
+    initUsage();
   }, []);
+
+  async function initUsage() {
+    try {
+      const { data: auth } = await supabase.auth.getUser();
+      const uid = auth?.user?.id;
+      if (!uid) return;
+      await refreshCallUsage(uid);
+    } catch {}
+  }
+
+  async function refreshCallUsage(uidParam) {
+    const { data: auth } = await supabase.auth.getUser();
+    const uid = uidParam || auth?.user?.id;
+    if (!uid) return;
+    setUsageLoading(true);
+    try {
+      const u = await fetchCallUsageForCurrentMonth(uid);
+      setMinutesUsed(u.used);
+      setMinutesTotal(u.total || FREE_CALL_MINUTES_TOTAL);
+    } catch (e) {
+      // keep defaults on error
+    } finally {
+      setUsageLoading(false);
+    }
+  }
 
   async function refreshBalance() {
     try {
@@ -227,7 +317,10 @@ export default function DialerPage() {
     setBusy(true);
     try {
       await startCall({ agentNumber: normUS(agentCell), leadNumber: normUS(toNumber) });
-      setTimeout(refreshLogs, 2000); // allow webhook to log
+      setTimeout(() => {
+        refreshLogs();
+        refreshCallUsage(); // usage may have changed after a call ends
+      }, 2000);
     } catch (e) {
       alert(e.message || "Failed to start call");
     } finally {
@@ -319,7 +412,7 @@ export default function DialerPage() {
       </div>
 
       {/* header */}
-      <header className="mb-6">
+      <header className="mb-4">
         <div className="flex items-center gap-3">
           <div className="grid h-10 w-10 place-items-center rounded-2xl bg-gradient-to-br from-indigo-500/80 to-fuchsia-500/80 text-white shadow-lg">
             <PhoneCall className="h-5 w-5" />
@@ -327,6 +420,41 @@ export default function DialerPage() {
           <div>
             <h1 className="text-2xl font-semibold tracking-tight">Dialer</h1>
             <p className="text-sm text-white/60">Local-presence calling with your owned numbers.</p>
+          </div>
+        </div>
+
+        {/* NEW: Free call minutes usage */}
+        <div className="mt-4 grid gap-3 md:grid-cols-3">
+          <div className="rounded-xl border border-white/10 bg-white/[0.04] p-3 md:col-span-2">
+            <div className="flex items-center justify-between">
+              <div className="text-sm text-white/70">Free call minutes this month</div>
+              <button
+                onClick={() => refreshCallUsage()}
+                className="inline-flex items-center gap-1 rounded-md border border-white/15 bg-white/5 px-2 py-1 text-[11px] hover:bg-white/10"
+                title="Refresh usage"
+              >
+                <RefreshCcw className="h-3.5 w-3.5" /> Refresh
+              </button>
+            </div>
+            <div className="mt-2 h-2 w-full rounded-full bg-white/10 overflow-hidden">
+              <div
+                className="h-full rounded-full"
+                style={{ width: `${minutesPct}%`, background: "linear-gradient(90deg,#6b8cff,#9b5cff)" }}
+              />
+            </div>
+            <div className="mt-1 text-xs text-white/70">
+              {usageLoading ? "Loading…" : (
+                <>
+                  {minutesUsed}/{minutesTotal} minutes used • {minutesLeft} left
+                </>
+              )}
+            </div>
+          </div>
+          <div className="rounded-xl border border-white/10 bg-amber-500/10 p-3">
+            <div className="text-sm font-medium text-amber-200">Billing note</div>
+            <p className="mt-1 text-xs text-amber-100/90">
+              Calls draw from your free minutes first. After that, your wallet is charged per started minute.
+            </p>
           </div>
         </div>
       </header>
@@ -337,8 +465,13 @@ export default function DialerPage() {
         <section className="lg:col-span-2 rounded-2xl border border-white/10 bg-white/5 backdrop-blur-xl p-5 shadow-[0_8px_30px_rgba(0,0,0,0.12)]">
           <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 mb-4">
             <h2 className="text-lg font-medium">Call composer</h2>
-            <div className="flex items-center gap-2 text-xs text-white/60">
-              <Shield className="h-4 w-4" /> Caller ID attested (STIR/SHAKEN)
+            <div className="flex items-center gap-3 text-xs text-white/60">
+              <span className="rounded-md border border-white/10 bg-white/10 px-2 py-0.5">
+                {usageLoading ? "Checking minutes…" : `${minutesLeft} min left`}
+              </span>
+              <div className="flex items-center gap-2">
+                <Shield className="h-4 w-4" /> Caller ID attested (STIR/SHAKEN)
+              </div>
             </div>
           </div>
 
@@ -451,7 +584,7 @@ export default function DialerPage() {
         <div className="mb-3 flex items-center gap-2">
           <History className="h-5 w-5" />
           <h2 className="text-lg font-medium">Recent calls</h2>
-          <button onClick={refreshLogs} className="ml-auto text-sm underline opacity-80 hover:opacity-100">
+          <button onClick={() => { refreshLogs(); refreshCallUsage(); }} className="ml-auto text-sm underline opacity-80 hover:opacity-100">
             Refresh
           </button>
         </div>
