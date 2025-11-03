@@ -1,7 +1,7 @@
 // File: src/pages/MessagingSettings.jsx
 import { useEffect, useRef, useState } from "react";
 import { supabase } from "../lib/supabaseClient";
-import { Check, Loader2, MessageSquare, Info, RotateCcw, Lock, Phone, X } from "lucide-react";
+import { Check, Loader2, MessageSquare, Info, RotateCcw, Lock, Phone, X, RefreshCcw } from "lucide-react";
 
 /* ---------------- Template Catalog (appointment removed) ---------------- */
 const TEMPLATE_DEFS = [
@@ -34,6 +34,64 @@ const DEFAULTS = {
   holiday_text:
     "Hi {{first_name}}, it’s {{agent_name}}. Wishing you a happy holiday season. I’m here if you need anything for your coverage.",
 };
+
+/* ========= NEW: Usage helpers (Free SMS) ========= */
+const FREE_SMS_SEGMENTS_FALLBACK = 6000; // default monthly allowance if not present in DB
+
+function monthWindow(d = new Date()) {
+  const start = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), 1, 0, 0, 0));
+  const end = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth() + 1, 1, 0, 0, 0));
+  return { period_start: start.toISOString(), period_end: end.toISOString() };
+}
+
+async function resolveAccountId(user_id) {
+  const { data, error } = await supabase
+    .from("subscriptions")
+    .select("account_id, status")
+    .eq("user_id", user_id)
+    .eq("status", "active")
+    .limit(1);
+  if (!error && data && data[0]?.account_id) return data[0].account_id;
+  return user_id;
+}
+
+/** Reads current month SMS usage. Prefers segment fields; falls back to message fields. */
+async function fetchSmsUsageForCurrentMonth(user_id) {
+  if (!user_id) return { used: 0, total: FREE_SMS_SEGMENTS_FALLBACK };
+  const account_id = await resolveAccountId(user_id);
+  const { period_start, period_end } = monthWindow();
+
+  const { data, error } = await supabase
+    .from("usage_counters")
+    .select(
+      "free_sms_segments_used, free_sms_segments_total, free_sms_messages_used, free_sms_messages_total"
+    )
+    .eq("account_id", account_id)
+    .eq("period_start", period_start)
+    .eq("period_end", period_end)
+    .maybeSingle();
+
+  if (error || !data) return { used: 0, total: FREE_SMS_SEGMENTS_FALLBACK };
+
+  // Prefer segments
+  if (
+    typeof data.free_sms_segments_used === "number" ||
+    typeof data.free_sms_segments_total === "number"
+  ) {
+    return {
+      used: Math.max(0, Number(data.free_sms_segments_used || 0)),
+      total: Math.max(1, Number(data.free_sms_segments_total || FREE_SMS_SEGMENTS_FALLBACK)),
+    };
+  }
+
+  // Fallback to messages (treat as segments 1:1)
+  const msgUsed = Number(data.free_sms_messages_used || 0);
+  const msgTotal = Number(data.free_sms_messages_total || 0);
+  return {
+    used: Math.max(0, msgUsed),
+    total: Math.max(1, msgTotal || FREE_SMS_SEGMENTS_FALLBACK),
+  };
+}
 
 /* Small toggle */
 function Toggle({ checked, onChange, label, disabled = false }) {
@@ -173,6 +231,13 @@ export default function MessagingSettings() {
   const [tfnAssigning, setTfnAssigning] = useState(false);
   const [tfnError, setTfnError] = useState("");
 
+  // NEW: Free SMS usage
+  const [smsLoading, setSmsLoading] = useState(true);
+  const [smsUsed, setSmsUsed] = useState(0);
+  const [smsTotal, setSmsTotal] = useState(FREE_SMS_SEGMENTS_FALLBACK);
+  const smsLeft = Math.max(0, smsTotal - smsUsed);
+  const smsPct = Math.min(100, Math.round((smsUsed / Math.max(1, smsTotal)) * 100));
+
   /* -------- Global ESC to close drawers -------- */
   useEffect(() => {
     function onKeyDown(e) {
@@ -275,6 +340,9 @@ export default function MessagingSettings() {
       }));
 
       setLoading(false);
+
+      // Kick off initial SMS usage load
+      await refreshSmsUsage(uid);
     })();
 
     return () => {
@@ -305,6 +373,23 @@ export default function MessagingSettings() {
       mounted = false;
     };
   }, []);
+
+  /* -------- NEW: refresh SMS usage -------- */
+  async function refreshSmsUsage(uidParam) {
+    const { data: auth } = await supabase.auth.getUser();
+    const uid = uidParam || auth?.user?.id;
+    if (!uid) return;
+    setSmsLoading(true);
+    try {
+      const u = await fetchSmsUsageForCurrentMonth(uid);
+      setSmsUsed(u.used);
+      setSmsTotal(u.total || FREE_SMS_SEGMENTS_FALLBACK);
+    } catch (e) {
+      // keep defaults on error
+    } finally {
+      setSmsLoading(false);
+    }
+  }
 
   /* -------- Autosave templates -------- */
   async function saveTemplates(next) {
@@ -411,6 +496,41 @@ export default function MessagingSettings() {
       <header className="rounded-2xl border border-white/10 bg-white/[0.03] p-4">
         <h1 className="text-lg font-semibold">Messaging Settings</h1>
         <p className="mt-1 text-sm text-white/70">Manage your messaging number and message templates.</p>
+
+        {/* NEW: Free SMS usage row */}
+        <div className="mt-4 grid gap-3 md:grid-cols-3">
+          <div className="rounded-xl border border-white/10 bg-white/[0.04] p-3 md:col-span-2">
+            <div className="flex items-center justify-between">
+              <div className="text-sm text-white/70">Free SMS this month (segments)</div>
+              <button
+                onClick={() => refreshSmsUsage()}
+                className="inline-flex items-center gap-1 rounded-md border border-white/15 bg-white/5 px-2 py-1 text-[11px] hover:bg-white/10"
+                title="Refresh usage"
+              >
+                <RefreshCcw className="h-3.5 w-3.5" /> Refresh
+              </button>
+            </div>
+            <div className="mt-2 h-2 w-full rounded-full bg-white/10 overflow-hidden">
+              <div
+                className="h-full rounded-full"
+                style={{ width: `${smsPct}%`, background: "linear-gradient(90deg,#6b8cff,#9b5cff)" }}
+              />
+            </div>
+            <div className="mt-1 text-xs text-white/70">
+              {smsLoading ? "Loading…" : (
+                <>
+                  {smsUsed}/{smsTotal} used • {smsLeft} left
+                </>
+              )}
+            </div>
+          </div>
+          <div className="rounded-xl border border-white/10 bg-amber-500/10 p-3">
+            <div className="text-sm font-medium text-amber-200">Delivery note</div>
+            <p className="mt-1 text-xs text-amber-100/90">
+              Long messages are split into segments. We deduct free segments first, then any overage follows your plan rules.
+            </p>
+          </div>
+        </div>
       </header>
 
       {/* Messaging Number (auto-assign from verified pool) */}
@@ -500,11 +620,15 @@ export default function MessagingSettings() {
           <div className="min-w-0">
             <h3 className="text-sm font-semibold">Message Templates</h3>
             <p className="mt-1 text-xs text-white/60 truncate">
-              Customize what’s sent for each event. Variables like <code className="px-1 rounded bg-white/10">{"{{first_name}}"}</code> are replaced automatically.
+              Customize what’s sent for each event. Variables like <code className="px-1 rounded bg-white/10">{{"{first_name}"}}</code> are replaced automatically.
             </p>
+            {/* Tiny usage pill here too */}
+            <div className="mt-2 text-[11px] text-white/60">
+              {smsLoading ? "Checking free segments…" : `${smsLeft} segments left this month`}
+            </div>
             {missingAgentSite && (
               <div className="mt-2 text-[11px] text-amber-300">
-                Heads up: your Agent Site link is not set yet. Add a <code className="px-1 rounded bg-white/10">slug</code> in your profile to enable <code className="px-1 rounded bg-white/10">{"{{agent_site}}"}</code>.
+                Heads up: your Agent Site link is not set yet. Add a <code className="px-1 rounded bg-white/10">slug</code> in your profile to enable <code className="px-1 rounded bg-white/10">{{"{agent_site}"}}</code>.
               </div>
             )}
           </div>
@@ -756,7 +880,7 @@ export default function MessagingSettings() {
                   <button
                     type="button"
                     className="rounded-md border border-white/15 bg-white/5 px-2 py-1 text-[11px] hover:bg-white/10"
-                    onClick={() => setTestData((d) => ({ ...d }))}
+                    onClick={() => setTestData((d) => ({ ...d }))} // triggers rerender
                   >
                     Refresh Preview
                   </button>
