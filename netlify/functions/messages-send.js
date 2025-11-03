@@ -150,6 +150,111 @@ function chooseFallbackKey(reqKey, { isMilitary }) {
   return isMilitary ? "new_lead_military" : "new_lead";
 }
 
+/* =========================
+   NEW: Monthly free usage
+   ========================= */
+
+// Resolve pooling account: subscription account_id (active) or fallback to user_id
+async function resolveAccountId(db, user_id) {
+  try {
+    const { data } = await db
+      .from("subscriptions")
+      .select("account_id, status")
+      .eq("user_id", user_id)
+      .eq("status", "active")
+      .limit(1);
+    if (data && data[0]?.account_id) return data[0].account_id;
+  } catch {}
+  return user_id;
+}
+
+function monthWindow(now = new Date()) {
+  const start = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1, 0, 0, 0));
+  const end = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + 1, 1, 0, 0, 0));
+  return {
+    period_start: start.toISOString(),
+    period_end: end.toISOString(),
+  };
+}
+
+async function ensureUsageRow(db, account_id, now = new Date()) {
+  const { period_start, period_end } = monthWindow(now);
+  const { data: existing, error: findErr } = await db
+    .from("usage_counters")
+    .select("id, free_sms_total, free_sms_used")
+    .eq("account_id", account_id)
+    .eq("period_start", period_start)
+    .eq("period_end", period_end)
+    .limit(1);
+  if (findErr) throw findErr;
+  if (existing && existing.length) return existing[0];
+
+  const { data: inserted, error: insErr } = await db
+    .from("usage_counters")
+    .insert([{ account_id, period_start, period_end }])
+    .select("id, free_sms_total, free_sms_used")
+    .single();
+  if (insErr) throw insErr;
+  return inserted;
+}
+
+// Conservative segment counter (GSM-7 vs UCS-2)
+function countSmsSegments(text = "") {
+  const s = String(text);
+  // Basic GSM-7 detector (good enough)
+  const gsm7 =
+    /^[\n\r\t\0\x0B\x0C\x1B\x20-\x7E€£¥èéùìòÇØøÅåΔ_ΦΓΛΩΠΨΣΘΞÆæßÉ^{}\[~\]|€\\]*$/.test(s);
+  if (gsm7) {
+    const singleLimit = 160, concatLimit = 153;
+    if (s.length <= singleLimit) return 1;
+    return Math.ceil(s.length / concatLimit);
+  } else {
+    const singleLimit = 70, concatLimit = 67;
+    if (s.length <= singleLimit) return 1;
+    return Math.ceil(s.length / concatLimit);
+  }
+}
+
+/**
+ * Try to consume N SMS segments from the monthly pool.
+ * Returns { covered, remaining_to_bill }.
+ * JS two-phase (simple). For truly atomic, replace with a SQL RPC.
+ */
+async function tryConsumeSms(db, account_id, segments, now = new Date()) {
+  await ensureUsageRow(db, account_id, now);
+  const { period_start, period_end } = monthWindow(now);
+
+  // Fetch row
+  const { data: row0, error: getErr } = await db
+    .from("usage_counters")
+    .select("id, free_sms_total, free_sms_used")
+    .eq("account_id", account_id)
+    .eq("period_start", period_start)
+    .eq("period_end", period_end)
+    .single();
+  if (getErr) throw getErr;
+
+  const remaining = Math.max(0, (row0.free_sms_total || 0) - (row0.free_sms_used || 0));
+  const covered = Math.min(remaining, segments);
+  const over = segments - covered;
+
+  if (covered > 0) {
+    const { error: updErr } = await db
+      .from("usage_counters")
+      .update({
+        free_sms_used: (row0.free_sms_used || 0) + covered,
+        updated_at: new Date().toISOString(),
+      })
+      .eq("id", row0.id);
+    if (updErr) throw updErr;
+  }
+
+  return { covered, remaining_to_bill: over };
+}
+
+// Price per segment (cents). Keep aligned with your wallet pricing.
+const PER_SEGMENT_CENTS = Number(process.env.SMS_PER_SEGMENT_CENTS || "1");
+
 exports.handler = async (event) => {
   const trace = [];
   const db = getServiceClient();
@@ -320,16 +425,34 @@ exports.handler = async (event) => {
     }
     const fromE164 = tfn.e164;
 
-    // -------- WALLET pre-flight --------
-    const COST_CENTS = 1; // keep in sync with webhook/trigger
-    let balance = 0;
+    // ======== NEW: Free-pool → Wallet flow (SMS segments) ========
+    const account_id = await resolveAccountId(db, user_id);
+    const segments = countSmsSegments(bodyText || "");
+    let cover = { covered: 0, remaining_to_bill: segments };
+
     try {
-      balance = await getBalanceCents(db, user_id);
-    } catch {
-      balance = 0;
+      cover = await tryConsumeSms(db, account_id, segments, new Date());
+      trace.push({ step: "usage.sms", segments, covered: cover.covered, billable: cover.remaining_to_bill });
+    } catch (e) {
+      // If usage table hiccups, we won't block send; we’ll just bill as before.
+      trace.push({ step: "usage.error", detail: e?.message || String(e) });
     }
-    if (balance < COST_CENTS) {
-      return json({ error: "insufficient_balance", balance_cents: balance, trace }, 402);
+
+    // Billable segments → price_cents; fully covered → zero cost
+    const billableSegments = cover.remaining_to_bill;
+    const price_cents = Math.max(0, billableSegments * PER_SEGMENT_CENTS);
+
+    // -------- WALLET pre-flight (only if we have overage to bill) --------
+    if (price_cents > 0) {
+      let balance = 0;
+      try {
+        balance = await getBalanceCents(db, user_id);
+      } catch {
+        balance = 0;
+      }
+      if (balance < price_cents) {
+        return json({ error: "insufficient_balance", balance_cents: balance, needed_cents: price_cents, trace }, 402);
+      }
     }
 
     // -------- Send via Telnyx --------
@@ -371,8 +494,14 @@ exports.handler = async (event) => {
       status: "sent",
       provider_sid,
       provider_message_id: provider_message_id || null,
-      price_cents: COST_CENTS,
-      meta: { templateKey: templateKey || null, lead_id: lead?.id || (lead_id || null) },
+      price_cents, // FREE if fully covered, else overage only
+      meta: {
+        templateKey: templateKey || null,
+        lead_id: lead?.id || (lead_id || null),
+        segments,
+        free_segments_covered: cover.covered || 0,
+        charge_source: price_cents === 0 ? "free_pool" : "wallet_overage",
+      },
       sent_by_ai: Boolean(sent_by_ai) === true, // tiny flag for UI badge
     };
 
