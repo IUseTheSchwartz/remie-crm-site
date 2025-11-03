@@ -1,6 +1,7 @@
 // netlify/functions/telnyx-voice-webhook.js
 // Transfers AGENT -> LEAD after answer, plays ringback, hangs up cleanly on no-answer/busy,
 // logs to call_logs, handles optional recording, computes billed_cents, debits wallet.
+// UPDATED: integrates monthly free call seconds from usage_counters (100 hrs / month).
 
 const crypto = require("crypto");
 const fetch = require("node-fetch");
@@ -17,6 +18,107 @@ const supa = (SUPABASE_URL && SUPABASE_SERVICE_ROLE)
   : null;
 
 function log(...args) { try { console.log("[telnyx-webhook]", ...args); } catch {} }
+
+/* ===================================================================
+   NEW: Monthly free-pool helpers (usage_counters for call seconds)
+   -------------------------------------------------------------------
+   - Pooling is by account: subscriptions.account_id (status=active),
+     falling back to per-user if no active subscription.
+   - Simple two-phase JS approach (good enough for typical concurrency).
+     If you want fully atomic decrements later, we can add SQL RPCs.
+   =================================================================== */
+async function resolveAccountId(user_id) {
+  if (!supa || !user_id) return user_id;
+  try {
+    const { data, error } = await supa
+      .from("subscriptions")
+      .select("account_id, status")
+      .eq("user_id", user_id)
+      .eq("status", "active")
+      .limit(1);
+    if (!error && data && data[0]?.account_id) return data[0].account_id;
+  } catch {}
+  return user_id;
+}
+
+function monthWindow(now = new Date()) {
+  const start = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1, 0, 0, 0));
+  const end = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + 1, 1, 0, 0, 0));
+  return { period_start: start.toISOString(), period_end: end.toISOString() };
+}
+
+async function ensureUsageRow(account_id, now = new Date()) {
+  if (!supa || !account_id) return null;
+  const { period_start, period_end } = monthWindow(now);
+
+  const { data: existing, error: findErr } = await supa
+    .from("usage_counters")
+    .select("id, free_call_seconds_total, free_call_seconds_used")
+    .eq("account_id", account_id)
+    .eq("period_start", period_start)
+    .eq("period_end", period_end)
+    .limit(1);
+
+  if (!findErr && existing && existing.length) return existing[0];
+
+  const { data: inserted, error: insErr } = await supa
+    .from("usage_counters")
+    .insert([{ account_id, period_start, period_end }])
+    .select("id, free_call_seconds_total, free_call_seconds_used")
+    .single();
+
+  if (insErr) {
+    // If a race created it, try fetching again
+    const { data: again } = await supa
+      .from("usage_counters")
+      .select("id, free_call_seconds_total, free_call_seconds_used")
+      .eq("account_id", account_id)
+      .eq("period_start", period_start)
+      .eq("period_end", period_end)
+      .limit(1);
+    return (again && again[0]) || null;
+  }
+  return inserted;
+}
+
+async function tryConsumeCallSeconds(account_id, seconds, now = new Date()) {
+  if (!supa || !account_id || !seconds || seconds <= 0) {
+    return { covered: 0, remaining_to_bill: seconds || 0 };
+  }
+  await ensureUsageRow(account_id, now);
+
+  const { period_start, period_end } = monthWindow(now);
+  const { data: row0, error: getErr } = await supa
+    .from("usage_counters")
+    .select("id, free_call_seconds_total, free_call_seconds_used")
+    .eq("account_id", account_id)
+    .eq("period_start", period_start)
+    .eq("period_end", period_end)
+    .single();
+
+  if (getErr || !row0) {
+    log("usage fetch err or missing row; billing full seconds", getErr?.message);
+    return { covered: 0, remaining_to_bill: seconds };
+  }
+
+  const remaining = Math.max(0, (row0.free_call_seconds_total || 0) - (row0.free_call_seconds_used || 0));
+  const covered = Math.min(remaining, seconds);
+  const over = seconds - covered;
+
+  if (covered > 0) {
+    const { error: updErr } = await supa
+      .from("usage_counters")
+      .update({
+        free_call_seconds_used: (row0.free_call_seconds_used || 0) + covered,
+        updated_at: new Date().toISOString(),
+      })
+      .eq("id", row0.id);
+    if (updErr) log("usage update err", updErr.message);
+  }
+
+  return { covered, remaining_to_bill: over };
+}
+/* =================================================================== */
 
 /* ---------------- Signature verify (optional) ---------------- */
 function verifySignature(rawBody, signatureHeader) {
@@ -230,6 +332,7 @@ async function saveRecordingUrlByCallSession({ call_session_id, recording_url })
   if (error) log("saveRecordingUrl err", error.message);
 }
 
+/* ---------------- END logic (UPDATED for free pool) ---------------- */
 async function markEnded({ legA, ended_at, hangup_cause }) {
   if (!supa || !legA) return;
 
@@ -252,20 +355,46 @@ async function markEnded({ legA, ended_at, hangup_cause }) {
     duration_seconds = Math.max(0, Math.round((t1 - t0) / 1000));
   }
 
+  // Default: assume failure only if non-normal cause
+  const failed = hangup_cause && hangup_cause !== "normal_clearing";
+
+  // ---------- NEW: Free pool deduction + overage billing ----------
+  // Pricing: same as before (per-minute), but applied ONLY to overage seconds.
+  // Per-minute rate selection preserved (recording surcharge).
   const rate_cents_per_min = record_enabled ? 2 : 1;
-  let billed_cents = null;
-  if (duration_seconds !== null) {
+
+  // Overages billed with ceil(overage_seconds / 60) * rate
+  let billed_cents = 0;
+
+  if (duration_seconds != null && user_id) {
+    try {
+      const account_id = await resolveAccountId(user_id);
+      const { covered, remaining_to_bill } = await tryConsumeCallSeconds(account_id, duration_seconds, new Date());
+
+      const overage_seconds = Math.max(0, remaining_to_bill || 0);
+      if (overage_seconds > 0) {
+        const overage_minutes = Math.max(1, Math.ceil(overage_seconds / 60));
+        billed_cents = overage_minutes * rate_cents_per_min;
+      }
+      log("usage.calls", { duration_seconds, covered, overage_seconds, billed_cents, rate_cents_per_min });
+    } catch (e) {
+      // If usage fails for any reason, fall back to prior behavior (bill entire duration)
+      const mins = Math.max(1, Math.ceil((duration_seconds || 0) / 60));
+      billed_cents = mins * rate_cents_per_min;
+      log("usage error; fallback to full billing", e?.message);
+    }
+  } else if (duration_seconds != null) {
+    // No user_id to resolve an account: keep old behavior for safety
     const mins = Math.max(1, Math.ceil(duration_seconds / 60));
     billed_cents = mins * rate_cents_per_min;
   }
 
-  const failed = hangup_cause && hangup_cause !== "normal_clearing";
   const baseUpdates = {
     status: failed ? "failed" : "completed",
     ended_at: endedISO,
   };
   if (duration_seconds !== null) baseUpdates.duration_seconds = duration_seconds;
-  if (billed_cents !== null) baseUpdates.billed_cents = billed_cents;
+  baseUpdates.billed_cents = billed_cents;
   if (failed) baseUpdates.error = hangup_cause;
 
   const { error: upErr } = await supa
@@ -290,7 +419,8 @@ async function markEnded({ legA, ended_at, hangup_cause }) {
     }
   }
 
-  if (billed_cents && user_id) {
+  // Wallet debit only for overage
+  if (billed_cents > 0 && user_id) {
     const res = await debitWalletForCall({ legA, user_id, cents: billed_cents });
     if (!res.ok) log("wallet debit failed (non-fatal)", res.error || "unknown");
     else log("wallet debit ok", { user_id, billed_cents, record_enabled });
