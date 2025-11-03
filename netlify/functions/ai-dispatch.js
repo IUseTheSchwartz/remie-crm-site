@@ -1,3 +1,4 @@
+// File: netlify/functions/ai-dispatch.js
 // Thin dispatcher: parse -> guard -> load agent -> delegate to AI brain -> send one reply.
 // All language/intent logic lives in ./ai-brain.js (exports decide()).
 
@@ -123,14 +124,12 @@ exports.handler = async (event) => {
   try {
     const { data: contact } = await db
       .from("message_contacts")
-      .select("id, subscribed, ai_booked, full_name")
+      .select("id, subscribed, ai_booked, full_name, ai_language, meta")
       .eq("id", contact_id)
       .maybeSingle();
     if (contact?.subscribed === false) {
       return ok({ ok: true, note: "contact_unsubscribed" });
     }
-    // If you still want to silence booked, uncomment:
-    // if (contact?.ai_booked === true) return ok({ ok: true, note: "ai_silent_booked" });
   } catch (e) {
     console.warn("[ai-dispatch] contact lookup warn:", e?.message || e);
   }
@@ -141,16 +140,80 @@ exports.handler = async (event) => {
   const bookingLink = buildAgentBookingLink(agent); // <-- brand-safe link (agent site)
   const tz = process.env.AGENT_DEFAULT_TZ || "America/Chicago";
 
+  // --------- SAFETY NET: price/quotes/estimates guard ----------
+  // If user says "quotes"/"estimate(s)" etc., immediately return the price-style reply
+  // so you get correct behavior even if the AI brain/env flags aren't active yet.
+  const norm = String(text || "").toLowerCase();
+  const priceHint = /\b(price|how much|cost|monthly|payment|premium|quotes?|estimate|estimates?|rate|rates?)\b/.test(
+    norm
+  );
+  if (priceHint) {
+    const es =
+      /[ñáéíóúü¿¡]/.test(norm) ||
+      /(precio|costo|prima|cotizaci[oó]n|cotizaciones)/.test(norm);
+
+    const outText = es
+      ? `Perfecto—las cifras dependen de edad/salud y del beneficiario. Es una llamada breve de 5–7 min.${bookingLink ? ` Puede elegir horario aquí: ${bookingLink}` : ""} ¿Qué hora le queda mejor?`
+      : `Totally—exact numbers depend on age/health and beneficiary. It’s a quick 5–7 min call.${bookingLink ? ` You can grab a time here: ${bookingLink}` : ""} What time works for you?`;
+
+    const sendUrl = deriveSendUrl(event);
+    console.log("[ai-dispatch] price-guard matched; sending deterministic price reply via:", sendUrl);
+
+    if (!sendUrl) {
+      console.error("[ai-dispatch] no OUTBOUND_SEND_URL; skipping send (price-guard)");
+      return ok({ ok: false, error: "no_outbound_url", ai_intent: "price", via: "price-guard" });
+    }
+
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 3000);
+
+    let res,
+      json = {};
+    try {
+      res = await fetch(sendUrl, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          to: from,
+          body: outText,
+          requesterId: user_id,
+          sent_by_ai: true,
+          ai_intent: "price",
+        }),
+        signal: controller.signal,
+      });
+      try {
+        json = await res.json();
+      } catch {}
+      console.log("[ai-dispatch] messages-send (price-guard) status:", res.status, json);
+    } catch (e) {
+      console.error("[ai-dispatch] messages-send error (price-guard):", e?.name || e?.message || String(e));
+    } finally {
+      clearTimeout(timeout);
+    }
+
+    return ok({
+      ok: true,
+      ai: "responded",
+      ai_intent: "price",
+      via: "price-guard",
+      send_status: json?.error ? "error" : "ok",
+      send_json: json,
+    });
+  }
+  // ------------------------------------------------------------
+
   // Delegate to brain
+  // (In later iterations we can load/persist lightweight conv_state here.)
   let decision = { text: "", intent: "general" };
   try {
     decision =
       (await decide({
         text,
         agentName,
-        calendlyLink: bookingLink, // we pass the agent-site link here
+        calendlyLink: bookingLink, // pass the agent-site link here
         tz,
-        // context: { firstTurn: false }, // set true when you use it for first outbound
+        // context: {} // (optional: conv_state)
       })) || decision;
   } catch (e) {
     console.error("[ai-dispatch] brain error:", e?.message || e);
@@ -161,9 +224,10 @@ exports.handler = async (event) => {
   const aiIntent = decision?.intent || "general";
 
   console.log("[ai-dispatch] brain:", {
+    normalized: norm,
     intent: aiIntent,
     route: decision?.meta?.route,
-    conf: decision?.meta?.conf,
+    conf: decision?.meta?.conf || decision?.meta?.llm_cls_conf || null,
     preview: outText.slice(0, 120),
   });
 
@@ -189,7 +253,13 @@ exports.handler = async (event) => {
     res = await fetch(sendUrl, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ to: from, body: outText, requesterId: user_id }),
+      body: JSON.stringify({
+        to: from,
+        body: outText,
+        requesterId: user_id,
+        sent_by_ai: true,
+        ai_intent: aiIntent,
+      }),
       signal: controller.signal,
     });
     try {
@@ -206,29 +276,15 @@ exports.handler = async (event) => {
     return ok({ ok: false, error: json?.error || `status_${res?.status}`, ai_intent: aiIntent });
   }
 
-  // Tag sent message for UI (boolean column + meta JSON)
+  // Tag AI message (dispatcher-side DB tagging still fine if you keep it)
   try {
     if (json?.id) {
-      // 1) Try to update explicit boolean/intent columns if they exist
       const { error: colErr } = await db
         .from("messages")
-        .update({ sent_by_ai: true, ai_intent: aiIntent })
+        .update({ sent_by_ai: true, meta: { ...(json?.meta || {}), ai_intent: aiIntent } })
         .eq("id", json.id);
-
       if (colErr) {
-        console.warn("[ai-dispatch] sent_by_ai column update failed (ok if column missing):", colErr.message);
-      }
-
-      // 2) Merge into meta JSON (backward-compat)
-      const { data: msg, error: selErr } = await db
-        .from("messages")
-        .select("meta")
-        .eq("id", json.id)
-        .maybeSingle();
-
-      if (!selErr) {
-        const mergedMeta = { ...(msg?.meta || {}), sent_by_ai: true, ai_intent: aiIntent };
-        await db.from("messages").update({ meta: mergedMeta }).eq("id", json.id);
+        console.warn("[ai-dispatch] tag AI message warn:", colErr.message);
       }
     }
   } catch (e) {
