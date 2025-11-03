@@ -620,7 +620,8 @@ export default function MessagingSettings() {
           <div className="min-w-0">
             <h3 className="text-sm font-semibold">Message Templates</h3>
             <p className="mt-1 text-xs text-white/60 truncate">
-              Customize what’s sent for each event. Variables like <code className="px-1 rounded bg-white/10">{{"{first_name}"}}</code> are replaced automatically.
+              Customize what’s sent for each event. Variables like{" "}
+              <code className="px-1 rounded bg-white/10">{'{{first_name}}'}</code> are replaced automatically.
             </p>
             {/* Tiny usage pill here too */}
             <div className="mt-2 text-[11px] text-white/60">
@@ -628,12 +629,13 @@ export default function MessagingSettings() {
             </div>
             {missingAgentSite && (
               <div className="mt-2 text-[11px] text-amber-300">
-                Heads up: your Agent Site link is not set yet. Add a <code className="px-1 rounded bg-white/10">slug</code> in your profile to enable <code className="px-1 rounded bg-white/10">{{"{agent_site}"}}</code>.
+                Heads up: your Agent Site link is not set yet. Add a <code className="px-1 rounded bg-white/10">slug</code> in your profile to enable{" "}
+                <code className="px-1 rounded bg-white/10">{'{{agent_site}}'}</code>.
               </div>
             )}
           </div>
 
-          {/* RIGHT-SIDE ACTIONS */}
+        {/* RIGHT-SIDE ACTIONS */}
           <div className="ml-auto flex items-center gap-2">
             {enabledSaveState === "saving" && (
               <span className="inline-flex items-center gap-1 text-xs text-white/70">
