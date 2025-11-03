@@ -8,7 +8,7 @@ import { startCall } from "../lib/calls";
 import { upsertLeadServer, deleteLeadServer } from "../lib/supabaseLeads.js";
 
 // Controls (assumed to write to Supabase; realtime will update this page)
-import AddLeadControl from "../components/leads/AddLeadControl.jsx";
+// import AddLeadControl from "../components/leads/AddLeadControl.jsx"; // REMOVED
 import CsvImportControl from "../components/leads/CsvImportControl.jsx";
 
 /* ---------------- Stage labels/styles (match PipelinePage) ------------------ */
@@ -127,8 +127,18 @@ async function sendSoldAutoText({ leadId }) {
     for (const templateKey of tryKeys) {
       const res = await fetch(`${FN_BASE}/messages-send`, {
         method: "POST",
-        headers: { "Content-Type": "application/json", ...(token ? { Authorization: `Bearer ${token}` } : {}) },
-        body: JSON.stringify({ requesterId: userId, lead_id: leadId, templateKey }),
+        headers: {
+          "Content-Type": "application/json",
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+          "X-Remie-Billing": "free_first", // hint for backend to consume free segments before wallet
+        },
+        body: JSON.stringify({
+          requesterId: userId,
+          lead_id: leadId,
+          templateKey,
+          billing: "free_first",
+          preferFreeSegments: true,
+        }),
       });
       const out = await res.json().catch(() => ({}));
       if (res.ok && (out?.ok || out?.deduped)) return;
@@ -294,6 +304,13 @@ export default function LeadsPage() {
 
   // selection for bulk actions
   const [selectedIds, setSelectedIds] = useState(new Set());
+
+  // Page-scoped global billing hint for any importer that chooses to read it
+  useEffect(() => {
+    const prev = window.__REMIE_BILLING_HINT__;
+    window.__REMIE_BILLING_HINT__ = "free_first";
+    return () => { window.__REMIE_BILLING_HINT__ = prev; };
+  }, []);
 
   /* -------------------- Initial fetch (Supabase only) -------------------- */
   useEffect(() => {
@@ -650,12 +667,17 @@ export default function LeadsPage() {
         </button>
 
         <div className="ml-auto flex items-center gap-3">
-          <AddLeadControl
-            onAddedLocal={() => { /* no-op; realtime will update */ }}
-            onServerMsg={(s) => setServerMsg(s)}
-          />
+          {/* <AddLeadControl ... /> REMOVED */}
           <CsvImportControl
-            onAddedLocal={() => { /* no-op; realtime will update */ }}
+            // Prefer free segments before wallet when importer triggers messages-send
+            preferFreeSegments
+            billingMode="free_first"
+            onSendOptions={{
+              billing: "free_first",
+              preferFreeSegments: true,
+              headers: { "X-Remie-Billing": "free_first" },
+            }}
+            onAddedLocal={() => { /* realtime will update */ }}
             onServerMsg={(s) => setServerMsg(s)}
           />
           <button
@@ -819,7 +841,7 @@ export default function LeadsPage() {
             {visible.length === 0 && (
               <tr>
                 <td colSpan={colCount} className="p-6 text-center text-white/60">
-                  No records yet. Import a CSV or add leads.
+                  No records yet. Import a CSV to get started.
                 </td>
               </tr>
             )}
