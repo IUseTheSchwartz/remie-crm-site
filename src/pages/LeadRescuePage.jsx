@@ -87,6 +87,46 @@ const PRESETS = {
   31: "Re-touch: If the timing wasn’t right before, no worries — I’m here when you’re ready to continue. You can always verify me at {{agent_site}}.",
 };
 
+/* ------------ NEW: Usage (Free SMS) helpers ------------- */
+const SMS_TOTAL_DEFAULT = 5000;
+
+function monthWindow(d = new Date()) {
+  const start = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), 1, 0, 0, 0));
+  const end = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth() + 1, 1, 0, 0, 0));
+  return { period_start: start.toISOString(), period_end: end.toISOString() };
+}
+
+async function resolveAccountId(user_id) {
+  const { data, error } = await supabase
+    .from("subscriptions")
+    .select("account_id, status")
+    .eq("user_id", user_id)
+    .eq("status", "active")
+    .limit(1);
+  if (!error && data && data[0]?.account_id) return data[0].account_id;
+  return user_id;
+}
+
+async function fetchSmsUsageForCurrentMonth(user_id) {
+  if (!user_id) return { sms_used: 0, sms_total: SMS_TOTAL_DEFAULT };
+  const account_id = await resolveAccountId(user_id);
+  const { period_start, period_end } = monthWindow();
+
+  const { data, error } = await supabase
+    .from("usage_counters")
+    .select("free_sms_used, free_sms_total")
+    .eq("account_id", account_id)
+    .eq("period_start", period_start)
+    .eq("period_end", period_end)
+    .maybeSingle();
+
+  if (error || !data) return { sms_used: 0, sms_total: SMS_TOTAL_DEFAULT };
+  return {
+    sms_used: Number(data.free_sms_used ?? 0),
+    sms_total: Number(data.free_sms_total ?? SMS_TOTAL_DEFAULT),
+  };
+}
+
 // ---- Page ----
 export default function LeadRescuePage() {
   // 🔒 Temporary off switch. Set to false to re-enable the full page.
@@ -144,6 +184,13 @@ export default function LeadRescuePage() {
   // UI state
   const [varsOpen, setVarsOpen] = useState(false);
 
+  // NEW: usage state
+  const [usageLoading, setUsageLoading] = useState(true);
+  const [smsUsed, setSmsUsed] = useState(0);
+  const [smsTotal, setSmsTotal] = useState(SMS_TOTAL_DEFAULT);
+  const smsLeft = Math.max(0, smsTotal - smsUsed);
+  const smsPct = Math.min(100, Math.round((smsUsed / Math.max(1, smsTotal)) * 100));
+
   // ---- Initial load ----
   useEffect(() => {
     (async () => {
@@ -190,9 +237,21 @@ export default function LeadRescuePage() {
 
       setTemplates((trows || []).filter((t) => (t.day_number || 0) >= 2));
 
+      // Usage
+      await refreshUsage(uid);
+
       setLoading(false);
     })();
   }, []);
+
+  async function refreshUsage(uid = userId) {
+    if (!uid) return;
+    setUsageLoading(true);
+    const u = await fetchSmsUsageForCurrentMonth(uid);
+    setSmsUsed(u.sms_used);
+    setSmsTotal(u.sms_total || SMS_TOTAL_DEFAULT);
+    setUsageLoading(false);
+  }
 
   // ---- Load trackers (with contact info) ----
   async function refreshTrackers() {
@@ -423,6 +482,41 @@ export default function LeadRescuePage() {
         <p className="mt-1 text-sm text-white/70">
           Daily follow-ups for contacts in your lead/military funnel. First send is the next calendar day at your Send Hour. If Loop is on, it continues every day using your last non-empty template until the contact replies.
         </p>
+
+        {/* NEW: Free SMS usage */}
+        <div className="mt-4 grid gap-3 md:grid-cols-3">
+          <div className="rounded-xl border border-white/10 bg-white/[0.04] p-3 md:col-span-2">
+            <div className="flex items-center justify-between">
+              <div className="text-sm text-white/70">Free SMS this month</div>
+              <button
+                onClick={() => refreshUsage()}
+                className="inline-flex items-center gap-1 rounded-md border border-white/15 bg-white/5 px-2 py-1 text-[11px] hover:bg-white/10"
+                title="Refresh usage"
+              >
+                <RefreshCcw className="h-3.5 w-3.5" /> Refresh
+              </button>
+            </div>
+            <div className="mt-2 h-2 w-full rounded-full bg-white/10 overflow-hidden">
+              <div
+                className="h-full rounded-full"
+                style={{ width: `${Math.min(100, smsPct)}%`, background: "linear-gradient(90deg,#6b8cff,#9b5cff)" }}
+              />
+            </div>
+            <div className="mt-1 text-xs text-white/70">
+              {usageLoading ? "Loading…" : (
+                <>
+                  {smsUsed}/{smsTotal} segments used • {smsLeft} left
+                </>
+              )}
+            </div>
+          </div>
+          <div className="rounded-xl border border-white/10 bg-amber-500/10 p-3">
+            <div className="text-sm font-medium text-amber-200">Lead Rescue usage</div>
+            <p className="mt-1 text-xs text-amber-100/90">
+              These automated follow-ups consume your free SMS pool first, then wallet funds after the pool is exhausted.
+            </p>
+          </div>
+        </div>
       </header>
 
       {/* Settings */}
