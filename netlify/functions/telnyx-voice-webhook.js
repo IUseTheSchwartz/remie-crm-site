@@ -1,7 +1,7 @@
 // netlify/functions/telnyx-voice-webhook.js
 // Transfers AGENT -> LEAD after answer, plays ringback, hangs up cleanly on no-answer/busy,
 // logs to call_logs, handles optional recording, computes billed_cents, debits wallet.
-// UPDATED: integrates monthly free call seconds from usage_counters (100 hrs / month).
+// UPDATED: integrates monthly free CALL MINUTES from usage_counters (100 hrs = 6000 minutes).
 
 const crypto = require("crypto");
 const fetch = require("node-fetch");
@@ -20,23 +20,18 @@ const supa = (SUPABASE_URL && SUPABASE_SERVICE_ROLE)
 function log(...args) { try { console.log("[telnyx-webhook]", ...args); } catch {} }
 
 /* ===================================================================
-   NEW: Monthly free-pool helpers (usage_counters for call seconds)
-   -------------------------------------------------------------------
-   - Pooling is by account: subscriptions.account_id (status=active),
-     falling back to per-user if no active subscription.
-   - Simple two-phase JS approach (good enough for typical concurrency).
-     If you want fully atomic decrements later, we can add SQL RPCs.
+   Monthly free-pool helpers (usage_counters for CALL MINUTES)
    =================================================================== */
 async function resolveAccountId(user_id) {
   if (!supa || !user_id) return user_id;
   try {
-    const { data, error } = await supa
+    const { data } = await supa
       .from("subscriptions")
       .select("account_id, status")
       .eq("user_id", user_id)
       .eq("status", "active")
       .limit(1);
-    if (!error && data && data[0]?.account_id) return data[0].account_id;
+    if (data && data[0]?.account_id) return data[0].account_id;
   } catch {}
   return user_id;
 }
@@ -47,73 +42,68 @@ function monthWindow(now = new Date()) {
   return { period_start: start.toISOString(), period_end: end.toISOString() };
 }
 
-async function ensureUsageRow(account_id, now = new Date()) {
+async function ensureUsageRowMinutes(account_id, now = new Date()) {
   if (!supa || !account_id) return null;
   const { period_start, period_end } = monthWindow(now);
 
-  const { data: existing, error: findErr } = await supa
+  const { data: existing } = await supa
     .from("usage_counters")
-    .select("id, free_call_seconds_total, free_call_seconds_used")
+    .select("id, free_call_minutes_total, free_call_minutes_used")
     .eq("account_id", account_id)
     .eq("period_start", period_start)
     .eq("period_end", period_end)
     .limit(1);
+  if (existing && existing[0]) return existing[0];
 
-  if (!findErr && existing && existing.length) return existing[0];
-
-  const { data: inserted, error: insErr } = await supa
+  const { data: inserted } = await supa
     .from("usage_counters")
     .insert([{ account_id, period_start, period_end }])
-    .select("id, free_call_seconds_total, free_call_seconds_used")
+    .select("id, free_call_minutes_total, free_call_minutes_used")
     .single();
 
-  if (insErr) {
-    // If a race created it, try fetching again
-    const { data: again } = await supa
-      .from("usage_counters")
-      .select("id, free_call_seconds_total, free_call_seconds_used")
-      .eq("account_id", account_id)
-      .eq("period_start", period_start)
-      .eq("period_end", period_end)
-      .limit(1);
-    return (again && again[0]) || null;
-  }
-  return inserted;
+  if (inserted) return inserted;
+
+  // race fallback
+  const { data: again } = await supa
+    .from("usage_counters")
+    .select("id, free_call_minutes_total, free_call_minutes_used")
+    .eq("account_id", account_id)
+    .eq("period_start", period_start)
+    .eq("period_end", period_end)
+    .limit(1);
+  return (again && again[0]) || null;
 }
 
-async function tryConsumeCallSeconds(account_id, seconds, now = new Date()) {
-  if (!supa || !account_id || !seconds || seconds <= 0) {
-    return { covered: 0, remaining_to_bill: seconds || 0 };
+async function tryConsumeCallMinutes(account_id, minutes, now = new Date()) {
+  if (!supa || !account_id || !minutes || minutes <= 0) {
+    return { covered: 0, remaining_to_bill: minutes || 0 };
   }
-  await ensureUsageRow(account_id, now);
-
+  await ensureUsageRowMinutes(account_id, now);
   const { period_start, period_end } = monthWindow(now);
-  const { data: row0, error: getErr } = await supa
+
+  const { data: row0 } = await supa
     .from("usage_counters")
-    .select("id, free_call_seconds_total, free_call_seconds_used")
+    .select("id, free_call_minutes_total, free_call_minutes_used")
     .eq("account_id", account_id)
     .eq("period_start", period_start)
     .eq("period_end", period_end)
     .single();
 
-  if (getErr || !row0) {
-    log("usage fetch err or missing row; billing full seconds", getErr?.message);
-    return { covered: 0, remaining_to_bill: seconds };
-  }
+  if (!row0) return { covered: 0, remaining_to_bill: minutes };
 
-  const remaining = Math.max(0, (row0.free_call_seconds_total || 0) - (row0.free_call_seconds_used || 0));
-  const covered = Math.min(remaining, seconds);
-  const over = seconds - covered;
+  const remaining = Math.max(0, (row0.free_call_minutes_total || 0) - (row0.free_call_minutes_used || 0));
+  const covered = Math.min(remaining, minutes);
+  const over = minutes - covered;
 
   if (covered > 0) {
     const { error: updErr } = await supa
       .from("usage_counters")
       .update({
-        free_call_seconds_used: (row0.free_call_seconds_used || 0) + covered,
+        free_call_minutes_used: (row0.free_call_minutes_used || 0) + covered,
         updated_at: new Date().toISOString(),
       })
       .eq("id", row0.id);
-    if (updErr) log("usage update err", updErr.message);
+    if (updErr) log("usage minutes update err", updErr.message);
   }
 
   return { covered, remaining_to_bill: over };
@@ -158,7 +148,7 @@ async function transferCall({ callControlId, to, from }) {
   const resp = await fetch(url, {
     method: "POST",
     headers: { Authorization: `Bearer ${TELNYX_API_KEY}`, "Content-Type": "application/json" },
-    body: JSON.stringify({ to, from }) // Telnyx hairpins media
+    body: JSON.stringify({ to, from })
   });
   const data = await resp.json().catch(() => ({}));
   if (!resp.ok) log("transfer failed", resp.status, data);
@@ -172,11 +162,7 @@ async function startRecording(callControlId) {
     const resp = await fetch(url, {
       method: "POST",
       headers: { Authorization: `Bearer ${TELNYX_API_KEY}`, "Content-Type": "application/json" },
-      body: JSON.stringify({
-        channels: "dual",
-        audio: { direction: "both" },
-        format: "mp3"
-      })
+      body: JSON.stringify({ channels: "dual", audio: { direction: "both" }, format: "mp3" })
     });
     if (!resp.ok) {
       const j = await resp.json().catch(() => ({}));
@@ -184,9 +170,7 @@ async function startRecording(callControlId) {
     } else {
       log("record_start ok");
     }
-  } catch (e) {
-    log("record_start error", e?.message);
-  }
+  } catch (e) { log("record_start error", e?.message); }
 }
 
 async function playbackStart(callControlId, audioUrl) {
@@ -204,9 +188,7 @@ async function playbackStart(callControlId, audioUrl) {
     } else {
       log("playback_start ok");
     }
-  } catch (e) {
-    log("playback_start error", e?.message);
-  }
+  } catch (e) { log("playback_start error", e?.message); }
 }
 
 async function playbackStop(callControlId) {
@@ -224,9 +206,7 @@ async function playbackStop(callControlId) {
     } else {
       log("playback_stop ok");
     }
-  } catch (e) {
-    log("playback_stop error", e?.message);
-  }
+  } catch (e) { log("playback_stop error", e?.message); }
 }
 
 async function hangupCall(callControlId) {
@@ -244,12 +224,10 @@ async function hangupCall(callControlId) {
     } else {
       log("hangup ok");
     }
-  } catch (e) {
-    log("hangup error", e?.message);
-  }
+  } catch (e) { log("hangup error", e?.message); }
 }
 
-/* ---------------- Wallet / DB helpers (unchanged) ---------------- */
+/* ---------------- Wallet / DB helpers (your originals) ---------------- */
 async function debitWalletForCall({ legA, user_id, cents }) {
   if (!supa || !legA || !user_id || !cents || cents <= 0) return { ok: true, skipped: true };
   const { data, error } = await supa.rpc("wallet_debit_for_call", {
@@ -286,19 +264,14 @@ async function upsertInitiated({
   if (call_session_id) baseFields.call_session_id = call_session_id;
 
   if (existing?.id) {
-    const { error } = await supa
-      .from("call_logs")
-      .update(baseFields)
-      .eq("id", existing.id);
+    const { error } = await supa.from("call_logs").update(baseFields).eq("id", existing.id);
     if (error) log("upsert initiated (update) err", error.message);
   } else {
-    const { error } = await supa
-      .from("call_logs")
-      .insert({
-        direction: "outbound",
-        telnyx_leg_a_id: legA,
-        ...baseFields,
-      });
+    const { error } = await supa.from("call_logs").insert({
+      direction: "outbound",
+      telnyx_leg_a_id: legA,
+      ...baseFields,
+    });
     if (error) log("upsert initiated (insert) err", error.message);
   }
 }
@@ -316,23 +289,17 @@ async function markBridged({ legA, maybeLegB }) {
   if (!supa || !legA) return;
   const updates = { status: "bridged" };
   if (maybeLegB) updates.telnyx_leg_b_id = maybeLegB;
-  const { error } = await supa
-    .from("call_logs")
-    .update(updates)
-    .eq("telnyx_leg_a_id", legA);
+  const { error } = await supa.from("call_logs").update(updates).eq("telnyx_leg_a_id", legA);
   if (error) log("markBridged err", error.message);
 }
 
 async function saveRecordingUrlByCallSession({ call_session_id, recording_url }) {
   if (!supa || !call_session_id || !recording_url) return;
-  const { error } = await supa
-    .from("call_logs")
-    .update({ recording_url })
-    .eq("call_session_id", call_session_id);
+  const { error } = await supa.from("call_logs").update({ recording_url }).eq("call_session_id", call_session_id);
   if (error) log("saveRecordingUrl err", error.message);
 }
 
-/* ---------------- END logic (UPDATED for free pool) ---------------- */
+/* ---------------- END logic (MINUTES pool) ---------------- */
 async function markEnded({ legA, ended_at, hangup_cause }) {
   if (!supa || !legA) return;
 
@@ -355,38 +322,30 @@ async function markEnded({ legA, ended_at, hangup_cause }) {
     duration_seconds = Math.max(0, Math.round((t1 - t0) / 1000));
   }
 
-  // Default: assume failure only if non-normal cause
+  // Default: failure if non-normal cause
   const failed = hangup_cause && hangup_cause !== "normal_clearing";
 
-  // ---------- NEW: Free pool deduction + overage billing ----------
-  // Pricing: same as before (per-minute), but applied ONLY to overage seconds.
-  // Per-minute rate selection preserved (recording surcharge).
+  // Per-minute rate (keep your existing logic)
   const rate_cents_per_min = record_enabled ? 2 : 1;
 
-  // Overages billed with ceil(overage_seconds / 60) * rate
+  // Bill ONLY overage minutes; minutes are rounded up
   let billed_cents = 0;
 
   if (duration_seconds != null && user_id) {
+    const wholeMinutes = Math.max(1, Math.ceil(duration_seconds / 60));
     try {
       const account_id = await resolveAccountId(user_id);
-      const { covered, remaining_to_bill } = await tryConsumeCallSeconds(account_id, duration_seconds, new Date());
-
-      const overage_seconds = Math.max(0, remaining_to_bill || 0);
-      if (overage_seconds > 0) {
-        const overage_minutes = Math.max(1, Math.ceil(overage_seconds / 60));
-        billed_cents = overage_minutes * rate_cents_per_min;
-      }
-      log("usage.calls", { duration_seconds, covered, overage_seconds, billed_cents, rate_cents_per_min });
+      const { covered, remaining_to_bill } = await tryConsumeCallMinutes(account_id, wholeMinutes, new Date());
+      const overage_minutes = Math.max(0, remaining_to_bill || 0);
+      billed_cents = overage_minutes * rate_cents_per_min;
+      log("usage.calls(minutes)", { wholeMinutes, covered, overage_minutes, billed_cents, rate_cents_per_min });
     } catch (e) {
-      // If usage fails for any reason, fall back to prior behavior (bill entire duration)
-      const mins = Math.max(1, Math.ceil((duration_seconds || 0) / 60));
-      billed_cents = mins * rate_cents_per_min;
-      log("usage error; fallback to full billing", e?.message);
+      // usage hiccup → fall back to billing full minutes
+      billed_cents = Math.max(1, Math.ceil(duration_seconds / 60)) * rate_cents_per_min;
+      log("usage minutes error; fallback to full billing", e?.message);
     }
   } else if (duration_seconds != null) {
-    // No user_id to resolve an account: keep old behavior for safety
-    const mins = Math.max(1, Math.ceil(duration_seconds / 60));
-    billed_cents = mins * rate_cents_per_min;
+    billed_cents = Math.max(1, Math.ceil(duration_seconds / 60)) * rate_cents_per_min;
   }
 
   const baseUpdates = {
@@ -419,11 +378,11 @@ async function markEnded({ legA, ended_at, hangup_cause }) {
     }
   }
 
-  // Wallet debit only for overage
-  if (billed_cents > 0 && user_id) {
-    const res = await debitWalletForCall({ legA, user_id, cents: billed_cents });
+  // Wallet debit only for overage minutes
+  if (billed_cents > 0 && row?.user_id) {
+    const res = await debitWalletForCall({ legA, user_id: row.user_id, cents: billed_cents });
     if (!res.ok) log("wallet debit failed (non-fatal)", res.error || "unknown");
-    else log("wallet debit ok", { user_id, billed_cents, record_enabled });
+    else log("wallet debit ok", { user_id: row.user_id, billed_cents, record_enabled });
   }
 }
 
@@ -498,9 +457,7 @@ exports.handler = async (event) => {
       }
 
       case "call.answered": {
-        // Agent answered: start ringback to agent, then transfer to lead.
         if (ringback_url && legA) await playbackStart(legA, ringback_url);
-
         if (kind === "crm_outbound" && legA && lead_number && from_number) {
           await transferCall({ callControlId: legA, to: lead_number, from: from_number });
         }
@@ -509,38 +466,27 @@ exports.handler = async (event) => {
       }
 
       case "call.bridged": {
-        // Stop ringback and mark bridged
         if (legA) await playbackStop(legA);
         await markBridged({ legA, maybeLegB: peerLeg || null });
-
-        // Start recording only after media is up
         if (record_enabled && legA) startRecording(legA);
         break;
       }
 
       case "call.transfer.completed": {
-        // Transfer finished. If we never bridged (no peer leg), treat as no-answer/busy and hang up agent.
         const outcome = (p?.result || p?.cause || p?.hangup_cause || "").toLowerCase();
         log("transfer.completed", { outcome, peerLeg: !!peerLeg });
-
-        // Always stop ringback if it was playing
         if (legA) await playbackStop(legA);
-
         const failed =
           !peerLeg ||
           ["busy", "no_answer", "call_rejected", "user_busy", "unallocated_number", "normal_clearing"].includes(outcome);
-
         if (failed && legA) {
-          await hangupCall(legA); // cleanly end A-leg so you aren’t left in silence
+          await hangupCall(legA);
         }
         break;
       }
 
       case "call.recording.saved": {
-        const url =
-          p?.recording_urls?.mp3 ||
-          p?.recording_url ||
-          null;
+        const url = p?.recording_urls?.mp3 || p?.recording_url || null;
         if (call_session_id && url) {
           await saveRecordingUrlByCallSession({ call_session_id, recording_url: url });
         }
@@ -549,12 +495,11 @@ exports.handler = async (event) => {
 
       case "call.ended":
       case "call.hangup": {
-        await playbackStop(legA); // best-effort
+        await playbackStop(legA);
         await markEnded({ legA, ended_at: occurred_at, hangup_cause: p?.hangup_cause });
         break;
       }
 
-      // If Telnyx emits these with a peer id, mark bridged so UI isn’t stuck
       case "call.transfer.initiated":
       case "call.initiated.outbound":
       case "call.answered.outbound": {
