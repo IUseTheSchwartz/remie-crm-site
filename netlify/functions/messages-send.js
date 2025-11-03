@@ -98,7 +98,7 @@ async function getBalanceCents(db, user_id) {
   return Number(data?.balance_cents ?? 0);
 }
 
-/* ====== NEW: TFN status via toll_free_numbers ======
+/* ====== TFN status via toll_free_numbers ======
    Returns { status: 'verified'|'pending'|'none', e164?: string }
 ==================================================== */
 async function getAgentTFNStatus(db, user_id) {
@@ -151,10 +151,10 @@ function chooseFallbackKey(reqKey, { isMilitary }) {
 }
 
 /* =========================
-   NEW: Monthly free usage
+   Monthly free usage (SMS)
    ========================= */
 
-// Resolve pooling account: subscription account_id (active) or fallback to user_id
+// account: subscription account_id (active) or fallback to user_id
 async function resolveAccountId(db, user_id) {
   try {
     const { data } = await db
@@ -171,10 +171,7 @@ async function resolveAccountId(db, user_id) {
 function monthWindow(now = new Date()) {
   const start = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1, 0, 0, 0));
   const end = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + 1, 1, 0, 0, 0));
-  return {
-    period_start: start.toISOString(),
-    period_end: end.toISOString(),
-  };
+  return { period_start: start.toISOString(), period_end: end.toISOString() };
 }
 
 async function ensureUsageRow(db, account_id, now = new Date()) {
@@ -201,7 +198,6 @@ async function ensureUsageRow(db, account_id, now = new Date()) {
 // Conservative segment counter (GSM-7 vs UCS-2)
 function countSmsSegments(text = "") {
   const s = String(text);
-  // Basic GSM-7 detector (good enough)
   const gsm7 =
     /^[\n\r\t\0\x0B\x0C\x1B\x20-\x7E€£¥èéùìòÇØøÅåΔ_ΦΓΛΩΠΨΣΘΞÆæßÉ^{}\[~\]|€\\]*$/.test(s);
   if (gsm7) {
@@ -215,16 +211,11 @@ function countSmsSegments(text = "") {
   }
 }
 
-/**
- * Try to consume N SMS segments from the monthly pool.
- * Returns { covered, remaining_to_bill }.
- * JS two-phase (simple). For truly atomic, replace with a SQL RPC.
- */
+/** Try to consume N SMS segments. Returns {covered, remaining_to_bill}. */
 async function tryConsumeSms(db, account_id, segments, now = new Date()) {
   await ensureUsageRow(db, account_id, now);
   const { period_start, period_end } = monthWindow(now);
 
-  // Fetch row
   const { data: row0, error: getErr } = await db
     .from("usage_counters")
     .select("id, free_sms_total, free_sms_used")
@@ -252,7 +243,7 @@ async function tryConsumeSms(db, account_id, segments, now = new Date()) {
   return { covered, remaining_to_bill: over };
 }
 
-// Price per segment (cents). Keep aligned with your wallet pricing.
+// price per segment (cents)
 const PER_SEGMENT_CENTS = Number(process.env.SMS_PER_SEGMENT_CENTS || "1");
 
 exports.handler = async (event) => {
@@ -272,16 +263,16 @@ exports.handler = async (event) => {
       contact_id,
       lead_id,
       body: rawBody,
-      templateKey, // camelCase
+      templateKey,
       requesterId,
       provider_message_id,
-      sent_by_ai, // <-- NEW: allow AI to tag the message
+      sent_by_ai,
     } = body || {};
 
-    // accept snake_case too
+    // also accept snake_case
     templateKey = body.template_key || body.template || templateKey;
 
-    // -------- Resolve user_id, contact, destination phone --------
+    // -------- Resolve user_id, contact, destination --------
     let user_id = null;
     let contact = null;
     let lead = null;
@@ -324,7 +315,7 @@ exports.handler = async (event) => {
       if (contact) trace.push({ step: "contact.resolved_by_phone", contact_id: contact.id });
     }
 
-    // -------- DEDUPE: provider_message_id guard --------
+    // -------- DEDUPE by provider_message_id --------
     if (provider_message_id) {
       const { data: dupe, error: dErr } = await db
         .from("messages")
@@ -339,7 +330,7 @@ exports.handler = async (event) => {
       }
     }
 
-    // -------- Build message body (template or raw) --------
+    // -------- Build body (template or raw) --------
     let bodyText = String(rawBody || "").trim();
 
     if (!bodyText) {
@@ -400,7 +391,7 @@ exports.handler = async (event) => {
       trace.push({ step: "template.rendered", key: keyToUse, body_len: bodyText.length });
     }
 
-    // -------- Determine FROM number & verification status --------
+    // -------- Determine FROM number & verification --------
     const tfn = await getAgentTFNStatus(db, user_id);
     if (tfn.status === "pending") {
       return json(
@@ -425,7 +416,7 @@ exports.handler = async (event) => {
     }
     const fromE164 = tfn.e164;
 
-    // ======== NEW: Free-pool → Wallet flow (SMS segments) ========
+    // ======== Free-pool → Wallet flow (SMS segments) ========
     const account_id = await resolveAccountId(db, user_id);
     const segments = countSmsSegments(bodyText || "");
     let cover = { covered: 0, remaining_to_bill: segments };
@@ -434,15 +425,13 @@ exports.handler = async (event) => {
       cover = await tryConsumeSms(db, account_id, segments, new Date());
       trace.push({ step: "usage.sms", segments, covered: cover.covered, billable: cover.remaining_to_bill });
     } catch (e) {
-      // If usage table hiccups, we won't block send; we’ll just bill as before.
       trace.push({ step: "usage.error", detail: e?.message || String(e) });
     }
 
-    // Billable segments → price_cents; fully covered → zero cost
     const billableSegments = cover.remaining_to_bill;
     const price_cents = Math.max(0, billableSegments * PER_SEGMENT_CENTS);
 
-    // -------- WALLET pre-flight (only if we have overage to bill) --------
+    // -------- WALLET preflight (only if overage) --------
     if (price_cents > 0) {
       let balance = 0;
       try {
@@ -494,7 +483,7 @@ exports.handler = async (event) => {
       status: "sent",
       provider_sid,
       provider_message_id: provider_message_id || null,
-      price_cents, // FREE if fully covered, else overage only
+      price_cents, // FREE if covered, else overage only
       meta: {
         templateKey: templateKey || null,
         lead_id: lead?.id || (lead_id || null),
@@ -502,7 +491,7 @@ exports.handler = async (event) => {
         free_segments_covered: cover.covered || 0,
         charge_source: price_cents === 0 ? "free_pool" : "wallet_overage",
       },
-      sent_by_ai: Boolean(sent_by_ai) === true, // tiny flag for UI badge
+      sent_by_ai: Boolean(sent_by_ai) === true,
     };
 
     const ins = await db.from("messages").insert([row]).select("id, contact_id").maybeSingle();
