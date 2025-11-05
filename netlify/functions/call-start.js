@@ -1,5 +1,5 @@
 // netlify/functions/call-start.js
-// Agent leg first, then your webhook transfers to the lead.
+// LEAD-FIRST: call the LEAD first; webhook will dial the AGENT on human answer, then bridge.
 // Caller ID selection priority:
 // 1) Exact area code (NPA) match
 // 2) Same state as the lead
@@ -11,7 +11,7 @@ const { createClient } = require("@supabase/supabase-js");
 
 const TELNYX_API_KEY = process.env.TELNYX_API_KEY;
 const CALL_CONTROL_APP_ID = process.env.TELNYX_CALL_CONTROL_APP_ID;
-// Optional ringback audio while B-leg is dialing (MP3/WAV URL). Safe to leave blank.
+// Optional ringback audio to play to the lead while the agent phone is ringing (MP3/WAV URL)
 const RINGBACK_URL = process.env.RINGBACK_URL || "";
 
 // You already have one of these set in Netlify; support both env names.
@@ -233,10 +233,10 @@ exports.handler = async (event) => {
   let body = {};
   try { body = JSON.parse(event.body || "{}"); } catch { return bad(400, "Invalid JSON"); }
 
-  const agent_id = String(body.agent_id || body.user_id || "").trim();
-  const agent_number = String(body.agent_number || "").trim(); // agent cell
-  const lead_number = String(body.lead_number || "").trim();   // target
-  const contact_id = body.contact_id || null;
+  const agent_id    = String(body.agent_id || body.user_id || "").trim();
+  const agent_number = String(body.agent_number || "").trim(); // agent cell to ring AFTER lead answers
+  const lead_number = String(body.lead_number || "").trim();   // target (we call this FIRST)
+  const contact_id  = body.contact_id || null;
 
   if (!agent_id) return bad(422, "agent_id required");
   if (!isE164(agent_number)) return bad(422, "agent_number must be E.164");
@@ -255,7 +255,7 @@ exports.handler = async (event) => {
   if (listErr) return bad(500, "DB list error: " + listErr.message);
   if (!nums || nums.length === 0) return bad(400, "You don’t own any Telnyx numbers yet");
 
-  // Read the per-user recording preference from the new table
+  // Per-user recording preference
   let recordFlag = false;
   try {
     const { data: rec } = await supa
@@ -273,9 +273,9 @@ exports.handler = async (event) => {
   const callerId = pickBestCallerId({ leadNPA, owned: nums });
   if (!callerId) return bad(400, "Could not choose a caller ID");
 
-  // Client state tells the webhook what to do next (ringback/timeout/recording)
+  // Client state tells the webhook this is the LEAD leg and what to do on answer
   const client_state = b64({
-    kind: "crm_outbound",
+    kind: "crm_outbound_lead_leg",   // 👈 NEW: lead-first leg
     user_id: agent_id,
     contact_id,
     lead_number,
@@ -283,17 +283,20 @@ exports.handler = async (event) => {
     from_number: callerId,
     lead_npa: leadNPA,
     lead_state: stateFromAreaCode(leadNPA),
-    ringback_url: RINGBACK_URL || null, // optional; webhook will skip if null/empty
-    b_timeout_secs: 25,                  // dial B-leg for up to ~25s, then bail
-    record: recordFlag                   // 🔑 enable recording (webhook will start + bill 2¢)
+    ringback_url: RINGBACK_URL || null, // optional ringback (to lead) while agent phone rings
+    b_timeout_secs: 25,                  // used by webhook when dialing the agent leg
+    record: recordFlag                   // webhook can start dual-channel recording post-bridge
   });
 
+  // Create call → to the LEAD first
   const createPayload = {
-    to: agent_number,
+    to: lead_number,
     from: callerId,
     connection_id: String(CALL_CONTROL_APP_ID),
     client_state,
     timeout_secs: 45,
+    // If your Call Control App has AMD enabled, you can request detection:
+    // answering_machine_detection: "detect"
   };
 
   try {
