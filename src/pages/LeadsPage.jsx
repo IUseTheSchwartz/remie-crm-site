@@ -149,6 +149,288 @@ async function sendSoldAutoText({ leadId }) {
 }
 
 /* =============================================================================
+   NEW: Auto Dialer Drawer
+   - Filters by stage, phone present, state includes
+   - Queue preview/progress
+   - Call / Next / Skip controls
+   - Optional auto-advance delay
+============================================================================= */
+function AutoDialerDrawer({
+  open,
+  onClose,
+  leads,               // full dataset (rows)
+  startCallFn,         // (lead) => Promise<void>
+  agentPhone,          // string
+  setAgentPhone,       // setter
+}) {
+  const [includeStages, setIncludeStages] = useState(new Set(["no_pickup", "answered"]));
+  const [mustHavePhone, setMustHavePhone] = useState(true);
+  const [stateFilter, setStateFilter] = useState(""); // comma-separated: e.g. "TN, KY"
+  const [autoAdvance, setAutoAdvance] = useState(false);
+  const [delaySec, setDelaySec] = useState(6);
+
+  const [queue, setQueue] = useState([]);   // array of lead objects
+  const [idx, setIdx] = useState(0);
+  const [running, setRunning] = useState(false);
+  const [stats, setStats] = useState({ called: 0, skipped: 0, redialed: 0 });
+
+  const tRef = useRef(null);
+
+  const parsedStates = useMemo(() => {
+    return stateFilter
+      .split(",")
+      .map(s => s.trim().toUpperCase())
+      .filter(Boolean);
+  }, [stateFilter]);
+
+  useEffect(() => {
+    if (!open) {
+      // reset timers & state when drawer closes
+      if (tRef.current) clearTimeout(tRef.current);
+      setRunning(false);
+      setIdx(0);
+      setStats({ called: 0, skipped: 0, redialed: 0 });
+    }
+  }, [open]);
+
+  function buildQueue() {
+    const list = (leads || [])
+      .filter(r => r.status !== "sold")
+      .filter(r => includeStages.has(r.stage || "no_pickup"))
+      .filter(r => (mustHavePhone ? !!r.phone : true))
+      .filter(r => parsedStates.length ? parsedStates.includes(String(r.state || "").toUpperCase()) : true)
+      // light sort: newest first by created_at (if present)
+      .sort((a, b) => (new Date(b.created_at || 0)) - (new Date(a.created_at || 0)));
+    setQueue(list);
+    setIdx(0);
+  }
+
+  async function ensureAgentPhone() {
+    if (agentPhone && toE164(agentPhone)) return agentPhone;
+    const p = prompt("Enter your phone (E.164, e.g. +1XXXXXXXXXX):", agentPhone || "+1");
+    if (!p) throw new Error("Agent phone required");
+    const e = toE164(p);
+    if (!e) throw new Error("Invalid phone. Use +1XXXXXXXXXX");
+    try {
+      // persist to profile (same as page helper)
+      const { data: auth } = await supabase.auth.getUser();
+      const uid = auth?.user?.id;
+      if (uid) {
+        const { data: existing } = await supabase
+          .from("agent_profiles")
+          .select("user_id")
+          .eq("user_id", uid)
+          .maybeSingle();
+        if (existing) await supabase.from("agent_profiles").update({ phone: e }).eq("user_id", uid);
+        else await supabase.from("agent_profiles").insert({ user_id: uid, phone: e });
+      }
+    } catch {}
+    setAgentPhone(e);
+    return e;
+  }
+
+  async function callCurrent() {
+    if (!queue.length || idx >= queue.length) return;
+    const lead = queue[idx];
+    const agent = await ensureAgentPhone();
+    const num = toE164(lead.phone);
+    if (!num) {
+      setStats(s => ({ ...s, skipped: s.skipped + 1 }));
+      setIdx(i => i + 1);
+      return;
+    }
+    await startCallFn({ lead, agent, e164: num });
+    setStats(s => ({ ...s, called: s.called + 1 }));
+    if (autoAdvance) {
+      if (tRef.current) clearTimeout(tRef.current);
+      tRef.current = setTimeout(() => setIdx(i => i + 1), Math.max(1, Number(delaySec)) * 1000);
+    }
+  }
+
+  async function redialX3() {
+    if (!queue.length || idx >= queue.length) return;
+    const lead = queue[idx];
+    const agent = await ensureAgentPhone();
+    const num = toE164(lead.phone);
+    if (!num) return;
+    setStats(s => ({ ...s, redialed: s.redialed + 1 }));
+    // three quick attempts; spacing 5s
+    const burst = async () => {
+      for (let k = 0; k < 3; k++) {
+        await startCallFn({ lead, agent, e164: num });
+        await new Promise(r => setTimeout(r, 5000));
+      }
+    };
+    burst();
+  }
+
+  function startRun() {
+    buildQueue();
+    setRunning(true);
+  }
+  function stopRun() {
+    setRunning(false);
+    if (tRef.current) clearTimeout(tRef.current);
+  }
+
+  const current = queue[idx];
+
+  if (!open) return null;
+  return (
+    <div className="fixed inset-0 z-50 grid bg-black/60 p-3">
+      <div className="relative m-auto w-full max-w-3xl rounded-2xl border border-white/15 bg-neutral-950 p-4">
+        <div className="mb-3 flex items-center justify-between">
+          <div className="text-base font-semibold">Auto Dial</div>
+          <button onClick={onClose} className="rounded-lg px-2 py-1 text-sm hover:bg-white/10">Close</button>
+        </div>
+
+        {/* Filters */}
+        <div className="grid gap-3 md:grid-cols-3">
+          <div className="rounded-xl border border-white/10 bg-black/30 p-3">
+            <div className="mb-2 text-sm font-semibold">Stages</div>
+            <div className="grid grid-cols-2 gap-2">
+              {["no_pickup","answered","quoted","app_started","app_pending","app_submitted"].map(sid => {
+                const checked = includeStages.has(sid);
+                return (
+                  <label key={sid} className="flex items-center gap-2 text-xs">
+                    <input
+                      type="checkbox"
+                      checked={checked}
+                      onChange={() => {
+                        setIncludeStages(prev => {
+                          const next = new Set(prev);
+                          if (next.has(sid)) next.delete(sid); else next.add(sid);
+                          return next;
+                        });
+                      }}
+                    />
+                    {labelForStage(sid)}
+                  </label>
+                );
+              })}
+            </div>
+            <label className="mt-3 flex items-center gap-2 text-xs">
+              <input type="checkbox" checked={mustHavePhone} onChange={(e)=>setMustHavePhone(e.target.checked)} />
+              Must have phone
+            </label>
+          </div>
+
+          <div className="rounded-xl border border-white/10 bg-black/30 p-3">
+            <div className="mb-2 text-sm font-semibold">State filter</div>
+            <input
+              value={stateFilter}
+              onChange={(e)=>setStateFilter(e.target.value)}
+              className="w-full rounded-lg border border-white/15 bg-black/40 px-3 py-2 text-sm outline-none"
+              placeholder="e.g. TN, KY"
+            />
+            <div className="mt-3 text-xs text-white/60">
+              Leave blank for all states. Comma-separated list accepted.
+            </div>
+          </div>
+
+          <div className="rounded-xl border border-white/10 bg-black/30 p-3">
+            <div className="mb-2 text-sm font-semibold">Auto-advance</div>
+            <label className="flex items-center gap-2 text-sm">
+              <input type="checkbox" checked={autoAdvance} onChange={(e)=>setAutoAdvance(e.target.checked)} />
+              Auto-advance after call
+            </label>
+            <div className="mt-2 flex items-center gap-2">
+              <span className="text-xs text-white/70">Delay</span>
+              <input
+                type="number"
+                min={2}
+                value={delaySec}
+                onChange={(e)=>setDelaySec(e.target.value)}
+                className="w-20 rounded-lg border border-white/15 bg-black/40 px-2 py-1 text-sm outline-none"
+              />
+              <span className="text-xs text-white/60">sec</span>
+            </div>
+            <div className="mt-3 text-xs text-white/60">
+              Tip: leave Auto-advance OFF if you want full control (Call then Next).
+            </div>
+          </div>
+        </div>
+
+        {/* Controls */}
+        <div className="mt-4 flex flex-wrap items-center gap-2">
+          <button
+            onClick={startRun}
+            className="rounded-xl bg-white px-4 py-2 text-sm font-medium text-black hover:bg-white/90"
+          >
+            Build queue
+          </button>
+          <button
+            onClick={stopRun}
+            className="rounded-xl border border-white/15 px-4 py-2 text-sm hover:bg-white/10"
+          >
+            Stop
+          </button>
+          <div className="ml-auto text-sm text-white/70">
+            {queue.length ? `Queue: ${idx+1}/${queue.length}` : "Queue is empty"}
+          </div>
+        </div>
+
+        {/* Current target */}
+        <div className="mt-3 rounded-2xl border border-white/10 bg-white/[0.03] p-3">
+          <div className="mb-2 text-sm font-semibold">Current</div>
+          {current ? (
+            <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+              <div className="text-sm">
+                <div className="font-medium">{current.name || "—"}</div>
+                <div className="text-white/70"><PhoneMono>{current.phone || "—"}</PhoneMono></div>
+                <div className="text-white/50 text-xs">
+                  {labelForStage(current.stage || "no_pickup")} · {current.state || "—"}
+                </div>
+              </div>
+              <div className="flex flex-wrap items-center gap-2">
+                <button
+                  onClick={callCurrent}
+                  className="inline-flex items-center gap-1 rounded-lg border border-emerald-500/40 bg-emerald-500/10 px-3 py-2 text-sm hover:bg-emerald-500/15"
+                >
+                  Call
+                </button>
+                <button
+                  onClick={()=>setIdx(i => Math.min(i + 1, queue.length))}
+                  className="rounded-lg border border-white/15 px-3 py-2 text-sm hover:bg-white/10"
+                  title="Skip to next"
+                >
+                  Next
+                </button>
+                <button
+                  onClick={redialX3}
+                  className="rounded-lg border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-sm hover:bg-amber-500/15"
+                  title="Try 3 quick redials"
+                >
+                  Redial ×3
+                </button>
+              </div>
+            </div>
+          ) : (
+            <div className="text-sm text-white/60">No current record. Click “Build queue”.</div>
+          )}
+        </div>
+
+        {/* Stats */}
+        <div className="mt-3 grid grid-cols-3 gap-3">
+          <div className="rounded-xl border border-white/10 bg-black/30 p-3 text-center">
+            <div className="text-xs text-white/60">Called</div>
+            <div className="text-lg font-semibold">{stats.called}</div>
+          </div>
+          <div className="rounded-xl border border-white/10 bg-black/30 p-3 text-center">
+            <div className="text-xs text-white/60">Skipped</div>
+            <div className="text-lg font-semibold">{stats.skipped}</div>
+          </div>
+          <div className="rounded-xl border border-white/10 bg-black/30 p-3 text-center">
+            <div className="text-xs text-white/60">Redial x3</div>
+            <div className="text-lg font-semibold">{stats.redialed}</div>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* =============================================================================
    Inbound Webhook Drawer Panel
    - Fetches/creates via /.netlify/functions/user-webhook (GET)
    - Rotates via POST { rotate: true }
@@ -292,6 +574,9 @@ export default function LeadsPage() {
   const [filter, setFilter] = useState("");
   const [serverMsg, setServerMsg] = useState("");
   const [showConnector, setShowConnector] = useState(false);
+
+  // NEW: auto dial drawer
+  const [showDialer, setShowDialer] = useState(false);
 
   // call and stage UI
   const [agentPhone, setAgentPhone] = useState("");
@@ -666,6 +951,15 @@ export default function LeadsPage() {
           {showConnector ? "Close setup" : "Setup auto import"}
         </button>
 
+        {/* NEW: Auto Dial open */}
+        <button
+          onClick={() => setShowDialer(true)}
+          className="rounded-xl border border-emerald-500/40 bg-emerald-500/10 px-3 py-2 text-sm hover:bg-emerald-500/15"
+          title="Open Auto Dial"
+        >
+          Auto Dial
+        </button>
+
         <div className="ml-auto flex items-center gap-3">
           {/* <AddLeadControl ... /> REMOVED */}
           <CsvImportControl
@@ -862,6 +1156,21 @@ export default function LeadsPage() {
       {/* Read-only policy viewer for SOLD rows */}
       {viewSelected && (
         <PolicyViewer person={viewSelected} onClose={() => setViewSelected(null)} />
+      )}
+
+      {/* NEW: Auto Dialer Drawer */}
+      {showDialer && (
+        <AutoDialerDrawer
+          open={showDialer}
+          onClose={() => setShowDialer(false)}
+          leads={rows}
+          agentPhone={agentPhone}
+          setAgentPhone={setAgentPhone}
+          startCallFn={async ({ lead, agent, e164 }) => {
+            await startCall({ agentNumber: agent, leadNumber: e164, contactId: lead.id });
+            setServerMsg(`📞 Calling ${lead.name || lead.phone || lead.id}…`);
+          }}
+        />
       )}
     </div>
   );
