@@ -161,7 +161,7 @@ async function startRecording(callControlId) {
     const url = `https://api.telnyx.com/v2/calls/${callControlId}/actions/record_start`;
     const resp = await fetch(url, {
       method: "POST",
-      headers: { Authorization: `Bearer ${TELNYX_API_KEY}", "Content-Type": "application/json" },
+      headers: { Authorization: `Bearer ${TELNYX_API_KEY}`, "Content-Type": "application/json" },
       body: JSON.stringify({ channels: "dual", audio: { direction: "both" }, format: "mp3" })
     });
     if (!resp.ok) {
@@ -179,7 +179,7 @@ async function playbackStart(callControlId, audioUrl) {
     const url = `https://api.telnyx.com/v2/calls/${callControlId}/actions/playback_start`;
     const resp = await fetch(url, {
       method: "POST",
-      headers: { Authorization: `Bearer ${TELNYX_API_KEY}", "Content-Type": "application/json" },
+      headers: { Authorization: `Bearer ${TELNYX_API_KEY}`, "Content-Type": "application/json" },
       body: JSON.stringify({ audio_url: audioUrl, loop: true })
     });
     if (!resp.ok) {
@@ -197,7 +197,7 @@ async function playbackStop(callControlId) {
     const url = `https://api.telnyx.com/v2/calls/${callControlId}/actions/playback_stop`;
     const resp = await fetch(url, {
       method: "POST",
-      headers: { Authorization: `Bearer ${TELNYX_API_KEY}", "Content-Type": "application/json" },
+      headers: { Authorization: `Bearer ${TELNYX_API_KEY}`, "Content-Type": "application/json" },
       body: JSON.stringify({})
     });
     if (!resp.ok) {
@@ -215,7 +215,7 @@ async function hangupCall(callControlId) {
     const url = `https://api.telnyx.com/v2/calls/${callControlId}/actions/hangup`;
     const resp = await fetch(url, {
       method: "POST",
-      headers: { Authorization: `Bearer ${TELNYX_API_KEY}", "Content-Type": "application/json" },
+      headers: { Authorization: `Bearer ${TELNYX_API_KEY}`, "Content-Type": "application/json" },
       body: JSON.stringify({})
     });
     if (!resp.ok) {
@@ -497,7 +497,7 @@ exports.handler = async (event) => {
         if (legA) await playbackStop(legA);
         const failed =
           !peerLeg ||
-          ["busy", "no_answer", "call_rejected", "user_busy", "unallocated_number", "normal_clearing"].includes(outcome);
+          ["busy", "no_answer", "call_rejected", "user_busy", "unallocated_number"].includes(outcome);
         if (failed && legA) {
           await hangupCall(legA);
         }
