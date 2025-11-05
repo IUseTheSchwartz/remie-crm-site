@@ -130,7 +130,7 @@ async function sendSoldAutoText({ leadId }) {
         headers: {
           "Content-Type": "application/json",
           ...(token ? { Authorization: `Bearer ${token}` } : {}),
-          "X-Remie-Billing": "free_first", // hint for backend to consume free segments before wallet
+          "X-Remie-Billing": "free_first",
         },
         body: JSON.stringify({
           requesterId: userId,
@@ -149,292 +149,7 @@ async function sendSoldAutoText({ leadId }) {
 }
 
 /* =============================================================================
-   NEW: Auto Dialer Drawer
-   - Filters by stage, phone present, state includes
-   - Queue preview/progress
-   - Call / Next / Skip controls
-   - Optional auto-advance delay
-============================================================================= */
-function AutoDialerDrawer({
-  open,
-  onClose,
-  leads,               // full dataset (rows)
-  startCallFn,         // (lead) => Promise<void>
-  agentPhone,          // string
-  setAgentPhone,       // setter
-}) {
-  const [includeStages, setIncludeStages] = useState(new Set(["no_pickup", "answered"]));
-  const [mustHavePhone, setMustHavePhone] = useState(true);
-  const [stateFilter, setStateFilter] = useState(""); // comma-separated: e.g. "TN, KY"
-  const [autoAdvance, setAutoAdvance] = useState(false);
-  const [delaySec, setDelaySec] = useState(6);
-
-  const [queue, setQueue] = useState([]);   // array of lead objects
-  const [idx, setIdx] = useState(0);
-  const [running, setRunning] = useState(false);
-  const [stats, setStats] = useState({ called: 0, skipped: 0, redialed: 0 });
-
-  const tRef = useRef(null);
-
-  const parsedStates = useMemo(() => {
-    return stateFilter
-      .split(",")
-      .map(s => s.trim().toUpperCase())
-      .filter(Boolean);
-  }, [stateFilter]);
-
-  useEffect(() => {
-    if (!open) {
-      // reset timers & state when drawer closes
-      if (tRef.current) clearTimeout(tRef.current);
-      setRunning(false);
-      setIdx(0);
-      setStats({ called: 0, skipped: 0, redialed: 0 });
-    }
-  }, [open]);
-
-  function buildQueue() {
-    const list = (leads || [])
-      .filter(r => r.status !== "sold")
-      .filter(r => includeStages.has(r.stage || "no_pickup"))
-      .filter(r => (mustHavePhone ? !!r.phone : true))
-      .filter(r => parsedStates.length ? parsedStates.includes(String(r.state || "").toUpperCase()) : true)
-      // light sort: newest first by created_at (if present)
-      .sort((a, b) => (new Date(b.created_at || 0)) - (new Date(a.created_at || 0)));
-    setQueue(list);
-    setIdx(0);
-  }
-
-  async function ensureAgentPhone() {
-    if (agentPhone && toE164(agentPhone)) return agentPhone;
-    const p = prompt("Enter your phone (E.164, e.g. +1XXXXXXXXXX):", agentPhone || "+1");
-    if (!p) throw new Error("Agent phone required");
-    const e = toE164(p);
-    if (!e) throw new Error("Invalid phone. Use +1XXXXXXXXXX");
-    try {
-      // persist to profile (same as page helper)
-      const { data: auth } = await supabase.auth.getUser();
-      const uid = auth?.user?.id;
-      if (uid) {
-        const { data: existing } = await supabase
-          .from("agent_profiles")
-          .select("user_id")
-          .eq("user_id", uid)
-          .maybeSingle();
-        if (existing) await supabase.from("agent_profiles").update({ phone: e }).eq("user_id", uid);
-        else await supabase.from("agent_profiles").insert({ user_id: uid, phone: e });
-      }
-    } catch {}
-    setAgentPhone(e);
-    return e;
-  }
-
-  async function callCurrent() {
-    if (!queue.length || idx >= queue.length) return;
-    const lead = queue[idx];
-    const agent = await ensureAgentPhone();
-    const num = toE164(lead.phone);
-    if (!num) {
-      setStats(s => ({ ...s, skipped: s.skipped + 1 }));
-      setIdx(i => i + 1);
-      return;
-    }
-    await startCallFn({ lead, agent, e164: num });
-    setStats(s => ({ ...s, called: s.called + 1 }));
-    if (autoAdvance) {
-      if (tRef.current) clearTimeout(tRef.current);
-      tRef.current = setTimeout(() => setIdx(i => i + 1), Math.max(1, Number(delaySec)) * 1000);
-    }
-  }
-
-  async function redialX3() {
-    if (!queue.length || idx >= queue.length) return;
-    const lead = queue[idx];
-    const agent = await ensureAgentPhone();
-    const num = toE164(lead.phone);
-    if (!num) return;
-    setStats(s => ({ ...s, redialed: s.redialed + 1 }));
-    // three quick attempts; spacing 5s
-    const burst = async () => {
-      for (let k = 0; k < 3; k++) {
-        await startCallFn({ lead, agent, e164: num });
-        await new Promise(r => setTimeout(r, 5000));
-      }
-    };
-    burst();
-  }
-
-  function startRun() {
-    buildQueue();
-    setRunning(true);
-  }
-  function stopRun() {
-    setRunning(false);
-    if (tRef.current) clearTimeout(tRef.current);
-  }
-
-  const current = queue[idx];
-
-  if (!open) return null;
-  return (
-    <div className="fixed inset-0 z-50 grid bg-black/60 p-3">
-      <div className="relative m-auto w-full max-w-3xl rounded-2xl border border-white/15 bg-neutral-950 p-4">
-        <div className="mb-3 flex items-center justify-between">
-          <div className="text-base font-semibold">Auto Dial</div>
-          <button onClick={onClose} className="rounded-lg px-2 py-1 text-sm hover:bg-white/10">Close</button>
-        </div>
-
-        {/* Filters */}
-        <div className="grid gap-3 md:grid-cols-3">
-          <div className="rounded-xl border border-white/10 bg-black/30 p-3">
-            <div className="mb-2 text-sm font-semibold">Stages</div>
-            <div className="grid grid-cols-2 gap-2">
-              {["no_pickup","answered","quoted","app_started","app_pending","app_submitted"].map(sid => {
-                const checked = includeStages.has(sid);
-                return (
-                  <label key={sid} className="flex items-center gap-2 text-xs">
-                    <input
-                      type="checkbox"
-                      checked={checked}
-                      onChange={() => {
-                        setIncludeStages(prev => {
-                          const next = new Set(prev);
-                          if (next.has(sid)) next.delete(sid); else next.add(sid);
-                          return next;
-                        });
-                      }}
-                    />
-                    {labelForStage(sid)}
-                  </label>
-                );
-              })}
-            </div>
-            <label className="mt-3 flex items-center gap-2 text-xs">
-              <input type="checkbox" checked={mustHavePhone} onChange={(e)=>setMustHavePhone(e.target.checked)} />
-              Must have phone
-            </label>
-          </div>
-
-          <div className="rounded-xl border border-white/10 bg-black/30 p-3">
-            <div className="mb-2 text-sm font-semibold">State filter</div>
-            <input
-              value={stateFilter}
-              onChange={(e)=>setStateFilter(e.target.value)}
-              className="w-full rounded-lg border border-white/15 bg-black/40 px-3 py-2 text-sm outline-none"
-              placeholder="e.g. TN, KY"
-            />
-            <div className="mt-3 text-xs text-white/60">
-              Leave blank for all states. Comma-separated list accepted.
-            </div>
-          </div>
-
-          <div className="rounded-xl border border-white/10 bg-black/30 p-3">
-            <div className="mb-2 text-sm font-semibold">Auto-advance</div>
-            <label className="flex items-center gap-2 text-sm">
-              <input type="checkbox" checked={autoAdvance} onChange={(e)=>setAutoAdvance(e.target.checked)} />
-              Auto-advance after call
-            </label>
-            <div className="mt-2 flex items-center gap-2">
-              <span className="text-xs text-white/70">Delay</span>
-              <input
-                type="number"
-                min={2}
-                value={delaySec}
-                onChange={(e)=>setDelaySec(e.target.value)}
-                className="w-20 rounded-lg border border-white/15 bg-black/40 px-2 py-1 text-sm outline-none"
-              />
-              <span className="text-xs text-white/60">sec</span>
-            </div>
-            <div className="mt-3 text-xs text-white/60">
-              Tip: leave Auto-advance OFF if you want full control (Call then Next).
-            </div>
-          </div>
-        </div>
-
-        {/* Controls */}
-        <div className="mt-4 flex flex-wrap items-center gap-2">
-          <button
-            onClick={startRun}
-            className="rounded-xl bg-white px-4 py-2 text-sm font-medium text-black hover:bg-white/90"
-          >
-            Build queue
-          </button>
-          <button
-            onClick={stopRun}
-            className="rounded-xl border border-white/15 px-4 py-2 text-sm hover:bg-white/10"
-          >
-            Stop
-          </button>
-          <div className="ml-auto text-sm text-white/70">
-            {queue.length ? `Queue: ${idx+1}/${queue.length}` : "Queue is empty"}
-          </div>
-        </div>
-
-        {/* Current target */}
-        <div className="mt-3 rounded-2xl border border-white/10 bg-white/[0.03] p-3">
-          <div className="mb-2 text-sm font-semibold">Current</div>
-          {current ? (
-            <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
-              <div className="text-sm">
-                <div className="font-medium">{current.name || "—"}</div>
-                <div className="text-white/70"><PhoneMono>{current.phone || "—"}</PhoneMono></div>
-                <div className="text-white/50 text-xs">
-                  {labelForStage(current.stage || "no_pickup")} · {current.state || "—"}
-                </div>
-              </div>
-              <div className="flex flex-wrap items-center gap-2">
-                <button
-                  onClick={callCurrent}
-                  className="inline-flex items-center gap-1 rounded-lg border border-emerald-500/40 bg-emerald-500/10 px-3 py-2 text-sm hover:bg-emerald-500/15"
-                >
-                  Call
-                </button>
-                <button
-                  onClick={()=>setIdx(i => Math.min(i + 1, queue.length))}
-                  className="rounded-lg border border-white/15 px-3 py-2 text-sm hover:bg-white/10"
-                  title="Skip to next"
-                >
-                  Next
-                </button>
-                <button
-                  onClick={redialX3}
-                  className="rounded-lg border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-sm hover:bg-amber-500/15"
-                  title="Try 3 quick redials"
-                >
-                  Redial ×3
-                </button>
-              </div>
-            </div>
-          ) : (
-            <div className="text-sm text-white/60">No current record. Click “Build queue”.</div>
-          )}
-        </div>
-
-        {/* Stats */}
-        <div className="mt-3 grid grid-cols-3 gap-3">
-          <div className="rounded-xl border border-white/10 bg-black/30 p-3 text-center">
-            <div className="text-xs text-white/60">Called</div>
-            <div className="text-lg font-semibold">{stats.called}</div>
-          </div>
-          <div className="rounded-xl border border-white/10 bg-black/30 p-3 text-center">
-            <div className="text-xs text-white/60">Skipped</div>
-            <div className="text-lg font-semibold">{stats.skipped}</div>
-          </div>
-          <div className="rounded-xl border border-white/10 bg-black/30 p-3 text-center">
-            <div className="text-xs text-white/60">Redial x3</div>
-            <div className="text-lg font-semibold">{stats.redialed}</div>
-          </div>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-/* =============================================================================
-   Inbound Webhook Drawer Panel
-   - Fetches/creates via /.netlify/functions/user-webhook (GET)
-   - Rotates via POST { rotate: true }
-   - Username = response.id ; Password = response.secret
+   Inbound Webhook Drawer Panel (unchanged)
 ============================================================================= */
 function InboundWebhookPanel() {
   const [username, setUsername] = useState(""); // webhook row id
@@ -444,7 +159,6 @@ function InboundWebhookPanel() {
 
   const LEADS_EMAIL = "remiecrmleads@gmail.com";
 
-  // Load (and create if missing) using your Netlify function
   useEffect(() => {
     (async () => {
       try {
@@ -525,7 +239,7 @@ function InboundWebhookPanel() {
             {copied.p ? "Copied!" : "Copy"}
           </button>
         </div>
-        <div /> {/* rotate button removed */}
+        <div />
       </div>
 
       {/* Steps (simplified) */}
@@ -575,9 +289,6 @@ export default function LeadsPage() {
   const [serverMsg, setServerMsg] = useState("");
   const [showConnector, setShowConnector] = useState(false);
 
-  // NEW: auto dial drawer
-  const [showDialer, setShowDialer] = useState(false);
-
   // call and stage UI
   const [agentPhone, setAgentPhone] = useState("");
   const [editingStageId, setEditingStageId] = useState(null);
@@ -589,6 +300,18 @@ export default function LeadsPage() {
 
   // selection for bulk actions
   const [selectedIds, setSelectedIds] = useState(new Set());
+
+  // ----- Auto Dial UI state -----
+  const [showAutoDial, setShowAutoDial] = useState(false);
+  const [queue, setQueue] = useState([]); // [{id, attempts, status}]
+  const [isRunning, setIsRunning] = useState(false);
+  const [currentIdx, setCurrentIdx] = useState(0);
+  const [maxAttempts, setMaxAttempts] = useState(1); // 1 | 2 | 3
+  const [stateFilter, setStateFilter] = useState(""); // comma or space-separated (e.g., "TN, FL")
+  const [onlyNoPickup, setOnlyNoPickup] = useState(true);
+
+  // live per-lead status (UI badges) → string: "queued" | "dialing" | "ringing" | "answered" | "bridged" | "completed" | "failed"
+  const [liveStatus, setLiveStatus] = useState({}); // { leadId: status }
 
   // Page-scoped global billing hint for any importer that chooses to read it
   useEffect(() => {
@@ -660,6 +383,53 @@ export default function LeadsPage() {
     return () => { if (channel) supabase.removeChannel(channel); };
   }, []);
 
+  /* -------------------- Realtime: call_logs (live status) -------------------- */
+  useEffect(() => {
+    let chan;
+    (async () => {
+      try {
+        const { data: authData } = await supabase.auth.getUser();
+        const userId = authData?.user?.id;
+        if (!userId) return;
+
+        chan = supabase.channel("call_logs_live")
+          .on("postgres_changes",
+            { event: "*", schema: "public", table: "call_logs", filter: `user_id=eq.${userId}` },
+            (payload) => {
+              const rec = payload.new || payload.old || {};
+              const leadId = rec.contact_id; // our webhook saves this from client_state
+              if (!leadId) return;
+
+              const status = rec.status || "";
+              // Map DB status to UI status
+              const mapped =
+                status === "ringing" ? "ringing" :
+                status === "answered" ? "answered" :
+                status === "bridged" ? "bridged" :
+                status === "completed" ? "completed" :
+                status === "failed" ? "failed" :
+                status || "dialing";
+
+              setLiveStatus((s) => ({ ...s, [leadId]: mapped }));
+
+              // If we are running auto dial, decide when to advance to next
+              if (isRunning) {
+                if (mapped === "completed" || mapped === "failed") {
+                  // After end, move to next (respect re-dial attempts if failed/no-answer)
+                  advanceAfterEnd(leadId, mapped);
+                }
+              }
+            }
+          )
+          .subscribe();
+      } catch (e) {
+        console.error("call_logs subscribe failed:", e);
+      }
+    })();
+    return () => { if (chan) supabase.removeChannel(chan); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isRunning, queue, currentIdx, maxAttempts]);
+
   /* -------------------- Load agent phone (for click-to-call) -------------------- */
   useEffect(() => {
     (async () => {
@@ -679,26 +449,34 @@ export default function LeadsPage() {
     })();
   }, []);
 
-  /* -------------------- Click-to-call -------------------- */
+  /* -------------------- Click-to-call (single) -------------------- */
   async function onCallLead(leadNumber, contactId) {
     try {
       const to = toE164(leadNumber);
       if (!to) return alert("Invalid lead phone.");
-      let fromAgent = agentPhone;
-      if (!fromAgent) {
-        const p = prompt("Enter your phone (we call you first):", "+1 ");
-        if (!p) return;
-        const e164 = toE164(p);
-        if (!e164) return alert("That phone doesn’t look valid. Use +1XXXXXXXXXX");
-        await saveAgentPhone(e164);
-        fromAgent = e164;
-      }
+      const fromAgent = await ensureAgentPhone();
+      if (!fromAgent) return;
       await startCall({ agentNumber: fromAgent, leadNumber: to, contactId });
       setServerMsg("📞 Calling…");
+      setLiveStatus((s) => ({ ...s, [contactId]: "dialing" }));
     } catch (e) {
       alert(e.message || "Failed to start call");
     }
   }
+
+  async function ensureAgentPhone() {
+    let fromAgent = agentPhone;
+    if (!fromAgent) {
+      const p = prompt("Enter your phone (we call you):", "+1 ");
+      if (!p) return null;
+      const e164 = toE164(p);
+      if (!e164) { alert("That phone doesn’t look valid. Use +1XXXXXXXXXX"); return null; }
+      await saveAgentPhone(e164);
+      fromAgent = e164;
+    }
+    return fromAgent;
+  }
+
   async function saveAgentPhone(newPhone) {
     const phone = (newPhone || "").trim();
     if (!phone) return;
@@ -918,8 +696,122 @@ export default function LeadsPage() {
     return () => document.removeEventListener("mousedown", onDocClick);
   }, [editingStageId]);
 
+  /* -------------------- Auto Dial: queue builders & runner -------------------- */
+  function parseStateFilter(s) {
+    // Accept "TN, FL", "tn fl", etc.
+    return String(s || "")
+      .split(/[\s,]+/)
+      .map(x => x.trim().toUpperCase())
+      .filter(Boolean);
+  }
+
+  function buildQueueFromFilters() {
+    const wantStates = new Set(parseStateFilter(stateFilter)); // may be empty (means all)
+    const list = (tab === "clients" ? rows : onlySold)
+      .filter(r => r.phone)
+      .filter(r => (wantStates.size ? wantStates.has((r.state || "").toUpperCase()) : true))
+      .filter(r => (onlyNoPickup ? (r.stage ?? "no_pickup") === "no_pickup" : true))
+      .map(r => ({ id: r.id, attempts: 0, status: "queued" }));
+
+    setQueue(list);
+    setCurrentIdx(0);
+    const patch = {};
+    for (const q of list) patch[q.id] = "queued";
+    setLiveStatus((s) => ({ ...s, ...patch }));
+  }
+
+  async function startAutoDial() {
+    if (!queue.length) {
+      buildQueueFromFilters();
+      // allow build to finish in same tick
+      setTimeout(() => runNext(), 0);
+    } else {
+      runNext();
+    }
+  }
+
+  function stopAutoDial() {
+    setIsRunning(false);
+    setServerMsg("⏸️ Auto dial paused");
+  }
+
+  async function runNext() {
+    const fromAgent = await ensureAgentPhone();
+    if (!fromAgent) return;
+
+    setIsRunning(true);
+
+    const idx = currentIdx;
+    if (idx >= queue.length) {
+      setIsRunning(false);
+      setServerMsg("✅ Queue finished");
+      return;
+    }
+
+    const item = queue[idx];
+    const lead = rows.find(r => r.id === item.id);
+    if (!lead || !lead.phone) {
+      // skip and advance
+      setCurrentIdx((i) => i + 1);
+      setTimeout(runNext, 0);
+      return;
+    }
+
+    // place call
+    try {
+      setLiveStatus((s) => ({ ...s, [item.id]: "dialing" }));
+      setQueue((q) => q.map((x, i) => i === idx ? { ...x, status: "dialing" } : x));
+      const to = toE164(lead.phone);
+      await startCall({ agentNumber: fromAgent, leadNumber: to, contactId: lead.id });
+      setServerMsg(`📞 Dialing: ${lead.name || lead.phone}`);
+      // We will advance on call_logs "completed"/"failed" events via advanceAfterEnd()
+      // Safety net: if nothing comes back after timeout (e.g., 70s), advance.
+      setTimeout(() => {
+        const st = liveStatus[lead.id];
+        if (isRunning && ["dialing","ringing","answered","bridged"].includes(st)) {
+          advanceAfterEnd(lead.id, "failed");
+        }
+      }, 70000);
+    } catch (e) {
+      // immediate failure; decide retry or move on
+      advanceAfterEnd(item.id, "failed");
+    }
+  }
+
+  function advanceAfterEnd(leadId, outcome) {
+    // If failed and attempts < maxAttempts, retry same index
+    setQueue((old) => {
+      const idx = currentIdx;
+      const cur = old[idx];
+      if (!cur || cur.id !== leadId) return old;
+
+      const attempts = (cur.attempts || 0) + 1;
+      // Map outcome to badge
+      setLiveStatus((s) => ({ ...s, [leadId]: outcome }));
+
+      if (outcome !== "completed" && attempts < maxAttempts) {
+        // re-dial same lead
+        const updated = [...old];
+        updated[idx] = { ...cur, attempts, status: "queued" };
+        setQueue(updated);
+        setServerMsg(`🔁 Re-dial ${attempts + 1}/${maxAttempts}`);
+        // slight delay then re-run
+        setTimeout(runNext, 500);
+        return updated;
+      } else {
+        // move to next lead
+        const updated = [...old];
+        updated[idx] = { ...cur, attempts, status: outcome };
+        setQueue(updated);
+        setCurrentIdx((i) => i + 1);
+        setTimeout(runNext, 300);
+        return updated;
+      }
+    });
+  }
+
   /* -------------------- Render -------------------- */
-  const baseHeaders = ["Name","Phone","Email","DOB","State","Beneficiary","Beneficiary Name","Gender","Military Branch","Stage"];
+  const baseHeaders = ["Name","Phone","Email","DOB","State","Beneficiary","Beneficiary Name","Gender","Military Branch","Stage","Status"];
   const colCount = baseHeaders.length + 2; // + Select + Actions
 
   return (
@@ -951,9 +843,9 @@ export default function LeadsPage() {
           {showConnector ? "Close setup" : "Setup auto import"}
         </button>
 
-        {/* NEW: Auto Dial open */}
+        {/* Auto Dial open */}
         <button
-          onClick={() => setShowDialer(true)}
+          onClick={() => setShowAutoDial(true)}
           className="rounded-xl border border-emerald-500/40 bg-emerald-500/10 px-3 py-2 text-sm hover:bg-emerald-500/15"
           title="Open Auto Dial"
         >
@@ -961,9 +853,7 @@ export default function LeadsPage() {
         </button>
 
         <div className="ml-auto flex items-center gap-3">
-          {/* <AddLeadControl ... /> REMOVED */}
           <CsvImportControl
-            // Prefer free segments before wallet when importer triggers messages-send
             preferFreeSegments
             billingMode="free_first"
             onSendOptions={{
@@ -971,7 +861,7 @@ export default function LeadsPage() {
               preferFreeSegments: true,
               headers: { "X-Remie-Billing": "free_first" },
             }}
-            onAddedLocal={() => { /* realtime will update */ }}
+            onAddedLocal={() => {}}
             onServerMsg={(s) => setServerMsg(s)}
           />
           <button
@@ -1009,7 +899,7 @@ export default function LeadsPage() {
 
       {/* Table */}
       <div className="overflow-x-auto rounded-2xl border border-white/10">
-        <table className="min-w-[1200px] w-full border-collapse text-sm">
+        <table className="min-w-[1300px] w-full border-collapse text-sm">
           <thead className="bg-white/[0.04] text-white/70">
             <tr>
               <Th>
@@ -1031,6 +921,11 @@ export default function LeadsPage() {
               const stageLabelTxt = labelForStage(stageId);
               const stageClass = STAGE_STYLE[stageId] || "bg-white/10 text-white/80";
               const isEditingThis = editingStageId === p.id;
+
+              const uiStatus = liveStatus[p.id]; // show live dialing/answered/etc.
+              const statusBadge = uiStatus
+                ? <span className={`rounded-full px-2 py-0.5 text-xs ${badgeClass(uiStatus)}`}>{cap(uiStatus)}</span>
+                : <span className="rounded-full bg-white/10 px-2 py-0.5 text-xs text-white/70">—</span>;
 
               return (
                 <tr key={p.id} className="border-t border-white/10">
@@ -1102,6 +997,9 @@ export default function LeadsPage() {
                     )}
                   </Td>
 
+                  {/* Live Status */}
+                  <Td>{statusBadge}</Td>
+
                   <Td>
                     <div className="flex items-center gap-2">
                       {tab === "clients" ? (
@@ -1158,18 +1056,24 @@ export default function LeadsPage() {
         <PolicyViewer person={viewSelected} onClose={() => setViewSelected(null)} />
       )}
 
-      {/* NEW: Auto Dialer Drawer */}
-      {showDialer && (
-        <AutoDialerDrawer
-          open={showDialer}
-          onClose={() => setShowDialer(false)}
-          leads={rows}
-          agentPhone={agentPhone}
-          setAgentPhone={setAgentPhone}
-          startCallFn={async ({ lead, agent, e164 }) => {
-            await startCall({ agentNumber: agent, leadNumber: e164, contactId: lead.id });
-            setServerMsg(`📞 Calling ${lead.name || lead.phone || lead.id}…`);
-          }}
+      {/* Auto Dial Modal */}
+      {showAutoDial && (
+        <AutoDialerModal
+          onClose={() => setShowAutoDial(false)}
+          stateFilter={stateFilter}
+          setStateFilter={setStateFilter}
+          onlyNoPickup={onlyNoPickup}
+          setOnlyNoPickup={setOnlyNoPickup}
+          maxAttempts={maxAttempts}
+          setMaxAttempts={setMaxAttempts}
+          buildQueue={buildQueueFromFilters}
+          queue={queue}
+          isRunning={isRunning}
+          onStart={startAutoDial}
+          onStop={stopAutoDial}
+          currentIdx={currentIdx}
+          rowsLookup={new Map(rows.map(r => [r.id, r]))}
+          liveStatus={liveStatus}
         />
       )}
     </div>
@@ -1178,6 +1082,20 @@ export default function LeadsPage() {
 
 function Th({ children }) { return <th className="px-3 py-2 text-left font-medium">{children}</th>; }
 function Td({ children }) { return <td className="px-3 py-2">{children}</td>; }
+
+function badgeClass(status) {
+  switch (status) {
+    case "queued": return "bg-white/10 text-white/70";
+    case "dialing": return "bg-white/10 text-white/80";
+    case "ringing": return "bg-amber-500/15 text-amber-300";
+    case "answered": return "bg-sky-500/15 text-sky-300";
+    case "bridged": return "bg-indigo-500/15 text-indigo-300";
+    case "completed": return "bg-emerald-500/15 text-emerald-300";
+    case "failed": return "bg-rose-500/15 text-rose-300";
+    default: return "bg-white/10 text-white/70";
+  }
+}
+const cap = (s) => String(s || "").replace(/_/g, " ").replace(/\b\w/g, m => m.toUpperCase());
 
 /* ------------------------------ Policy Viewer ------------------------------ */
 function PolicyViewer({ person, onClose }) {
@@ -1359,5 +1277,119 @@ function Field({ label, children }) {
       <div className="mb-1 text-white/70">{label}</div>
       {children}
     </label>
+  );
+}
+
+/* ------------------------------ Auto Dial Modal ------------------------------- */
+function AutoDialerModal({
+  onClose,
+  stateFilter, setStateFilter,
+  onlyNoPickup, setOnlyNoPickup,
+  maxAttempts, setMaxAttempts,
+  buildQueue, queue, isRunning, onStart, onStop, currentIdx,
+  rowsLookup, liveStatus
+}) {
+  return (
+    <div className="fixed inset-0 z-50 grid bg-black/60 p-4">
+      <div className="relative m-auto w-full max-w-3xl rounded-2xl border border-white/15 bg-neutral-950 p-5">
+        <div className="mb-3 flex items-center justify-between">
+          <div className="text-lg font-semibold">Auto Dial</div>
+          <button onClick={onClose} className="rounded-lg px-2 py-1 text-sm hover:bg-white/10">Close</button>
+        </div>
+
+        <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
+          <div className="col-span-1">
+            <label className="text-xs text-white/70">States (comma or space separated)</label>
+            <input
+              value={stateFilter}
+              onChange={(e)=>setStateFilter(e.target.value)}
+              placeholder="TN, KY, FL"
+              className="mt-1 w-full rounded-xl border border-white/10 bg-black/40 px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-indigo-500/40"
+            />
+          </div>
+          <div className="col-span-1 flex items-end">
+            <label className="flex items-center gap-2 rounded-xl border border-white/10 bg-black/30 px-3 py-2">
+              <input type="checkbox" checked={onlyNoPickup} onChange={(e)=>setOnlyNoPickup(e.target.checked)} />
+              <span className="text-sm">Only “No Pickup”</span>
+            </label>
+          </div>
+          <div className="col-span-1">
+            <label className="text-xs text-white/70">Re-dial attempts</label>
+            <select
+              value={maxAttempts}
+              onChange={(e)=>setMaxAttempts(Number(e.target.value))}
+              className="mt-1 w-full rounded-xl border border-white/10 bg-black/40 px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-indigo-500/40"
+            >
+              <option value={1}>Single dial</option>
+              <option value={2}>Double dial</option>
+              <option value={3}>Triple dial</option>
+            </select>
+          </div>
+        </div>
+
+        <div className="mt-4 flex items-center gap-2">
+          <button
+            onClick={buildQueue}
+            className="rounded-xl border border-white/15 bg-white/5 px-3 py-2 text-sm hover:bg-white/10"
+          >
+            Build queue
+          </button>
+          {!isRunning ? (
+            <button
+              onClick={onStart}
+              className="rounded-xl border border-emerald-500/50 bg-emerald-500/10 px-3 py-2 text-sm hover:bg-emerald-500/20"
+            >
+              Start calling
+            </button>
+          ) : (
+            <button
+              onClick={onStop}
+              className="rounded-xl border border-amber-500/50 bg-amber-500/10 px-3 py-2 text-sm hover:bg-amber-500/20"
+            >
+              Pause
+            </button>
+          )}
+          <div className="text-xs text-white/60 ml-2">
+            {queue.length ? `Lead ${Math.min(currentIdx + 1, queue.length)} of ${queue.length}` : "No queue yet"}
+          </div>
+        </div>
+
+        <div className="mt-4 max-h-80 overflow-auto rounded-xl border border-white/10">
+          <table className="w-full text-sm">
+            <thead className="bg-white/[0.04] text-white/70">
+              <tr>
+                <th className="px-3 py-2 text-left font-medium">#</th>
+                <th className="px-3 py-2 text-left font-medium">Lead</th>
+                <th className="px-3 py-2 text-left font-medium">Phone</th>
+                <th className="px-3 py-2 text-left font-medium">State</th>
+                <th className="px-3 py-2 text-left font-medium">Attempts</th>
+                <th className="px-3 py-2 text-left font-medium">Status</th>
+              </tr>
+            </thead>
+            <tbody>
+              {queue.length === 0 ? (
+                <tr><td colSpan={6} className="px-3 py-4 text-center text-white/60">Build a queue to preview calls.</td></tr>
+              ) : queue.map((q, i) => {
+                const r = rowsLookup.get(q.id) || {};
+                const uiStatus = liveStatus[q.id] || q.status || "queued";
+                return (
+                  <tr key={q.id} className={`border-t border-white/10 ${i === currentIdx ? "bg-white/[0.03]" : ""}`}>
+                    <td className="px-3 py-2">{i + 1}</td>
+                    <td className="px-3 py-2">{r.name || r.email || r.phone || r.id}</td>
+                    <td className="px-3 py-2"><PhoneMono>{r.phone || "—"}</PhoneMono></td>
+                    <td className="px-3 py-2">{r.state || "—"}</td>
+                    <td className="px-3 py-2">{q.attempts || 0}/{maxAttempts}</td>
+                    <td className="px-3 py-2">
+                      <span className={`rounded-full px-2 py-0.5 text-xs ${badgeClass(uiStatus)}`}>{cap(uiStatus)}</span>
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+
+      </div>
+    </div>
   );
 }
