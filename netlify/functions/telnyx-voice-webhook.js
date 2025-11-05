@@ -1,7 +1,7 @@
 // netlify/functions/telnyx-voice-webhook.js
-// Transfers AGENT -> LEAD after answer, plays ringback, hangs up cleanly on no-answer/busy,
-// logs to call_logs, handles optional recording, computes billed_cents, debits wallet.
-// UPDATED: integrates monthly free CALL MINUTES from usage_counters (100 hrs = 6000 minutes).
+// LEAD-FIRST flow: Lead phone rings first (from call-start). On lead answer → play ringback to lead,
+// transfer to agent, bridge on agent answer. Logs to call_logs, handles optional recording, free minutes,
+// and wallet debit. Marks lead stage=answered on bridge when contact_id is known.
 
 const crypto = require("crypto");
 const fetch = require("node-fetch");
@@ -161,7 +161,7 @@ async function startRecording(callControlId) {
     const url = `https://api.telnyx.com/v2/calls/${callControlId}/actions/record_start`;
     const resp = await fetch(url, {
       method: "POST",
-      headers: { Authorization: `Bearer ${TELNYX_API_KEY}`, "Content-Type": "application/json" },
+      headers: { Authorization: `Bearer ${TELNYX_API_KEY}", "Content-Type": "application/json" },
       body: JSON.stringify({ channels: "dual", audio: { direction: "both" }, format: "mp3" })
     });
     if (!resp.ok) {
@@ -179,7 +179,7 @@ async function playbackStart(callControlId, audioUrl) {
     const url = `https://api.telnyx.com/v2/calls/${callControlId}/actions/playback_start`;
     const resp = await fetch(url, {
       method: "POST",
-      headers: { Authorization: `Bearer ${TELNYX_API_KEY}`, "Content-Type": "application/json" },
+      headers: { Authorization: `Bearer ${TELNYX_API_KEY}", "Content-Type": "application/json" },
       body: JSON.stringify({ audio_url: audioUrl, loop: true })
     });
     if (!resp.ok) {
@@ -197,7 +197,7 @@ async function playbackStop(callControlId) {
     const url = `https://api.telnyx.com/v2/calls/${callControlId}/actions/playback_stop`;
     const resp = await fetch(url, {
       method: "POST",
-      headers: { Authorization: `Bearer ${TELNYX_API_KEY}`, "Content-Type": "application/json" },
+      headers: { Authorization: `Bearer ${TELNYX_API_KEY}", "Content-Type": "application/json" },
       body: JSON.stringify({})
     });
     if (!resp.ok) {
@@ -215,7 +215,7 @@ async function hangupCall(callControlId) {
     const url = `https://api.telnyx.com/v2/calls/${callControlId}/actions/hangup`;
     const resp = await fetch(url, {
       method: "POST",
-      headers: { Authorization: `Bearer ${TELNYX_API_KEY}`, "Content-Type": "application/json" },
+      headers: { Authorization: `Bearer ${TELNYX_API_KEY}", "Content-Type": "application/json" },
       body: JSON.stringify({})
     });
     if (!resp.ok) {
@@ -227,7 +227,7 @@ async function hangupCall(callControlId) {
   } catch (e) { log("hangup error", e?.message); }
 }
 
-/* ---------------- Wallet / DB helpers (your originals) ---------------- */
+/* ---------------- Wallet / DB helpers ---------------- */
 async function debitWalletForCall({ legA, user_id, cents }) {
   if (!supa || !legA || !user_id || !cents || cents <= 0) return { ok: true, skipped: true };
   const { data, error } = await supa.rpc("wallet_debit_for_call", {
@@ -297,6 +297,19 @@ async function saveRecordingUrlByCallSession({ call_session_id, recording_url })
   if (!supa || !call_session_id || !recording_url) return;
   const { error } = await supa.from("call_logs").update({ recording_url }).eq("call_session_id", call_session_id);
   if (error) log("saveRecordingUrl err", error.message);
+}
+
+/* ---- Lead pipeline helper: mark stage=answered when bridged ---- */
+async function markLeadAnsweredStage({ contact_id }) {
+  if (!supa || !contact_id) return;
+  try {
+    await supa
+      .from("leads")
+      .update({ stage: "answered", stage_changed_at: new Date().toISOString() })
+      .eq("id", contact_id);
+  } catch (e) {
+    log("markLeadAnsweredStage err", e?.message);
+  }
 }
 
 /* ---------------- END logic (MINUTES pool) ---------------- */
@@ -457,18 +470,24 @@ exports.handler = async (event) => {
       }
 
       case "call.answered": {
+        // LEAD-FIRST: Lead answered → (optional) play ringback to the lead, then transfer to AGENT.
         if (ringback_url && legA) await playbackStart(legA, ringback_url);
-        if (kind === "crm_outbound" && legA && lead_number && from_number) {
-          await transferCall({ callControlId: legA, to: lead_number, from: from_number });
+
+        if (kind === "crm_outbound_lead_leg" && legA && agent_number && from_number) {
+          await transferCall({ callControlId: legA, to: agent_number, from: from_number });
         }
+
         if (legA) await markAnswered({ legA, answered_at: occurred_at });
         break;
       }
 
       case "call.bridged": {
+        // Stop ringback to the lead (now bridged), update status, start recording if enabled,
+        // and mark the lead stage=answered (UI reflects without refresh).
         if (legA) await playbackStop(legA);
         await markBridged({ legA, maybeLegB: peerLeg || null });
         if (record_enabled && legA) startRecording(legA);
+        if (contact_id) await markLeadAnsweredStage({ contact_id });
         break;
       }
 
