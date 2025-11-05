@@ -305,6 +305,7 @@ export default function LeadsPage() {
   const [showAutoDial, setShowAutoDial] = useState(false);
   const [queue, setQueue] = useState([]); // [{id, attempts, status}]
   const [isRunning, setIsRunning] = useState(false);
+  const isRunningRef = useRef(false);
   const [currentIdx, setCurrentIdx] = useState(0);
   const [maxAttempts, setMaxAttempts] = useState(1); // 1 | 2 | 3
   const [stateFilter, setStateFilter] = useState(""); // comma or space-separated (e.g., "TN, FL")
@@ -312,6 +313,8 @@ export default function LeadsPage() {
 
   // live per-lead status (UI badges) → string: "queued" | "dialing" | "ringing" | "answered" | "bridged" | "completed" | "failed"
   const [liveStatus, setLiveStatus] = useState({}); // { leadId: status }
+  const liveStatusRef = useRef({});
+  useEffect(() => { liveStatusRef.current = liveStatus; }, [liveStatus]);
 
   // Page-scoped global billing hint for any importer that chooses to read it
   useEffect(() => {
@@ -340,6 +343,47 @@ export default function LeadsPage() {
         console.error("Initial fetch failed:", e);
         setServerMsg(`⚠️ Failed to load leads: ${e.message || e}`);
       }
+    })();
+  }, []);
+
+  /* -------------------- Prefill latest call status per lead -------------------- */
+  useEffect(() => {
+    (async () => {
+      try {
+        const { data: authData } = await supabase.auth.getUser();
+        const userId = authData?.user?.id;
+        if (!userId) return;
+
+        // Pull the last ~200 call logs for the user and keep the most recent per contact_id
+        const { data, error } = await supabase
+          .from("call_logs")
+          .select("contact_id,status,updated_at,answered_at,started_at,ended_at")
+          .eq("user_id", userId)
+          .order("updated_at", { ascending: false })
+          .limit(200);
+
+        if (error) return;
+
+        const latest = new Map();
+        for (const r of data || []) {
+          if (!r.contact_id || latest.has(r.contact_id)) continue;
+          latest.set(r.contact_id, r.status);
+        }
+
+        if (latest.size) {
+          const obj = {};
+          for (const [cid, st] of latest.entries()) {
+            obj[cid] =
+              st === "ringing" ? "ringing" :
+              st === "answered" ? "answered" :
+              st === "bridged" ? "bridged" :
+              st === "completed" ? "completed" :
+              st === "failed" ? "failed" :
+              "dialing";
+          }
+          setLiveStatus((s) => ({ ...obj, ...s })); // keep any already-live states
+        }
+      } catch {}
     })();
   }, []);
 
@@ -397,11 +441,10 @@ export default function LeadsPage() {
             { event: "*", schema: "public", table: "call_logs", filter: `user_id=eq.${userId}` },
             (payload) => {
               const rec = payload.new || payload.old || {};
-              const leadId = rec.contact_id; // our webhook saves this from client_state
+              const leadId = rec.contact_id;
               if (!leadId) return;
 
               const status = rec.status || "";
-              // Map DB status to UI status
               const mapped =
                 status === "ringing" ? "ringing" :
                 status === "answered" ? "answered" :
@@ -412,10 +455,9 @@ export default function LeadsPage() {
 
               setLiveStatus((s) => ({ ...s, [leadId]: mapped }));
 
-              // If we are running auto dial, decide when to advance to next
-              if (isRunning) {
+              // Drive the auto-dialer based on end events
+              if (isRunningRef.current) {
                 if (mapped === "completed" || mapped === "failed") {
-                  // After end, move to next (respect re-dial attempts if failed/no-answer)
                   advanceAfterEnd(leadId, mapped);
                 }
               }
@@ -428,7 +470,7 @@ export default function LeadsPage() {
     })();
     return () => { if (chan) supabase.removeChannel(chan); };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isRunning, queue, currentIdx, maxAttempts]);
+  }, []);
 
   /* -------------------- Load agent phone (for click-to-call) -------------------- */
   useEffect(() => {
@@ -732,6 +774,7 @@ export default function LeadsPage() {
 
   function stopAutoDial() {
     setIsRunning(false);
+    isRunningRef.current = false;
     setServerMsg("⏸️ Auto dial paused");
   }
 
@@ -740,10 +783,12 @@ export default function LeadsPage() {
     if (!fromAgent) return;
 
     setIsRunning(true);
+    isRunningRef.current = true;
 
     const idx = currentIdx;
     if (idx >= queue.length) {
       setIsRunning(false);
+      isRunningRef.current = false;
       setServerMsg("✅ Queue finished");
       return;
     }
@@ -764,12 +809,13 @@ export default function LeadsPage() {
       const to = toE164(lead.phone);
       await startCall({ agentNumber: fromAgent, leadNumber: to, contactId: lead.id });
       setServerMsg(`📞 Dialing: ${lead.name || lead.phone}`);
-      // We will advance on call_logs "completed"/"failed" events via advanceAfterEnd()
+
       // Safety net: if nothing comes back after timeout (e.g., 70s), advance.
+      const leadId = lead.id;
       setTimeout(() => {
-        const st = liveStatus[lead.id];
-        if (isRunning && ["dialing","ringing","answered","bridged"].includes(st)) {
-          advanceAfterEnd(lead.id, "failed");
+        const st = liveStatusRef.current[leadId];
+        if (isRunningRef.current && ["dialing","ringing","answered","bridged"].includes(st)) {
+          advanceAfterEnd(leadId, "failed");
         }
       }, 70000);
     } catch (e) {
@@ -779,30 +825,25 @@ export default function LeadsPage() {
   }
 
   function advanceAfterEnd(leadId, outcome) {
-    // If failed and attempts < maxAttempts, retry same index
     setQueue((old) => {
       const idx = currentIdx;
       const cur = old[idx];
       if (!cur || cur.id !== leadId) return old;
 
       const attempts = (cur.attempts || 0) + 1;
-      // Map outcome to badge
       setLiveStatus((s) => ({ ...s, [leadId]: outcome }));
 
       if (outcome !== "completed" && attempts < maxAttempts) {
         // re-dial same lead
         const updated = [...old];
         updated[idx] = { ...cur, attempts, status: "queued" };
-        setQueue(updated);
         setServerMsg(`🔁 Re-dial ${attempts + 1}/${maxAttempts}`);
-        // slight delay then re-run
         setTimeout(runNext, 500);
         return updated;
       } else {
         // move to next lead
         const updated = [...old];
         updated[idx] = { ...cur, attempts, status: outcome };
-        setQueue(updated);
         setCurrentIdx((i) => i + 1);
         setTimeout(runNext, 300);
         return updated;
@@ -1110,7 +1151,7 @@ function PolicyViewer({ person, onClose }) {
           <Field label="Phone"><div className="ro">{s.phone || person?.phone || "—"}</div></Field>
           <Field label="Email"><div className="ro break-all">{s.email || person?.email || "—"}</div></Field>
 
-          <Field label="Carrier"><div className="ro">{s.carrier || "—"}</div></Field>
+        <Field label="Carrier"><div className="ro">{s.carrier || "—"}</div></Field>
           <Field label="Face Amount"><div className="ro">{s.faceAmount || "—"}</div></Field>
           <Field label="AP (Annual premium)"><div className="ro">{s.premium || "—"}</div></Field>
           <Field label="Monthly Payment"><div className="ro">{s.monthlyPayment || "—"}</div></Field>
