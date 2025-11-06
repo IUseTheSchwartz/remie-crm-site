@@ -7,8 +7,7 @@ import { startCall } from "../lib/calls";
 // Optional server helpers (kept so your existing functions continue to work)
 import { upsertLeadServer, deleteLeadServer } from "../lib/supabaseLeads.js";
 
-// Controls (assumed to write to Supabase; realtime will update this page)
-// import AddLeadControl from "../components/leads/AddLeadControl.jsx"; // REMOVED
+// Controls
 import CsvImportControl from "../components/leads/CsvImportControl.jsx";
 
 /* ---------------- Stage labels/styles (match PipelinePage) ------------------ */
@@ -35,14 +34,13 @@ const STAGE_IDS = ["no_pickup","answered","quoted","app_started","app_pending","
 
 /* ------------------------ Small helpers ----------------------- */
 const PhoneMono = ({ children }) => <span className="font-mono whitespace-nowrap">{children}</span>;
-const onlyDigits = (s) => String(s || "").replace(/\D+/g, "");
 
 /* -------------------- Contacts helpers (for cleanup/tagging) -------------------- */
 const normalizeTag = (s) => String(s ?? "").trim().toLowerCase().replace(/\s+/g, "_");
 const uniqTags = (arr) => Array.from(new Set((arr || []).map(normalizeTag))).filter(Boolean);
 const normalizePhone = (s) => {
   const d = String(s || "").replace(/\D/g, "");
-  return d.length === 11 && d.startsWith("1") ? d.slice(1) : d; // drop leading US '1'
+  return d.length === 11 && d.startsWith("1") ? d.slice(1) : d;
 };
 async function findContactByUserAndPhone(userId, rawPhone) {
   const phoneNorm = normalizePhone(rawPhone);
@@ -58,7 +56,6 @@ async function upsertSoldContact({ userId, phone, fullName, addBdayHoliday, addP
   if (!phone) return;
   const phoneE164 = toE164(phone);
   if (!phoneE164) throw new Error(`Invalid phone: ${phone}`);
-
   const existing = await findContactByUserAndPhone(userId, phone);
   const buildSoldTags = (currentTags) => {
     const base = (currentTags || []).filter((t) => !["lead","military","sold"].includes(normalizeTag(t)));
@@ -67,7 +64,6 @@ async function upsertSoldContact({ userId, phone, fullName, addBdayHoliday, addP
     if (addPaymentReminder) out.push("payment_reminder");
     return uniqTags(out);
   };
-
   if (existing) {
     const nextTags = buildSoldTags(existing.tags);
     const { error } = await supabase
@@ -112,7 +108,7 @@ async function deleteContactsByPhones(userId, phones) {
 /* -------------------- Messages-send function base -------------------- */
 const FN_BASE = import.meta.env?.VITE_FUNCTIONS_BASE || "/.netlify/functions";
 
-/* -------------------- SOLD auto-text (tries common keys) -------------------- */
+/* -------------------- SOLD auto-text -------------------- */
 async function sendSoldAutoText({ leadId }) {
   try {
     const [{ data: authUser }, { data: sess }] = await Promise.all([
@@ -122,7 +118,6 @@ async function sendSoldAutoText({ leadId }) {
     const userId = authUser?.user?.id;
     const token = sess?.session?.access_token;
     if (!userId || !leadId) return;
-
     const tryKeys = ["sold","sold_welcome","policy_info","sold_policy","policy"];
     for (const templateKey of tryKeys) {
       const res = await fetch(`${FN_BASE}/messages-send`, {
@@ -152,40 +147,29 @@ async function sendSoldAutoText({ leadId }) {
    Inbound Webhook Drawer Panel (unchanged)
 ============================================================================= */
 function InboundWebhookPanel() {
-  const [username, setUsername] = useState(""); // webhook row id
-  const [secret, setSecret] = useState("");     // webhook secret
+  const [username, setUsername] = useState("");
+  const [secret, setSecret] = useState("");
   const [loading, setLoading] = useState(true);
   const [copied, setCopied] = useState({ u: false, p: false, addr: false });
-
   const LEADS_EMAIL = "remiecrmleads@gmail.com";
-
   useEffect(() => {
     (async () => {
       try {
         setLoading(true);
         const { data: sess } = await supabase.auth.getSession();
         const token = sess?.session?.access_token;
-        if (!token) {
-          setUsername(""); setSecret("");
-          return;
-        }
+        if (!token) { setUsername(""); setSecret(""); return; }
         const res = await fetch("/.netlify/functions/user-webhook", {
           method: "GET",
           headers: { Authorization: `Bearer ${token}` },
         });
         const json = await res.json().catch(() => ({}));
-        if (!res.ok || !json?.id) {
-          setUsername(""); setSecret("");
-          return;
-        }
+        if (!res.ok || !json?.id) { setUsername(""); setSecret(""); return; }
         setUsername(json.id);
         setSecret(json.secret || "");
-      } finally {
-        setLoading(false);
-      }
+      } finally { setLoading(false); }
     })();
   }, []);
-
   function copy(val, k) {
     try {
       navigator.clipboard.writeText(val);
@@ -193,63 +177,41 @@ function InboundWebhookPanel() {
       setTimeout(() => setCopied((c) => ({ ...c, [k]: false })), 1200);
     } catch {}
   }
-
   return (
     <div className="rounded-2xl border border-white/15 bg-white/[0.03] p-4">
       <div className="mb-2 text-base font-semibold">Auto-Import Leads</div>
       <p className="mb-4 text-sm text-white/70">
         Send leads straight into Remie via webhook. Authenticate with <b>Basic Auth</b> using your Username &amp; Password.
       </p>
-
-      {/* Credentials */}
       <div className="grid gap-3 md:grid-cols-[160px_1fr_auto] items-center">
         <div className="text-xs text-white/60">Username</div>
         <div className="flex items-center gap-2">
-          <input
-            readOnly
-            value={loading ? "Loading…" : username || "—"}
-            className="w-full rounded-lg border border-white/15 bg-black/40 px-3 py-2 text-sm outline-none"
-          />
-          <button
-            type="button"
-            onClick={() => copy(username, "u")}
-            className="rounded-lg border border-white/15 bg-white/5 px-3 py-2 text-xs hover:bg-white/10"
-            disabled={!username}
-          >
+          <input readOnly value={loading ? "Loading…" : username || "—"}
+                 className="w-full rounded-lg border border-white/15 bg-black/40 px-3 py-2 text-sm outline-none"/>
+          <button type="button" onClick={() => copy(username, "u")}
+                  className="rounded-lg border border-white/15 bg-white/5 px-3 py-2 text-xs hover:bg-white/10"
+                  disabled={!username}>
             {copied.u ? "Copied!" : "Copy"}
           </button>
         </div>
         <div />
-
         <div className="text-xs text-white/60">Password</div>
         <div className="flex items-center gap-2">
-          <input
-            readOnly
-            type="password"
-            value={loading ? "" : secret}
-            placeholder={loading ? "Loading…" : secret ? "********" : "No password yet"}
-            className="w-full rounded-lg border border-white/15 bg-black/40 px-3 py-2 text-sm outline-none"
-          />
-          <button
-            type="button"
-            onClick={() => copy(secret, "p")}
-            className="rounded-lg border border-white/15 bg-white/5 px-3 py-2 text-xs hover:bg-white/10"
-            disabled={!secret}
-          >
+          <input readOnly type="password" value={loading ? "" : secret}
+                 placeholder={loading ? "Loading…" : secret ? "********" : "No password yet"}
+                 className="w-full rounded-lg border border-white/15 bg-black/40 px-3 py-2 text-sm outline-none"/>
+          <button type="button" onClick={() => copy(secret, "p")}
+                  className="rounded-lg border border-white/15 bg-white/5 px-3 py-2 text-xs hover:bg-white/10"
+                  disabled={!secret}>
             {copied.p ? "Copied!" : "Copy"}
           </button>
         </div>
         <div />
       </div>
-
-      {/* Steps (simplified) */}
       <div className="mt-5 rounded-xl border border-white/10 bg-gradient-to-r from-black/40 to-black/10 p-4">
         <div className="font-medium mb-2">Steps:</div>
         <ol className="list-decimal space-y-2 pl-5 text-sm">
-          <li>
-            Share your Google Sheet with{" "}
-            <span className="font-mono">remiecrmleads@gmail.com</span>.
-          </li>
+          <li>Share your Google Sheet with <span className="font-mono">remiecrmleads@gmail.com</span>.</li>
           <li>
             Email me the details:
             <ul className="mt-2 list-disc space-y-1 pl-5">
@@ -260,17 +222,12 @@ function InboundWebhookPanel() {
             </ul>
           </li>
         </ol>
-
         <div className="mt-3 flex flex-wrap items-center gap-2">
-          <button
-            type="button"
-            onClick={() => copy(LEADS_EMAIL, "addr")}
-            className="rounded-lg border border-white/15 bg-white/5 px-3 py-2 text-sm hover:bg-white/10"
-          >
+          <button type="button" onClick={() => copy(LEADS_EMAIL, "addr")}
+                  className="rounded-lg border border-white/15 bg-white/5 px-3 py-2 text-sm hover:bg-white/10">
             {copied.addr ? "Copied!" : "Copy email address"}
           </button>
         </div>
-
         <p className="mt-2 text-xs text-white/50">
           I’ll complete setup and email you when it’s done. After that, new rows in your sheet will auto-import into Remie.
         </p>
@@ -283,13 +240,13 @@ function InboundWebhookPanel() {
    Main Component
 ============================================================================= */
 export default function LeadsPage() {
-  const [tab, setTab] = useState("clients"); // 'clients' | 'sold'
-  const [rows, setRows] = useState([]);      // <-- SINGLE SOURCE OF TRUTH (Supabase)
+  const [tab, setTab] = useState("clients");
+  const [rows, setRows] = useState([]);
   const [filter, setFilter] = useState("");
   const [serverMsg, setServerMsg] = useState("");
   const [showConnector, setShowConnector] = useState(false);
 
-  // call and stage UI
+  // calling UI
   const [agentPhone, setAgentPhone] = useState("");
   const [editingStageId, setEditingStageId] = useState(null);
   const stageSelectRef = useRef(null);
@@ -307,23 +264,25 @@ export default function LeadsPage() {
   const [isRunning, setIsRunning] = useState(false);
   const isRunningRef = useRef(false);
   const [currentIdx, setCurrentIdx] = useState(0);
-  const [maxAttempts, setMaxAttempts] = useState(1); // 1 | 2 | 3
-  const [stateFilter, setStateFilter] = useState(""); // comma or space-separated (e.g., "TN, FL")
-  const [onlyNoPickup, setOnlyNoPickup] = useState(true);
+  const [maxAttempts, setMaxAttempts] = useState(1);
 
-  // live per-lead status (UI badges) → string: "queued" | "dialing" | "ringing" | "answered" | "bridged" | "completed" | "failed"
-  const [liveStatus, setLiveStatus] = useState({}); // { leadId: status }
+  // Filters
+  const [stateFilter, setStateFilter] = useState("");         // "TN, FL"
+  const [stageFilters, setStageFilters] = useState(new Set()); // empty = ALL
+
+  // live per-lead status
+  const [liveStatus, setLiveStatus] = useState({}); // { leadId: 'queued'|'dialing'|'ringing'|'answered'|'bridged'|'completed'|'failed' }
   const liveStatusRef = useRef({});
   useEffect(() => { liveStatusRef.current = liveStatus; }, [liveStatus]);
 
-  // Page-scoped global billing hint for any importer that chooses to read it
+  // Billing hint
   useEffect(() => {
     const prev = window.__REMIE_BILLING_HINT__;
     window.__REMIE_BILLING_HINT__ = "free_first";
     return () => { window.__REMIE_BILLING_HINT__ = prev; };
   }, []);
 
-  /* -------------------- Initial fetch (Supabase only) -------------------- */
+  /* -------------------- Initial fetch -------------------- */
   useEffect(() => {
     (async () => {
       try {
@@ -336,7 +295,6 @@ export default function LeadsPage() {
           .select("*")
           .eq("user_id", userId)
           .order("created_at", { ascending: false });
-
         if (error) throw error;
         setRows(data || []);
       } catch (e) {
@@ -354,14 +312,12 @@ export default function LeadsPage() {
         const userId = authData?.user?.id;
         if (!userId) return;
 
-        // Pull the last ~200 call logs for the user and keep the most recent per contact_id
         const { data, error } = await supabase
           .from("call_logs")
-          .select("contact_id,status,updated_at,answered_at,started_at,ended_at")
+          .select("contact_id,status,updated_at")
           .eq("user_id", userId)
           .order("updated_at", { ascending: false })
           .limit(200);
-
         if (error) return;
 
         const latest = new Map();
@@ -369,7 +325,6 @@ export default function LeadsPage() {
           if (!r.contact_id || latest.has(r.contact_id)) continue;
           latest.set(r.contact_id, r.status);
         }
-
         if (latest.size) {
           const obj = {};
           for (const [cid, st] of latest.entries()) {
@@ -381,13 +336,13 @@ export default function LeadsPage() {
               st === "failed" ? "failed" :
               "dialing";
           }
-          setLiveStatus((s) => ({ ...obj, ...s })); // keep any already-live states
+          setLiveStatus((s) => ({ ...obj, ...s }));
         }
       } catch {}
     })();
   }, []);
 
-  /* -------------------- Realtime (INSERT/UPDATE/DELETE) -------------------- */
+  /* -------------------- Realtime: leads -------------------- */
   useEffect(() => {
     let channel;
     (async () => {
@@ -400,25 +355,15 @@ export default function LeadsPage() {
           .on("postgres_changes",
             { event: "INSERT", schema: "public", table: "leads", filter: `user_id=eq.${userId}` },
             (payload) => {
-              setRows((prev) => {
-                if (prev.some((r) => r.id === payload.new.id)) return prev;
-                return [payload.new, ...prev];
-              });
+              setRows((prev) => prev.some((r) => r.id === payload.new.id) ? prev : [payload.new, ...prev]);
               setServerMsg("✅ New lead arrived");
-            }
-          )
+            })
           .on("postgres_changes",
             { event: "UPDATE", schema: "public", table: "leads", filter: `user_id=eq.${userId}` },
-            (payload) => {
-              setRows((prev) => prev.map((r) => (r.id === payload.new.id ? payload.new : r)));
-            }
-          )
+            (payload) => setRows((prev) => prev.map((r) => (r.id === payload.new.id ? payload.new : r))))
           .on("postgres_changes",
             { event: "DELETE", schema: "public", table: "leads", filter: `user_id=eq.${userId}` },
-            (payload) => {
-              setRows((prev) => prev.filter((r) => r.id !== payload.old.id));
-            }
-          )
+            (payload) => setRows((prev) => prev.filter((r) => r.id !== payload.old.id)))
           .subscribe();
       } catch (e) {
         console.error("Realtime subscribe failed:", e);
@@ -455,24 +400,20 @@ export default function LeadsPage() {
 
               setLiveStatus((s) => ({ ...s, [leadId]: mapped }));
 
-              // Drive the auto-dialer based on end events
-              if (isRunningRef.current) {
-                if (mapped === "completed" || mapped === "failed") {
-                  advanceAfterEnd(leadId, mapped);
-                }
+              // Auto-dial advance on end statuses
+              if (isRunningRef.current && (mapped === "completed" || mapped === "failed")) {
+                advanceAfterEnd(leadId, mapped);
               }
-            }
-          )
+            })
           .subscribe();
       } catch (e) {
         console.error("call_logs subscribe failed:", e);
       }
     })();
     return () => { if (chan) supabase.removeChannel(chan); };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  /* -------------------- Load agent phone (for click-to-call) -------------------- */
+  /* -------------------- Load agent phone -------------------- */
   useEffect(() => {
     (async () => {
       try {
@@ -491,16 +432,24 @@ export default function LeadsPage() {
     })();
   }, []);
 
-  /* -------------------- Click-to-call (single) -------------------- */
+  /* -------------------- Single click-to-call -------------------- */
   async function onCallLead(leadNumber, contactId) {
     try {
       const to = toE164(leadNumber);
       if (!to) return alert("Invalid lead phone.");
       const fromAgent = await ensureAgentPhone();
       if (!fromAgent) return;
+
       await startCall({ agentNumber: fromAgent, leadNumber: to, contactId });
       setServerMsg("📞 Calling…");
       setLiveStatus((s) => ({ ...s, [contactId]: "dialing" }));
+
+      // Optimistic: if still 'dialing' after 1.5s, flip to 'ringing'
+      setTimeout(() => {
+        if (liveStatusRef.current[contactId] === "dialing") {
+          setLiveStatus((s) => ({ ...s, [contactId]: "ringing" }));
+        }
+      }, 1500);
     } catch (e) {
       alert(e.message || "Failed to start call");
     }
@@ -518,10 +467,9 @@ export default function LeadsPage() {
     }
     return fromAgent;
   }
-
-  async function saveAgentPhone(newPhone) {
-    const phone = (newPhone || "").trim();
-    if (!phone) return;
+  async function saveAgentPhone(phone) {
+    const num = (phone || "").trim();
+    if (!num) return;
     try {
       const { data: auth } = await supabase.auth.getUser();
       const uid = auth?.user?.id;
@@ -531,28 +479,25 @@ export default function LeadsPage() {
         .select("user_id")
         .eq("user_id", uid)
         .maybeSingle();
-      if (existing) {
-        await supabase.from("agent_profiles").update({ phone }).eq("user_id", uid);
-      } else {
-        await supabase.from("agent_profiles").insert({ user_id: uid, phone });
-      }
-      setAgentPhone(phone);
+      if (existing) await supabase.from("agent_profiles").update({ phone: num }).eq("user_id", uid);
+      else await supabase.from("agent_profiles").insert({ user_id: uid, phone: num });
+      setAgentPhone(num);
     } catch (e) {
       console.error("saveAgentPhone failed", e);
       alert("Could not save your phone. Try again on the Dialer page.");
     }
   }
 
-  /* -------------------- Local patcher (UI-only, source of truth is Supabase) -------------------- */
+  /* -------------------- Local patcher -------------------- */
   function patchLocalLead(id, patch) {
     setRows((prev) => prev.map((r) => (r.id === id ? { ...r, ...patch, pipeline: { ...(r.pipeline || {}) } } : r)));
   }
 
-  /* -------------------- Stage change (persist to Supabase) -------------------- */
+  /* -------------------- Stage change -------------------- */
   async function saveStageChange(id, newStage) {
     try {
       const nowISO = new Date().toISOString();
-      patchLocalLead(id, { stage: newStage, stage_changed_at: nowISO }); // optimistic
+      patchLocalLead(id, { stage: newStage, stage_changed_at: nowISO });
       const current = rows.find((x) => x.id === id) || { id };
       const payload = { ...current, stage: newStage, stage_changed_at: nowISO };
       setServerMsg("Updating stage…");
@@ -566,16 +511,13 @@ export default function LeadsPage() {
     }
   }
 
-  /* -------------------- Delete single (Supabase + Contacts) -------------------- */
+  /* -------------------- Delete single / bulk -------------------- */
   async function removeOne(id) {
     if (!confirm("Delete this record? This deletes from Supabase and removes the matching Contact.")) return;
     const rec = rows.find((r) => r.id === id);
     const phone = rec?.phone;
-
-    // Optimistic UI
     setRows((prev) => prev.filter((r) => r.id !== id));
     if (selected?.id === id) setSelected(null);
-
     try {
       setServerMsg("Deleting on Supabase…");
       await deleteLeadServer(id);
@@ -584,7 +526,6 @@ export default function LeadsPage() {
       console.error("Delete server error:", e);
       setServerMsg(`⚠️ Could not delete lead on Supabase: ${e.message || e}`);
     }
-
     try {
       const { data: auth } = await supabase.auth.getUser();
       const userId = auth?.user?.id;
@@ -597,13 +538,10 @@ export default function LeadsPage() {
       setServerMsg(`⚠️ Contact delete failed: ${e.message || e}`);
     }
   }
-
-  /* -------------------- Selection helpers & bulk delete -------------------- */
   function toggleSelect(id) {
     setSelectedIds((prev) => {
       const next = new Set(prev);
-      if (next.has(id)) next.delete(id);
-      else next.add(id);
+      if (next.has(id)) next.delete(id); else next.add(id);
       return next;
     });
   }
@@ -617,59 +555,8 @@ export default function LeadsPage() {
       return next;
     });
   }
-  async function removeSelected() {
-    const idsToDelete = visible.filter((v) => selectedIds.has(v.id)).map((v) => v.id);
-    if (!idsToDelete.length) return;
-    if (!confirm(`Delete ${idsToDelete.length} selected record(s)? This deletes from Supabase and removes matching Contacts.`)) {
-      return;
-    }
 
-    const phoneById = new Map(rows.filter((r) => idsToDelete.includes(r.id)).map((r) => [r.id, r.phone]));
-
-    try {
-      const { data: auth } = await supabase.auth.getUser();
-      const userId = auth?.user?.id;
-      if (!userId) {
-        setServerMsg("⚠️ Not logged in.");
-        return;
-      }
-      setServerMsg(`Deleting ${idsToDelete.length} on server…`);
-      const { data, error } = await supabase
-        .from("leads")
-        .delete()
-        .eq("user_id", userId)
-        .in("id", idsToDelete)
-        .select("id");
-      if (error) {
-        console.error("Bulk delete error:", error);
-        setServerMsg(`⚠️ Server delete failed: ${error.message || error}`);
-        return;
-      }
-
-      const deletedIds = new Set((data || []).map((r) => r.id));
-      setRows((prev) => prev.filter((r) => !deletedIds.has(r.id)));
-      setSelectedIds(new Set());
-      setSelected(null);
-
-      try {
-        const phonesToDelete = Array.from(deletedIds).map((id) => phoneById.get(id)).filter(Boolean);
-        if (phonesToDelete.length) await deleteContactsByPhones(userId, phonesToDelete);
-      } catch (e) {
-        console.warn("Contact bulk delete failed:", e);
-      }
-
-      const missed = idsToDelete.length - deletedIds.size;
-      setServerMsg(missed > 0
-        ? `⚠️ Deleted ${deletedIds.size}, ${missed} not deleted (server skipped).`
-        : `🗑️ Deleted ${deletedIds.size} selected (and matching contacts).`
-      );
-    } catch (e) {
-      console.error("Bulk delete fatal:", e);
-      setServerMsg(`⚠️ Delete failed: ${e.message || e}`);
-    }
-  }
-
-  /* -------------------- SOLD save (persist to Supabase only) -------------------- */
+  /* -------------------- SOLD save -------------------- */
   async function saveSoldInfo(id, form) {
     try {
       setServerMsg("Saving SOLD info…");
@@ -686,10 +573,8 @@ export default function LeadsPage() {
         email: String(form.email || current.email || "").trim() || null,
       };
       const payload = { ...current, id, status: "sold", sold, updated_at: new Date().toISOString() };
-
-      await upsertLeadServer(payload);                   // persist
-      setRows((prev) => prev.map((r) => (r.id === id ? { ...r, status: "sold", sold } : r))); // reflect
-
+      await upsertLeadServer(payload);
+      setRows((prev) => prev.map((r) => (r.id === id ? { ...r, status: "sold", sold } : r)));
       try {
         const { data: auth } = await supabase.auth.getUser();
         const userId = auth?.user?.id;
@@ -702,10 +587,7 @@ export default function LeadsPage() {
             addPaymentReminder: false,
           });
         }
-      } catch (e) {
-        console.warn("[sold] contact upsert failed:", e?.message || e);
-      }
-
+      } catch (e) { console.warn("[sold] contact upsert failed:", e?.message || e); }
       try { await sendSoldAutoText({ leadId: id }); } catch {}
       setServerMsg("✅ Saved SOLD info");
       setSelected(null);
@@ -715,7 +597,7 @@ export default function LeadsPage() {
     }
   }
 
-  /* -------------------- Derived lists (purely from Supabase rows) -------------------- */
+  /* -------------------- Derived lists -------------------- */
   const onlySold  = useMemo(() => rows.filter((c) => c.status === "sold"), [rows]);
   const visible = useMemo(() => {
     const src = tab === "clients" ? rows : onlySold;
@@ -738,21 +620,22 @@ export default function LeadsPage() {
     return () => document.removeEventListener("mousedown", onDocClick);
   }, [editingStageId]);
 
-  /* -------------------- Auto Dial: queue builders & runner -------------------- */
+  /* -------------------- Auto Dial helpers -------------------- */
   function parseStateFilter(s) {
-    // Accept "TN, FL", "tn fl", etc.
     return String(s || "")
       .split(/[\s,]+/)
       .map(x => x.trim().toUpperCase())
       .filter(Boolean);
   }
-
   function buildQueueFromFilters() {
-    const wantStates = new Set(parseStateFilter(stateFilter)); // may be empty (means all)
-    const list = (tab === "clients" ? rows : onlySold)
+    const wantStates = new Set(parseStateFilter(stateFilter)); // empty = all states
+    const wantStages = stageFilters; // empty = all stages
+
+    const source = tab === "clients" ? rows : onlySold;
+    const list = source
       .filter(r => r.phone)
       .filter(r => (wantStates.size ? wantStates.has((r.state || "").toUpperCase()) : true))
-      .filter(r => (onlyNoPickup ? (r.stage ?? "no_pickup") === "no_pickup" : true))
+      .filter(r => (wantStages.size ? wantStages.has((r.stage || "no_pickup")) : true))
       .map(r => ({ id: r.id, attempts: 0, status: "queued" }));
 
     setQueue(list);
@@ -761,23 +644,19 @@ export default function LeadsPage() {
     for (const q of list) patch[q.id] = "queued";
     setLiveStatus((s) => ({ ...s, ...patch }));
   }
-
   async function startAutoDial() {
     if (!queue.length) {
       buildQueueFromFilters();
-      // allow build to finish in same tick
       setTimeout(() => runNext(), 0);
     } else {
       runNext();
     }
   }
-
   function stopAutoDial() {
     setIsRunning(false);
     isRunningRef.current = false;
     setServerMsg("⏸️ Auto dial paused");
   }
-
   async function runNext() {
     const fromAgent = await ensureAgentPhone();
     if (!fromAgent) return;
@@ -796,13 +675,11 @@ export default function LeadsPage() {
     const item = queue[idx];
     const lead = rows.find(r => r.id === item.id);
     if (!lead || !lead.phone) {
-      // skip and advance
       setCurrentIdx((i) => i + 1);
       setTimeout(runNext, 0);
       return;
     }
 
-    // place call
     try {
       setLiveStatus((s) => ({ ...s, [item.id]: "dialing" }));
       setQueue((q) => q.map((x, i) => i === idx ? { ...x, status: "dialing" } : x));
@@ -810,20 +687,24 @@ export default function LeadsPage() {
       await startCall({ agentNumber: fromAgent, leadNumber: to, contactId: lead.id });
       setServerMsg(`📞 Dialing: ${lead.name || lead.phone}`);
 
-      // Safety net: if nothing comes back after timeout (e.g., 70s), advance.
-      const leadId = lead.id;
+      // Optimistic “ringing” fallback
       setTimeout(() => {
-        const st = liveStatusRef.current[leadId];
+        if (liveStatusRef.current[lead.id] === "dialing") {
+          setLiveStatus((s) => ({ ...s, [lead.id]: "ringing" }));
+        }
+      }, 1500);
+
+      // Safety net advance if nothing ends after 70s
+      setTimeout(() => {
+        const st = liveStatusRef.current[lead.id];
         if (isRunningRef.current && ["dialing","ringing","answered","bridged"].includes(st)) {
-          advanceAfterEnd(leadId, "failed");
+          advanceAfterEnd(lead.id, "failed");
         }
       }, 70000);
-    } catch (e) {
-      // immediate failure; decide retry or move on
+    } catch {
       advanceAfterEnd(item.id, "failed");
     }
   }
-
   function advanceAfterEnd(leadId, outcome) {
     setQueue((old) => {
       const idx = currentIdx;
@@ -834,14 +715,12 @@ export default function LeadsPage() {
       setLiveStatus((s) => ({ ...s, [leadId]: outcome }));
 
       if (outcome !== "completed" && attempts < maxAttempts) {
-        // re-dial same lead
         const updated = [...old];
         updated[idx] = { ...cur, attempts, status: "queued" };
         setServerMsg(`🔁 Re-dial ${attempts + 1}/${maxAttempts}`);
         setTimeout(runNext, 500);
         return updated;
       } else {
-        // move to next lead
         const updated = [...old];
         updated[idx] = { ...cur, attempts, status: outcome };
         setCurrentIdx((i) => i + 1);
@@ -906,7 +785,10 @@ export default function LeadsPage() {
             onServerMsg={(s) => setServerMsg(s)}
           />
           <button
-            onClick={removeSelected}
+            onClick={() => {
+              const idsToDelete = visible.filter((v) => selectedIds.has(v.id)).map((v) => v.id);
+              if (idsToDelete.length) removeSelected();
+            }}
             disabled={selectedIds.size === 0}
             className={`rounded-xl border ${selectedIds.size ? "border-rose-500/60 bg-rose-500/10" : "border-white/10 bg-white/5"} px-3 py-2 text-sm`}
             title="Delete selected leads (Supabase + Contacts)"
@@ -963,7 +845,7 @@ export default function LeadsPage() {
               const stageClass = STAGE_STYLE[stageId] || "bg-white/10 text-white/80";
               const isEditingThis = editingStageId === p.id;
 
-              const uiStatus = liveStatus[p.id]; // show live dialing/answered/etc.
+              const uiStatus = liveStatus[p.id];
               const statusBadge = uiStatus
                 ? <span className={`rounded-full px-2 py-0.5 text-xs ${badgeClass(uiStatus)}`}>{cap(uiStatus)}</span>
                 : <span className="rounded-full bg-white/10 px-2 py-0.5 text-xs text-white/70">—</span>;
@@ -979,8 +861,6 @@ export default function LeadsPage() {
                     />
                   </Td>
                   <Td>{p.name || "—"}</Td>
-
-                  {/* Phone with call button */}
                   <Td>
                     {p.phone ? (
                       <div className="flex items-center gap-2">
@@ -996,7 +876,6 @@ export default function LeadsPage() {
                       </div>
                     ) : "—"}
                   </Td>
-
                   <Td>{p.email || "—"}</Td>
                   <Td>{p.dob || "—"}</Td>
                   <Td>{p.state || "—"}</Td>
@@ -1005,12 +884,9 @@ export default function LeadsPage() {
                   <Td>{p.gender || "—"}</Td>
                   <Td>{p.military_branch || "—"}</Td>
 
-                  {/* Stage */}
                   <Td>
                     {isSold ? (
-                      <span className="rounded-full bg-emerald-500/15 px-2 py-0.5 text-xs text-emerald-300">
-                        Sold
-                      </span>
+                      <span className="rounded-full bg-emerald-500/15 px-2 py-0.5 text-xs text-emerald-300">Sold</span>
                     ) : (
                       <div ref={isEditingThis ? stageSelectRef : null} className="relative inline-block">
                         {!isEditingThis ? (
@@ -1038,7 +914,6 @@ export default function LeadsPage() {
                     )}
                   </Td>
 
-                  {/* Live Status */}
                   <Td>{statusBadge}</Td>
 
                   <Td>
@@ -1082,7 +957,7 @@ export default function LeadsPage() {
         </table>
       </div>
 
-      {/* Drawer for SOLD (create/edit sold) */}
+      {/* Drawer for SOLD */}
       {selected && (
         <SoldDrawer
           initial={selected}
@@ -1092,7 +967,7 @@ export default function LeadsPage() {
         />
       )}
 
-      {/* Read-only policy viewer for SOLD rows */}
+      {/* View SOLD */}
       {viewSelected && (
         <PolicyViewer person={viewSelected} onClose={() => setViewSelected(null)} />
       )}
@@ -1103,8 +978,8 @@ export default function LeadsPage() {
           onClose={() => setShowAutoDial(false)}
           stateFilter={stateFilter}
           setStateFilter={setStateFilter}
-          onlyNoPickup={onlyNoPickup}
-          setOnlyNoPickup={setOnlyNoPickup}
+          stageFilters={stageFilters}
+          setStageFilters={setStageFilters}
           maxAttempts={maxAttempts}
           setMaxAttempts={setMaxAttempts}
           buildQueue={buildQueueFromFilters}
@@ -1145,29 +1020,23 @@ function PolicyViewer({ person, onClose }) {
     <div className="fixed inset-0 z-50 grid bg-black/60 p-4">
       <div className="relative m-auto w-full max-w-3xl rounded-2xl border border-white/15 bg-neutral-950 p-5">
         <div className="mb-3 text-lg font-semibold">Policy File</div>
-
         <div className="grid gap-3 sm:grid-cols-2">
           <Field label="Name"><div className="ro">{s.name || person?.name || "—"}</div></Field>
           <Field label="Phone"><div className="ro">{s.phone || person?.phone || "—"}</div></Field>
           <Field label="Email"><div className="ro break-all">{s.email || person?.email || "—"}</div></Field>
-
-        <Field label="Carrier"><div className="ro">{s.carrier || "—"}</div></Field>
+          <Field label="Carrier"><div className="ro">{s.carrier || "—"}</div></Field>
           <Field label="Face Amount"><div className="ro">{s.faceAmount || "—"}</div></Field>
           <Field label="AP (Annual premium)"><div className="ro">{s.premium || "—"}</div></Field>
           <Field label="Monthly Payment"><div className="ro">{s.monthlyPayment || "—"}</div></Field>
           <Field label="Policy #"><div className="ro">{s.policyNumber || "—"}</div></Field>
           <Field label="Start Date"><div className="ro">{s.startDate || "—"}</div></Field>
         </div>
-
         <div className="mt-4 flex items-center justify-end">
-          <button
-            onClick={onClose}
-            className="rounded-xl border border-white/15 px-4 py-2 text-sm hover:bg-white/10">
+          <button onClick={onClose} className="rounded-xl border border-white/15 px-4 py-2 text-sm hover:bg-white/10">
             Close
           </button>
         </div>
       </div>
-
       <style>{`.ro{padding:.5rem .75rem; border-radius:.75rem; border:1px solid rgba(255,255,255,.08); background:#00000040}`}</style>
     </div>
   );
@@ -1182,7 +1051,7 @@ function SoldDrawer({ initial, allClients, onClose, onSave }) {
     email: initial?.email || "",
     carrier: initial?.sold?.carrier || "",
     faceAmount: initial?.sold?.faceAmount || "",
-    premium: initial?.sold?.premium || "",           // AP stored here
+    premium: initial?.sold?.premium || "",
     monthlyPayment: initial?.sold?.monthlyPayment || "",
     policyNumber: initial?.sold?.policyNumber || "",
     startDate: initial?.sold?.startDate || "",
@@ -1200,7 +1069,6 @@ function SoldDrawer({ initial, allClients, onClose, onSave }) {
       email: c.email || f.email,
     }));
   }
-
   function submit(e) {
     e.preventDefault();
     onSave(form);
@@ -1208,7 +1076,7 @@ function SoldDrawer({ initial, allClients, onClose, onSave }) {
 
   return (
     <div className="fixed inset-0 z-50 grid bg-black/60 p-3">
-      <div className="relative m-auto w-full max-w-xl rounded-2xl border border-white/15 bg-neutral-950 p-4">
+      <div className="relative m-auto w/full max-w-xl rounded-2xl border border-white/15 bg-neutral-950 p-4">
         <div className="mb-2 flex items-center justify-between">
           <div className="text-base font-semibold">Mark as SOLD</div>
           <button onClick={onClose} className="rounded-lg px-2 py-1 text-sm hover:bg-white/10">Close</button>
@@ -1245,7 +1113,6 @@ function SoldDrawer({ initial, allClients, onClose, onSave }) {
             <input value={form.email} onChange={(e)=>setForm({...form, email:e.target.value})}
                    className="inp" placeholder="jane@example.com" />
           </Field>
-
           <div className="grid gap-3 sm:grid-cols-2">
             <Field label="Carrier sold">
               <input value={form.carrier} onChange={(e)=>setForm({...form, carrier:e.target.value})}
@@ -1272,7 +1139,6 @@ function SoldDrawer({ initial, allClients, onClose, onSave }) {
                      className="inp" />
             </Field>
           </div>
-
           <div className="rounded-2xl border border-white/15 bg-white/[0.03] p-3">
             <div className="mb-2 text-sm font-semibold text-white/90">Post-sale options</div>
             <div className="grid gap-2">
@@ -1292,7 +1158,6 @@ function SoldDrawer({ initial, allClients, onClose, onSave }) {
               </label>
             </div>
           </div>
-
           <div className="mt-3 flex items-center justify-end gap-2">
             <button type="button" onClick={onClose}
               className="rounded-xl border border-white/15 px-4 py-2 text-sm hover:bg-white/10">
@@ -1305,13 +1170,11 @@ function SoldDrawer({ initial, allClients, onClose, onSave }) {
           </div>
         </form>
       </div>
-
       <style>{`.inp{width:100%; border-radius:.75rem; border:1px solid rgba(255,255,255,.1); background:#00000066; padding:.5rem .75rem; outline:none}
         .inp:focus{box-shadow:0 0 0 2px rgba(99,102,241,.4)}`}</style>
     </div>
   );
 }
-
 function Field({ label, children }) {
   return (
     <label className="text-sm">
@@ -1325,11 +1188,32 @@ function Field({ label, children }) {
 function AutoDialerModal({
   onClose,
   stateFilter, setStateFilter,
-  onlyNoPickup, setOnlyNoPickup,
+  stageFilters, setStageFilters,
   maxAttempts, setMaxAttempts,
   buildQueue, queue, isRunning, onStart, onStop, currentIdx,
   rowsLookup, liveStatus
 }) {
+  function toggleStage(id) {
+    setStageFilters((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }
+  const stagePills = STAGE_IDS.map((sid) => (
+    <button
+      key={sid}
+      onClick={() => toggleStage(sid)}
+      className={`rounded-full px-3 py-1 text-xs border ${
+        stageFilters.has(sid) ? "border-white bg-white text-black" : "border-white/20 bg-white/5 text-white/80"
+      }`}
+      title={labelForStage(sid)}
+    >
+      {labelForStage(sid)}
+    </button>
+  ));
+
   return (
     <div className="fixed inset-0 z-50 grid bg-black/60 p-4">
       <div className="relative m-auto w-full max-w-3xl rounded-2xl border border-white/15 bg-neutral-950 p-5">
@@ -1348,11 +1232,11 @@ function AutoDialerModal({
               className="mt-1 w-full rounded-xl border border-white/10 bg-black/40 px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-indigo-500/40"
             />
           </div>
-          <div className="col-span-1 flex items-end">
-            <label className="flex items-center gap-2 rounded-xl border border-white/10 bg-black/30 px-3 py-2">
-              <input type="checkbox" checked={onlyNoPickup} onChange={(e)=>setOnlyNoPickup(e.target.checked)} />
-              <span className="text-sm">Only “No Pickup”</span>
-            </label>
+          <div className="col-span-2">
+            <label className="text-xs text-white/70">Stages (leave empty for ALL)</label>
+            <div className="mt-1 flex flex-wrap gap-2">
+              {stagePills}
+            </div>
           </div>
           <div className="col-span-1">
             <label className="text-xs text-white/70">Re-dial attempts</label>
