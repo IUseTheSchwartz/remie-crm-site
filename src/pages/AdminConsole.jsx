@@ -1,10 +1,9 @@
-// File: src/pages/AdminConsole.jsx
 import { useEffect, useMemo, useState } from "react";
 import { supabase } from "../lib/supabaseClient.js";
 import useIsAdminAllowlist from "../hooks/useIsAdminAllowlist.js";
 
-// ✅ Toll-Free Number pool admin section (kept)
-import TFNPoolAdminSection from "../components/admin/TFNPoolAdminSection.jsx";
+// ⬇️ REPLACED: was TFNPoolAdminSection (toll-free only)
+import PhoneNumberPoolAdminSection from "../components/admin/PhoneNumberPoolAdminSection.jsx";
 
 /* ------------------------ small helpers ------------------------ */
 function centsToUsd(cents) {
@@ -391,16 +390,13 @@ export default function AdminConsole() {
     }
   }
 
-  /* ===================== Agent Site Onboarding (NEW) ===================== */
-
-  // Manual user override: paste Supabase UUID to onboard anyone (brand-new OK)
+  /* ===================== Agent Site Onboarding (existing) ===================== */
   const [manualUserId, setManualUserId] = useState("");
-  const [selUserId, setSelUserId] = useState(""); // current user being edited
+  const [selUserId, setSelUserId] = useState("");
   const [apLoading, setApLoading] = useState(false);
   const [apSaving, setApSaving] = useState(false);
   const [statesSaving, setStatesSaving] = useState(false);
 
-  // agent_profiles fields
   const [ap, setAp] = useState({
     full_name: "",
     email: "",
@@ -413,7 +409,6 @@ export default function AdminConsole() {
     published: false,
   });
 
-  // simple slug
   const slug = useMemo(
     () =>
       (ap.full_name || "")
@@ -423,9 +418,7 @@ export default function AdminConsole() {
     [ap.full_name]
   );
 
-  // agent_states rows (array of {state_code, license_number, license_image_url})
   const [stateRows, setStateRows] = useState([]);
-
   function addStateRow() {
     setStateRows((s) => [...s, { state_code: "", license_number: "", license_image_url: "" }]);
   }
@@ -452,7 +445,6 @@ export default function AdminConsole() {
     setApLoading(true);
     setErr("");
     try {
-      // Try fetch existing profile
       const { data: prof, error: pErr } = await supabase
         .from("agent_profiles")
         .select("*")
@@ -460,7 +452,6 @@ export default function AdminConsole() {
         .maybeSingle();
       if (pErr) throw pErr;
 
-      // If no profile, try to pull email from auth via edge function OR let admin type it
       const emailGuess = prof?.email || "";
 
       setAp({
@@ -475,7 +466,6 @@ export default function AdminConsole() {
         published: !!prof?.published,
       });
 
-      // Load states
       const { data: st, error: sErr } = await supabase
         .from("agent_states")
         .select("state_code, license_number, license_image_url")
@@ -551,7 +541,6 @@ export default function AdminConsole() {
     setStatesSaving(true);
     setErr("");
     try {
-      // Validate rows
       const cleaned = stateRows
         .map((r) => ({
           state_code: (r.state_code || "").toUpperCase().trim(),
@@ -572,7 +561,6 @@ export default function AdminConsole() {
         }
       }
 
-      // Fetch existing for diff
       const { data: existing, error: selErr } = await supabase
         .from("agent_states")
         .select("state_code")
@@ -583,7 +571,6 @@ export default function AdminConsole() {
       const desiredSet = new Set(cleaned.map((x) => x.state_code));
       const toDelete = [...existingSet].filter((c) => !desiredSet.has(c));
 
-      // Upsert
       if (cleaned.length) {
         const upPayload = cleaned.map((r) => ({
           user_id: selUserId,
@@ -599,7 +586,6 @@ export default function AdminConsole() {
         if (upErr) throw upErr;
       }
 
-      // Delete removed
       if (toDelete.length) {
         const { error: delErr } = await supabase
           .from("agent_states")
@@ -784,13 +770,16 @@ export default function AdminConsole() {
         <code>message_templates_backup</code> so unlocking restores exactly what they had.
       </p>
 
-      {/* ---------- TFN Pool Admin Section ---------- */}
+      {/* ---------- Unified Phone Number Pool (10DLC + TFN) ---------- */}
       <div className="pt-6 border-t border-white/10">
-        <TFNPoolAdminSection />
+        <PhoneNumberPoolAdminSection />
       </div>
 
-      {/* ================= Agent Site Onboarding (NEW) ================= */}
+      {/* ================= Agent Site Onboarding (existing) ================= */}
       <div className="pt-6 border-t border-white/10">
+        {/* ... existing Agent Site Onboarding UI unchanged ... */}
+        {/* (keeping the full block you already have below) */}
+
         <div className="rounded-2xl border border-white/10 bg-white/[0.04] p-4 ring-1 ring-white/5">
           <div className="mb-3 flex items-center justify-between">
             <div className="font-medium">Agent Site Onboarding</div>
@@ -816,7 +805,9 @@ export default function AdminConsole() {
             </div>
           ) : (
             <>
-              <div className="text-xs text-white/60 mb-2">Editing user_id: <span className="font-mono">{selUserId}</span></div>
+              <div className="text-xs text-white/60 mb-2">
+                Editing user_id: <span className="font-mono">{selUserId}</span>
+              </div>
 
               {/* Profile form */}
               <div className="grid gap-3 md:grid-cols-2">
