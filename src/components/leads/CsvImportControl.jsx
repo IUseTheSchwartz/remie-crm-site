@@ -78,13 +78,64 @@ const buildBeneficiaryName=(row,map)=> pick(row,map.beneficiary_name);
 const buildGender=(row,map)=> pick(row,map.gender);
 const buildMilitaryBranch=(row,map)=> pick(row,map.military_branch);
 
-// naive segment estimator for preview only
+// preview-only segment estimator
 function estimateSegments(text=""){
   const s=String(text);
   const gsm7=/^[\n\r\t\0\x0B\x0C\x1B\x20-\x7E€£¥èéùìòÇØøÅåΔ_ΦΓΛΩΠΨΣΘΞÆæßÉ^{}\[\]~|€\\]*$/.test(s);
   if(gsm7){ return s.length<=160 ? 1 : Math.ceil(s.length/153); }
   return s.length<=70 ? 1 : Math.ceil(s.length/67);
 }
+
+// ---------- NEW: contacts helpers (create only on "Add & Message Now") ----------
+function phoneDigits(p){ return onlyDigits(toE164(p)||""); }
+
+async function findContactByDigits(userId, digits){
+  const { data, error } = await supabase
+    .from("message_contacts")
+    .select("id, phone, tags")
+    .eq("user_id", userId);
+  if (error) throw error;
+  return (data || []).find(c => onlyDigits(c.phone) === digits) || null;
+}
+
+async function upsertContactForPerson(userId, person){
+  const e164 = toE164(person.phone);
+  if(!e164) return null;
+  const digits = onlyDigits(e164);
+  const existing = await findContactByDigits(userId, digits);
+
+  const statusTag = "lead";
+  if (existing?.id) {
+    const cur = Array.isArray(existing.tags) ? existing.tags : [];
+    const withoutStatus = cur.filter(t => !["lead","military"].includes(String(t).toLowerCase()));
+    const next = Array.from(new Set([...withoutStatus, statusTag]));
+    await supabase.from("message_contacts")
+      .update({ phone: e164, full_name: person.name || null, subscribed: true, tags: next })
+      .eq("id", existing.id);
+    return existing.id;
+  } else {
+    const { data, error } = await supabase.from("message_contacts").insert([{
+      user_id: userId,
+      phone: e164,
+      full_name: person.name || null,
+      subscribed: true,
+      tags: [statusTag],
+    }]).select("id").single();
+    if (error) throw error;
+    return data?.id || null;
+  }
+}
+
+async function ensureContactsForPeople(people){
+  const { data: auth } = await supabase.auth.getUser();
+  const userId = auth?.user?.id;
+  if (!userId) return;
+  for (const p of people) {
+    if (!p.phone) continue;
+    try { await upsertContactForPerson(userId, p); } catch {}
+  }
+}
+// -------------------------------------------------------------------------------
 
 export default function CsvImportControl({ onAddedLocal, onServerMsg }) {
   const [choice, setChoice] = useState(null);     // {count, people}
@@ -189,7 +240,7 @@ export default function CsvImportControl({ onAddedLocal, onServerMsg }) {
     const total = valid.filter(v => !!toE164(v.phone)).length;
     const will_send = total; // all valid will attempt
     const est_segments = valid.reduce((n,v)=>{
-      const text = ""; // leaving blank triggers your default template in messages-send
+      const text = ""; // blank => default template on server
       return n + estimateSegments(text);
     }, 0);
     return {
@@ -231,7 +282,7 @@ export default function CsvImportControl({ onAddedLocal, onServerMsg }) {
           const body = {
             requesterId,
             to,
-            // optional: templateKey: "new_lead",
+            // optional: templateKey: "new_lead_short", // keep under 1 segment if you want
             body: "",                        // blank => server renders default template
             billing: "free_first",
             preferFreeSegments: true,
@@ -279,7 +330,7 @@ export default function CsvImportControl({ onAddedLocal, onServerMsg }) {
                     return okPhone;
                   });
                   setChoice(null);
-                  await persist(valid);
+                  await persist(valid); // CRM only (no contacts created)
                 }}
               >
                 Add to CRM only
@@ -297,8 +348,16 @@ export default function CsvImportControl({ onAddedLocal, onServerMsg }) {
                   // CLOSE chooser first
                   setChoice(null);
 
-                  // SAVE to CRM first so server can find the leads
+                  // 1) SAVE to CRM first so the server can find the leads
                   await persist(valid);
+
+                  // 2) CREATE/UPDATE CONTACTS ONLY IN THIS PATH
+                  try {
+                    await ensureContactsForPeople(valid);
+                    msg("👤 Contacts upserted for messaging.");
+                  } catch {
+                    msg("⚠️ Contact upsert had issues (continuing).");
+                  }
 
                   // small delay for DB indexing
                   await new Promise(r=>setTimeout(r, 500));
