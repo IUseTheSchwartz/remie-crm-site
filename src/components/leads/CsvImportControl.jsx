@@ -78,7 +78,7 @@ const buildBeneficiaryName=(row,map)=> pick(row,map.beneficiary_name);
 const buildGender=(row,map)=> pick(row,map.gender);
 const buildMilitaryBranch=(row,map)=> pick(row,map.military_branch);
 
-// naive segment estimator (matches server logic enough for preview)
+// naive segment estimator for preview only
 function estimateSegments(text=""){
   const s=String(text);
   const gsm7=/^[\n\r\t\0\x0B\x0C\x1B\x20-\x7E€£¥èéùìòÇØøÅåΔ_ΦΓΛΩΠΨΣΘΞÆæßÉ^{}\[\]~|€\\]*$/.test(s);
@@ -185,11 +185,11 @@ export default function CsvImportControl({ onAddedLocal, onServerMsg }) {
   }
 
   async function previewSend(valid){
-    // lightweight local preview (segments & counts). Cost is handled server-side with free-first.
+    // lightweight local preview (segments & counts). Cost handled server-side with free-first.
     const total = valid.filter(v => !!toE164(v.phone)).length;
     const will_send = total; // all valid will attempt
     const est_segments = valid.reduce((n,v)=>{
-      const text = ""; // if you later include a message column, swap here
+      const text = ""; // leaving blank triggers your default template in messages-send
       return n + estimateSegments(text);
     }, 0);
     return {
@@ -231,12 +231,11 @@ export default function CsvImportControl({ onAddedLocal, onServerMsg }) {
           const body = {
             requesterId,
             to,
-            // If you want templates, set templateKey: "new_lead"
-            // Otherwise body -> server will render default template when empty
-            body: "",
+            // optional: templateKey: "new_lead",
+            body: "",                        // blank => server renders default template
             billing: "free_first",
             preferFreeSegments: true,
-            provider_message_id: `csv-${batchId}-${myIndex}`
+            provider_message_id: `csv-${batchId}-${myIndex}` // dedupe-safe
           };
 
           const res = await fetch(`${FN_BASE}/messages-send`, {
