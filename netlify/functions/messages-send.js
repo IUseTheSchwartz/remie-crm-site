@@ -1,4 +1,3 @@
-// File: netlify/functions/messages-send.js
 // Sends an SMS via Telnyx using a template or raw body.
 // DEDUPE-SAFE using provider_message_id (pass it!)
 // Accepts: { to?, contact_id?, lead_id?, body?, templateKey?/template_key?/template?, requesterId?, provider_message_id?, sent_by_ai? }
@@ -7,7 +6,10 @@ const { getServiceClient } = require("./_supabase");
 const fetch = require("node-fetch");
 
 const TELNYX_API_KEY = process.env.TELNYX_API_KEY;
-const MESSAGING_PROFILE_ID_FALLBACK = process.env.TELNYX_MESSAGING_PROFILE_ID || null;
+// Accept either env name:
+const MESSAGING_PROFILE_ID_FALLBACK =
+  process.env.TELNYX_MESSAGING_PROFILE_ID || process.env.MESSAGING_PROFILE_ID || null;
+
 const AGENT_SITE_BASE = process.env.AGENT_SITE_BASE || "https://remiecrm.com";
 
 function json(obj, statusCode = 200) {
