@@ -1,3 +1,4 @@
+// File: netlify/functions/messages-send.js
 // Sends an SMS via Telnyx using a template or raw body.
 // DEDUPE-SAFE using provider_message_id (pass it!)
 // Accepts: { to?, contact_id?, lead_id?, body?, templateKey?/template_key?/template?, requesterId?, provider_message_id?, sent_by_ai? }
@@ -6,7 +7,7 @@ const { getServiceClient } = require("./_supabase");
 const fetch = require("node-fetch");
 
 const TELNYX_API_KEY = process.env.TELNYX_API_KEY;
-// Accept either env name:
+// Accept either env name for the profile UUID (Telnyx messaging profile is a UUID like 40019936-…)
 const MESSAGING_PROFILE_ID_FALLBACK =
   process.env.TELNYX_MESSAGING_PROFILE_ID || process.env.MESSAGING_PROFILE_ID || null;
 
@@ -89,13 +90,14 @@ async function getBalanceCents(db, user_id) {
   return Number(data?.balance_cents ?? 0);
 }
 
-/* ====== Messaging number via ten_dlc_numbers ======
-   Returns { status: 'verified'|'pending'|'none', e164?: string, profileId?: string }
-==================================================== */
+/* ====== Messaging number via ten_dlc_numbers (fits your schema) ======
+   Returns { status: 'verified'|'pending'|'none', e164?: string }
+   - Uses: phone_number, verified, assigned_to, date_assigned
+===================================================================== */
 async function getAgentMessagingNumber(db, user_id) {
   const { data, error } = await db
     .from("ten_dlc_numbers")
-    .select("phone_number, verified, status, messaging_profile_id")
+    .select("phone_number, verified, assigned_to, date_assigned")
     .eq("assigned_to", user_id)
     .order("date_assigned", { ascending: true, nullsFirst: true })
     .limit(1)
@@ -107,11 +109,9 @@ async function getAgentMessagingNumber(db, user_id) {
   const e = toE164(data.phone_number);
   if (!e) return { status: "none" };
 
-  const isActive = (data.status || "active") === "active";
-  const ok = !!data.verified && isActive;
-  return ok
-    ? { status: "verified", e164: e, profileId: data.messaging_profile_id || null }
-    : { status: "pending", e164: e, profileId: data.messaging_profile_id || null };
+  return data.verified
+    ? { status: "verified", e164: e }
+    : { status: "pending", e164: e };
 }
 
 // ---- Telnyx send ----
@@ -404,7 +404,7 @@ exports.handler = async (event) => {
       );
     }
     const fromE164 = mnum.e164;
-    const profileId = mnum.profileId || MESSAGING_PROFILE_ID_FALLBACK || null;
+    const profileId = MESSAGING_PROFILE_ID_FALLBACK || null; // use env profile UUID
 
     // -------- Free pool → Wallet flow --------
     const account_id = await resolveAccountId(db, user_id);
