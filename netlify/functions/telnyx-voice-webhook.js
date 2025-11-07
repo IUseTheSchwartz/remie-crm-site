@@ -4,8 +4,7 @@
 //  - LEAD-FIRST  (Auto Dialer): lead answers  -> ringback -> transfer to agent -> bridge
 //
 // Stage is marked "answered" ONLY on call.bridged (never on first answer).
-// NEW: If AGENT-FIRST transfer fails (lead hangs up / busy / no answer), tell agent and retry with longer timeout to hit voicemail.
-//      Optional RINGBACK_URL will play to the agent while the voicemail retry is ringing.
+// Voicemail fallback: if transfer to the lead fails once, tell agent and do a single retry with longer timeout.
 
 const crypto = require("crypto");
 const fetch = require("node-fetch");
@@ -17,8 +16,11 @@ const SUPABASE_URL = process.env.SUPABASE_URL || "";
 const SUPABASE_SERVICE_ROLE =
   process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_SERVICE_ROLE || "";
 
-// Optional ringback looped to the AGENT during the voicemail retry
+// Optional audio to play to the LEAD during lead-first ringback
 const RINGBACK_URL = process.env.RINGBACK_URL || "";
+
+// In-memory single-retry guard (per warm instance)
+const vmRetryOnce = new Map(); // key: legA, value: true
 
 const supa = (SUPABASE_URL && SUPABASE_SERVICE_ROLE)
   ? createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE)
@@ -165,9 +167,8 @@ async function action(callControlId, path, body = {}) {
 }
 
 async function transferCall({ callControlId, to, from, timeout_secs }) {
-  const body = { to, from };
-  if (timeout_secs) body.timeout_secs = timeout_secs;
-  return action(callControlId, "transfer", body);
+  // Telnyx transfer supports a timeout on the destination leg (documented behavior)
+  return action(callControlId, "transfer", { to, from, timeout_secs });
 }
 async function startRecording(callControlId) {
   return action(callControlId, "record_start", { channels: "dual", audio: { direction: "both" }, format: "mp3" });
@@ -180,7 +181,6 @@ async function playbackStop(callControlId) {
   return action(callControlId, "playback_stop", {});
 }
 async function speak(callControlId, payload) {
-  // payload: { payload: "text", voice: "female", language: "en-US" }
   return action(callControlId, "speak", payload);
 }
 async function hangupCall(callControlId) {
@@ -405,24 +405,13 @@ exports.handler = async (event) => {
   const from_number = cs.from_number || cs.ani || p?.from || null; // accept legacy "ani"
   const agent_number = cs.agent_number || null;
   const record_enabled = !!cs.record;
-  const ringback_url = cs.ringback_url || null;
+  const ringback_url = cs.ringback_url || RINGBACK_URL || null;
 
   log("event", eventType, {
     kind, flow, hasLegA: !!legA,
     toPref: lead_number ? String(lead_number).slice(0,4) + "…" : null,
     record_enabled
   });
-
-  // Helper: handle a transfer failure in AGENT-FIRST flow by retrying to voicemail.
-  async function handleAgentFirstTransferFailure() {
-    if (!legA || !lead_number || !from_number) return;
-    // tell agent what's happening
-    await speak(legA, { payload: "The prospect disconnected. Connecting you to their voicemail.", voice: "female", language: "en-US" });
-    // optional ringback while retrying
-    if (RINGBACK_URL) await playbackStart(legA, RINGBACK_URL);
-    // retry with longer timeout to catch voicemail
-    await transferCall({ callControlId: legA, to: lead_number, from: from_number, timeout_secs: 55 });
-  }
 
   try {
     switch (eventType) {
@@ -450,7 +439,7 @@ exports.handler = async (event) => {
             await speak(legA, { payload: "Connecting your prospect.", voice: "female", language: "en-US" });
           }
           if (legA && lead_number && from_number) {
-            await transferCall({ callControlId: legA, to: lead_number, from: from_number });
+            await transferCall({ callControlId: legA, to: lead_number, from: from_number, timeout_secs: 25 });
           }
         }
 
@@ -458,7 +447,7 @@ exports.handler = async (event) => {
         if (flow === "lead_first" && kind === "crm_outbound_lead_leg") {
           if (ringback_url && legA) await playbackStart(legA, ringback_url);
           if (legA && agent_number && from_number) {
-            await transferCall({ callControlId: legA, to: agent_number, from: from_number });
+            await transferCall({ callControlId: legA, to: agent_number, from: from_number, timeout_secs: 25 });
           }
         }
 
@@ -467,7 +456,7 @@ exports.handler = async (event) => {
       }
 
       case "call.bridged": {
-        // Stop any ringback (if we used it)
+        // Stop any ringback (if we used it in lead-first)
         if (legA) await playbackStop(legA);
         await markBridged({ legA, maybeLegB: peerLeg || null });
         if (record_enabled && legA) startRecording(legA);
@@ -476,31 +465,39 @@ exports.handler = async (event) => {
         break;
       }
 
-      // When Telnyx completes a transfer, we may still see "completed" with a cause;
-      // treat failure outcomes as failure.
       case "call.transfer.completed": {
+        // If the lead declined or no-answer, do a ONE-TIME voicemail retry.
         const outcome = (p?.result || p?.cause || p?.hangup_cause || "").toLowerCase();
-        log("transfer.completed", { outcome, peerLeg: !!peerLeg });
-        if (legA) await playbackStop(legA);
         const failed =
           !peerLeg ||
-          ["busy", "no_answer", "call_rejected", "user_busy", "unallocated_number", "call_hangup"].includes(outcome);
-        if (failed && flow === "agent_first") {
-          await handleAgentFirstTransferFailure();
-        } else if (legA && peerLeg) {
-          // safety: treat as bridged if it actually succeeded
-          await markBridged({ legA, maybeLegB: peerLeg });
-        }
-        break;
-      }
+          ["busy", "no_answer", "call_rejected", "user_busy", "unallocated_number"].includes(outcome);
 
-      // Some accounts emit explicit failed/hangup variants for transfer
-      case "call.transfer.failed":
-      case "call.transfer.hangup": {
-        log(eventType, { cause: p?.cause || p?.hangup_cause });
+        log("transfer.completed", { outcome, peerLeg: !!peerLeg, failed });
+
         if (legA) await playbackStop(legA);
-        if (flow === "agent_first") {
-          await handleAgentFirstTransferFailure();
+
+        if (failed && legA && lead_number && from_number && flow === "agent_first") {
+          if (!vmRetryOnce.get(legA)) {
+            vmRetryOnce.set(legA, true);
+            // Tell the agent and retry once to hit voicemail (longer timeout).
+            await speak(legA, {
+              payload: "The prospect disconnected. Connecting you to their voicemail.",
+              voice: "female",
+              language: "en-US"
+            });
+            await transferCall({ callControlId: legA, to: lead_number, from: from_number, timeout_secs: 55 });
+          } else {
+            // Second failure → hang up the agent leg
+            await speak(legA, {
+              payload: "Voicemail was unavailable. Please try again later.",
+              voice: "female",
+              language: "en-US"
+            });
+            await hangupCall(legA);
+          }
+        } else if (failed && legA) {
+          // Non agent-first or no numbers to retry → hang up
+          await hangupCall(legA);
         }
         break;
       }
