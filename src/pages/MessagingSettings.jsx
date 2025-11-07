@@ -36,7 +36,8 @@ const DEFAULTS = {
 };
 
 /* ========= Usage helpers (Free SMS) ========= */
-const FREE_SMS_SEGMENTS_FALLBACK = 6000; // default monthly allowance if not present in DB
+/** Use SMS fallback = 5000 (your schema default). 6000 is for call minutes. */
+const FREE_SMS_SEGMENTS_FALLBACK = 5000;
 
 function monthWindow(d = new Date()) {
   const start = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), 1, 0, 0, 0));
@@ -55,59 +56,128 @@ async function resolveAccountId(user_id) {
   return user_id;
 }
 
-/** Robust reader: supports segments, generic, and legacy message fields. */
+/** Robust reader for current-month SMS usage. Reads SMS columns and is resilient to timestamp mismatches. */
 async function fetchSmsUsageForCurrentMonth(user_id) {
   if (!user_id) return { used: 0, total: FREE_SMS_SEGMENTS_FALLBACK };
+
   const account_id = await resolveAccountId(user_id);
   const { period_start, period_end } = monthWindow();
 
-  const { data, error } = await supabase
-    .from("usage_counters")
-    .select(
-      [
-        "free_sms_segments_used",
-        "free_sms_segments_total",
-        "free_sms_used",
-        "free_sms_total",
-        "free_sms_messages_used",
-        "free_sms_messages_total",
-      ].join(", ")
-    )
-    .eq("account_id", account_id)
-    .eq("period_start", period_start)
-    .eq("period_end", period_end)
-    .maybeSingle();
+  // Helper to extract SMS fields from a row that may have different column names
+  function pickSms(row) {
+    if (!row) return null;
 
-  if (error || !data) return { used: 0, total: FREE_SMS_SEGMENTS_FALLBACK };
+    // Priority 1: segments columns (if you ever add them)
+    if (Number.isFinite(row.free_sms_segments_used) || Number.isFinite(row.free_sms_segments_total)) {
+      return {
+        used: Math.max(0, Number(row.free_sms_segments_used || 0)),
+        total: Math.max(1, Number(row.free_sms_segments_total || FREE_SMS_SEGMENTS_FALLBACK)),
+      };
+    }
 
-  // Priority 1: segments columns
-  const segUsed = data.free_sms_segments_used;
-  const segTotal = data.free_sms_segments_total;
-  if (Number.isFinite(segUsed) || Number.isFinite(segTotal)) {
-    return {
-      used: Math.max(0, Number(segUsed || 0)),
-      total: Math.max(1, Number(segTotal || FREE_SMS_SEGMENTS_FALLBACK)),
-    };
+    // Priority 2: your actual schema (free_sms_used/total)
+    if (Number.isFinite(row.free_sms_used) || Number.isFinite(row.free_sms_total)) {
+      return {
+        used: Math.max(0, Number(row.free_sms_used || 0)),
+        total: Math.max(1, Number(row.free_sms_total || FREE_SMS_SEGMENTS_FALLBACK)),
+      };
+    }
+
+    // Priority 3: legacy message fields
+    if (Number.isFinite(row.free_sms_messages_used) || Number.isFinite(row.free_sms_messages_total)) {
+      return {
+        used: Math.max(0, Number(row.free_sms_messages_used || 0)),
+        total: Math.max(1, Number(row.free_sms_messages_total || FREE_SMS_SEGMENTS_FALLBACK)),
+      };
+    }
+
+    return null;
   }
 
-  // Priority 2: generic free_sms_used/total (matches MessagesPage)
-  const genUsed = data.free_sms_used;
-  const genTotal = data.free_sms_total;
-  if (Number.isFinite(genUsed) || Number.isFinite(genTotal)) {
-    return {
-      used: Math.max(0, Number(genUsed || 0)),
-      total: Math.max(1, Number(genTotal || FREE_SMS_SEGMENTS_FALLBACK)),
-    };
+  // 1) Exact match (ideal)
+  {
+    const { data, error } = await supabase
+      .from("usage_counters")
+      .select(
+        [
+          "free_sms_segments_used",
+          "free_sms_segments_total",
+          "free_sms_used",
+          "free_sms_total",
+          "free_sms_messages_used",
+          "free_sms_messages_total",
+          "period_start",
+          "period_end",
+        ].join(", ")
+      )
+      .eq("account_id", account_id)
+      .eq("period_start", period_start)
+      .eq("period_end", period_end)
+      .maybeSingle();
+
+    if (!error && data) {
+      const v = pickSms(data);
+      if (v) return v;
+    }
   }
 
-  // Priority 3: legacy messages fields
-  const msgUsed = data.free_sms_messages_used;
-  const msgTotal = data.free_sms_messages_total;
-  if (Number.isFinite(msgUsed) || Number.isFinite(msgTotal)) {
-    return {
-      used: Math.max(0, Number(msgUsed || 0)),
-      total: Math.max(1, Number(msgTotal || FREE_SMS_SEGMENTS_FALLBACK)),
-    };
+  // 2) Range match for current month (in case timestamps don't exactly match)
+  {
+    const { data, error } = await supabase
+      .from("usage_counters")
+      .select(
+        [
+          "free_sms_segments_used",
+          "free_sms_segments_total",
+          "free_sms_used",
+          "free_sms_total",
+          "free_sms_messages_used",
+          "free_sms_messages_total",
+          "period_start",
+          "period_end",
+        ].join(", ")
+      )
+      .eq("account_id", account_id)
+      .gte("period_start", period_start)
+      .lt("period_end", period_end)
+      .order("period_start", { ascending: false })
+      .limit(1);
+
+    const row = !error && Array.isArray(data) ? data[0] : null;
+    if (row) {
+      const v = pickSms(row);
+      if (v) return v;
+    }
+  }
+
+  // 3) Latest row for account that *covers now*
+  {
+    const nowIso = new Date().toISOString();
+    const { data, error } = await supabase
+      .from("usage_counters")
+      .select(
+        [
+          "free_sms_segments_used",
+          "free_sms_segments_total",
+          "free_sms_used",
+          "free_sms_total",
+          "free_sms_messages_used",
+          "free_sms_messages_total",
+          "period_start",
+          "period_end",
+        ].join(", ")
+      )
+      .eq("account_id", account_id)
+      .lte("period_start", nowIso)
+      .gte("period_end", nowIso) // note: if your end is exclusive, you can replace with .gt("period_end", nowIso)
+      .order("period_start", { ascending: false })
+      .limit(1);
+
+    const row = !error && Array.isArray(data) ? data[0] : null;
+    if (row) {
+      const v = pickSms(row);
+      if (v) return v;
+    }
   }
 
   // Fallback
@@ -218,6 +288,7 @@ export default function MessagingSettings() {
   const [loading, setLoading] = useState(true);
 
   // Auth
+  theUser: null;
   const [userId, setUserId] = useState(null);
 
   // Templates
