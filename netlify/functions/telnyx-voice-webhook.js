@@ -1,17 +1,9 @@
-// netlify/functions/telnyx-voice-webhook.js
+// File: netlify/functions/telnyx-voice-webhook.js
 // Supports BOTH flows:
+//  - AGENT-FIRST (Leads Page click-to-call): agent answers -> speak -> transfer to lead -> bridge
+//  - LEAD-FIRST  (Auto Dialer): lead answers  -> ringback -> transfer to agent -> bridge
 //
-// 1) AGENT-FIRST (LeadsPage "Call" button):
-//    - Agent phone rings first (agent_number)
-//    - On agent ANSWER → (optional) speak whisper to agent ("Connecting...") → TRANSFER leg to lead_number
-//    - When bridged → start recording (if enabled) and mark stage=answered (only here)
-//
-// 2) LEAD-FIRST (Auto Dial):
-//    - Lead phone rings first (lead_number)
-//    - On lead ANSWER → (optional) play ringback to the lead → TRANSFER to agent_number
-//    - When bridged → start recording (if enabled) and mark stage=answered (only here)
-//
-// Other behavior kept: free minutes pool, wallet debits on overage, call_logs updates.
+// Stage is marked "answered" ONLY on call.bridged (never on first answer).
 
 const crypto = require("crypto");
 const fetch = require("node-fetch");
@@ -152,108 +144,39 @@ function decodeClientState(any) {
 }
 
 /* ---------------- Telnyx helpers ---------------- */
-async function transferCall({ callControlId, to, from }) {
-  if (!TELNYX_API_KEY) { log("transfer skipped: no TELNYX_API_KEY"); return; }
-  const url = `https://api.telnyx.com/v2/calls/${callControlId}/actions/transfer`;
+async function action(callControlId, path, body = {}) {
+  if (!TELNYX_API_KEY || !callControlId) return { ok: false };
+  const url = `https://api.telnyx.com/v2/calls/${callControlId}/actions/${path}`;
   const resp = await fetch(url, {
     method: "POST",
     headers: { Authorization: `Bearer ${TELNYX_API_KEY}`, "Content-Type": "application/json" },
-    body: JSON.stringify({ to, from })
+    body: JSON.stringify(body)
   });
-  const data = await resp.json().catch(() => ({}));
-  if (!resp.ok) log("transfer failed", resp.status, data);
-  else log("transfer ok", { to, from });
+  let data = {};
+  try { data = await resp.json(); } catch {}
+  if (!resp.ok) log(path, "failed", resp.status, data);
+  else log(path, "ok");
+  return { ok: resp.ok, data };
 }
 
+async function transferCall({ callControlId, to, from }) {
+  return action(callControlId, "transfer", { to, from });
+}
 async function startRecording(callControlId) {
-  try {
-    if (!TELNYX_API_KEY || !callControlId) return;
-    const url = `https://api.telnyx.com/v2/calls/${callControlId}/actions/record_start`;
-    const resp = await fetch(url, {
-      method: "POST",
-      headers: { Authorization: `Bearer ${TELNYX_API_KEY}`, "Content-Type": "application/json" },
-      body: JSON.stringify({ channels: "dual", audio: { direction: "both" }, format: "mp3" })
-    });
-    if (!resp.ok) {
-      const j = await resp.json().catch(() => ({}));
-      log("record_start failed", resp.status, j);
-    } else {
-      log("record_start ok");
-    }
-  } catch (e) { log("record_start error", e?.message); }
+  return action(callControlId, "record_start", { channels: "dual", audio: { direction: "both" }, format: "mp3" });
 }
-
 async function playbackStart(callControlId, audioUrl) {
-  try {
-    if (!TELNYX_API_KEY || !callControlId || !audioUrl) return;
-    const url = `https://api.telnyx.com/v2/calls/${callControlId}/actions/playback_start`;
-    const resp = await fetch(url, {
-      method: "POST",
-      headers: { Authorization: `Bearer ${TELNYX_API_KEY}`, "Content-Type": "application/json" },
-      body: JSON.stringify({ audio_url: audioUrl, loop: true })
-    });
-    if (!resp.ok) {
-      const j = await resp.json().catch(() => ({}));
-      log("playback_start failed", resp.status, j);
-    } else {
-      log("playback_start ok");
-    }
-  } catch (e) { log("playback_start error", e?.message); }
+  if (!audioUrl) return { ok: true };
+  return action(callControlId, "playback_start", { audio_url: audioUrl, loop: true });
 }
-
 async function playbackStop(callControlId) {
-  try {
-    if (!TELNYX_API_KEY || !callControlId) return;
-    const url = `https://api.telnyx.com/v2/calls/${callControlId}/actions/playback_stop`;
-    const resp = await fetch(url, {
-      method: "POST",
-      headers: { Authorization: `Bearer ${TELNYX_API_KEY}`, "Content-Type": "application/json" },
-      body: JSON.stringify({})
-    });
-    if (!resp.ok) {
-      const j = await resp.json().catch(() => ({}));
-      log("playback_stop failed", resp.status, j);
-    } else {
-      log("playback_stop ok");
-    }
-  } catch (e) { log("playback_stop error", e?.message); }
+  return action(callControlId, "playback_stop", {});
 }
-
+async function speak(callControlId, payload) {
+  return action(callControlId, "speak", payload);
+}
 async function hangupCall(callControlId) {
-  try {
-    if (!TELNYX_API_KEY || !callControlId) return;
-    const url = `https://api.telnyx.com/v2/calls/${callControlId}/actions/hangup`;
-    const resp = await fetch(url, {
-      method: "POST",
-      headers: { Authorization: `Bearer ${TELNYX_API_KEY}", "Content-Type": "application/json" },
-      body: JSON.stringify({})
-    });
-    if (!resp.ok) {
-      const j = await resp.json().catch(() => ({}));
-      log("hangup failed", resp.status, j);
-    } else {
-      log("hangup ok");
-    }
-  } catch (e) { log("hangup error", e?.message); }
-}
-
-// NEW: agent whisper helper to avoid dead silence in agent-first flow
-async function speak(callControlId, text = "Connecting your prospect…", voice = "female", language = "en-US") {
-  try {
-    if (!TELNYX_API_KEY || !callControlId) return;
-    const url = `https://api.telnyx.com/v2/calls/${callControlId}/actions/speak`;
-    const resp = await fetch(url, {
-      method: "POST",
-      headers: { Authorization: `Bearer ${TELNYX_API_KEY}`, "Content-Type": "application/json" },
-      body: JSON.stringify({ payload: text, voice, language })
-    });
-    if (!resp.ok) {
-      const j = await resp.json().catch(() => ({}));
-      log("speak failed", resp.status, j);
-    } else {
-      log("speak ok");
-    }
-  } catch (e) { log("speak error", e?.message); }
+  return action(callControlId, "hangup", {});
 }
 
 /* ---------------- Wallet / DB helpers ---------------- */
@@ -305,8 +228,15 @@ async function upsertInitiated({
   }
 }
 
-// We no longer mark "answered" on call.answered.
-// We'll mark "bridged" only (and use that as the signal that the lead truly answered).
+async function markAnswered({ legA, answered_at }) {
+  if (!supa || !legA) return;
+  const { error } = await supa
+    .from("call_logs")
+    .update({ status: "answered", answered_at: answered_at || new Date().toISOString() })
+    .eq("telnyx_leg_a_id", legA);
+  if (error) log("markAnswered err", error.message);
+}
+
 async function markBridged({ legA, maybeLegB }) {
   if (!supa || !legA) return;
   const updates = { status: "bridged" };
@@ -321,7 +251,7 @@ async function saveRecordingUrlByCallSession({ call_session_id, recording_url })
   if (error) log("saveRecordingUrl err", error.message);
 }
 
-/* ---- Lead pipeline helper: mark stage=answered only when bridged ---- */
+/* ---- Lead pipeline helper: mark stage=answered when bridged ---- */
 async function markLeadAnsweredStage({ contact_id }) {
   if (!supa || !contact_id) return;
   try {
@@ -457,28 +387,21 @@ exports.handler = async (event) => {
     decodeClientState(p?.client_state) ||
     decodeClientState(p?.client_state_b64) || {};
 
-  // Accept multiple key shapes for compatibility
-  const kind = cs.kind || cs.compat_kind || null;
-  const flow = cs.flow || null;
+  // Unified state
+  const kind = cs.kind || cs.compat_kind || null;       // supports old/new keys
+  const flow = cs.flow || (kind === "crm_outbound_lead_leg" ? "lead_first" : "agent_first");
 
   const user_id = cs.user_id || cs.agent_id || null;
   const contact_id = cs.contact_id || null;
-
-  const lead_number = cs.lead_number || cs.to || p?.to || null;
-  const from_number = cs.from_number || cs.ani || p?.from || null;
+  const lead_number = cs.lead_number || cs.to || p?.to || null; // accept legacy "to"
+  const from_number = cs.from_number || cs.ani || p?.from || null; // accept legacy "ani"
   const agent_number = cs.agent_number || null;
-
   const record_enabled = !!cs.record;
   const ringback_url = cs.ringback_url || null;
 
-  // Determine mode
-  const isAgentFirst = flow === "agent_first" || kind === "crm_outbound_agent";
-  const isLeadFirst  = flow === "lead_first"  || kind === "crm_outbound_lead_leg";
-
   log("event", eventType, {
-    hasLegA: !!legA,
-    kind, flow, isAgentFirst, isLeadFirst,
-    leadPrefix: lead_number ? String(lead_number).slice(0,4) + "…" : null,
+    kind, flow, hasLegA: !!legA,
+    toPref: lead_number ? String(lead_number).slice(0,4) + "…" : null,
     record_enabled
   });
 
@@ -501,39 +424,40 @@ exports.handler = async (event) => {
       }
 
       case "call.answered": {
-        // NOTE: We NO LONGER mark "answered" here.
-        // We only mark "bridged" later when legs actually connect.
+        // === AGENT-FIRST: agent answered -> speak -> transfer to LEAD ===
+        if (flow === "agent_first" && kind && kind.includes("crm_outbound_agent")) {
+          if (legA) {
+            // tiny anti-silence whisper so agent doesn't hear dead air
+            await speak(legA, { payload: "Connecting your prospect.", voice: "female", language: "en-US" });
+          }
+          if (legA && lead_number && from_number) {
+            await transferCall({ callControlId: legA, to: lead_number, from: from_number });
+          }
+        }
 
-        // LEAD-FIRST: Lead answered → play ringback (optional), then transfer to agent.
-        if (isLeadFirst) {
+        // === LEAD-FIRST: lead answered -> (optional) ringback -> transfer to AGENT ===
+        if (flow === "lead_first" && kind === "crm_outbound_lead_leg") {
           if (ringback_url && legA) await playbackStart(legA, ringback_url);
           if (legA && agent_number && from_number) {
             await transferCall({ callControlId: legA, to: agent_number, from: from_number });
           }
         }
 
-        // AGENT-FIRST: Agent answered → whisper to agent (optional), then transfer to lead.
-        if (isAgentFirst) {
-          if (legA) await speak(legA, "Connecting your prospect…");
-          if (legA && lead_number && from_number) {
-            await transferCall({ callControlId: legA, to: lead_number, from: from_number });
-          }
-        }
-
+        if (legA) await markAnswered({ legA, answered_at: occurred_at });
         break;
       }
 
       case "call.bridged": {
-        // Stop any playback (if we were playing ringback to lead), set status, start recording, mark stage=answered.
+        // Stop any ringback (if we used it in lead-first)
         if (legA) await playbackStop(legA);
         await markBridged({ legA, maybeLegB: peerLeg || null });
         if (record_enabled && legA) startRecording(legA);
+        // Only now do we mark leads.stage = "answered"
         if (contact_id) await markLeadAnsweredStage({ contact_id });
         break;
       }
 
       case "call.transfer.completed": {
-        // If transfer failed or peer missing, end A leg to avoid endless silent calls.
         const outcome = (p?.result || p?.cause || p?.hangup_cause || "").toLowerCase();
         log("transfer.completed", { outcome, peerLeg: !!peerLeg });
         if (legA) await playbackStop(legA);
@@ -564,7 +488,6 @@ exports.handler = async (event) => {
       case "call.transfer.initiated":
       case "call.initiated.outbound":
       case "call.answered.outbound": {
-        // Some accounts emit these around bridge; keep bridged status in sync if Telnyx provides peer id here.
         if (legA && peerLeg) {
           await markBridged({ legA, maybeLegB: peerLeg });
         }
