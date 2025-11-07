@@ -21,6 +21,17 @@ function classNames(...xs) {
   return xs.filter(Boolean).join(" ");
 }
 
+function fmtPhone(p) {
+  const digits = String(p || "").replace(/\D/g, "");
+  if (digits.length === 10) {
+    return `(${digits.slice(0, 3)}) ${digits.slice(3, 6)}-${digits.slice(6)}`;
+  }
+  if (digits.length === 11 && digits.startsWith("1")) {
+    return `+1 (${digits.slice(1, 4)}) ${digits.slice(4, 7)}-${digits.slice(7)}`;
+  }
+  return p || "";
+}
+
 /* ============================================================
    LEFT (top): Upcoming CRM Appointments (booked via AI/SMS)
    ============================================================ */
@@ -39,9 +50,15 @@ function UpcomingCrmAppointments() {
       setLoading(true);
       setErr("");
 
+      // Relational select to pull the contact (name + phone) via FK crm_appts_contact_fk
+      const APPT_SELECT = `
+        id, title, scheduled_at, time_label, source, contact_id,
+        contact:message_contacts!crm_appts_contact_fk ( full_name, phone )
+      `;
+
       const { data, error } = await supabase
         .from("crm_appointments")
-        .select("id, title, scheduled_at, time_label, source, contact_id")
+        .select(APPT_SELECT)
         .eq("user_id", user.id)
         .gte("scheduled_at", new Date().toISOString())
         .order("scheduled_at", { ascending: true })
@@ -76,26 +93,43 @@ function UpcomingCrmAppointments() {
           <div className="text-white/60">No upcoming CRM appointments.</div>
         ) : (
           <ul className="space-y-2">
-            {items.map((ev) => (
-              <li
-                key={ev.id}
-                className="rounded-lg border border-white/10 bg-black/30 px-3 py-2"
-              >
-                <div className="flex items-center justify-between gap-3">
-                  <div className="min-w-0">
-                    <div className="truncate font-medium">
-                      {ev.title || "Discovery Call"}
+            {items.map((ev) => {
+              const name = (ev?.contact?.full_name || "").trim();
+              const phone = fmtPhone(ev?.contact?.phone);
+              const who =
+                name || phone
+                  ? `With ${[name, phone].filter(Boolean).join(" · ")}`
+                  : "With (unknown contact)";
+              const subline = ev.time_label
+                ? `Chosen: ${ev.time_label}`
+                : ev.source
+                ? ev.source
+                : "";
+
+              return (
+                <li
+                  key={ev.id}
+                  className="rounded-lg border border-white/10 bg-black/30 px-3 py-2"
+                >
+                  <div className="flex items-center justify-between gap-3">
+                    <div className="min-w-0">
+                      <div className="truncate font-medium">
+                        {ev.title || "Discovery Call"}
+                      </div>
+                      <div className="truncate text-xs text-white/80">{who}</div>
+                      {(subline || "") && (
+                        <div className="truncate text-xs text-white/60">
+                          {subline}
+                        </div>
+                      )}
                     </div>
-                    <div className="truncate text-xs text-white/60">
-                      {ev.time_label ? `Chosen: ${ev.time_label}` : ev.source ? ev.source : ""}
+                    <div className="shrink-0 text-white/70">
+                      {ev.scheduled_at ? fmt(ev.scheduled_at) : "—"}
                     </div>
                   </div>
-                  <div className="shrink-0 text-white/70">
-                    {ev.scheduled_at ? fmt(ev.scheduled_at) : "—"}
-                  </div>
-                </div>
-              </li>
-            ))}
+                </li>
+              );
+            })}
           </ul>
         )}
       </div>
