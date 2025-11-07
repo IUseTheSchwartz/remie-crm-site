@@ -3,7 +3,7 @@ import { useEffect, useMemo, useState } from "react";
 import { supabase } from "../lib/supabaseClient.js";
 import useIsAdminAllowlist from "../hooks/useIsAdminAllowlist.js";
 
-// ✅ 10DLC Number pool admin section (toll-free removed)
+// 🔁 REPLACE TFN section with 10DLC number pool admin
 import NumberPool10DLC from "../components/admin/NumberPool10DLC.jsx";
 
 /* ------------------------ small helpers ------------------------ */
@@ -690,7 +690,101 @@ export default function AdminConsole() {
         </p>
       </div>
 
-      {/* ---------- 10DLC Number Pool ---------- */}
+      {/* ---------- Users table ---------- */}
+      <div className="overflow-x-auto rounded-2xl border border-white/10">
+        <table className="min-w-full text-sm">
+          <thead className="bg-white/5">
+            <tr>
+              <th className="px-3 py-2 text-left text-white/70">User</th>
+              <th className="px-3 py-2 text-left text-white/70">Email</th>
+              <th className="px-3 py-2 text-left text-white/70">Team ID</th>
+              <th className="px-3 py-2 text-left text-white/70">Seats Purchased</th>
+              <th className="px-3 py-2 text-left text-white/70">Balance ($)</th>
+              <th className="px-3 py-2 text-left text-white/70">Lead Rescue</th>
+              <th className="px-3 py-2 text-left text-white/70">Templates Locked</th>
+              <th className="px-3 py-2 text-left text-white/70">Actions</th>
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map((r) => {
+              const usd = centsToUsd(r.balance_cents);
+              return (
+                <tr key={r.id} className="border-t border-white/10">
+                  <td className="px-3 py-2">{r.full_name || "—"}</td>
+                  <td className="px-3 py-2 text-white/80">{r.email || "—"}</td>
+                  <td className="px-3 py-2 text-white/60 text-[11px]">{r.team_id || "—"}</td>
+                  <td className="px-3 py-2">
+                    <input
+                      type="number"
+                      min={0}
+                      value={r.seats_purchased ?? 0}
+                      disabled={!r.team_id}
+                      onChange={(e) => patchRow(r.id, { seats_purchased: Number(e.target.value) })}
+                      className="w-24 rounded-md border border-white/15 bg-black/40 px-2 py-1 outline-none focus:ring-2 focus:ring-indigo-500/40 disabled:opacity-50"
+                    />
+                  </td>
+                  <td className="px-3 py-2">
+                    <div className="flex items-center gap-2">
+                      <span className="text-white/60">$</span>
+                      <input
+                        type="text"
+                        inputMode="decimal"
+                        value={usd}
+                        onChange={(e) => patchRow(r.id, { balance_cents: usdToCents(e.target.value) })}
+                        className="w-28 rounded-md border border-white/15 bg-black/40 px-2 py-1 outline-none focus:ring-2 focus:ring-indigo-500/40"
+                      />
+                    </div>
+                  </td>
+                  <td className="px-3 py-2">
+                    <label className="inline-flex items-center gap-2">
+                      <input
+                        type="checkbox"
+                        checked={!!r.lead_rescue_enabled}
+                        onChange={(e) => patchRow(r.id, { lead_rescue_enabled: e.target.checked })}
+                      />
+                      <span className="text-white/80">Enabled</span>
+                    </label>
+                  </td>
+                  <td className="px-3 py-2">
+                    <label className="inline-flex items-center gap-2">
+                      <input
+                        type="checkbox"
+                        checked={!!r.templates_locked}
+                        onChange={(e) => patchRow(r.id, { templates_locked: e.target.checked })}
+                      />
+                      <span className="text-white/80">Locked</span>
+                    </label>
+                  </td>
+                  <td className="px-3 py-2">
+                    <button
+                      onClick={() => saveRow(r)}
+                      className="rounded-md border border-white/20 px-3 py-1 hover:bg-white/10"
+                    >
+                      Save
+                    </button>
+                  </td>
+                </tr>
+              );
+            })}
+
+            {rows.length === 0 && !fetching && (
+              <tr>
+                <td className="px-3 py-6 text-center text-white/60" colSpan={8}>
+                  No users found.
+                </td>
+              </tr>
+            )}
+          </tbody>
+        </table>
+      </div>
+
+      <p className="text-xs text-white/50">
+        Lead Rescue toggle is stored in <code>lead_rescue_settings.enabled</code> (upserted on save).
+        Locked = all templates disabled. We keep the prior state in{" "}
+        <code>message_templates_backup</code> so unlocking restores exactly what they had.
+      </p>
+
+      {/* ---------- 10DLC Number Pool Admin Section (replaces TFN) ---------- */}
       <div className="pt-6 border-t border-white/10">
         <NumberPool10DLC />
       </div>
