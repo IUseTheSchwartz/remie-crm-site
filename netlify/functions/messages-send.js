@@ -7,7 +7,7 @@ const { getServiceClient } = require("./_supabase");
 const fetch = require("node-fetch");
 
 const TELNYX_API_KEY = process.env.TELNYX_API_KEY;
-const MESSAGING_PROFILE_ID = process.env.TELNYX_MESSAGING_PROFILE_ID || null;
+const MESSAGING_PROFILE_ID_FALLBACK = process.env.TELNYX_MESSAGING_PROFILE_ID || null;
 const AGENT_SITE_BASE = process.env.AGENT_SITE_BASE || "https://remiecrm.com";
 
 function json(obj, statusCode = 200) {
@@ -68,70 +68,65 @@ async function findContactByPhone(db, user_id, phoneLike) {
   return (data || []).find((c) => norm10(c.phone) === d10) || null;
 }
 
-// schema-agnostic to avoid column mismatches
+// schema-agnostic
 async function getAgentProfile(db, user_id) {
-  const { data, error } = await db
-    .from("agent_profiles")
-    .select("*")
-    .eq("user_id", user_id)
-    .maybeSingle();
+  const { data, error } = await db.from("agent_profiles").select("*").eq("user_id", user_id).maybeSingle();
   if (error) throw error;
   return data || null;
 }
 
 async function getTemplatesRow(db, user_id) {
-  const { data, error } = await db
-    .from("message_templates")
-    .select("*")
-    .eq("user_id", user_id)
-    .maybeSingle();
+  const { data, error } = await db.from("message_templates").select("*").eq("user_id", user_id).maybeSingle();
   if (error) throw error;
   return data || null;
 }
 
-// WALLET helper
 async function getBalanceCents(db, user_id) {
-  const { data, error } = await db
-    .from("user_wallets")
-    .select("balance_cents")
-    .eq("user_id", user_id)
-    .maybeSingle();
+  const { data, error } = await db.from("user_wallets").select("balance_cents").eq("user_id", user_id).maybeSingle();
   if (error) throw error;
   return Number(data?.balance_cents ?? 0);
 }
 
 /* ====== Messaging number via ten_dlc_numbers ======
-   Returns { status: 'verified'|'pending'|'none', e164?: string }
+   Returns { status: 'verified'|'pending'|'none', e164?: string, profileId?: string }
 ==================================================== */
-async function getAgentMessagingNumberStatus(db, user_id) {
-  try {
-    const { data, error } = await db
-      .from("ten_dlc_numbers")
-      .select("phone_number, verified, status")
-      .eq("assigned_to", user_id)
-      .order("date_assigned", { ascending: true, nullsFirst: true })
-      .limit(1)
-      .maybeSingle();
-    if (error) throw error;
+async function getAgentMessagingNumber(db, user_id) {
+  const { data, error } = await db
+    .from("ten_dlc_numbers")
+    .select("phone_number, verified, status, messaging_profile_id")
+    .eq("assigned_to", user_id)
+    .order("date_assigned", { ascending: true, nullsFirst: true })
+    .limit(1)
+    .maybeSingle();
+  if (error) throw error;
 
-    if (!data) return { status: "none" };
-    const e = toE164(data.phone_number);
-    if (!e) return { status: "none" };
+  if (!data) return { status: "none" };
 
-    const isActive = (data.status || "active") === "active";
-    return data.verified && isActive ? { status: "verified", e164: e } : { status: "pending", e164: e };
-  } catch {
-    return { status: "none" };
-  }
+  const e = toE164(data.phone_number);
+  if (!e) return { status: "none" };
+
+  const isActive = (data.status || "active") === "active";
+  const ok = !!data.verified && isActive;
+  return ok
+    ? { status: "verified", e164: e, profileId: data.messaging_profile_id || null }
+    : { status: "pending", e164: e, profileId: data.messaging_profile_id || null };
 }
 
-/* ===== Telnyx ===== */
+// ---- Telnyx send ----
 async function telnyxSend({ from, to, text, profileId }) {
   if (!TELNYX_API_KEY) throw new Error("TELNYX_API_KEY missing");
-  const payload = { to, text, ...(profileId ? { messaging_profile_id: profileId } : {}), ...(from ? { from } : {}) };
+  const payload = {
+    to,
+    text,
+    ...(profileId ? { messaging_profile_id: profileId } : {}),
+    ...(from ? { from } : {}),
+  };
   const res = await fetch("https://api.telnyx.com/v2/messages", {
     method: "POST",
-    headers: { Authorization: `Bearer ${TELNYX_API_KEY}`, "Content-Type": "application/json" },
+    headers: {
+      Authorization: `Bearer ${TELNYX_API_KEY}`,
+      "Content-Type": "application/json",
+    },
     body: JSON.stringify(payload),
   });
   const out = await res.json().catch(() => ({}));
@@ -153,14 +148,6 @@ function chooseFallbackKey(reqKey, { isMilitary }) {
 /* =========================
    Monthly free usage (SMS)
    ========================= */
-
-function monthWindow(now = new Date()) {
-  const start = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1, 0, 0, 0));
-  const end = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + 1, 1, 0, 0, 0));
-  return { period_start: start.toISOString(), period_end: end.toISOString() };
-}
-
-// account: subscription account_id (active) or fallback to user_id
 async function resolveAccountId(db, user_id) {
   try {
     const { data } = await db
@@ -174,90 +161,79 @@ async function resolveAccountId(db, user_id) {
   return user_id;
 }
 
-/** Ensure row exists for this month */
+function monthWindow(now = new Date()) {
+  const start = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1, 0, 0, 0));
+  const end = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + 1, 1, 0, 0, 0));
+  return { period_start: start.toISOString(), period_end: end.toISOString() };
+}
+
 async function ensureUsageRow(db, account_id, now = new Date()) {
   const { period_start, period_end } = monthWindow(now);
-  const { data: found, error: findErr } = await db
+  const { data: existing, error: findErr } = await db
     .from("usage_counters")
-    .select("id, period_start, period_end")
+    .select("id, free_sms_total, free_sms_used")
     .eq("account_id", account_id)
     .eq("period_start", period_start)
     .eq("period_end", period_end)
     .limit(1);
   if (findErr) throw findErr;
-  if (found && found.length) return found[0];
-  const { data: ins, error: insErr } = await db
+  if (existing && existing.length) return existing[0];
+
+  const { data: inserted, error: insErr } = await db
     .from("usage_counters")
     .insert([{ account_id, period_start, period_end }])
-    .select("id, period_start, period_end")
+    .select("id, free_sms_total, free_sms_used")
     .single();
   if (insErr) throw insErr;
-  return ins;
+  return inserted;
 }
 
-// Conservative segment counter (GSM-7 vs UCS-2)
+// segment counter
 function countSmsSegments(text = "") {
   const s = String(text);
   const gsm7 = /^[\n\r\t\0\x0B\x0C\x1B\x20-\x7E€£¥èéùìòÇØøÅåΔ_ΦΓΛΩΠΨΣΘΞÆæßÉ^{}\[~\]|€\\]*$/.test(s);
-  if (gsm7) return s.length <= 160 ? 1 : Math.ceil(s.length / 153);
-  return s.length <= 70 ? 1 : Math.ceil(s.length / 67);
+  if (gsm7) {
+    const singleLimit = 160, concatLimit = 153;
+    if (s.length <= singleLimit) return 1;
+    return Math.ceil(s.length / concatLimit);
+  } else {
+    const singleLimit = 70, concatLimit = 67;
+    if (s.length <= singleLimit) return 1;
+    return Math.ceil(s.length / concatLimit);
+  }
 }
 
-/** Read usage for this month, tolerating either column family:
- *  (free_sms_segments_total/used) OR (free_sms_total/used)
- */
-async function readUsageRow(db, account_id, now = new Date()) {
+async function tryConsumeSms(db, account_id, segments, now = new Date()) {
+  await ensureUsageRow(db, account_id, now);
   const { period_start, period_end } = monthWindow(now);
-  const { data, error } = await db
+
+  const { data: row0, error: getErr } = await db
     .from("usage_counters")
-    .select("*")
+    .select("id, free_sms_total, free_sms_used")
     .eq("account_id", account_id)
     .eq("period_start", period_start)
     .eq("period_end", period_end)
-    .maybeSingle();
-  if (error) throw error;
-  const row = data || {};
-  const total =
-    row.free_sms_segments_total ??
-    row.free_sms_total ??
-    6000;
-  const used =
-    row.free_sms_segments_used ??
-    row.free_sms_used ??
-    0;
-  return { id: row.id, total: Number(total || 0), used: Number(used || 0) };
-}
+    .single();
+  if (getErr) throw getErr;
 
-/** Write back 'used' to whichever column family exists */
-async function writeUsageRow(db, id, nextUsed) {
-  // Try segments family first
-  try {
-    const { error } = await db
-      .from("usage_counters")
-      .update({ free_sms_segments_used: nextUsed, updated_at: new Date().toISOString() })
-      .eq("id", id);
-    if (!error) return;
-  } catch {}
-  // Fallback to non-segments family
-  const { error: e2 } = await db
-    .from("usage_counters")
-    .update({ free_sms_used: nextUsed, updated_at: new Date().toISOString() })
-    .eq("id", id);
-  if (e2) throw e2;
-}
-
-/** Try to consume N SMS segments. Returns {covered, remaining_to_bill}. */
-async function tryConsumeSms(db, account_id, segments, now = new Date()) {
-  await ensureUsageRow(db, account_id, now);
-  const row = await readUsageRow(db, account_id, now);
-  const remaining = Math.max(0, row.total - row.used);
+  const remaining = Math.max(0, (row0.free_sms_total || 0) - (row0.free_sms_used || 0));
   const covered = Math.min(remaining, segments);
   const over = segments - covered;
-  if (covered > 0) await writeUsageRow(db, row.id, row.used + covered);
+
+  if (covered > 0) {
+    const { error: updErr } = await db
+      .from("usage_counters")
+      .update({
+        free_sms_used: (row0.free_sms_used || 0) + covered,
+        updated_at: new Date().toISOString(),
+      })
+      .eq("id", row0.id);
+    if (updErr) throw updErr;
+  }
+
   return { covered, remaining_to_bill: over };
 }
 
-// price per segment (cents)
 const PER_SEGMENT_CENTS = Number(process.env.SMS_PER_SEGMENT_CENTS || "1");
 
 exports.handler = async (event) => {
@@ -283,7 +259,7 @@ exports.handler = async (event) => {
       sent_by_ai,
     } = body || {};
 
-    // also accept snake_case
+    // accept snake_case
     templateKey = body.template_key || body.template || templateKey;
 
     // -------- Resolve user_id, contact, destination --------
@@ -329,7 +305,7 @@ exports.handler = async (event) => {
       if (contact) trace.push({ step: "contact.resolved_by_phone", contact_id: contact.id });
     }
 
-    // -------- DEDUPE by provider_message_id --------
+    // -------- DEDUPE --------
     if (provider_message_id) {
       const { data: dupe, error: dErr } = await db
         .from("messages")
@@ -352,8 +328,7 @@ exports.handler = async (event) => {
       if (!mt) return json({ error: "template_not_configured", trace }, 400);
 
       const enabledGlobal = typeof mt.enabled === "boolean" ? mt.enabled : true;
-      const enabledByKey =
-        mt.enabled && typeof mt.enabled === "object" ? mt.enabled[templateKey] : undefined;
+      const enabledByKey = mt.enabled && typeof mt.enabled === "object" ? mt.enabled[templateKey] : undefined;
       const isEnabled = enabledGlobal && enabledByKey !== false;
       if (!isEnabled) return json({ status: "skipped_disabled", templateKey, trace });
 
@@ -367,11 +342,7 @@ exports.handler = async (event) => {
       if (!tpl && keyToUse === "new_lead_military") tpl = String(T("new_lead") || "").trim();
       if (!tpl && keyToUse === "new_lead") tpl = String(T("new_lead_military") || "").trim();
 
-      if (!tpl)
-        return json(
-          { error: "template_not_found", requested: templateKey, tried: keyToUse, trace },
-          404
-        );
+      if (!tpl) return json({ error: "template_not_found", requested: templateKey, tried: keyToUse, trace }, 404);
 
       const ap = await getAgentProfile(db, user_id);
       const slug = (ap?.slug || "").trim();
@@ -394,7 +365,7 @@ exports.handler = async (event) => {
       const fullName = lead?.name || contact?.full_name || "";
       if (fullName) {
         ctx.full_name = fullName;
-        const parts = fullName split(/\s+/).filter(Boolean);
+        const parts = fullName.split(/\s+/).filter(Boolean);
         ctx.first_name = parts[0] || "";
         ctx.last_name = parts.slice(1).join(" ");
       }
@@ -408,14 +379,13 @@ exports.handler = async (event) => {
       trace.push({ step: "template.rendered", key: keyToUse, body_len: bodyText.length });
     }
 
-    // -------- Determine FROM number & verification (10DLC pool) --------
-    const mnum = await getAgentMessagingNumberStatus(db, user_id);
+    // -------- Determine FROM number & profile (10DLC) --------
+    const mnum = await getAgentMessagingNumber(db, user_id);
     if (mnum.status === "pending") {
       return json(
         {
           error: "messaging_number_pending_verification",
-          message:
-            "Your messaging number is not fully verified/active yet. Outbound texting will enable automatically once approved.",
+          message: "Your messaging number is not fully verified/active yet.",
           trace,
         },
         409
@@ -432,8 +402,9 @@ exports.handler = async (event) => {
       );
     }
     const fromE164 = mnum.e164;
+    const profileId = mnum.profileId || MESSAGING_PROFILE_ID_FALLBACK || null;
 
-    // ======== Free-pool → Wallet flow (SMS segments) ========
+    // -------- Free pool → Wallet flow --------
     const account_id = await resolveAccountId(db, user_id);
     const segments = countSmsSegments(bodyText || "");
     let cover = { covered: 0, remaining_to_bill: segments };
@@ -448,14 +419,11 @@ exports.handler = async (event) => {
     const billableSegments = cover.remaining_to_bill;
     const price_cents = Math.max(0, billableSegments * PER_SEGMENT_CENTS);
 
-    // -------- WALLET preflight (only if overage) --------
     if (price_cents > 0) {
       let balance = 0;
       try {
         balance = await getBalanceCents(db, user_id);
-      } catch {
-        balance = 0;
-      }
+      } catch { balance = 0; }
       if (balance < price_cents) {
         return json({ error: "insufficient_balance", balance_cents: balance, needed_cents: price_cents, trace }, 402);
       }
@@ -470,11 +438,11 @@ exports.handler = async (event) => {
         from: fromE164,
         to: toE,
         text: bodyText,
-        profileId: MESSAGING_PROFILE_ID,
+        profileId,
       });
-      trace.push({ step: "telnyx.sent", id: telnyxResp?.data?.id, used_from: fromE164 });
+      trace.push({ step: "telnyx.sent", id: telnyxResp?.data?.id, used_from: fromE164, profileId });
     } catch (e) {
-      trace.push({ step: "telnyx.error", detail: e?.message || String(e) });
+      trace.push({ step: "telnyx.error", detail: e?.message || String(e), profileId, from: fromE164 });
       return json(
         {
           error: "send_failed",
@@ -500,7 +468,7 @@ exports.handler = async (event) => {
       status: "sent",
       provider_sid,
       provider_message_id: provider_message_id || null,
-      price_cents, // FREE if covered, else overage only
+      price_cents,
       meta: {
         templateKey: templateKey || null,
         lead_id: lead?.id || (lead_id || null),
@@ -518,6 +486,7 @@ exports.handler = async (event) => {
         trace.push({ step: "insert.duplicate", provider_message_id });
         return json({ ok: true, deduped: true, provider_message_id, trace });
       }
+      console.error("[messages-send] db insert failed:", ins.error);
       return json({ error: `db_insert_failed: ${msg}`, trace }, 500);
     }
 
@@ -530,6 +499,7 @@ exports.handler = async (event) => {
       trace,
     });
   } catch (e) {
-    return json({ error: "unhandled", detail: String(e?.message || e), trace: [] }, 500);
+    console.error("[messages-send] unhandled:", e);
+    return json({ error: "unhandled", detail: String(e?.message || e) });
   }
 };
