@@ -1,6 +1,7 @@
 // File: netlify/functions/ai-dispatch.js
 // Thin dispatcher: parse -> guard -> load agent -> delegate to AI brain -> send one reply.
-// Now: when AI confirms a time, we create a CRM appointment for the contact.
+// Adds minimal per-contact AI context so credentials link shows only on the first AI message
+// and the final time confirmation. Keeps your price-guard and appointment creation flow.
 
 const { getServiceClient } = require("./_supabase");
 const fetch = require("node-fetch");
@@ -69,6 +70,26 @@ function buildAgentBookingLink(agent) {
   return "";
 }
 
+async function getContactMeta(db, contact_id) {
+  try {
+    const { data } = await db
+      .from("message_contacts")
+      .select("meta")
+      .eq("id", contact_id)
+      .maybeSingle();
+    return (data && data.meta) || {};
+  } catch {
+    return {};
+  }
+}
+
+async function mergeContactMeta(db, contact_id, patch = {}) {
+  const cur = await getContactMeta(db, contact_id);
+  const next = { ...(cur || {}), ...patch };
+  await db.from("message_contacts").update({ meta: next }).eq("id", contact_id);
+  return next;
+}
+
 /* ---------------- Time parsing (label -> next datetime in tz) ---------------- */
 function getNowPartsInTZ(tz) {
   const fmt = new Intl.DateTimeFormat("en-US", {
@@ -85,14 +106,10 @@ function getNowPartsInTZ(tz) {
   };
 }
 function toUTCFromTZ({ year, month, day, hour, minute }, tz) {
-  // Build a local string in tz and let Date parse it with that TZ using toLocaleString trick.
-  // Safer path: we compute the instant by asking what the UTC time is when the wall clock in tz shows Y-M-D H:M.
   const asLocal = new Date(Date.UTC(year, month - 1, day, hour, minute, 0));
-  // Offset between UTC "now" and "now in tz"
   const now = new Date();
   const nowInTZ = new Date(now.toLocaleString("en-US", { timeZone: tz }));
   const offsetMs = nowInTZ.getTime() - now.getTime();
-  // Apply the same offset to our target "local" time to approximate wall time in tz back to UTC
   return new Date(asLocal.getTime() - offsetMs);
 }
 function parseClockLabelToNext(label, tz = "America/Chicago") {
@@ -111,11 +128,9 @@ function parseClockLabelToNext(label, tz = "America/Chicago") {
   const nowParts = getNowPartsInTZ(tz);
   let target = toUTCFromTZ({ ...nowParts, hour, minute }, tz);
 
-  // If it's already passed in that TZ today, schedule tomorrow
   const nowInTZ = new Date(new Date().toLocaleString("en-US", { timeZone: tz }));
   const targetInTZ = new Date(target.toLocaleString("en-US", { timeZone: tz }));
   if (targetInTZ.getTime() <= nowInTZ.getTime()) {
-    // add 1 day in tz terms
     const tomorrow = new Date(targetInTZ.getTime() + 24 * 60 * 60 * 1000);
     const y = tomorrow.getFullYear();
     const mo = tomorrow.getMonth() + 1;
@@ -158,7 +173,7 @@ exports.handler = async (event) => {
     return bad("missing_fields", 400);
   }
 
-  // Respect contact state (unsubscribe / booked silence is managed upstream)
+  // Respect contact state
   try {
     const { data: contact } = await db
       .from("message_contacts")
@@ -208,12 +223,23 @@ exports.handler = async (event) => {
   }
   // ------------------------------------------------------------
 
-  // Delegate to brain
+  // -------- Load & pass AI context so the brain knows if creds were already shown
+  const metaNow = await getContactMeta(db, contact_id);
+  const aiContext = {
+    last_intent: metaNow?.ai_last_intent || null,
+    promptedHour: metaNow?.ai_prompted_hour || null,
+    sent_credentials: metaNow?.ai_sent_credentials === true,
+  };
+
+  // Delegate to brain with context
   let decision = { text: "", intent: "general" };
   try {
     decision = (await decide({
-      text, agentName, calendlyLink: bookingLink, tz,
-      // context: {} // (future conv state)
+      text,
+      agentName,
+      calendlyLink: bookingLink,
+      tz,
+      context: aiContext, // <<< critical
     })) || decision;
   } catch (e) {
     console.error("[ai-dispatch] brain error:", e?.message || e);
@@ -253,7 +279,6 @@ exports.handler = async (event) => {
           user_id,
           contact_id,
           title: "Discovery Call",
-          // Store the text label too for reference
           time_label: label || null,
           scheduled_at: iso,
           source: "sms_ai",
@@ -302,8 +327,36 @@ exports.handler = async (event) => {
     clearTimeout(timeout);
   }
 
+  // Persist updated AI context on the contact (so creds only first & final)
+  try {
+    const patch = {};
+    if (decision?.meta?.context_patch) {
+      if ("last_intent" in decision.meta.context_patch) patch.ai_last_intent = decision.meta.context_patch.last_intent || null;
+      if ("promptedHour" in decision.meta.context_patch) patch.ai_prompted_hour = decision.meta.context_patch.promptedHour || null;
+      if ("sent_credentials" in decision.meta.context_patch) patch.ai_sent_credentials = !!decision.meta.context_patch.sent_credentials;
+    }
+    if (Object.keys(patch).length) {
+      await mergeContactMeta(db, contact_id, patch);
+    }
+  } catch (e) {
+    console.warn("[ai-dispatch] persist ai context warn:", e?.message || e);
+  }
+
   if (!res || !res.ok || json?.error) {
     return ok({ ok: false, error: json?.error || `status_${res?.status}`, ai_intent: aiIntent });
+  }
+
+  // Best-effort tag; ignore if your schema doesn't have these columns
+  try {
+    if (json?.id) {
+      const { error: colErr } = await db
+        .from("messages")
+        .update({ sent_by_ai: true /*, ai_intent: aiIntent*/ })
+        .eq("id", json.id);
+      if (colErr) console.warn("[ai-dispatch] messages tag warn:", colErr.message);
+    }
+  } catch (e) {
+    console.warn("[ai-dispatch] tag AI message warn:", e?.message || e);
   }
 
   return ok({
