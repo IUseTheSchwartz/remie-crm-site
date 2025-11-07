@@ -26,7 +26,7 @@ const withinOffice = (hours = DEFAULT_HOURS, hour) =>
   hour >= Number(hours.start ?? 9) && hour <= Number(hours.end ?? 21);
 
 function shortDateTodayInTZ(tz = DEFAULT_TZ, es = false) {
-  // e.g., "Nov 3" / "3 nov"
+  // e.g., "Nov 7" / "7 nov"
   const d = new Date();
   const fmt = new Intl.DateTimeFormat(es ? "es-US" : "en-US", {
     timeZone: tz,
@@ -129,7 +129,13 @@ function isAMPMOnly(t = "") { return /^\s*(a\.?m\.?|p\.?m\.?|am|pm)\s*$/i.test(S
 
 /* ---------------- copy ---------------- */
 const T = {
-  linkLine: (es, link) => link ? (es ? ` Puede elegir un horario aquí: ${link}` : ` You can grab a time here: ${link}`) : "",
+  // ⬅️ CHANGED: make the link a credentials/legitimacy line, not a booking CTA
+  linkLine: (es, link) =>
+    link
+      ? (es
+          ? ` Mientras tanto, si desea verificar mis credenciales, puede visitar mi sitio: ${link}`
+          : ` In the meantime, if you’d like to verify my credentials, you can visit my website: ${link}`)
+      : "",
 
   greetGeneral: (es, n, link) =>
     es ? `Hola—soy ${n}. Sobre su solicitud de seguro de vida—esto toma solo unos minutos.${T.linkLine(es, link)} ¿Qué hora le funciona?`
@@ -179,7 +185,7 @@ const T = {
     es ? `Solo 5–7 minutos para salud básica, presupuesto y beneficiario, y darle opciones claras.${T.linkLine(es, link)} ¿Qué hora le conviene?`
        : `Just 5–7 minutes to cover basic health, budget, and beneficiary so we can show clear options.${T.linkLine(es, link)} What time works for you?`,
 
-  // UPDATED: confirmation copy with date + reschedule by text + credentials website
+  // Confirmation with date + reschedule by text + credentials website
   timeConfirm: (es, label, link, tz) => {
     const d = shortDateTodayInTZ(tz, es);
     const verifyLine = link
