@@ -22,7 +22,7 @@ const DEFAULT_ENABLED = Object.fromEntries(TEMPLATE_DEFS.map((t) => [t.key, fals
 /* ---------------- Carrier-safe defaults (with agent_site; appointment removed) ---------------- */
 const DEFAULTS = {
   new_lead:
-    "Hi {{first_name}}, it’s {{agent_name}} in {{state}}. I received your request listing {{beneficiary}} as beneficiary. When you’re ready, book here: {{agent_site}}",
+    "Hi {{first_name}}, it’s {{agent_name}} in {{state}}. I received the form you sent in where you listed {{beneficiary}} as your beneficiary for the life insurance. If I'm unable to reach you, what's a good time to give you a call? in the mean time you can verify my credentials here : {{agent_site}}",
   new_lead_military:
     "Hi {{first_name}}, it’s {{agent_name}} the veterans life specialist here in {{state}}. I got the form you sent in to me, let’s book an appointment to go over this: {{agent_site}}",
   sold:
@@ -35,7 +35,7 @@ const DEFAULTS = {
     "Hi {{first_name}}, it’s {{agent_name}}. Wishing you a happy holiday season. I’m here if you need anything for your coverage.",
 };
 
-/* ========= NEW: Usage helpers (Free SMS) ========= */
+/* ========= Usage helpers (Free SMS) ========= */
 const FREE_SMS_SEGMENTS_FALLBACK = 6000; // default monthly allowance if not present in DB
 
 function monthWindow(d = new Date()) {
@@ -55,7 +55,7 @@ async function resolveAccountId(user_id) {
   return user_id;
 }
 
-/** Reads current month SMS usage. Prefers segment fields; falls back to message fields. */
+/** Robust reader: supports segments, generic, and legacy message fields. */
 async function fetchSmsUsageForCurrentMonth(user_id) {
   if (!user_id) return { used: 0, total: FREE_SMS_SEGMENTS_FALLBACK };
   const account_id = await resolveAccountId(user_id);
@@ -64,7 +64,14 @@ async function fetchSmsUsageForCurrentMonth(user_id) {
   const { data, error } = await supabase
     .from("usage_counters")
     .select(
-      "free_sms_segments_used, free_sms_segments_total, free_sms_messages_used, free_sms_messages_total"
+      [
+        "free_sms_segments_used",
+        "free_sms_segments_total",
+        "free_sms_used",
+        "free_sms_total",
+        "free_sms_messages_used",
+        "free_sms_messages_total",
+      ].join(", ")
     )
     .eq("account_id", account_id)
     .eq("period_start", period_start)
@@ -73,24 +80,38 @@ async function fetchSmsUsageForCurrentMonth(user_id) {
 
   if (error || !data) return { used: 0, total: FREE_SMS_SEGMENTS_FALLBACK };
 
-  // Prefer segments
-  if (
-    typeof data.free_sms_segments_used === "number" ||
-    typeof data.free_sms_segments_total === "number"
-  ) {
+  // Priority 1: segments columns
+  const segUsed = data.free_sms_segments_used;
+  const segTotal = data.free_sms_segments_total;
+  if (Number.isFinite(segUsed) || Number.isFinite(segTotal)) {
     return {
-      used: Math.max(0, Number(data.free_sms_segments_used || 0)),
-      total: Math.max(1, Number(data.free_sms_segments_total || FREE_SMS_SEGMENTS_FALLBACK)),
+      used: Math.max(0, Number(segUsed || 0)),
+      total: Math.max(1, Number(segTotal || FREE_SMS_SEGMENTS_FALLBACK)),
     };
   }
 
-  // Fallback to messages (treat as segments 1:1)
-  const msgUsed = Number(data.free_sms_messages_used || 0);
-  const msgTotal = Number(data.free_sms_messages_total || 0);
-  return {
-    used: Math.max(0, msgUsed),
-    total: Math.max(1, msgTotal || FREE_SMS_SEGMENTS_FALLBACK),
-  };
+  // Priority 2: generic free_sms_used/total (matches MessagesPage)
+  const genUsed = data.free_sms_used;
+  const genTotal = data.free_sms_total;
+  if (Number.isFinite(genUsed) || Number.isFinite(genTotal)) {
+    return {
+      used: Math.max(0, Number(genUsed || 0)),
+      total: Math.max(1, Number(genTotal || FREE_SMS_SEGMENTS_FALLBACK)),
+    };
+  }
+
+  // Priority 3: legacy messages fields
+  const msgUsed = data.free_sms_messages_used;
+  const msgTotal = data.free_sms_messages_total;
+  if (Number.isFinite(msgUsed) || Number.isFinite(msgTotal)) {
+    return {
+      used: Math.max(0, Number(msgUsed || 0)),
+      total: Math.max(1, Number(msgTotal || FREE_SMS_SEGMENTS_FALLBACK)),
+    };
+  }
+
+  // Fallback
+  return { used: 0, total: FREE_SMS_SEGMENTS_FALLBACK };
 }
 
 /* Small toggle */
@@ -159,7 +180,7 @@ async function withAuthHeaders() {
   return token ? { Authorization: `Bearer ${token}` } : {};
 }
 
-// 🔄 UPDATED: read from new backend wired to ten_dlc_numbers
+// 🔄 read from backend wired to ten_dlc_numbers
 async function apiGetTenDlcStatus() {
   const headers = await withAuthHeaders();
   const res = await fetch("/.netlify/functions/ten-dlc-status", { headers });
@@ -232,7 +253,7 @@ export default function MessagingSettings() {
   const [tfnAssigning, setTfnAssigning] = useState(false);
   const [tfnError, setTfnError] = useState("");
 
-  // NEW: Free SMS usage
+  // Free SMS usage
   const [smsLoading, setSmsLoading] = useState(true);
   const [smsUsed, setSmsUsed] = useState(0);
   const [smsTotal, setSmsTotal] = useState(FREE_SMS_SEGMENTS_FALLBACK);
@@ -375,7 +396,7 @@ export default function MessagingSettings() {
     };
   }, []);
 
-  /* -------- NEW: refresh SMS usage -------- */
+  /* -------- refresh SMS usage -------- */
   async function refreshSmsUsage(uidParam) {
     const { data: auth } = await supabase.auth.getUser();
     const uid = uidParam || auth?.user?.id;
@@ -498,7 +519,7 @@ export default function MessagingSettings() {
         <h1 className="text-lg font-semibold">Messaging Settings</h1>
         <p className="mt-1 text-sm text-white/70">Manage your messaging number and message templates.</p>
 
-        {/* NEW: Free SMS usage row */}
+        {/* Free SMS usage row */}
         <div className="mt-4 grid gap-3 md:grid-cols-3">
           <div className="rounded-xl border border-white/10 bg-white/[0.04] p-3 md:col-span-2">
             <div className="flex items-center justify-between">
@@ -520,7 +541,7 @@ export default function MessagingSettings() {
             <div className="mt-1 text-xs text-white/70">
               {smsLoading ? "Loading…" : (
                 <>
-                  {smsUsed}/{smsTotal} used • {smsLeft} left
+                  {smsUsed}/{smsTotal} used • {Math.max(0, smsTotal - smsUsed)} left
                 </>
               )}
             </div>
@@ -626,7 +647,7 @@ export default function MessagingSettings() {
             </p>
             {/* Tiny usage pill here too */}
             <div className="mt-2 text-[11px] text-white/60">
-              {smsLoading ? "Checking free segments…" : `${smsLeft} segments left this month`}
+              {smsLoading ? "Checking free segments…" : `${Math.max(0, smsTotal - smsUsed)} segments left this month`}
             </div>
             {missingAgentSite && (
               <div className="mt-2 text-[11px] text-amber-300">
@@ -636,7 +657,7 @@ export default function MessagingSettings() {
             )}
           </div>
 
-        {/* RIGHT-SIDE ACTIONS */}
+          {/* RIGHT-SIDE ACTIONS */}
           <div className="ml-auto flex items-center gap-2">
             {enabledSaveState === "saving" && (
               <span className="inline-flex items-center gap-1 text-xs text-white/70">
