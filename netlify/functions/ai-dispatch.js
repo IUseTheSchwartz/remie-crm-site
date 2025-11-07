@@ -188,6 +188,7 @@ exports.handler = async (event) => {
   // Load agent profile and compute brand-safe booking link
   const agent = await getAgentProfile(db, user_id).catch(() => ({}));
   const agentName = agent?.full_name || "your licensed broker";
+  const agentPhone = agent?.phone || ""; // <<< pass through to brain
   const bookingLink = buildAgentBookingLink(agent);
   const tz = process.env.AGENT_DEFAULT_TZ || "America/Chicago";
 
@@ -237,9 +238,10 @@ exports.handler = async (event) => {
     decision = (await decide({
       text,
       agentName,
+      agentPhone,          // <<< pass to brain
       calendlyLink: bookingLink,
       tz,
-      context: aiContext, // <<< makes creds line appear only on first + final confirm
+      context: aiContext,  // <<< makes creds line appear only on first + final confirm
     })) || decision;
   } catch (e) {
     console.error("[ai-dispatch] brain error:", e?.message || e);
