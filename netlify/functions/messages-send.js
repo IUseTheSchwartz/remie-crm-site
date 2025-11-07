@@ -6,8 +6,9 @@ const { getServiceClient } = require("./_supabase");
 const fetch = require("node-fetch");
 
 const TELNYX_API_KEY = process.env.TELNYX_API_KEY;
-const MESSAGING_PROFILE_ID_FALLBACK = process.env.TELNYX_MESSAGING_PROFILE_ID || null;
+const MESSAGING_PROFILE_ID = process.env.TELNYX_MESSAGING_PROFILE_ID || null;
 const AGENT_SITE_BASE = process.env.AGENT_SITE_BASE || "https://remiecrm.com";
+const PER_SEGMENT_CENTS = Number(process.env.SMS_PER_SEGMENT_CENTS || "1");
 
 function json(obj, statusCode = 200) {
   return { statusCode, headers: { "Content-Type": "application/json" }, body: JSON.stringify(obj) };
@@ -86,13 +87,13 @@ async function getBalanceCents(db, user_id) {
   return Number(data?.balance_cents ?? 0);
 }
 
-/* ====== Messaging number via ten_dlc_numbers ======
-   Returns { status: 'verified'|'pending'|'none', e164?: string, profileId?: string }
-==================================================== */
+/* ====== Messaging number via ten_dlc_numbers (verified only) ======
+   Returns { status: 'verified'|'none'|'pending', e164?: string }
+==================================================================== */
 async function getAgentMessagingNumber(db, user_id) {
   const { data, error } = await db
     .from("ten_dlc_numbers")
-    .select("phone_number, verified, status, messaging_profile_id")
+    .select("phone_number, verified")
     .eq("assigned_to", user_id)
     .order("date_assigned", { ascending: true, nullsFirst: true })
     .limit(1)
@@ -100,24 +101,18 @@ async function getAgentMessagingNumber(db, user_id) {
   if (error) throw error;
 
   if (!data) return { status: "none" };
-
   const e = toE164(data.phone_number);
   if (!e) return { status: "none" };
-
-  const isActive = (data.status || "active") === "active";
-  const ok = !!data.verified && isActive;
-  return ok
-    ? { status: "verified", e164: e, profileId: data.messaging_profile_id || null }
-    : { status: "pending", e164: e, profileId: data.messaging_profile_id || null };
+  return data.verified ? { status: "verified", e164: e } : { status: "pending", e164: e };
 }
 
 // ---- Telnyx send ----
-async function telnyxSend({ from, to, text, profileId }) {
+async function telnyxSend({ from, to, text }) {
   if (!TELNYX_API_KEY) throw new Error("TELNYX_API_KEY missing");
   const payload = {
     to,
     text,
-    ...(profileId ? { messaging_profile_id: profileId } : {}),
+    ...(MESSAGING_PROFILE_ID ? { messaging_profile_id: MESSAGING_PROFILE_ID } : {}),
     ...(from ? { from } : {}),
   };
   const res = await fetch("https://api.telnyx.com/v2/messages", {
@@ -190,7 +185,7 @@ async function ensureUsageRow(db, account_id, now = new Date()) {
 // segment counter
 function countSmsSegments(text = "") {
   const s = String(text);
-  const gsm7 = /^[\n\r\t\0\x0B\x0C\x1B\x20-\x7E€£¥èéùìòÇØøÅåΔ_ΦΓΛΩΠΨΣΘΞÆæßÉ^{}\[\]~|€\\]*$/.test(s);
+  const gsm7 = /^[\n\r\t\0\x0B\x0C\x1B\x20-\x7E€£¥èéùìòÇØøÅåΔ_ΦΓΛΩΠΨΣΘΞÆæßÉ^{}\[~\]|€\\]*$/.test(s);
   if (gsm7) {
     const singleLimit = 160, concatLimit = 153;
     if (s.length <= singleLimit) return 1;
@@ -232,8 +227,6 @@ async function tryConsumeSms(db, account_id, segments, now = new Date()) {
 
   return { covered, remaining_to_bill: over };
 }
-
-const PER_SEGMENT_CENTS = Number(process.env.SMS_PER_SEGMENT_CENTS || "1");
 
 exports.handler = async (event) => {
   const trace = [];
@@ -346,18 +339,13 @@ exports.handler = async (event) => {
       const ap = await getAgentProfile(db, user_id);
       const slug = (ap?.slug || "").trim();
       const agent_site = slug ? `${AGENT_SITE_BASE.replace(/\/+$/,"")}/a/${slug}` : "";
-
-      // ==== CONTEXT MAPPING (patched) ====
-      // - state => from lead.state
-      // - beneficiary => from lead.beneficiary_name (your preference)
       const ctx = {
         first_name: "",
         last_name: "",
         full_name: "",
-        state: lead?.state || "",
-        beneficiary: lead?.beneficiary_name || "",
-        beneficiary_name: lead?.beneficiary_name || "",
-        military_branch: S(lead?.military_branch) || (tags.includes("military") ? "Military" : ""),
+        state: "",
+        beneficiary: "",
+        military_branch: "",
         agent_name: ap?.name || ap?.full_name || "",
         company: ap?.company || "",
         agent_phone: ap?.phone || "",
@@ -373,43 +361,32 @@ exports.handler = async (event) => {
         ctx.first_name = parts[0] || "";
         ctx.last_name = parts.slice(1).join(" ");
       }
+      ctx.state = lead?.state || "";
+      // prefer beneficiary_name, fall back to beneficiary
+      ctx.beneficiary = lead?.beneficiary_name || lead?.beneficiary || "";
+      ctx.military_branch = S(lead?.military_branch) || (tags.includes("military") ? "Military" : "");
 
       bodyText = renderTemplate(tpl, ctx);
       if (!bodyText) return json({ error: "rendered_empty_body", trace }, 400);
 
-      trace.push({
-        step: "template.rendered",
-        key: keyToUse,
-        body_len: bodyText.length,
-        ctx_probe: { state: ctx.state, beneficiary: ctx.beneficiary } // small probe for debugging
-      });
-      // ===================================
+      trace.push({ step: "template.rendered", key: keyToUse, body_len: bodyText.length });
     }
 
-    // -------- Determine FROM number & profile (10DLC) --------
+    // -------- Determine FROM number (10DLC) --------
     const mnum = await getAgentMessagingNumber(db, user_id);
     if (mnum.status === "pending") {
       return json(
-        {
-          error: "messaging_number_pending_verification",
-          message: "Your messaging number is not fully verified/active yet.",
-          trace,
-        },
+        { error: "messaging_number_pending_verification", message: "Your messaging number is not verified yet.", trace },
         409
       );
     }
     if (mnum.status !== "verified") {
       return json(
-        {
-          error: "no_messaging_number",
-          hint: "Assign a verified messaging number in Messaging Settings.",
-          trace,
-        },
+        { error: "no_messaging_number", hint: "Assign a verified messaging number in Messaging Settings.", trace },
         400
       );
     }
     const fromE164 = mnum.e164;
-    const profileId = mnum.profileId || MESSAGING_PROFILE_ID_FALLBACK || null;
 
     // -------- Free pool → Wallet flow --------
     const account_id = await resolveAccountId(db, user_id);
@@ -441,22 +418,12 @@ exports.handler = async (event) => {
 
     let telnyxResp;
     try {
-      telnyxResp = await telnyxSend({
-        from: fromE164,
-        to: toE,
-        text: bodyText,
-        profileId,
-      });
-      trace.push({ step: "telnyx.sent", id: telnyxResp?.data?.id, used_from: fromE164, profileId });
+      telnyxResp = await telnyxSend({ from: fromE164, to: toE, text: bodyText });
+      trace.push({ step: "telnyx.sent", id: telnyxResp?.data?.id, used_from: fromE164, profileId: MESSAGING_PROFILE_ID });
     } catch (e) {
-      trace.push({ step: "telnyx.error", detail: e?.message || String(e), profileId, from: fromE164 });
+      trace.push({ step: "telnyx.error", detail: e?.message || String(e), profileId: MESSAGING_PROFILE_ID, from: fromE164 });
       return json(
-        {
-          error: "send_failed",
-          detail: e?.message || String(e),
-          telnyx_response: e?.telnyx_response,
-          trace,
-        },
+        { error: "send_failed", detail: e?.message || String(e), telnyx_response: e?.telnyx_response, trace },
         502
       );
     }
