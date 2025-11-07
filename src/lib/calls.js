@@ -1,4 +1,3 @@
-// File: src/lib/calls.js
 import { supabase } from "./supabaseClient";
 
 /**
@@ -58,6 +57,74 @@ export async function startCall({ agentNumber, leadNumber, contactId = null }) {
 
   // { ok: true, call_leg_id }
   return json;
+}
+
+/**
+ * Start a LEAD-FIRST call (Auto Dialer).
+ * - Calls the LEAD first (Leg A)
+ * - Your telnyx-voice-webhook.js (lead_first branch) will dial the AGENT on lead answer and bridge
+ * Returns: { ok:true, call_leg_id, call_session_id?, contact_id }
+ */
+export async function startLeadFirstCall({
+  agentNumber,
+  leadNumber,
+  contactId = null,
+  fromNumber,
+  record = true,
+  ringTimeout = 25,
+  ringbackUrl = "",
+  sessionId = null,
+}) {
+  const [{ data: auth }, { data: sess }] = await Promise.all([
+    supabase.auth.getUser(),
+    supabase.auth.getSession(),
+  ]);
+
+  const uid = auth?.user?.id;
+  if (!uid) throw new Error("Not signed in");
+  const token = sess?.session?.access_token || null;
+
+  const payload = {
+    agent_number: agentNumber,
+    lead_number: leadNumber,
+    contact_id: contactId,
+    from_number: fromNumber,      // REQUIRED caller ID to present
+    record,
+    ring_timeout: ringTimeout,
+    ringback_url: ringbackUrl,
+    session_id: sessionId,
+  };
+
+  let res, json;
+  try {
+    res = await fetch("/.netlify/functions/dialer-lead-first-start", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      },
+      body: JSON.stringify(payload),
+    });
+  } catch (e) {
+    throw new Error(e?.message || "Network error while starting lead-first call");
+  }
+
+  try {
+    json = await res.json();
+  } catch {
+    json = {};
+  }
+
+  if (!res.ok || json?.ok === false) {
+    const msg =
+      json?.error ||
+      json?.errors?.[0]?.detail ||
+      json?.message ||
+      `Failed to start lead-first call (${res.status})`;
+    throw new Error(msg);
+  }
+
+  return json; // { ok:true, call_leg_id, call_session_id?, contact_id }
 }
 
 /**
