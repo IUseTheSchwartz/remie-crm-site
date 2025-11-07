@@ -58,17 +58,12 @@ function buildHeaderIndex(headers){
 }
 const pick=(row,key)=>{ if(!key) return ""; const v=row[key]; return v==null?"":String(v).trim(); }
 function buildName(row,map){
-  // Prefer explicit first + last if present
   const first=pick(row,map.first);
   const last=pick(row,map.last);
   const combined=`${first} ${last}`.replace(/\s+/g," ").trim();
   if(combined) return combined;
-
-  // Then any full-name column
   const full=pick(row,map.full);
   if(full) return full;
-
-  // Then fallbacks
   const company=pick(row,map.company); if(company) return company;
   const email=pick(row,map.email); if(email && email.includes("@")) return email.split("@")[0];
   return "";
@@ -83,24 +78,20 @@ const buildBeneficiaryName=(row,map)=> pick(row,map.beneficiary_name);
 const buildGender=(row,map)=> pick(row,map.gender);
 const buildMilitaryBranch=(row,map)=> pick(row,map.military_branch);
 
+// naive segment estimator (matches server logic enough for preview)
+function estimateSegments(text=""){
+  const s=String(text);
+  const gsm7=/^[\n\r\t\0\x0B\x0C\x1B\x20-\x7E€£¥èéùìòÇØøÅåΔ_ΦΓΛΩΠΨΣΘΞÆæßÉ^{}\[\]~|€\\]*$/.test(s);
+  if(gsm7){ return s.length<=160 ? 1 : Math.ceil(s.length/153); }
+  return s.length<=70 ? 1 : Math.ceil(s.length/67);
+}
+
 export default function CsvImportControl({ onAddedLocal, onServerMsg }) {
-  const [choice, setChoice] = useState(null); // {count, people}
-  const [confirm, setConfirm] = useState(null); // preview payload
+  const [choice, setChoice] = useState(null);     // {count, people}
+  const [confirm, setConfirm] = useState(null);   // preview payload
   const [isSending, setIsSending] = useState(false);
 
   function msg(s){ onServerMsg?.(s); }
-
-  async function runDryRun(people){
-    const { data: auth } = await supabase.auth.getUser();
-    const requesterId = auth?.user?.id;
-    if(!requesterId){ alert("Not logged in."); return null; }
-    const res = await fetch(`${FN_BASE}/import-batch-send`, {
-      method:"POST", headers:{ "Content-Type":"application/json" },
-      body: JSON.stringify({ requesterId, dry_run:true, batch_id:Math.random().toString(36).slice(2,10), people })
-    });
-    const out = await res.json().catch(()=>({}));
-    return { status: res.status, out };
-  }
 
   async function handleImportCsv(file){
     Papa.parse(file, {
@@ -128,7 +119,6 @@ export default function CsvImportControl({ onAddedLocal, onServerMsg }) {
         const uniqueToAdd=[]; let skippedDupEmail=0, skippedDupPhone=0, skippedEmpty=0;
 
         for(const r of rows){
-          // IMPORTANT: prefer combining First + Last, then fall back to any Name column
           const name  = buildName(r,map) || r.name || r.Name || "";
           const phone = buildPhone(r,map);
           const email = buildEmail(r,map);
@@ -146,11 +136,10 @@ export default function CsvImportControl({ onAddedLocal, onServerMsg }) {
             dob, state, beneficiary, beneficiary_name, gender, military_branch,
           });
 
-          // ---- NEW: normalize to match server lookup format ----
+          // normalize like server
           const e164 = toE164(person.phone);
           if (e164) person.phone = e164;
           person.email = (person.email || "").trim().toLowerCase();
-          // ------------------------------------------------------
 
           const e = cleanEmail(person.email);
           const p = canonicalDigits(person.phone);
@@ -195,6 +184,79 @@ export default function CsvImportControl({ onAddedLocal, onServerMsg }) {
     }
   }
 
+  async function previewSend(valid){
+    // lightweight local preview (segments & counts). Cost is handled server-side with free-first.
+    const total = valid.filter(v => !!toE164(v.phone)).length;
+    const will_send = total; // all valid will attempt
+    const est_segments = valid.reduce((n,v)=>{
+      const text = ""; // if you later include a message column, swap here
+      return n + estimateSegments(text);
+    }, 0);
+    return {
+      total_candidates: valid.length,
+      will_send,
+      estimated_segments: est_segments,
+      batch_id: Math.random().toString(36).slice(2,10),
+      skipped_by_reason: {},
+    };
+  }
+
+  async function sendBatch(valid, batchId){
+    const [{ data: authUser }, { data: sess }] = await Promise.all([
+      supabase.auth.getUser(),
+      supabase.auth.getSession(),
+    ]);
+    const requesterId = authUser?.user?.id;
+    const token = sess?.session?.access_token;
+    if(!requesterId){ onServerMsg?.("⚠️ Not logged in."); return { ok:0, skipped:valid.length, errors:valid.length }; }
+
+    const headers = {
+      "Content-Type": "application/json",
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      "X-Remie-Billing": "free_first",
+    };
+
+    const CONCURRENCY = 5;
+    let idx = 0;
+    let ok = 0, skipped = 0, errors = 0;
+
+    async function worker(){
+      while(idx < valid.length){
+        const myIndex = idx++;
+        const p = valid[myIndex];
+        try{
+          const to = toE164(p.phone);
+          if(!to){ skipped++; continue; }
+
+          const body = {
+            requesterId,
+            to,
+            // If you want templates, set templateKey: "new_lead"
+            // Otherwise body -> server will render default template when empty
+            body: "",
+            billing: "free_first",
+            preferFreeSegments: true,
+            provider_message_id: `csv-${batchId}-${myIndex}`
+          };
+
+          const res = await fetch(`${FN_BASE}/messages-send`, {
+            method:"POST", headers, body: JSON.stringify(body)
+          });
+          const out = await res.json().catch(()=> ({}));
+
+          if(res.ok && (out?.ok || out?.deduped)){ ok++; }
+          else { errors++; }
+        } catch {
+          errors++;
+        }
+      }
+    }
+
+    const workers = Array.from({length: Math.min(CONCURRENCY, valid.length)}, () => worker());
+    await Promise.all(workers);
+    return { ok, skipped, errors };
+  }
+
   return (
     <>
       <label className="inline-flex items-center gap-2 rounded-xl border border-white/15 bg-white/5 px-3 py-2 text-sm cursor-pointer">
@@ -236,21 +298,15 @@ export default function CsvImportControl({ onAddedLocal, onServerMsg }) {
                   // CLOSE chooser first
                   setChoice(null);
 
-                  // SAVE to CRM first so the server can find the leads
+                  // SAVE to CRM first so server can find the leads
                   await persist(valid);
 
-                  // Small pause helps slow networks/DB indexing
-                  await new Promise(r=>setTimeout(r, 600));
+                  // small delay for DB indexing
+                  await new Promise(r=>setTimeout(r, 500));
 
-                  // Now preview the send against saved leads
-                  const { status, out } = await runDryRun(valid) || {};
-                  if(!out) return;
-                  if(status===403 && out?.error==="disabled"){ onServerMsg?.("⚠️ Bulk messaging is disabled by env flag."); return; }
-                  if(status===413 && out?.error==="over_cap"){ onServerMsg?.(`⚠️ Over batch cap (${out.cap}). Reduce your file size.`); return; }
-                  if(out.error){ onServerMsg?.("⚠️ Preview failed. See console for details."); console.warn("[dry-run] fail", out); return; }
-
+                  const prev = await previewSend(valid);
                   setConfirm({
-                    ...out,
+                    ...prev,
                     people: valid,
                     _skipped_invalid_phone: skippedInvalid,
                   });
@@ -271,10 +327,9 @@ export default function CsvImportControl({ onAddedLocal, onServerMsg }) {
             <div className="space-y-2 text-sm">
               <div className="flex justify-between"><span>Candidates</span><span>{confirm.total_candidates}</span></div>
               <div className="flex justify-between"><span>Will send now</span><span>{confirm.will_send}</span></div>
-              <div className="flex justify-between"><span>Estimated cost</span><span>${(confirm.estimated_cost_cents/100).toFixed(2)}</span></div>
-              {typeof confirm.wallet_balance_cents==="number" && (
-                <div className="flex justify-between"><span>Wallet balance</span><span>${(confirm.wallet_balance_cents/100).toFixed(2)}</span></div>
-              )}
+              <div className="flex justify-between">
+                <span>Billing mode</span><span>Free-first (10DLC)</span>
+              </div>
               <details className="mt-2">
                 <summary className="cursor-pointer text-white/80">Skipped (preview)</summary>
                 <div className="mt-2 grid gap-1 text-white/70">
@@ -288,36 +343,19 @@ export default function CsvImportControl({ onAddedLocal, onServerMsg }) {
                   )}
                 </div>
               </details>
-              {confirm.blocker && (
-                <div className="mt-2 rounded-lg border border-amber-500/40 bg-amber-500/10 p-2 text-amber-200">
-                  {confirm.blocker==="tfn_pending_verification" && "Your toll-free number is pending verification. You can import, but cannot send yet."}
-                  {confirm.blocker==="no_agent_tfn_configured" && "No verified toll-free number is configured. Add one in Messaging Settings."}
-                  {confirm.blocker==="insufficient_balance" && "Insufficient wallet balance to send this batch."}
-                </div>
-              )}
             </div>
 
             <div className="mt-4 flex items-center justify-end gap-2">
               <button className="rounded-xl border border-white/15 px-4 py-2 text-sm hover:bg-white/10" onClick={()=>setConfirm(null)}>Back</button>
               <button
-                disabled={!!confirm.blocker || isSending || confirm.will_send===0}
-                className={`rounded-xl px-4 py-2 text-sm font-medium ${(!confirm.blocker && confirm.will_send>0 && !isSending) ? "bg-white text-black hover:bg-white/90" : "bg-white/20 text-white/60 cursor-not-allowed"}`}
+                disabled={isSending || confirm.will_send===0}
+                className={`rounded-xl px-4 py-2 text-sm font-medium ${(!isSending && confirm.will_send>0) ? "bg-white text-black hover:bg-white/90" : "bg-white/20 text-white/60 cursor-not-allowed"}`}
                 onClick={async ()=>{
                   try{
                     setIsSending(true);
-                    onServerMsg?.("📨 Sending messages…");
-                    const { data: auth } = await supabase.auth.getUser();
-                    const requesterId = auth?.user?.id;
-                    const res = await fetch(`${FN_BASE}/import-batch-send`, {
-                      method:"POST",
-                      headers:{ "Content-Type":"application/json" },
-                      body: JSON.stringify({ requesterId, batch_id: confirm.batch_id, people: confirm.people })
-                    });
-                    const out = await res.json().catch(()=>({}));
-                    if(res.status===402 && out?.stop==="insufficient_balance"){ onServerMsg?.("⚠️ Not enough balance to send this batch."); }
-                    else if(res.status===409 && out?.stop){ onServerMsg?.("⚠️ Cannot send until your toll-free number is verified/configured."); }
-                    else if(res.ok){ onServerMsg?.(`✅ Sent: ${out.ok}, skipped: ${out.skipped}, errors: ${out.errors}`); }
-                    else { onServerMsg?.("⚠️ Batch send failed. See console."); console.warn("[import-batch-send] send fail", out); }
+                    onServerMsg?.("📨 Sending via 10DLC (free-first) …");
+                    const res = await sendBatch(confirm.people, confirm.batch_id);
+                    onServerMsg?.(`✅ Sent: ${res.ok}, skipped: ${res.skipped}, errors: ${res.errors}`);
                   } finally {
                     setIsSending(false);
                     setConfirm(null);
