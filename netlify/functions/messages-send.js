@@ -1,3 +1,4 @@
+// File: netlify/functions/messages-send.js
 // Sends an SMS via Telnyx using a template or raw body.
 // DEDUPE-SAFE using provider_message_id (pass it!)
 // Accepts: { to?, contact_id?, lead_id?, body?, templateKey?/template_key?/template?, requesterId?, provider_message_id?, sent_by_ai? }
@@ -7,6 +8,8 @@ const fetch = require("node-fetch"); // ensure fetch exists in function runtime
 
 const TELNYX_API_KEY = process.env.TELNYX_API_KEY;
 const MESSAGING_PROFILE_ID = process.env.TELNYX_MESSAGING_PROFILE_ID || null;
+// Base to build public agent-site links like https://remiecrm.com/a/<slug>
+const AGENT_SITE_BASE = process.env.AGENT_SITE_BASE || "https://remiecrm.com";
 
 function json(obj, statusCode = 200) {
   return { statusCode, headers: { "Content-Type": "application/json" }, body: JSON.stringify(obj) };
@@ -98,15 +101,15 @@ async function getBalanceCents(db, user_id) {
   return Number(data?.balance_cents ?? 0);
 }
 
-/* ====== TFN status via toll_free_numbers ======
+/* ====== Messaging number via ten_dlc_numbers ======
    Returns { status: 'verified'|'pending'|'none', e164?: string }
 ==================================================== */
-async function getAgentTFNStatus(db, user_id) {
+async function getAgentMessagingNumberStatus(db, user_id) {
   const { data, error } = await db
-    .from("toll_free_numbers")
-    .select("phone_number, verified")
+    .from("ten_dlc_numbers")
+    .select("phone_number, verified, status")
     .eq("assigned_to", user_id)
-    .order("verified", { ascending: false })
+    .order("date_assigned", { ascending: true, nullsFirst: true })
     .limit(1)
     .maybeSingle();
   if (error) throw error;
@@ -114,7 +117,10 @@ async function getAgentTFNStatus(db, user_id) {
   if (!data) return { status: "none" };
   const e = toE164(data.phone_number);
   if (!e) return { status: "none" };
-  return data.verified ? { status: "verified", e164: e } : { status: "pending", e164: e };
+
+  // If table has verified=false or status != active, treat as pending
+  const isActive = (data.status || "active") === "active";
+  return data.verified && isActive ? { status: "verified", e164: e } : { status: "pending", e164: e };
 }
 
 // ---- Telnyx send ----
@@ -360,6 +366,9 @@ exports.handler = async (event) => {
         );
 
       const ap = await getAgentProfile(db, user_id);
+      // Build agent_site from slug, fallback to Calendly fields
+      const slug = (ap?.slug || "").trim();
+      const agent_site = slug ? `${AGENT_SITE_BASE.replace(/\/+$/,"")}/a/${slug}` : "";
       const ctx = {
         first_name: "",
         last_name: "",
@@ -371,7 +380,8 @@ exports.handler = async (event) => {
         company: ap?.company || "",
         agent_phone: ap?.phone || "",
         agent_email: ap?.email || "",
-        calendly_link: ap?.calendly_link || ap?.calendly_url || "",
+        agent_site,
+        calendly_link: ap?.calendly_link || ap?.calendly_url || "", // still supported if templates use it
       };
 
       const fullName = lead?.name || contact?.full_name || "";
@@ -385,36 +395,37 @@ exports.handler = async (event) => {
       ctx.beneficiary = lead?.beneficiary || lead?.beneficiary_name || "";
       ctx.military_branch = S(lead?.military_branch) || (tags.includes("military") ? "Military" : "");
 
+      // Safety shim: if template still has {{calendly_link}} but agent_site exists, keep both available
       bodyText = renderTemplate(tpl, ctx);
       if (!bodyText) return json({ error: "rendered_empty_body", trace }, 400);
 
       trace.push({ step: "template.rendered", key: keyToUse, body_len: bodyText.length });
     }
 
-    // -------- Determine FROM number & verification --------
-    const tfn = await getAgentTFNStatus(db, user_id);
-    if (tfn.status === "pending") {
+    // -------- Determine FROM number & verification (10DLC pool) --------
+    const mnum = await getAgentMessagingNumberStatus(db, user_id);
+    if (mnum.status === "pending") {
       return json(
         {
-          error: "tfn_pending_verification",
+          error: "messaging_number_pending_verification",
           message:
-            "Your toll-free number is pending verification (typically 4–7 business days). Outbound texting will enable automatically once approved.",
+            "Your messaging number is not fully verified/active yet. Outbound texting will enable automatically once approved.",
           trace,
         },
         409
       );
     }
-    if (tfn.status !== "verified") {
+    if (mnum.status !== "verified") {
       return json(
         {
-          error: "no_agent_tfn_configured",
-          hint: "Assign a verified toll-free number in Messaging Settings.",
+          error: "no_messaging_number",
+          hint: "Assign a verified messaging number in Messaging Settings.",
           trace,
         },
         400
       );
     }
-    const fromE164 = tfn.e164;
+    const fromE164 = mnum.e164;
 
     // ======== Free-pool → Wallet flow (SMS segments) ========
     const account_id = await resolveAccountId(db, user_id);
