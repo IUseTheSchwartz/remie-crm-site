@@ -1,7 +1,7 @@
 // File: netlify/functions/ai-brain.js
 // Hybrid conversational brain: rules-first, then optional LLM classification + short LLM reply.
-// Exports: decide({ text, agentName, agentSite, agentPhone, agentEmail, tz, officeHours, context, useLLM, useLLMReply, llmMinConf })
-//   -> { text, intent, meta?, action? }
+// Gate the agent-site link so it only appears on the first AI reply and the final time confirmation.
+// Also answer "what number will you call from?" with the agent’s phone.
 
 let llmClassify = async () => ({ intent: "", confidence: 0, lang: "en" });
 let llmReply = async () => ({ text: "", confidence: 0, reasons: [] });
@@ -78,6 +78,11 @@ function classify(t = "") {
       /\bwhy (are|r) you texting\b/.test(x) ||
       /\bqui[eé]n (eres|habla|manda|me escribe)\b/.test(x)) return "who";
 
+  // "what number will you call from?"
+  if (/\b(what|which)\s+number\s+(will|do)\s+you\s+(call|phone)\s+(me\s+)?(from|off)\b/.test(x) ||
+      /\bcaller\s*id\b/.test(x) ||
+      /\bde\s+qu[eé]\s+n[uú]mero\s+(me\s+)?(llamas|vas a llamar)\b/.test(x)) return "which_number";
+
   // status
   if (/\b(already have|i have insurance|covered|i'?m covered|policy already|i'm good)\b/.test(x) ||
       /\b(ya tengo|tengo seguro|ya estoy cubiert[oa])\b/.test(x)) return "covered";
@@ -126,109 +131,80 @@ function hasAmbiguousBareHour(t) {
 }
 function isAMPMOnly(t = "") { return /^\s*(a\.?m\.?|p\.?m\.?|am|pm)\s*$/i.test(String(t || "")); }
 
-/* ---------------- gated helper lines ---------------- */
-const lines = {
-  linkLine: (es, link, show) =>
-    show && link ? (es ? ` Puede elegir un horario aquí: ${link}` : ` You can grab a time here: ${link}`) : "",
-  verifyLine: (es, link, show) =>
-    show && link ? (es
-      ? ` Mientras tanto, si desea verificar mis credenciales, puede visitar mi sitio: ${link}`
-      : ` In the meantime, if you’d like to verify my credentials, you can visit my website: ${link}`) : ""
-};
+/* ---------------- small utils ---------------- */
+function prettyUS(p) {
+  const s = String(p || "").replace(/\D/g, "");
+  if (s.length === 11 && s.startsWith("1")) return `+1 (${s.slice(1,4)}) ${s.slice(4,7)}-${s.slice(7)}`;
+  if (s.length === 10) return `+1 (${s.slice(0,3)}) ${s.slice(3,6)}-${s.slice(6)}`;
+  return p || "";
+}
+const linkAllowed = (ctx, intent) =>
+  ctx?.sent_credentials !== true || intent === "confirm_time";
 
 /* ---------------- copy ---------------- */
 const T = {
-  greetGeneral: (es, n, link, opts = {}) =>
-    es
-      ? `Hola—soy ${n}. Sobre su solicitud de seguro de vida—esto toma solo unos minutos.` +
-        lines.linkLine(es, link, !!opts.firstTurn) +
-        ` ¿Qué hora le funciona?` +
-        lines.verifyLine(es, link, !!opts.firstTurn)
-      : `Hi there—it’s ${n}. About your life-insurance request—this only takes a few minutes.` +
-        lines.linkLine(es, link, !!opts.firstTurn) +
-        ` What time works for you?` +
-        lines.verifyLine(es, link, !!opts.firstTurn),
+  linkLine: (es, link) => link ? (es ? ` Puede elegir un horario aquí: ${link}` : ` You can grab a time here: ${link}`) : "",
 
-  who: (es, n, link, opts = {}) =>
-    es
-      ? `Hola, soy ${n}. Usted solicitó información de seguro de vida recientemente. Podemos verlo rápido.` +
-        lines.linkLine(es, link, !!opts.firstTurn) +
-        ` ¿Qué hora le conviene?` +
-        lines.verifyLine(es, link, !!opts.firstTurn)
-      : `Hey, this is ${n}. You recently requested info about life insurance. We can review it quickly.` +
-        lines.linkLine(es, link, !!opts.firstTurn) +
-        ` What time works for you?` +
-        lines.verifyLine(es, link, !!opts.firstTurn),
+  greetGeneral: (es, n, link) =>
+    es ? `Hola—soy ${n}. Sobre su solicitud de seguro de vida—esto toma solo unos minutos.${T.linkLine(es, link)} ¿Qué hora le funciona?`
+       : `Hi there—it’s ${n}. About your life-insurance request—this only takes a few minutes.${T.linkLine(es, link)} What time works for you?`,
 
-  // UPDATED: removed beneficiary dependency
-  price: (es, link, opts = {}) =>
-    es
-      ? `Claro—las cifras dependen sobre todo de su edad y salud. Es una llamada breve de 5–7 min.` +
-        lines.linkLine(es, link, !!opts.firstTurn) +
-        ` ¿Qué hora le queda mejor?`
-      : `Totally—exact numbers mainly depend on age and health. It’s a quick 5–7 min call.` +
-        lines.linkLine(es, link, !!opts.firstTurn) +
-        ` What time works for you?`,
+  who: (es, n, link) =>
+    es ? `Hola, soy ${n}. Usted solicitó información de seguro de vida recientemente. Podemos verlo rápido.${T.linkLine(es, link)} ¿Qué hora le conviene?`
+       : `Hey, this is ${n}. You recently requested info about life insurance. We can review it quickly.${T.linkLine(es, link)} What time works for you?`,
 
-  covered: (es, link, opts = {}) =>
-    es
-      ? `Genial. Igual conviene una revisión corta para no pagar de más ni perder beneficios.` +
-        lines.linkLine(es, link, !!opts.firstTurn) +
-        ` ¿Qué hora le conviene?`
-      : `Good to hear. Folks still do a quick review so they’re not overpaying or missing benefits.` +
-        lines.linkLine(es, link, !!opts.firstTurn) +
-        ` What time works for you?`,
+  price: (es, link) =>
+    es ? `Perfecto—las cifras dependen de edad y salud. Es una llamada breve de 5–7 min.${T.linkLine(es, link)} ¿Qué hora le queda mejor?`
+       : `Totally—exact numbers depend on age and health. It’s a quick 5–7 min call.${T.linkLine(es, link)} What time works for you?`,
 
-  brushoff: (es, link, opts = {}) =>
-    es
-      ? `Entiendo—lo mantenemos breve.` + lines.linkLine(es, link, !!opts.firstTurn) + ` ¿Qué hora le funciona?`
-      : `Totally get it—we’ll keep it quick.` + lines.linkLine(es, link, !!opts.firstTurn) + ` What time works for you?`,
+  covered: (es, link) =>
+    es ? `Genial. Igual conviene una revisión corta para no pagar de más ni perder beneficios.${T.linkLine(es, link)} ¿Qué hora le conviene?`
+       : `Good to hear. Folks still do a quick review so they’re not overpaying or missing benefits.${T.linkLine(es, link)} What time works for you?`,
 
-  spouse: (es, link, opts = {}) =>
-    es
-      ? `De acuerdo—mejor cuando estén ambos.` + lines.linkLine(es, link, !!opts.firstTurn) + ` ¿Qué hora les conviene?`
-      : `Makes sense—best when you’re both on.` + lines.linkLine(es, link, !!opts.firstTurn) + ` What time works for you two?`,
+  brushoff: (es, link) =>
+    es ? `Entiendo—lo mantenemos breve.${T.linkLine(es, link)} ¿Qué hora le funciona?`
+       : `Totally get it—we’ll keep it quick.${T.linkLine(es, link)} What time works for you?`,
+
+  spouse: (es, link) =>
+    es ? `De acuerdo—mejor cuando estén ambos.${T.linkLine(es, link)} ¿Qué hora les conviene?`
+       : `Makes sense—best when you’re both on.${T.linkLine(es, link)} What time works for you two?`,
 
   wrong: (es) =>
-    es ? `Sin problema—si más adelante quiere revisar opciones, me avisa.` : `No worries—if you want to look at options later, just text me.`,
+    es ? `Sin problema—si más adelante quiere revisar opciones, me avisa.`
+       : `No worries—if you want to look at options later, just text me.`,
 
-  agree: (es, link, opts = {}) =>
-    es
-      ? `Perfecto—lo dejamos rápido.` + lines.linkLine(es, link, !!opts.firstTurn) + ` ¿Qué hora le conviene?`
-      : `Great—let’s keep it quick.` + lines.linkLine(es, link, !!opts.firstTurn) + ` What time works for you?`,
+  agree: (es, link) =>
+    es ? `Perfecto—lo dejamos rápido.${T.linkLine(es, link)} ¿Qué hora le conviene?`
+       : `Great—let’s keep it quick.${T.linkLine(es, link)} What time works for you?`,
 
-  verify: (es, n, link, opts = {}) =>
-    es
-      ? `Pregunta válida—soy ${n}, corredor autorizado. Hago seguimiento a su solicitud de seguro de vida.` +
-        lines.linkLine(es, link, !!opts.firstTurn) + ` ¿Qué hora le funciona?` + lines.verifyLine(es, link, !!opts.firstTurn)
-      : `Fair question—this is ${n}, a licensed broker. I’m following up on your life-insurance request.` +
-        lines.linkLine(es, link, !!opts.firstTurn) + ` What time works for you?` + lines.verifyLine(es, link, !!opts.firstTurn),
+  verify: (es, n, link) =>
+    es ? `Pregunta válida—soy ${n}, corredor autorizado. Hago seguimiento a su solicitud de seguro de vida.${T.linkLine(es, link)} ¿Qué hora le funciona?`
+       : `Fair question—this is ${n}, a licensed broker. I’m following up on your life-insurance request.${T.linkLine(es, link)} What time works for you?`,
 
-  info: (es, link, opts = {}) =>
-    es
-      ? `Puedo enviar lo básico por aquí—en la llamada confirmamos lo necesario para cifras reales.` +
-        lines.linkLine(es, link, !!opts.firstTurn) + ` ¿Qué hora prefiere?`
-      : `I can text the basics here—on a quick call we confirm what’s needed for exact numbers.` +
-        lines.linkLine(es, link, !!opts.firstTurn) + ` What time works for you?`,
+  info: (es, link) =>
+    es ? `Puedo enviar lo básico por aquí—en la llamada confirmamos salud para cifras reales.${T.linkLine(es, link)} ¿Qué hora prefiere?`
+       : `I can text the basics here—on a quick call we confirm health for exact numbers.${T.linkLine(es, link)} What time works for you?`,
 
-  cant_talk: (es, link, opts = {}) =>
-    es
-      ? `Sin problema, lo coordinamos.` + lines.linkLine(es, link, !!opts.firstTurn) + ` ¿Qué hora más tarde le queda mejor?`
-      : `No problem—let’s line it up.` + lines.linkLine(es, link, !!opts.firstTurn) + ` What time later today works best?`,
+  cant_talk: (es, link) =>
+    es ? `Sin problema, lo coordinamos.${T.linkLine(es, link)} ¿Qué hora más tarde le queda mejor?`
+       : `No problem—let’s line it up.${T.linkLine(es, link)} What time later today works best?`,
 
-  how_long: (es, link, opts = {}) =>
-    es
-      ? `Solo 5–7 minutos para salud básica y presupuesto, y darle opciones claras.` +
-        lines.linkLine(es, link, !!opts.firstTurn) + ` ¿Qué hora le conviene?`
-      : `Just 5–7 minutes to cover basic health and budget so we can show clear options.` +
-        lines.linkLine(es, link, !!opts.firstTurn) + ` What time works for you?`,
+  how_long: (es, link) =>
+    es ? `Solo 5–7 minutos para salud básica, presupuesto y darle opciones claras.${T.linkLine(es, link)} ¿Qué hora le conviene?`
+       : `Just 5–7 minutes to cover basic health and budget so we can show clear options.${T.linkLine(es, link)} What time works for you?`,
 
-  // Confirmation (ALWAYS includes verify line)
+  whichNumber: (es, phone) =>
+    es ? (phone ? `Le llamaré desde ${prettyUS(phone)}. Si prefiere otro número, avíseme por aquí.` :
+                   `Le llamaré desde mi línea comercial. Si prefiere otro número, avíseme por aquí.`)
+       : (phone ? `I’ll call you from ${prettyUS(phone)}. If you prefer a different number, just text me here.`
+               : `I’ll call you from my business line. If you prefer a different number, just text me here.`),
+
+  // Confirmation ALWAYS includes the verify line if link is present
   timeConfirm: (es, label, link, tz) => {
     const d = shortDateTodayInTZ(tz, es);
     const verifyLine = link
       ? (es
-          ? ` Mientras tanto, si desea verificar mis credenciales, puede visitar mi sitio: ${link}`
+          ? ` En lo que tanto, si desea verificar mis credenciales, visite mi sitio: ${link}`
           : ` In the meantime, if you’d like to verify my credentials, you can visit my website: ${link}`)
       : "";
     return es
@@ -236,60 +212,49 @@ const T = {
       : `Just to make sure—I’ll call you at ${label} today (${d}). If you need to reschedule, just text me 30–60 minutes before our appointment.${verifyLine}`;
   },
 
-  clarifyTime: (es, h) => (es ? `¿Le queda mejor ${h} AM o ${h} PM?` : `Does ${h} work better AM or PM?`),
+  clarifyTime: (es, h) => es ? `¿Le queda mejor ${h} AM o ${h} PM?` : `Does ${h} work better AM or PM?`,
 
-  courtesy: (es, n, link, opts = {}) =>
-    es
-      ? `¡Bien, gracias!` + lines.linkLine(es, link, !!opts.firstTurn) + ` ¿Qué hora le conviene?`
-      : `Doing well, thanks!` + lines.linkLine(es, link, !!opts.firstTurn) + ` What time works for you?`,
+  courtesy: (es, n, link) =>
+    es ? `¡Bien, gracias!${T.linkLine(es, link)} ¿Qué hora le conviene?`
+       : `Doing well, thanks!${T.linkLine(es, link)} What time works for you?`,
 };
 
 /* ---------------- planner ---------------- */
-function planNext({ intent, text, es, link, name, context, tz }) {
-  const firstTurn = !!(context && context.firstTurn);
+function planNext({ intent, text, es, link, name, context, tz, agentPhone }) {
+  const linkForThisTurn = linkAllowed(context, intent) ? link : ""; // gate the link
 
   // AM/PM follow-up from last turn
   if (isAMPMOnly(text) && context?.promptedHour) {
     const ampm = /p/i.test(text) ? "PM" : "AM";
     const label = `${context.promptedHour} ${ampm}`;
+    const out = T.timeConfirm(es, label, link /* always include on confirm */, tz);
+    const patch = { promptedHour: null, last_intent: "confirm_time" };
+    // mark creds sent if we had a link
+    if (link) patch.sent_credentials = true;
     return {
-      text: T.timeConfirm(es, label, link, tz),
+      text: out,
       intent: "confirm_time",
-      meta: {
-        route: "context_am_pm",
-        time_label: label,
-        context_patch: { promptedHour: null, last_intent: "confirm_time" },
-      }
+      meta: { route: "context_am_pm", time_label: label, context_patch: patch }
     };
   }
 
   // Specific clock time & "noon"
   if (/\bnoon\b/i.test(text)) {
     const label = "12 PM";
-    return {
-      text: T.timeConfirm(es, label, link, tz),
-      intent: "confirm_time",
-      meta: {
-        route: "deterministic",
-        time_label: label,
-        context_patch: { promptedHour: null, last_intent: "confirm_time" },
-      }
-    };
+    const out = T.timeConfirm(es, label, link /* always include on confirm */, tz);
+    const patch = { promptedHour: null, last_intent: "confirm_time" };
+    if (link) patch.sent_credentials = true;
+    return { text: out, intent: "confirm_time", meta: { route: "deterministic", time_label: label, context_patch: patch } };
   }
   if (intent === "time_specific") {
     const m =
       String(text).match(/\b(1?\d(?::\d{2})?\s?(a\.?m\.?|p\.?m\.?|am|pm))\b/i) ||
       String(text).match(/\b(1?\d:\d{2})\b/);
     const label = m ? m[1].toUpperCase().replace(/\s+/g, " ") : "the time we discussed";
-    return {
-      text: T.timeConfirm(es, label, link, tz),
-      intent: "confirm_time",
-      meta: {
-        route: "deterministic",
-        time_label: label,
-        context_patch: { promptedHour: null, last_intent: "confirm_time" },
-      }
-    };
+    const out = T.timeConfirm(es, label, link /* always include on confirm */, tz);
+    const patch = { promptedHour: null, last_intent: "confirm_time" };
+    if (link) patch.sent_credentials = true;
+    return { text: out, intent: "confirm_time", meta: { route: "deterministic", time_label: label, context_patch: patch } };
   }
 
   // Bare hour → clarify AM/PM and remember
@@ -306,35 +271,48 @@ function planNext({ intent, text, es, link, name, context, tz }) {
   if (intent === "time_window") {
     return {
       text: es
-        ? `Esa franja me funciona.` + lines.linkLine(es, link, firstTurn) + ` ¿Qué hora específica le queda mejor?`
-        : `That window works for me.` + lines.linkLine(es, link, firstTurn) + ` What specific time is best for you?`,
+        ? `Esa franja me funciona.${T.linkLine(es, linkForThisTurn)} ¿Qué hora específica le queda mejor?`
+        : `That window works for me.${T.linkLine(es, linkForThisTurn)} What specific time is best for you?`,
       intent: "time_window_ack",
-      meta: { route: "deterministic", context_patch: { last_intent: "time_window_ack" } },
+      meta: {
+        route: "deterministic",
+        context_patch: {
+          last_intent: "time_window_ack",
+          ...(linkForThisTurn ? { sent_credentials: true } : {})
+        }
+      },
     };
   }
 
-  // Directs (note: pass firstTurn to gate link/verify on first message only)
+  // Directs
+  if (intent === "which_number") {
+    return {
+      text: T.whichNumber(es, agentPhone),
+      intent: "which_number",
+      meta: { route: "deterministic", context_patch: { last_intent: "which_number" } }
+    };
+  }
   if (intent === "stop")       return { text: "", intent: "stop", meta: { route: "deterministic", context_patch: { last_intent: "stop" } }, action: "opt_out" };
   if (intent === "wrong")      return { text: T.wrong(es), intent: "wrong", meta: { route: "deterministic", context_patch: { last_intent: "wrong" } }, action: "tag_wrong_number" };
-  if (intent === "greet")      return { text: T.greetGeneral(es, name, link, { firstTurn }), intent: "greet", meta: { route: "deterministic", context_patch: { last_intent: "greet" } } };
-  if (intent === "courtesy_greet") return { text: T.courtesy(es, name, link, { firstTurn }), intent: "courtesy_greet", meta: { route: "deterministic", context_patch: { last_intent: "courtesy_greet" } } };
-  if (intent === "who")        return { text: T.who(es, name, link, { firstTurn }), intent: "who", meta: { route: "deterministic", context_patch: { last_intent: "who" } } };
-  if (intent === "price")      return { text: T.price(es, link, { firstTurn }), intent: "price", meta: { route: "deterministic", context_patch: { last_intent: "price" } } };
-  if (intent === "covered")    return { text: T.covered(es, link, { firstTurn }), intent: "covered", meta: { route: "deterministic", context_patch: { last_intent: "covered" } } };
-  if (intent === "brushoff")   return { text: T.brushoff(es, link, { firstTurn }), intent: "brushoff", meta: { route: "deterministic", context_patch: { last_intent: "brushoff" } } };
-  if (intent === "spouse")     return { text: T.spouse(es, link, { firstTurn }), intent: "spouse", meta: { route: "deterministic", context_patch: { last_intent: "spouse" } } };
-  if (intent === "callme")     return { text: T.greetGeneral(es, name, link, { firstTurn }), intent: "callme", meta: { route: "deterministic", context_patch: { last_intent: "callme" } } };
-  if (intent === "agree")      return { text: T.agree(es, link, { firstTurn }), intent: "agree", meta: { route: "deterministic", context_patch: { last_intent: "agree" } } };
-  if (intent === "info")       return { text: T.info(es, link, { firstTurn }), intent: "info", meta: { route: "deterministic", context_patch: { last_intent: "info" } } };
-  if (intent === "cant_talk")  return { text: T.cant_talk(es, link, { firstTurn }), intent: "cant_talk", meta: { route: "deterministic", context_patch: { last_intent: "cant_talk" } } };
-  if (intent === "how_long")   return { text: T.how_long(es, link, { firstTurn }), intent: "how_long", meta: { route: "deterministic", context_patch: { last_intent: "how_long" } } };
-  if (intent === "verify")     return { text: T.verify(es, name, link, { firstTurn }), intent: "verify", meta: { route: "deterministic", context_patch: { last_intent: "verify" } } };
+  if (intent === "greet")      return { text: T.greetGeneral(es, name, linkForThisTurn), intent: "greet", meta: { route: "deterministic", context_patch: { last_intent: "greet", ...(linkForThisTurn ? { sent_credentials: true } : {}) } } };
+  if (intent === "courtesy_greet") return { text: T.courtesy(es, name, linkForThisTurn), intent: "courtesy_greet", meta: { route: "deterministic", context_patch: { last_intent: "courtesy_greet", ...(linkForThisTurn ? { sent_credentials: true } : {}) } } };
+  if (intent === "who")        return { text: T.who(es, name, linkForThisTurn), intent: "who", meta: { route: "deterministic", context_patch: { last_intent: "who", ...(linkForThisTurn ? { sent_credentials: true } : {}) } } };
+  if (intent === "price")      return { text: T.price(es, linkForThisTurn), intent: "price", meta: { route: "deterministic", context_patch: { last_intent: "price", ...(linkForThisTurn ? { sent_credentials: true } : {}) } } };
+  if (intent === "covered")    return { text: T.covered(es, linkForThisTurn), intent: "covered", meta: { route: "deterministic", context_patch: { last_intent: "covered", ...(linkForThisTurn ? { sent_credentials: true } : {}) } } };
+  if (intent === "brushoff")   return { text: T.brushoff(es, linkForThisTurn), intent: "brushoff", meta: { route: "deterministic", context_patch: { last_intent: "brushoff", ...(linkForThisTurn ? { sent_credentials: true } : {}) } } };
+  if (intent === "spouse")     return { text: T.spouse(es, linkForThisTurn), intent: "spouse", meta: { route: "deterministic", context_patch: { last_intent: "spouse", ...(linkForThisTurn ? { sent_credentials: true } : {}) } } };
+  if (intent === "callme")     return { text: T.greetGeneral(es, name, linkForThisTurn), intent: "callme", meta: { route: "deterministic", context_patch: { last_intent: "callme", ...(linkForThisTurn ? { sent_credentials: true } : {}) } } };
+  if (intent === "agree")      return { text: T.agree(es, linkForThisTurn), intent: "agree", meta: { route: "deterministic", context_patch: { last_intent: "agree", ...(linkForThisTurn ? { sent_credentials: true } : {}) } } };
+  if (intent === "info")       return { text: T.info(es, linkForThisTurn), intent: "info", meta: { route: "deterministic", context_patch: { last_intent: "info", ...(linkForThisTurn ? { sent_credentials: true } : {}) } } };
+  if (intent === "cant_talk")  return { text: T.cant_talk(es, linkForThisTurn), intent: "cant_talk", meta: { route: "deterministic", context_patch: { last_intent: "cant_talk", ...(linkForThisTurn ? { sent_credentials: true } : {}) } } };
+  if (intent === "how_long")   return { text: T.how_long(es, linkForThisTurn), intent: "how_long", meta: { route: "deterministic", context_patch: { last_intent: "how_long", ...(linkForThisTurn ? { sent_credentials: true } : {}) } } };
+  if (intent === "verify")     return { text: T.verify(es, name, linkForThisTurn), intent: "verify", meta: { route: "deterministic", context_patch: { last_intent: "verify", ...(linkForThisTurn ? { sent_credentials: true } : {}) } } };
 
   // fallback
   return {
-    text: T.greetGeneral(es, name, link, { firstTurn }),
+    text: T.greetGeneral(es, name, linkForThisTurn),
     intent: "greet",
-    meta: { route: "fallback", context_patch: { last_intent: "greet" } }
+    meta: { route: "fallback", context_patch: { last_intent: "greet", ...(linkForThisTurn ? { sent_credentials: true } : {}) } }
   };
 }
 
@@ -342,9 +320,8 @@ function planNext({ intent, text, es, link, name, context, tz }) {
 async function decide({
   text,
   agentName,
-  agentSite,   // new: direct agent website
-  agentPhone,  // new: available if we want to weave into future copy
-  agentEmail,  // new: available if we want to weave into future copy
+  agentPhone,   // <<< new
+  calendlyLink,
   tz,
   officeHours,
   context,
@@ -355,16 +332,18 @@ async function decide({
   tz = tz || DEFAULT_TZ;
   const es = detectSpanish(text);
   const name = agentName || (es ? "su corredor autorizado" : "your licensed broker");
-  const link = (agentSite || "").trim(); // prefer agent site (brand-safe)
+  const link = (calendlyLink || "").trim();
 
   // 1) Deterministic first
   const intentDet = classify(text);
 
+  // hard-stop paths
   if (intentDet === "stop") {
     return { text: "", intent: "stop", meta: { route: "deterministic", context_patch: { last_intent: "stop" } }, action: "opt_out" };
   }
 
-  let best = planNext({ intent: intentDet, text, es, link, name, context, tz });
+  // Ask/confirm times & map basics
+  let best = planNext({ intent: intentDet, text, es, link, name, context, tz, agentPhone });
 
   // 2) Optional: LLM classification override
   const wantLLM = typeof useLLM === "boolean" ? useLLM : LLM_ENABLED;
@@ -382,6 +361,7 @@ async function decide({
           name,
           context,
           tz,
+          agentPhone
         });
         best = {
           ...detFromLLM,
@@ -391,7 +371,7 @@ async function decide({
     } catch {}
   }
 
-  // 3) Optional: LLM short-generation if fallback/generic
+  // 3) Optional: short LLM reply generation (kept as-is)
   const wantLLMReply = typeof useLLMReply === "boolean" ? useLLMReply : LLM_REPLY_ENABLED;
   const looksGeneric = best.meta?.route === "fallback" || best.intent === "general";
   const eligibleForGen =
@@ -406,10 +386,8 @@ async function decide({
       const gen = await llmReply({
         text,
         language: es ? "es" : "en",
-        calendlyLink: link,
+        calendlyLink: linkAllowed(context, best.intent) ? link : "",
         agentName: name,
-        agentPhone: agentPhone || "",
-        agentEmail: agentEmail || "",
         context: context || {},
         maxTokens: LLM_REPLY_MAXTOKENS
       });
