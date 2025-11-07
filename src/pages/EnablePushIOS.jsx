@@ -2,7 +2,7 @@
 import { useEffect, useRef, useState } from "react";
 import { supabase } from "../lib/supabaseClient";
 
-const VERSION = "push-ios-v3.4"; // trimmed UI + copy tweaks
+const VERSION = "push-ios-v3.5"; // adds Safari + A2HS gating
 
 function urlB64ToUint8Array(base64String) {
   const padding = "=".repeat((4 - (base64String.length % 4)) % 4);
@@ -16,19 +16,23 @@ function urlB64ToUint8Array(base64String) {
 const FLOW_KEY = "remie:push:resume";
 
 export default function EnablePushIOS() {
+  const ua = navigator.userAgent || "";
+  const isIOS = /iPhone|iPad|iPod/i.test(ua);
+  const isSafari = /Safari/i.test(ua) && !/CriOS|FxiOS|EdgiOS/i.test(ua);
+  const isStandalone =
+    window.matchMedia?.("(display-mode: standalone)")?.matches ||
+    (window.navigator as any).standalone === true ||
+    false;
+
   const [permission, setPermission] = useState(
     typeof Notification === "undefined" ? "unsupported" : Notification.permission
   );
   const [busy, setBusy] = useState(false);
   const resuming = useRef(false);
 
-  // iOS device check (must be mobile iOS)
-  const isIOSMobile = /iPhone|iPad|iPod/i.test(navigator.userAgent);
-
   useEffect(() => {
     if ("serviceWorker" in navigator) {
       navigator.serviceWorker.addEventListener("controllerchange", () => {
-        // iOS may white-flash when the SW takes control after first visit
         if (localStorage.getItem(FLOW_KEY) === "pending" && !resuming.current) {
           resuming.current = true;
           setTimeout(() => finishSubscription().catch(() => {}), 200);
@@ -52,11 +56,9 @@ export default function EnablePushIOS() {
   }
 
   async function finishSubscription() {
-    // 1) Must be logged in
     const jwt = await getJwt();
     if (!jwt) throw new Error("Please log in on this device first.");
 
-    // 2) Permission
     if (typeof Notification === "undefined") throw new Error("Notifications unsupported here");
     if (Notification.permission !== "granted") {
       const perm = await Notification.requestPermission();
@@ -64,12 +66,11 @@ export default function EnablePushIOS() {
       if (perm !== "granted") throw new Error("Permission not granted");
     }
 
-    // 3) SW
     const reg = await ensureSW();
 
-    // 4) Subscribe or reuse
     const VAPID = import.meta.env.VITE_VAPID_PUBLIC_KEY;
     if (!VAPID) throw new Error("Missing VITE_VAPID_PUBLIC_KEY");
+
     const subExisting = await reg.pushManager.getSubscription();
     let sub = subExisting;
     if (!subExisting) {
@@ -79,7 +80,6 @@ export default function EnablePushIOS() {
       });
     }
 
-    // 5) Save to server
     const payload = {
       endpoint: sub.endpoint,
       keys: sub.toJSON().keys,
@@ -100,7 +100,6 @@ export default function EnablePushIOS() {
   }
 
   async function startFlow() {
-    if (!isIOSMobile) return;
     setBusy(true);
     try {
       if (!navigator.serviceWorker?.controller) {
@@ -116,10 +115,10 @@ export default function EnablePushIOS() {
   }
 
   async function sendTest() {
-    if (!isIOSMobile) return;
     setBusy(true);
     try {
-      const jwt = await getJwt();
+      const { data } = await supabase.auth.getSession();
+      const jwt = data?.session?.access_token || null;
       const res = await fetch("/.netlify/functions/push-test", {
         headers: jwt ? { Authorization: `Bearer ${jwt}` } : {},
       });
@@ -133,6 +132,12 @@ export default function EnablePushIOS() {
     }
   }
 
+  // --- Render gating & instructions ---
+  const notIOS = !isIOS;
+  const wrongBrowser = isIOS && !isSafari;
+  const needsA2HS = isIOS && isSafari && !isStandalone;
+  const canEnable = isIOS && isSafari && isStandalone;
+
   return (
     <div className="p-6 max-w-md mx-auto text-white">
       <h1 className="text-xl font-semibold mb-2">Enable Notifications (iOS)</h1>
@@ -140,32 +145,58 @@ export default function EnablePushIOS() {
         Version: <span className="font-mono">{VERSION}</span>
       </p>
 
-      {!isIOSMobile ? (
+      {notIOS && (
         <div className="rounded-2xl border border-amber-500/40 bg-amber-500/10 p-4 text-sm">
-          This setup must be done from an <b>iOS device</b> (iPhone or iPad) using <b>Safari</b>.
-          Open this page on your iPhone/iPad to continue.
-        </div>
-      ) : (
-        <div className="grid gap-2">
-          <button
-            type="button"
-            disabled={busy}
-            onClick={startFlow}
-            className="rounded-xl bg-white text-black px-4 py-2 text-sm font-medium hover:bg-white/90 disabled:opacity-60"
-          >
-            Enable Notifications
-          </button>
-
-          <button
-            type="button"
-            disabled={busy}
-            onClick={sendTest}
-            className="rounded-xl border border-white/15 bg-white/5 px-4 py-2 text-sm hover:bg-white/10 disabled:opacity-60"
-          >
-            Test Notification
-          </button>
+          This setup must be done from an <b>iOS device</b> (iPhone/iPad) using <b>Safari</b>.
         </div>
       )}
+
+      {wrongBrowser && (
+        <div className="rounded-2xl border border-amber-500/40 bg-amber-500/10 p-4 text-sm">
+          You’re on iOS but not using Safari. Please open this page in <b>Safari</b>.
+        </div>
+      )}
+
+      {needsA2HS && (
+        <div className="rounded-2xl border border-blue-500/40 bg-blue-500/10 p-4 text-sm space-y-2">
+          <div className="font-medium">Add Remie to your Home Screen first</div>
+          <ol className="list-decimal pl-5 space-y-1">
+            <li>Tap the <b>Share</b> icon in Safari (square with arrow).</li>
+            <li>Scroll and choose <b>Add to Home Screen</b>.</li>
+            <li>Open Remie from your Home Screen icon.</li>
+            <li>Return to this page from the app, then tap <b>Enable Notifications</b>.</li>
+          </ol>
+          <div className="text-xs text-white/60">
+            Apple only lets push notifications work when the web app is opened from the Home Screen.
+          </div>
+        </div>
+      )}
+
+      <div className="grid gap-2 mt-4">
+        <button
+          type="button"
+          onClick={startFlow}
+          disabled={!canEnable || busy}
+          className={`rounded-xl px-4 py-2 text-sm font-medium ${
+            canEnable ? "bg-white text-black hover:bg-white/90" : "bg-white/10 text-white/60 cursor-not-allowed"
+          }`}
+        >
+          Enable Notifications
+        </button>
+
+        <button
+          type="button"
+          onClick={sendTest}
+          disabled={!canEnable || busy}
+          className={`rounded-xl px-4 py-2 text-sm ${
+            canEnable
+              ? "border border-white/15 bg-white/5 hover:bg-white/10"
+              : "border border-white/10 bg-white/5 text-white/60 cursor-not-allowed"
+          }`}
+        >
+          Test Notification
+        </button>
+      </div>
     </div>
   );
 }
