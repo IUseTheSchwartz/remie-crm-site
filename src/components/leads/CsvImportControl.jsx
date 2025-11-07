@@ -86,7 +86,7 @@ function estimateSegments(text=""){
   return s.length<=70 ? 1 : Math.ceil(s.length/67);
 }
 
-// ---------- NEW: contacts helpers (create only on "Add & Message Now") ----------
+// ---------- contacts helpers (create only on "Add & Message Now") ----------
 function phoneDigits(p){ return onlyDigits(toE164(p)||""); }
 
 async function findContactByDigits(userId, digits){
@@ -135,7 +135,7 @@ async function ensureContactsForPeople(people){
     try { await upsertContactForPerson(userId, p); } catch {}
   }
 }
-// -------------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
 
 export default function CsvImportControl({ onAddedLocal, onServerMsg }) {
   const [choice, setChoice] = useState(null);     // {count, people}
@@ -252,6 +252,7 @@ export default function CsvImportControl({ onAddedLocal, onServerMsg }) {
     };
   }
 
+  // ----------- SENDER with lead_id lookup so templates fill state/beneficiary/etc. -----------
   async function sendBatch(valid, batchId){
     const [{ data: authUser }, { data: sess }] = await Promise.all([
       supabase.auth.getUser(),
@@ -267,6 +268,20 @@ export default function CsvImportControl({ onAddedLocal, onServerMsg }) {
       "X-Remie-Billing": "free_first",
     };
 
+    // helper: find the most recently inserted lead for this phone (belongs to this user)
+    async function findLeadIdByPhone(e164){
+      const { data, error } = await supabase
+        .from("leads")
+        .select("id")
+        .eq("user_id", requesterId)
+        .eq("phone", e164)
+        .order("created_at", { ascending: false })
+        .limit(1)
+        .maybeSingle();
+      if (error) return null;
+      return data?.id || null;
+    }
+
     const CONCURRENCY = 5;
     let idx = 0;
     let ok = 0, skipped = 0, errors = 0;
@@ -279,11 +294,15 @@ export default function CsvImportControl({ onAddedLocal, onServerMsg }) {
           const to = toE164(p.phone);
           if(!to){ skipped++; continue; }
 
+          // 🔎 get the lead id so templates get state/beneficiary/etc.
+          const lead_id = await findLeadIdByPhone(to);
+
           const body = {
             requesterId,
             to,
-            // optional: templateKey: "new_lead_short", // keep under 1 segment if you want
-            body: "",                        // blank => server renders default template
+            lead_id,                     // <-- key fix: let messages-send load the full lead context
+            // optional: templateKey: "new_lead", // or "new_lead_short" to keep 1 segment
+            body: "",                    // blank => server renders default template from settings
             billing: "free_first",
             preferFreeSegments: true,
             provider_message_id: `csv-${batchId}-${myIndex}` // dedupe-safe
@@ -306,6 +325,7 @@ export default function CsvImportControl({ onAddedLocal, onServerMsg }) {
     await Promise.all(workers);
     return { ok, skipped, errors };
   }
+  // -------------------------------------------------------------------------------------------
 
   return (
     <>
