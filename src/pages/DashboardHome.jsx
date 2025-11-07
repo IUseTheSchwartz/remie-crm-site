@@ -186,7 +186,7 @@ export default function DashboardHome() {
         </Card>
       </div>
 
-      {/* Concierge Onboarding Panel (replaces video) */}
+      {/* Concierge Onboarding Panel */}
       {showDiscordPanel && (
         <Card
           title="Get Onboarded"
@@ -237,19 +237,19 @@ export default function DashboardHome() {
         </Card>
       )}
 
-      {/* New: Get Notifications & Mobile App */}
+      {/* Fixed link per your URL */}
       <Card title="Get notifications & mobile app">
         <p className="text-white/70 mb-3">
           Enable push notifications on iOS and add Remie to your home screen for a true mobile app experience.
         </p>
         <a
-          href="/app/enable-notifications"
+          href="https://remiecrm.com/app/enable-ios-push"
           className="inline-flex items-center rounded-xl bg-white text-black px-4 py-2 font-medium hover:bg-white/90"
         >
           Set up notifications on iOS →
         </a>
         <div className="mt-2 text-xs text-white/50">
-          Heads up: setup must be done from an iOS device (iPhone/iPad) in Safari.
+          Heads up: setup must be done from an iOS device (Safari).
         </div>
       </Card>
     </div>
