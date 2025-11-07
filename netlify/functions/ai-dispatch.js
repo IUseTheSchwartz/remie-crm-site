@@ -1,7 +1,6 @@
 // File: netlify/functions/ai-dispatch.js
 // Thin dispatcher: parse -> guard -> load agent -> delegate to AI brain -> send one reply.
-// Adds minimal per-contact AI context so credentials link shows only on the first AI message
-// and the final time confirmation. Keeps your price-guard and appointment creation flow.
+// Prevents double-booking: if requested time conflicts (±29m), replies with "slot taken" and suggests nearby openings.
 
 const { getServiceClient } = require("./_supabase");
 const fetch = require("node-fetch");
@@ -90,7 +89,7 @@ async function mergeContactMeta(db, contact_id, patch = {}) {
   return next;
 }
 
-/* ---------------- Time parsing (label -> next datetime in tz) ---------------- */
+/* ---------------- Time helpers ---------------- */
 function getNowPartsInTZ(tz) {
   const fmt = new Intl.DateTimeFormat("en-US", {
     timeZone: tz, year: "numeric", month: "2-digit", day: "2-digit",
@@ -122,7 +121,7 @@ function parseClockLabelToNext(label, tz = "America/Chicago") {
   const minute = Number(m[2] || "0");
   const ampm = m[3];
 
-  if (hour === 12) hour = (ampm === "AM") ? 0 : 12; // 12AM -> 0, 12PM -> 12
+  if (hour === 12) hour = (ampm === "AM") ? 0 : 12;
   else if (ampm === "PM") hour += 12;
 
   const nowParts = getNowPartsInTZ(tz);
@@ -138,6 +137,52 @@ function parseClockLabelToNext(label, tz = "America/Chicago") {
     target = toUTCFromTZ({ year: y, month: mo, day: d, hour, minute }, tz);
   }
   return target.toISOString();
+}
+
+function addMinutesISO(iso, minutes) {
+  const d = new Date(iso);
+  return new Date(d.getTime() + minutes * 60 * 1000).toISOString();
+}
+function fmtClockLabelFromISO(iso, tz = "America/Chicago") {
+  const d = new Date(iso);
+  return new Intl.DateTimeFormat("en-US", {
+    timeZone: tz,
+    hour: "numeric",
+    minute: "2-digit",
+    hour12: true
+  }).format(d).toUpperCase();
+}
+async function hasConflict(db, user_id, targetISO) {
+  const target = new Date(targetISO).getTime();
+  const start = new Date(target - 29 * 60 * 1000).toISOString();
+  const end   = new Date(target + 29 * 60 * 1000).toISOString();
+
+  const { data, error } = await db
+    .from("crm_appointments")
+    .select("id")
+    .eq("user_id", user_id)
+    .gte("scheduled_at", start)
+    .lte("scheduled_at", end)
+    .limit(1);
+
+  if (error) {
+    console.warn("[ai-dispatch] conflict check error:", error.message);
+    return false;
+  }
+  return Array.isArray(data) && data.length > 0;
+}
+async function suggestAlternates(db, user_id, targetISO, tz) {
+  // Try -30, +30, -60, +60 minutes (first two that are free)
+  const candidates = [-30, 30, -60, 60];
+  const out = [];
+  for (const delta of candidates) {
+    const iso = addMinutesISO(targetISO, delta);
+    if (!(await hasConflict(db, user_id, iso))) {
+      out.push({ iso, label: fmtClockLabelFromISO(iso, tz) });
+      if (out.length >= 2) break;
+    }
+  }
+  return out;
 }
 
 /* ---------------- Handler ---------------- */
@@ -188,7 +233,7 @@ exports.handler = async (event) => {
   // Load agent profile and compute brand-safe booking link
   const agent = await getAgentProfile(db, user_id).catch(() => ({}));
   const agentName = agent?.full_name || "your licensed broker";
-  const agentPhone = agent?.phone || ""; // <<< pass through to brain
+  const agentPhone = agent?.phone || "";
   const bookingLink = buildAgentBookingLink(agent);
   const tz = process.env.AGENT_DEFAULT_TZ || "America/Chicago";
 
@@ -224,7 +269,7 @@ exports.handler = async (event) => {
   }
   // ------------------------------------------------------------
 
-  // -------- Load & pass AI context so the brain knows if creds were already shown
+  // -------- Load & pass AI context so creds show only first + final confirm
   const metaNow = await getContactMeta(db, contact_id);
   const aiContext = {
     last_intent: metaNow?.ai_last_intent || null,
@@ -238,10 +283,10 @@ exports.handler = async (event) => {
     decision = (await decide({
       text,
       agentName,
-      agentPhone,          // <<< pass to brain
+      agentPhone,          // pass phone so brain can answer "which number?"
       calendlyLink: bookingLink,
       tz,
-      context: aiContext,  // <<< makes creds line appear only on first + final confirm
+      context: aiContext,
     })) || decision;
   } catch (e) {
     console.error("[ai-dispatch] brain error:", e?.message || e);
@@ -261,9 +306,12 @@ exports.handler = async (event) => {
 
   if (!outText) return ok({ ok: true, note: "no_text_from_brain", ai_intent: aiIntent });
 
-  // If the AI confirmed a specific time, try to create a CRM appointment before sending
+  /* ============================================================
+     Conflict check for confirmed time
+     ============================================================ */
   let createdAppointmentId = null;
   let scheduledAtISO = null;
+
   if (aiIntent === "confirm_time") {
     const label =
       (decision?.meta?.label) ||
@@ -274,32 +322,89 @@ exports.handler = async (event) => {
     const iso = label ? parseClockLabelToNext(label, tz) : null;
     scheduledAtISO = iso;
 
-    try {
-      const { data, error } = await db
-        .from("crm_appointments")
-        .insert([{
-          user_id,
-          contact_id,
-          title: "Discovery Call",
-          time_label: label || null,
-          scheduled_at: iso,
-          source: "sms_ai",
-        }])
-        .select("id")
-        .maybeSingle();
-      if (error) throw error;
-      createdAppointmentId = data?.id || null;
+    if (iso) {
+      const conflict = await hasConflict(db, user_id, iso);
+      if (conflict) {
+        // Suggest alternatives and send a "slot taken" message instead of booking.
+        const es = /[ñáéíóúü¿¡]/.test(norm);
+        const alts = await suggestAlternates(db, user_id, iso, tz);
 
-      // mark contact as booked for your UI
+        const altStr = alts.length
+          ? (es
+              ? ` ¿Le funciona ${alts.map(a => a.label).join(" o ")}?`
+              : ` Would ${alts.map(a => a.label).join(" or ")} work?`)
+          : (es
+              ? ` ¿Le funciona 30 minutos antes o después?`
+              : ` Would 30 minutes before or after work?`);
+
+        const takenMsg = es
+          ? `Uy—ya tengo una cita con otra familia a esa hora. ${altStr}`
+          : `Ah—I actually have an appointment with another family at that time. ${altStr}`;
+
+        const sendUrl = deriveSendUrl(event);
+        if (!sendUrl) return ok({ ok: false, error: "no_outbound_url", ai_intent: "conflict" });
+
+        const controller = new AbortController();
+        const timeout = setTimeout(() => controller.abort(), 3000);
+        let res2, json2 = {};
+        try {
+          res2 = await fetch(sendUrl, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              to: from,
+              body: takenMsg,
+              requesterId: user_id,
+              sent_by_ai: true,
+              ai_intent: "conflict",
+            }),
+            signal: controller.signal,
+          });
+          try { json2 = await res2.json(); } catch {}
+          console.log("[ai-dispatch] conflict reply status:", res2?.status, json2);
+        } catch (e) {
+          console.error("[ai-dispatch] messages-send error (conflict):", e?.name || e?.message || String(e));
+        } finally {
+          clearTimeout(timeout);
+        }
+
+        // Don’t insert appointment; we’re done for this turn.
+        return ok({
+          ok: true,
+          ai: "responded",
+          ai_intent: "conflict",
+          conflict_at: iso,
+          suggested: alts.map(a => a.iso),
+        });
+      }
+
+      // No conflict → create appointment
       try {
-        await db.from("message_contacts").update({ ai_booked: true }).eq("id", contact_id);
-      } catch {}
-    } catch (e) {
-      console.warn("[ai-dispatch] create appointment warn:", e?.message || e);
+        const { data, error } = await db
+          .from("crm_appointments")
+          .insert([{
+            user_id,
+            contact_id,
+            title: "Discovery Call",
+            time_label: label || null,
+            scheduled_at: iso,
+            source: "sms_ai",
+          }])
+          .select("id")
+          .maybeSingle();
+        if (error) throw error;
+        createdAppointmentId = data?.id || null;
+
+        try {
+          await db.from("message_contacts").update({ ai_booked: true }).eq("id", contact_id);
+        } catch {}
+      } catch (e) {
+        console.warn("[ai-dispatch] create appointment warn:", e?.message || e);
+      }
     }
   }
 
-  // Send via messages-send
+  /* ---------------- Send the (possibly non-confirmation) message ---------------- */
   const sendUrl = deriveSendUrl(event);
   console.log("[ai-dispatch] OUTBOUND_SEND_URL:", sendUrl);
   if (!sendUrl) return ok({ ok: false, error: "no_outbound_url", ai_intent: aiIntent });
