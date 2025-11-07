@@ -151,24 +151,25 @@ function prettyE164(e164) {
   return `+1 (${d.slice(0,3)}) ${d.slice(3,6)}-${d.slice(6)}`;
 }
 
-/* ------------------ TFN helpers (auto-assign flow) ------------------ */
-/* NEW: send the Supabase JWT so Netlify functions can authenticate the request */
+/* ------------------ 10DLC helpers (auto-assign flow) ------------------ */
+/* Send the Supabase JWT so Netlify functions can auth the user */
 async function withAuthHeaders() {
   const { data } = await supabase.auth.getSession();
   const token = data?.session?.access_token;
   return token ? { Authorization: `Bearer ${token}` } : {};
 }
 
-async function apiGetTFNStatus() {
+// 🔄 UPDATED: read from new backend wired to ten_dlc_numbers
+async function apiGetTenDlcStatus() {
   const headers = await withAuthHeaders();
-  const res = await fetch("/.netlify/functions/tfn-status", { headers });
+  const res = await fetch("/.netlify/functions/ten-dlc-status", { headers });
   const j = await res.json().catch(() => ({}));
   if (!res.ok) throw new Error(j?.error || `HTTP_${res.status}`);
   return j; // { ok, phone_number, verified }
 }
-async function apiAssignTFN() {
+async function apiAssignTenDlc() {
   const headers = await withAuthHeaders();
-  const res = await fetch("/.netlify/functions/tfn-assign", { method: "POST", headers });
+  const res = await fetch("/.netlify/functions/ten-dlc-assign", { method: "POST", headers });
   const j = await res.json().catch(() => ({}));
   if (!res.ok) throw new Error(j?.error || `HTTP_${res.status}`);
   return j; // { ok, phone_number, verified }
@@ -224,7 +225,7 @@ export default function MessagingSettings() {
     agent_site: "",
   });
 
-  // --- Messaging Number state (same backend flow, UI hides digits) ---
+  // --- Messaging Number state (reads from ten_dlc_numbers via functions) ---
   const [myTFN, setMyTFN] = useState(null);
   const [tfnVerified, setTfnVerified] = useState(false);
   const [tfnLoading, setTfnLoading] = useState(true);
@@ -351,14 +352,14 @@ export default function MessagingSettings() {
     };
   }, [userId]);
 
-  /* -------- Load messaging number status -------- */
+  /* -------- Load messaging number status (via new 10DLC endpoints) -------- */
   useEffect(() => {
     let mounted = true;
     (async () => {
       setTfnError("");
       setTfnLoading(true);
       try {
-        const s = await apiGetTFNStatus();
+        const s = await apiGetTenDlcStatus();
         if (!mounted) return;
         setMyTFN(s?.phone_number || null);
         setTfnVerified(!!s?.verified);
@@ -533,7 +534,7 @@ export default function MessagingSettings() {
         </div>
       </header>
 
-      {/* Messaging Number (auto-assign from verified pool) */}
+      {/* Messaging Number (auto-assign from verified 10DLC pool) */}
       <section className="rounded-2xl border border-white/10 bg-white/[0.03] p-4">
         <div className="mb-2 flex items-center justify-between">
           <div className="flex items-center gap-2">
@@ -543,7 +544,7 @@ export default function MessagingSettings() {
             <div>
               <h3 className="text-sm font-semibold">Messaging Number</h3>
               <p className="text-xs text-white/60">
-                We’ll assign a verified messaging number for your outbound texts.
+                We’ll assign a verified 10DLC number for your outbound texts.
               </p>
             </div>
           </div>
@@ -573,7 +574,7 @@ export default function MessagingSettings() {
                   try {
                     setTfnError("");
                     setTfnAssigning(true);
-                    const r = await apiAssignTFN();
+                    const r = await apiAssignTenDlc();
                     setMyTFN(r?.phone_number || null);
                     setTfnVerified(!!r?.verified);
                   } catch (e) {
