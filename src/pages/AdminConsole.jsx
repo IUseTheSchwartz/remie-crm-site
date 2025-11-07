@@ -1,9 +1,10 @@
+// File: src/pages/AdminConsole.jsx
 import { useEffect, useMemo, useState } from "react";
 import { supabase } from "../lib/supabaseClient.js";
 import useIsAdminAllowlist from "../hooks/useIsAdminAllowlist.js";
 
-// ⬇️ REPLACED: was TFNPoolAdminSection (toll-free only)
-import PhoneNumberPoolAdminSection from "../components/admin/PhoneNumberPoolAdminSection.jsx";
+// ✅ 10DLC Number pool admin section (toll-free removed)
+import NumberPool10DLC from "../components/admin/NumberPool10DLC.jsx";
 
 /* ------------------------ small helpers ------------------------ */
 function centsToUsd(cents) {
@@ -390,13 +391,16 @@ export default function AdminConsole() {
     }
   }
 
-  /* ===================== Agent Site Onboarding (existing) ===================== */
+  /* ===================== Agent Site Onboarding (NEW) ===================== */
+
+  // Manual user override: paste Supabase UUID to onboard anyone (brand-new OK)
   const [manualUserId, setManualUserId] = useState("");
-  const [selUserId, setSelUserId] = useState("");
+  const [selUserId, setSelUserId] = useState(""); // current user being edited
   const [apLoading, setApLoading] = useState(false);
   const [apSaving, setApSaving] = useState(false);
   const [statesSaving, setStatesSaving] = useState(false);
 
+  // agent_profiles fields
   const [ap, setAp] = useState({
     full_name: "",
     email: "",
@@ -409,6 +413,7 @@ export default function AdminConsole() {
     published: false,
   });
 
+  // simple slug
   const slug = useMemo(
     () =>
       (ap.full_name || "")
@@ -418,7 +423,9 @@ export default function AdminConsole() {
     [ap.full_name]
   );
 
+  // agent_states rows (array of {state_code, license_number, license_image_url})
   const [stateRows, setStateRows] = useState([]);
+
   function addStateRow() {
     setStateRows((s) => [...s, { state_code: "", license_number: "", license_image_url: "" }]);
   }
@@ -445,6 +452,7 @@ export default function AdminConsole() {
     setApLoading(true);
     setErr("");
     try {
+      // Try fetch existing profile
       const { data: prof, error: pErr } = await supabase
         .from("agent_profiles")
         .select("*")
@@ -452,6 +460,7 @@ export default function AdminConsole() {
         .maybeSingle();
       if (pErr) throw pErr;
 
+      // If no profile, try to pull email from auth via edge function OR let admin type it
       const emailGuess = prof?.email || "";
 
       setAp({
@@ -466,6 +475,7 @@ export default function AdminConsole() {
         published: !!prof?.published,
       });
 
+      // Load states
       const { data: st, error: sErr } = await supabase
         .from("agent_states")
         .select("state_code, license_number, license_image_url")
@@ -541,6 +551,7 @@ export default function AdminConsole() {
     setStatesSaving(true);
     setErr("");
     try {
+      // Validate rows
       const cleaned = stateRows
         .map((r) => ({
           state_code: (r.state_code || "").toUpperCase().trim(),
@@ -561,6 +572,7 @@ export default function AdminConsole() {
         }
       }
 
+      // Fetch existing for diff
       const { data: existing, error: selErr } = await supabase
         .from("agent_states")
         .select("state_code")
@@ -571,6 +583,7 @@ export default function AdminConsole() {
       const desiredSet = new Set(cleaned.map((x) => x.state_code));
       const toDelete = [...existingSet].filter((c) => !desiredSet.has(c));
 
+      // Upsert
       if (cleaned.length) {
         const upPayload = cleaned.map((r) => ({
           user_id: selUserId,
@@ -586,6 +599,7 @@ export default function AdminConsole() {
         if (upErr) throw upErr;
       }
 
+      // Delete removed
       if (toDelete.length) {
         const { error: delErr } = await supabase
           .from("agent_states")
@@ -676,110 +690,13 @@ export default function AdminConsole() {
         </p>
       </div>
 
-      {/* ---------- Users table ---------- */}
-      <div className="overflow-x-auto rounded-2xl border border-white/10">
-        <table className="min-w-full text-sm">
-          <thead className="bg-white/5">
-            <tr>
-              <th className="px-3 py-2 text-left text-white/70">User</th>
-              <th className="px-3 py-2 text-left text-white/70">Email</th>
-              <th className="px-3 py-2 text-left text-white/70">Team ID</th>
-              <th className="px-3 py-2 text-left text-white/70">Seats Purchased</th>
-              <th className="px-3 py-2 text-left text-white/70">Balance ($)</th>
-              <th className="px-3 py-2 text-left text-white/70">Lead Rescue</th>
-              <th className="px-3 py-2 text-left text-white/70">Templates Locked</th>
-              <th className="px-3 py-2 text-left text-white/70">Actions</th>
-            </tr>
-          </thead>
-          <tbody>
-            {rows.map((r) => {
-              const usd = centsToUsd(r.balance_cents);
-              return (
-                <tr key={r.id} className="border-t border-white/10">
-                  <td className="px-3 py-2">{r.full_name || "—"}</td>
-                  <td className="px-3 py-2 text-white/80">{r.email || "—"}</td>
-                  <td className="px-3 py-2 text-white/60 text-[11px]">{r.team_id || "—"}</td>
-                  <td className="px-3 py-2">
-                    <input
-                      type="number"
-                      min={0}
-                      value={r.seats_purchased ?? 0}
-                      disabled={!r.team_id}
-                      onChange={(e) => patchRow(r.id, { seats_purchased: Number(e.target.value) })}
-                      className="w-24 rounded-md border border-white/15 bg-black/40 px-2 py-1 outline-none focus:ring-2 focus:ring-indigo-500/40 disabled:opacity-50"
-                    />
-                  </td>
-                  <td className="px-3 py-2">
-                    <div className="flex items-center gap-2">
-                      <span className="text-white/60">$</span>
-                      <input
-                        type="text"
-                        inputMode="decimal"
-                        value={usd}
-                        onChange={(e) => patchRow(r.id, { balance_cents: usdToCents(e.target.value) })}
-                        className="w-28 rounded-md border border-white/15 bg-black/40 px-2 py-1 outline-none focus:ring-2 focus:ring-indigo-500/40"
-                      />
-                    </div>
-                  </td>
-                  <td className="px-3 py-2">
-                    <label className="inline-flex items-center gap-2">
-                      <input
-                        type="checkbox"
-                        checked={!!r.lead_rescue_enabled}
-                        onChange={(e) => patchRow(r.id, { lead_rescue_enabled: e.target.checked })}
-                      />
-                      <span className="text-white/80">Enabled</span>
-                    </label>
-                  </td>
-                  <td className="px-3 py-2">
-                    <label className="inline-flex items-center gap-2">
-                      <input
-                        type="checkbox"
-                        checked={!!r.templates_locked}
-                        onChange={(e) => patchRow(r.id, { templates_locked: e.target.checked })}
-                      />
-                      <span className="text-white/80">Locked</span>
-                    </label>
-                  </td>
-                  <td className="px-3 py-2">
-                    <button
-                      onClick={() => saveRow(r)}
-                      className="rounded-md border border-white/20 px-3 py-1 hover:bg-white/10"
-                    >
-                      Save
-                    </button>
-                  </td>
-                </tr>
-              );
-            })}
-
-            {rows.length === 0 && !fetching && (
-              <tr>
-                <td className="px-3 py-6 text-center text-white/60" colSpan={8}>
-                  No users found.
-                </td>
-              </tr>
-            )}
-          </tbody>
-        </table>
+      {/* ---------- 10DLC Number Pool ---------- */}
+      <div className="pt-6 border-t border-white/10">
+        <NumberPool10DLC />
       </div>
 
-      <p className="text-xs text-white/50">
-        Lead Rescue toggle is stored in <code>lead_rescue_settings.enabled</code> (upserted on save).
-        Locked = all templates disabled. We keep the prior state in{" "}
-        <code>message_templates_backup</code> so unlocking restores exactly what they had.
-      </p>
-
-      {/* ---------- Unified Phone Number Pool (10DLC + TFN) ---------- */}
+      {/* ================= Agent Site Onboarding (NEW) ================= */}
       <div className="pt-6 border-t border-white/10">
-        <PhoneNumberPoolAdminSection />
-      </div>
-
-      {/* ================= Agent Site Onboarding (existing) ================= */}
-      <div className="pt-6 border-t border-white/10">
-        {/* ... existing Agent Site Onboarding UI unchanged ... */}
-        {/* (keeping the full block you already have below) */}
-
         <div className="rounded-2xl border border-white/10 bg-white/[0.04] p-4 ring-1 ring-white/5">
           <div className="mb-3 flex items-center justify-between">
             <div className="font-medium">Agent Site Onboarding</div>
@@ -805,9 +722,7 @@ export default function AdminConsole() {
             </div>
           ) : (
             <>
-              <div className="text-xs text-white/60 mb-2">
-                Editing user_id: <span className="font-mono">{selUserId}</span>
-              </div>
+              <div className="text-xs text-white/60 mb-2">Editing user_id: <span className="font-mono">{selUserId}</span></div>
 
               {/* Profile form */}
               <div className="grid gap-3 md:grid-cols-2">
