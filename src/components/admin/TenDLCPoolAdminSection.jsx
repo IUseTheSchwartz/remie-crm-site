@@ -37,13 +37,13 @@ export default function TenDLCPoolAdminSection() {
   const [saving, setSaving] = useState(false);
   const [err, setErr] = useState("");
 
-  // Search (like TFN)
+  // Search (TFN-like)
   const [q, setQ] = useState("");
   const [rows, setRows] = useState([]);
   const [page, setPage] = useState(0);
   const [hasMore, setHasMore] = useState(false);
 
-  // Add + Bulk (like TFN)
+  // Add + Bulk (TFN-like)
   const [addOpen, setAddOpen] = useState(false);
   const [bulkOpen, setBulkOpen] = useState(false);
 
@@ -131,21 +131,39 @@ export default function TenDLCPoolAdminSection() {
     setRows((prev) => prev.map((r) => (r.id === id ? { ...r, ...patch } : r)));
   }
 
-  async function upsertOne(payload) {
-    const clean = {
-      ...payload,
-      phone_number: toE164Raw(payload.phone_number || payload.e164 || payload.number),
-      telnyx_number_id: payload.telnyx_number_id || null,
-      verified: !!payload.verified,
-      notes: payload.notes || null,
-      assigned_to: payload.assigned_to || null,
-      date_assigned: payload.assigned_to ? new Date().toISOString() : null,
+  // ⛑️ Only allow real DB columns through to the upsert
+  function toDbPayload(anyObj) {
+    // whitelist columns that exist in ten_dlc_numbers
+    const {
+      phone_number,
+      telnyx_number_id = null,
+      verified = false,
+      notes = null,
+      assigned_to = null,
+      date_assigned = null,
+      id, // optional (for updates)
+    } = anyObj || {};
+    const payload = {
+      ...(id ? { id } : {}),
+      phone_number: toE164Raw(phone_number),
+      telnyx_number_id,
+      verified: !!verified,
+      notes,
+      assigned_to,
+      // only set date_assigned if assigned
+      date_assigned: assigned_to ? date_assigned : null,
       updated_at: new Date().toISOString(),
     };
-    if (!clean.phone_number) throw new Error("Enter a valid phone number.");
+    if (!payload.assigned_to) payload.date_assigned = null;
+    return payload;
+  }
+
+  async function upsertOne(anyObj) {
+    const payload = toDbPayload(anyObj);
+    if (!payload.phone_number) throw new Error("Enter a valid phone number.");
     const { data, error } = await supabase
       .from("ten_dlc_numbers")
-      .upsert(clean, { onConflict: "phone_number", defaultToNull: false })
+      .upsert(payload, { onConflict: "phone_number", defaultToNull: false })
       .select()
       .maybeSingle();
     if (error) throw error;
@@ -193,11 +211,12 @@ export default function TenDLCPoolAdminSection() {
     try {
       setSaving(true);
       setErr("");
-      // Preserve date_assigned if already assigned; set if newly assigned; clear if unassigned
       const next = { ...r };
-      if (r.assigned_to && !r.date_assigned) next.date_assigned = new Date().toISOString();
-      if (!r.assigned_to) next.date_assigned = null;
-      await upsertOne(next);
+      // set/clear date_assigned correctly
+      if (next.assigned_to && !next.date_assigned) next.date_assigned = new Date().toISOString();
+      if (!next.assigned_to) next.date_assigned = null;
+
+      await upsertOne(next); // this strips _dirty before write
       patchRowLocal(r.id, { _dirty: false });
     } catch (e) {
       setErr(e.message || "Failed to save row");
@@ -276,7 +295,7 @@ export default function TenDLCPoolAdminSection() {
         </div>
       )}
 
-      {/* Add Single (TFN-style) */}
+      {/* Add Single */}
       {addOpen && (
         <div className="mb-4 rounded-xl border border-white/10 bg-white/[0.03] p-3">
           <div className="mb-2 text-sm font-medium">Add 10DLC Number</div>
@@ -355,7 +374,7 @@ export default function TenDLCPoolAdminSection() {
           </thead>
           <tbody>
             {rows.map((r) => {
-              const isLocked = !!r.assigned_to; // lock editing when assigned (like old TFN)
+              const isLocked = !!r.assigned_to; // lock editing when assigned
               return (
                 <tr key={r.id} className="border-t border-white/10 align-top">
                   <td className="px-2 py-2">
