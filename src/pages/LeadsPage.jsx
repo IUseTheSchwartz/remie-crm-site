@@ -76,7 +76,7 @@ async function upsertSoldContact({ userId, phone, fullName, addBdayHoliday, addP
     const nextTags = buildSoldTags([]);
     const { data, error } = await supabase
       .from("message_contacts")
-      .insert([{ user_id: userId, phone: phoneE164, full_name: fullName || null, tags: nextTags }])
+      .insert([{ user_id: userId, phone: phoneE164, full_name: fullName || null, tags: [ ...nextTags ] }])
       .select("id")
       .single();
     if (error) throw error;
@@ -270,7 +270,7 @@ export default function LeadsPage() {
   const [stateFilter, setStateFilter] = useState("");         // "TN, FL"
   const [stageFilters, setStageFilters] = useState(new Set()); // empty = ALL
 
-  // live per-lead status
+  // live per-lead status (kept for Auto Dial modal only)
   const [liveStatus, setLiveStatus] = useState({}); // { leadId: 'queued'|'dialing'|'ringing'|'answered'|'bridged'|'completed'|'failed' }
   const liveStatusRef = useRef({});
   useEffect(() => { liveStatusRef.current = liveStatus; }, [liveStatus]);
@@ -731,8 +731,8 @@ export default function LeadsPage() {
   }
 
   /* -------------------- Render -------------------- */
-  const baseHeaders = ["Name","Phone","Email","DOB","State","Beneficiary","Beneficiary Name","Gender","Military Branch","Stage","Status"];
-  const colCount = baseHeaders.length + 2; // + Select + Actions
+  const baseHeaders = ["Name","Phone","Email","DOB","State","Beneficiary","Beneficiary Name","Gender","Military Branch","Stage"];
+  const colCount = baseHeaders.length + 2; // + Select + Actions (Status column removed)
 
   return (
     <div className="space-y-6 min-w-0 overflow-x-hidden">
@@ -822,7 +822,7 @@ export default function LeadsPage() {
 
       {/* Table */}
       <div className="overflow-x-auto rounded-2xl border border-white/10">
-        <table className="min-w-[1300px] w-full border-collapse text-sm">
+        <table className="min-w-[1200px] w-full border-collapse text-sm">
           <thead className="bg-white/[0.04] text-white/70">
             <tr>
               <Th>
@@ -844,11 +844,6 @@ export default function LeadsPage() {
               const stageLabelTxt = labelForStage(stageId);
               const stageClass = STAGE_STYLE[stageId] || "bg-white/10 text-white/80";
               const isEditingThis = editingStageId === p.id;
-
-              const uiStatus = liveStatus[p.id];
-              const statusBadge = uiStatus
-                ? <span className={`rounded-full px-2 py-0.5 text-xs ${badgeClass(uiStatus)}`}>{cap(uiStatus)}</span>
-                : <span className="rounded-full bg-white/10 px-2 py-0.5 text-xs text-white/70">—</span>;
 
               return (
                 <tr key={p.id} className="border-t border-white/10">
@@ -913,8 +908,6 @@ export default function LeadsPage() {
                       </div>
                     )}
                   </Td>
-
-                  <Td>{statusBadge}</Td>
 
                   <Td>
                     <div className="flex items-center gap-2">
