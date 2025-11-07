@@ -1,16 +1,8 @@
 // File: src/components/admin/NumberPool10DLC.jsx
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useState, useMemo } from "react";
 import { supabase } from "../../lib/supabaseClient.js";
 
-/* ---------- tiny UI helpers (same vibe as your TFN section) ---------- */
-function Row({ label, children }) {
-  return (
-    <div className="grid grid-cols-1 items-center gap-2 py-1.5 sm:grid-cols-[160px_1fr]">
-      <div className="text-xs sm:text-sm text-white/70">{label}</div>
-      <div>{children}</div>
-    </div>
-  );
-}
+/* ---------- small UI bits ---------- */
 function TextInput(props) {
   return (
     <input
@@ -23,62 +15,54 @@ function TextInput(props) {
     />
   );
 }
-function Checkbox({ label, ...rest }) {
+function Row({ label, children }) {
   return (
-    <label className="inline-flex items-center gap-2 text-sm">
-      <input type="checkbox" {...rest} />
-      <span>{label}</span>
-    </label>
+    <div className="grid grid-cols-1 gap-2 sm:grid-cols-[160px_1fr] items-center py-1.5">
+      <div className="text-xs sm:text-sm text-white/70">{label}</div>
+      <div>{children}</div>
+    </div>
   );
 }
-function toE164(s) {
+function toE164Raw(s) {
   const d = String(s || "").replace(/\D/g, "");
   if (!d) return "";
   return d.startsWith("1") ? `+${d}` : `+1${d}`;
 }
 
+/* ---------- component ---------- */
 const PAGE = 50;
 
-/**
- * 10DLC Number Pool (TFN-style minimal UI)
- * Fields we keep: e164 (Number), telnyx_number_id (Number ID), label (optional), verified (bool)
- * Hidden/defaulted: type='10dlc', provider='telnyx'
- */
 export default function NumberPool10DLC() {
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
   const [err, setErr] = useState("");
 
-  // filters (match TFN simplicity)
+  // filters (keep it super simple like your TFN UI)
   const [q, setQ] = useState("");
-  const [onlyVerified, setOnlyVerified] = useState(false);
-
-  // data
   const [rows, setRows] = useState([]);
   const [hasMore, setHasMore] = useState(false);
   const [page, setPage] = useState(0);
 
-  // add form (TFN-esque)
+  // add form: only Number + Telnyx Number ID + Verified
   const [addOpen, setAddOpen] = useState(false);
-  const [bulkOpen, setBulkOpen] = useState(false);
   const [form, setForm] = useState({
     e164: "",
     telnyx_number_id: "",
-    label: "",
-    verified: false,
+    verified: true,
   });
 
   const whereBuilder = useMemo(() => {
     return (b) => {
       b = b.eq("type", "10dlc");
-      if (onlyVerified) b = b.eq("verified", true);
+      // default: show only active numbers for quick pool management
+      b = b.eq("status", "active");
       if (q.trim()) {
         const term = q.trim();
-        b = b.or(`e164.ilike.%${term}%,label.ilike.%${term}%,telnyx_number_id.ilike.%${term}%`);
+        b = b.or(`e164.ilike.%${term}%,telnyx_number_id.ilike.%${term}%`);
       }
       return b;
     };
-  }, [q, onlyVerified]);
+  }, [q]);
 
   async function load(reset = false) {
     try {
@@ -89,7 +73,7 @@ export default function NumberPool10DLC() {
 
       let query = supabase
         .from("phone_numbers")
-        .select("id,e164,label,verified,telnyx_number_id,created_at,updated_at,type,provider", { count: "exact" })
+        .select("id,e164,telnyx_number_id,verified,status,created_at,updated_at", { count: "exact" })
         .order("created_at", { ascending: false })
         .range(offset, offset + PAGE - 1);
 
@@ -115,30 +99,31 @@ export default function NumberPool10DLC() {
   useEffect(() => {
     load(true);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [q, onlyVerified]);
+  }, [q]);
 
-  function patchLocal(id, patch) {
+  function patchRowLocal(id, patch) {
     setRows((prev) => prev.map((r) => (r.id === id ? { ...r, ...patch } : r)));
   }
 
-  async function upsertNumber(payload) {
+  async function upsertNumber({ id, e164, telnyx_number_id, verified }) {
     const clean = {
-      e164: toE164(payload.e164),
+      id,
+      e164: toE164Raw(e164),
+      telnyx_number_id: telnyx_number_id || null,
+      verified: !!verified,
       type: "10dlc",
+      // lock these to sensible defaults for pool mgmt
       provider: "telnyx",
-      telnyx_number_id: (payload.telnyx_number_id || "").trim() || null,
-      label: (payload.label || "").trim() || null,
-      verified: !!payload.verified,
+      capabilities_sms: true,
+      capabilities_voice: false,
+      status: "active",
       updated_at: new Date().toISOString(),
     };
     if (!clean.e164) throw new Error("Enter a valid phone number.");
-    const { data, error } = await supabase
+    const { error } = await supabase
       .from("phone_numbers")
-      .upsert(clean, { onConflict: "e164", defaultToNull: false })
-      .select()
-      .maybeSingle();
+      .upsert(clean, { onConflict: "e164", defaultToNull: false });
     if (error) throw error;
-    return data;
   }
 
   async function onAddOne() {
@@ -146,7 +131,7 @@ export default function NumberPool10DLC() {
       setSaving(true);
       setErr("");
       await upsertNumber(form);
-      setForm({ e164: "", telnyx_number_id: "", label: "", verified: false });
+      setForm({ e164: "", telnyx_number_id: "", verified: true });
       await load(true);
       setAddOpen(false);
     } catch (e) {
@@ -156,47 +141,35 @@ export default function NumberPool10DLC() {
     }
   }
 
-  async function onBulkImport(text) {
-    const lines = String(text || "")
-      .split(/\r?\n/)
-      .map((s) => s.trim())
-      .filter(Boolean);
-
-    if (!lines.length) return;
-
+  async function saveInline(r) {
     try {
       setSaving(true);
       setErr("");
-      for (const line of lines) {
-        await upsertNumber({ e164: line, telnyx_number_id: "", label: "", verified: false });
-      }
-      await load(true);
-      setBulkOpen(false);
+      await upsertNumber({
+        id: r.id,
+        e164: r.e164,
+        telnyx_number_id: r.telnyx_number_id,
+        verified: r.verified,
+      });
+      patchRowLocal(r.id, { _dirty: false });
     } catch (e) {
-      setErr(e.message || "Bulk import failed");
-    } finally {
-      setSaving(false);
-    }
-  }
-
-  async function saveRow(r) {
-    try {
-      setSaving(true);
-      setErr("");
-      await upsertNumber(r);
-      patchLocal(r.id, { _dirty: false });
-    } catch (e) {
-      setErr(e.message || "Failed to save");
+      setErr(e.message || "Failed to save row");
     } finally {
       setSaving(false);
     }
   }
 
   async function releaseRow(r) {
-    // Same behavior your TFN UI had: "Release" removes the row from pool
     try {
       setSaving(true);
-      const { error } = await supabase.from("phone_numbers").delete().eq("id", r.id);
+      setErr("");
+      const { error } = await supabase
+        .from("phone_numbers")
+        .update({
+          status: "released",
+          updated_at: new Date().toISOString(),
+        })
+        .eq("id", r.id);
       if (error) throw error;
       await load(true);
     } catch (e) {
@@ -211,6 +184,12 @@ export default function NumberPool10DLC() {
       <div className="mb-2 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
         <div className="font-medium">10DLC Number Pool</div>
         <div className="flex flex-wrap gap-2">
+          <TextInput
+            placeholder="Search number or Telnyx ID…"
+            value={q}
+            onChange={(e) => setQ(e.target.value)}
+            className="w-56"
+          />
           <button
             onClick={() => load(true)}
             disabled={loading}
@@ -224,12 +203,6 @@ export default function NumberPool10DLC() {
           >
             + Add number
           </button>
-          <button
-            onClick={() => setBulkOpen((v) => !v)}
-            className="rounded-md border border-indigo-400/30 px-3 py-1.5 text-sm hover:bg-indigo-400/10"
-          >
-            Bulk import
-          </button>
         </div>
       </div>
 
@@ -239,50 +212,34 @@ export default function NumberPool10DLC() {
         </div>
       )}
 
-      {/* Filters (TFN-style simple) */}
-      <div className="mb-3 grid gap-2 md:grid-cols-3">
-        <TextInput
-          placeholder="Search number / label / number ID…"
-          value={q}
-          onChange={(e) => setQ(e.target.value)}
-        />
-        <div className="flex items-center gap-4">
-          <Checkbox label="Verified only" checked={onlyVerified} onChange={(e) => setOnlyVerified(e.target.checked)} />
-        </div>
-      </div>
-
-      {/* Add Single (TFN-like) */}
+      {/* Add Single (TFN-style minimal) */}
       {addOpen && (
         <div className="mb-4 rounded-xl border border-white/10 bg-white/[0.03] p-3">
           <div className="mb-2 text-sm font-medium">Add 10DLC Number</div>
           <div className="grid gap-2 md:grid-cols-2">
-            <Row label="Number (E.164)">
+            <Row label="E.164 (e.g. +15551234567)">
               <TextInput
                 value={form.e164}
                 onChange={(e) => setForm((v) => ({ ...v, e164: e.target.value }))}
-                placeholder="+15551234567 or 5551234567"
+                placeholder="+1… or 555…"
               />
             </Row>
-            <Row label="Number ID">
+            <Row label="Telnyx Number ID">
               <TextInput
                 value={form.telnyx_number_id}
                 onChange={(e) => setForm((v) => ({ ...v, telnyx_number_id: e.target.value }))}
-                placeholder="e.g. 40019936 (or num_… if you use that format)"
+                placeholder="(e.g. 40019936 or num_xxx)"
               />
             </Row>
-            <Row label="Label (optional)">
-              <TextInput
-                value={form.label}
-                onChange={(e) => setForm((v) => ({ ...v, label: e.target.value }))}
-                placeholder="Internal note"
-              />
-            </Row>
-            <Row label="Status">
-              <Checkbox
-                label="Verified"
-                checked={!!form.verified}
-                onChange={(e) => setForm((v) => ({ ...v, verified: e.target.checked }))}
-              />
+            <Row label="Verified">
+              <label className="inline-flex items-center gap-2 text-sm">
+                <input
+                  type="checkbox"
+                  checked={!!form.verified}
+                  onChange={(e) => setForm((v) => ({ ...v, verified: e.target.checked }))}
+                />
+                <span>Mark as verified</span>
+              </label>
             </Row>
           </div>
           <div className="mt-2 flex items-center justify-end gap-2">
@@ -303,54 +260,47 @@ export default function NumberPool10DLC() {
         </div>
       )}
 
-      {/* Bulk Import (just numbers, like TFN) */}
-      {bulkOpen && <BulkImporter onCancel={() => setBulkOpen(false)} onImport={onBulkImport} saving={saving} />}
-
       {/* Table (TFN-style minimal) */}
       <div className="overflow-x-auto rounded-xl border border-white/10">
         <table className="min-w-full text-sm">
           <thead className="bg-white/5">
             <tr>
               <th className="px-2 py-2 text-left">Number</th>
-              <th className="px-2 py-2 text-left">Number ID</th>
-              <th className="px-2 py-2 text-left">Label</th>
+              <th className="px-2 py-2 text-left">Telnyx ID</th>
               <th className="px-2 py-2 text-left">Verified</th>
               <th className="px-2 py-2 text-left">Actions</th>
             </tr>
           </thead>
           <tbody>
             {rows.map((r) => (
-              <tr key={r.id} className="border-t border-white/10">
+              <tr key={r.id} className="border-t border-white/10 align-top">
                 <td className="px-2 py-2">
-                  <EditCell
+                  <TextInput
                     value={r.e164}
-                    onChange={(v) => patchLocal(r.id, { e164: v, _dirty: true })}
+                    onChange={(e) => patchRowLocal(r.id, { e164: e.target.value, _dirty: true })}
                     className="font-mono"
                   />
+                  <div className="mt-1 text-[11px] text-white/50">Status: {r.status}</div>
                 </td>
                 <td className="px-2 py-2">
-                  <EditCell
+                  <TextInput
                     value={r.telnyx_number_id || ""}
-                    onChange={(v) => patchLocal(r.id, { telnyx_number_id: v, _dirty: true })}
-                  />
-                </td>
-                <td className="px-2 py-2">
-                  <EditCell
-                    value={r.label || ""}
-                    onChange={(v) => patchLocal(r.id, { label: v, _dirty: true })}
+                    onChange={(e) =>
+                      patchRowLocal(r.id, { telnyx_number_id: e.target.value, _dirty: true })
+                    }
                   />
                 </td>
                 <td className="px-2 py-2">
                   <input
                     type="checkbox"
                     checked={!!r.verified}
-                    onChange={(e) => patchLocal(r.id, { verified: e.target.checked, _dirty: true })}
+                    onChange={(e) => patchRowLocal(r.id, { verified: e.target.checked, _dirty: true })}
                   />
                 </td>
                 <td className="px-2 py-2">
                   <div className="flex flex-col gap-1">
                     <button
-                      onClick={() => saveRow(r)}
+                      onClick={() => saveInline(r)}
                       disabled={saving || !r._dirty}
                       className="rounded-md border border-white/20 px-2 py-1 text-xs hover:bg-white/10 disabled:opacity-50"
                     >
@@ -369,7 +319,7 @@ export default function NumberPool10DLC() {
             ))}
             {rows.length === 0 && !loading && (
               <tr>
-                <td className="px-3 py-6 text-center text-white/60" colSpan={5}>
+                <td className="px-3 py-6 text-center text-white/60" colSpan={4}>
                   No numbers found.
                 </td>
               </tr>
@@ -392,51 +342,6 @@ export default function NumberPool10DLC() {
           </button>
         </div>
       )}
-    </div>
-  );
-}
-
-function EditCell({ value, onChange, className }) {
-  return (
-    <input
-      type="text"
-      value={value ?? ""}
-      onChange={(e) => onChange(e.target.value)}
-      className={[
-        "w-full rounded-md border border-white/10 bg-black/30 px-2 py-1 outline-none",
-        "focus:ring-2 focus:ring-indigo-500/30",
-        className || "",
-      ].join(" ")}
-    />
-  );
-}
-
-function BulkImporter({ onCancel, onImport, saving }) {
-  const [text, setText] = useState("");
-  return (
-    <div className="mb-4 rounded-xl border border-white/10 bg-white/[0.03] p-3">
-      <div className="mb-2 text-sm font-medium">Bulk import numbers (one per line)</div>
-      <textarea
-        value={text}
-        onChange={(e) => setText(e.target.value)}
-        className="h-40 w-full rounded-md border border-white/15 bg-black/40 p-2 outline-none focus:ring-2 focus:ring-indigo-500/40"
-        placeholder="+15551234567\n+16155551234\n…"
-      />
-      <div className="mt-2 flex items-center justify-end gap-2">
-        <button
-          onClick={onCancel}
-          className="rounded-md border border-white/20 px-3 py-1.5 text-sm hover:bg-white/10"
-        >
-          Cancel
-        </button>
-        <button
-          onClick={() => onImport(text)}
-          disabled={saving}
-          className="rounded-md border border-emerald-400/30 px-3 py-1.5 text-sm hover:bg-emerald-400/10"
-        >
-          {saving ? "Importing…" : "Import"}
-        </button>
-      </div>
     </div>
   );
 }
