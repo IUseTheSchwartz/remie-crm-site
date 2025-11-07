@@ -1,27 +1,20 @@
 // File: netlify/functions/ai-dispatch.js
 // Thin dispatcher: parse -> guard -> load agent -> delegate to AI brain -> send one reply.
-// Adds minimal per-contact AI context so credentials link shows only on the first AI message
-// and the final time confirmation. Keeps your price-guard and appointment creation flow.
+// When AI confirms a time, create a CRM appointment for the contact.
+// Now passes `context.firstTurn` and agent’s phone/email/site into the brain.
+// Also fixes "quotes" guard copy (no beneficiary dependency).
 
 const { getServiceClient } = require("./_supabase");
 const fetch = require("node-fetch");
 const { AbortController } = require("abort-controller");
-const { decide } = require("./ai-brain"); // pure logic module
+const { decide } = require("./ai-brain");
 
 /* ---------------- HTTP helpers ---------------- */
 function ok(body) {
-  return {
-    statusCode: 200,
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(body || { ok: true }),
-  };
+  return { statusCode: 200, headers: { "Content-Type": "application/json" }, body: JSON.stringify(body || { ok: true }) };
 }
 function bad(msg, code = 400, extra = {}) {
-  return {
-    statusCode: code,
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ ok: false, error: msg, ...extra }),
-  };
+  return { statusCode: code, headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ok: false, error: msg, ...extra }) };
 }
 
 /* ---------------- Parsing helpers ---------------- */
@@ -42,8 +35,7 @@ function deriveSendUrl(event) {
       : `${String(env).replace(/\/$/, "")}/.netlify/functions/messages-send`;
 
   const proto =
-    (event.headers &&
-      (event.headers["x-forwarded-proto"] || event.headers["X-Forwarded-Proto"])) || "https";
+    (event.headers && (event.headers["x-forwarded-proto"] || event.headers["X-Forwarded-Proto"])) || "https";
   const host = (event.headers && (event.headers.host || event.headers.Host)) || "";
   return host ? `${proto}://${host}/.netlify/functions/messages-send` : null;
 }
@@ -63,47 +55,20 @@ async function getAgentProfile(db, user_id) {
   return data || {};
 }
 
-function buildAgentBookingLink(agent) {
+function buildAgentSite(agent) {
   const slug = (agent?.slug || "").trim();
   if (slug && /^[a-z0-9-]+$/i.test(slug)) return `${agentSiteOrigin()}/a/${slug}`;
-  if (agent?.calendly_url) return agent.calendly_url;
-  return "";
+  // fall back to Calendly if no slug/site
+  return agent?.calendly_url || "";
 }
 
-async function getContactMeta(db, contact_id) {
-  try {
-    const { data } = await db
-      .from("message_contacts")
-      .select("meta")
-      .eq("id", contact_id)
-      .maybeSingle();
-    return (data && data.meta) || {};
-  } catch {
-    return {};
-  }
-}
-
-async function mergeContactMeta(db, contact_id, patch = {}) {
-  const cur = await getContactMeta(db, contact_id);
-  const next = { ...(cur || {}), ...patch };
-  await db.from("message_contacts").update({ meta: next }).eq("id", contact_id);
-  return next;
-}
-
-/* ---------------- Time parsing (label -> next datetime in tz) ---------------- */
+/* ---------------- Time parsing ---------------- */
 function getNowPartsInTZ(tz) {
   const fmt = new Intl.DateTimeFormat("en-US", {
-    timeZone: tz, year: "numeric", month: "2-digit", day: "2-digit",
-    hour: "2-digit", minute: "2-digit", hour12: false
+    timeZone: tz, year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", hour12: false
   });
   const parts = Object.fromEntries(fmt.formatToParts(new Date()).map(p => [p.type, p.value]));
-  return {
-    year: Number(parts.year),
-    month: Number(parts.month),
-    day: Number(parts.day),
-    hour: Number(parts.hour),
-    minute: Number(parts.minute),
-  };
+  return { year: Number(parts.year), month: Number(parts.month), day: Number(parts.day), hour: Number(parts.hour), minute: Number(parts.minute) };
 }
 function toUTCFromTZ({ year, month, day, hour, minute }, tz) {
   const asLocal = new Date(Date.UTC(year, month - 1, day, hour, minute, 0));
@@ -115,14 +80,12 @@ function toUTCFromTZ({ year, month, day, hour, minute }, tz) {
 function parseClockLabelToNext(label, tz = "America/Chicago") {
   const s = String(label || "").trim().toUpperCase();
   if (s === "NOON") return parseClockLabelToNext("12:00 PM", tz);
-
   const m = s.match(/\b(\d{1,2})(?::(\d{2}))?\s*(AM|PM)\b/);
   if (!m) return null;
   let hour = Number(m[1]);
   const minute = Number(m[2] || "0");
   const ampm = m[3];
-
-  if (hour === 12) hour = (ampm === "AM") ? 0 : 12; // 12AM -> 0, 12PM -> 12
+  if (hour === 12) hour = (ampm === "AM") ? 0 : 12;
   else if (ampm === "PM") hour += 12;
 
   const nowParts = getNowPartsInTZ(tz);
@@ -144,11 +107,9 @@ function parseClockLabelToNext(label, tz = "America/Chicago") {
 exports.handler = async (event) => {
   const db = getServiceClient();
 
-  // Decode body (supports base64)
+  // Decode body
   let raw = event.body || "";
-  if (event.isBase64Encoded) {
-    try { raw = Buffer.from(raw, "base64").toString("utf8"); } catch {}
-  }
+  if (event.isBase64Encoded) { try { raw = Buffer.from(raw, "base64").toString("utf8"); } catch {} }
 
   // Parse body robustly
   const headers = event.headers || {};
@@ -165,8 +126,7 @@ exports.handler = async (event) => {
   const { user_id, contact_id, from, to, text } = body || {};
 
   console.log("[ai-dispatch] payload:", {
-    user_id, contact_id, from, to,
-    text: text ? `(len=${text.length})` : undefined,
+    user_id, contact_id, from, to, text: text ? `(len=${text.length})` : undefined,
   });
   if (!user_id || !contact_id || !from || !to) {
     console.error("[ai-dispatch] missing fields", { ct, sample: raw?.slice?.(0, 160) });
@@ -177,7 +137,7 @@ exports.handler = async (event) => {
   try {
     const { data: contact } = await db
       .from("message_contacts")
-      .select("id, subscribed, ai_booked, full_name, ai_language, meta")
+      .select("id, subscribed")
       .eq("id", contact_id)
       .maybeSingle();
     if (contact?.subscribed === false) return ok({ ok: true, note: "contact_unsubscribed" });
@@ -185,23 +145,40 @@ exports.handler = async (event) => {
     console.warn("[ai-dispatch] contact lookup warn:", e?.message || e);
   }
 
-  // Load agent profile and compute brand-safe booking link
+  // Load agent profile + site/phone/email
   const agent = await getAgentProfile(db, user_id).catch(() => ({}));
-  const agentName = agent?.full_name || "your licensed broker";
-  const bookingLink = buildAgentBookingLink(agent);
+  const agentName  = agent?.full_name || "your licensed broker";
+  const agentSite  = buildAgentSite(agent);   // prefer agent site (slug) else Calendly
+  const agentPhone = agent?.phone || "";
+  const agentEmail = agent?.email || "";
   const tz = process.env.AGENT_DEFAULT_TZ || "America/Chicago";
 
-  // --------- SAFETY NET: price/quotes/estimates guard ----------
+  // Detect if this is the FIRST outbound to this contact (to gate verify/link)
+  let firstTurn = false;
+  try {
+    const { data: prev } = await db
+      .from("messages")
+      .select("id")
+      .eq("contact_id", contact_id)
+      .eq("direction", "outgoing")
+      .limit(1);
+    firstTurn = !(prev && prev.length);
+  } catch {}
+
+  // --------- Price/quotes/estimates guard (no beneficiary dependency) ----------
   const norm = String(text || "").toLowerCase();
   const priceHint = /\b(price|how much|cost|monthly|payment|premium|quotes?|estimate|estimates?|rate|rates?)\b/.test(norm);
   if (priceHint) {
     const es = /[ñáéíóúü¿¡]/.test(norm) || /(precio|costo|prima|cotizaci[oó]n|cotizaciones)/.test(norm);
-    const outText = es
-      ? `Perfecto—las cifras dependen de edad/salud y del beneficiario. Es una llamada breve de 5–7 min.${bookingLink ? ` Puede elegir horario aquí: ${bookingLink}` : ""} ¿Qué hora le queda mejor?`
-      : `Totally—exact numbers depend on age/health and beneficiary. It’s a quick 5–7 min call.${bookingLink ? ` You can grab a time here: ${bookingLink}` : ""} What time works for you?`;
+    const base = es
+      ? `Claro—las cifras dependen sobre todo de su edad y salud. Es una llamada breve de 5–7 min.`
+      : `Totally—exact numbers mainly depend on age and health. It’s a quick 5–7 min call.`;
+    const linkLine = agentSite && firstTurn
+      ? (es ? ` Puede elegir un horario aquí: ${agentSite}` : ` You can grab a time here: ${agentSite}`)
+      : "";
+    const outText = base + linkLine + (es ? ` ¿Qué hora le queda mejor?` : ` What time works for you?`);
 
     const sendUrl = deriveSendUrl(event);
-    console.log("[ai-dispatch] price-guard matched; sending deterministic price reply via:", sendUrl);
     if (!sendUrl) return ok({ ok: false, error: "no_outbound_url", ai_intent: "price", via: "price-guard" });
 
     const controller = new AbortController();
@@ -209,7 +186,8 @@ exports.handler = async (event) => {
     let res, json = {};
     try {
       res = await fetch(sendUrl, {
-        method: "POST", headers: { "Content-Type": "application/json" },
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ to: from, body: outText, requesterId: user_id, sent_by_ai: true, ai_intent: "price" }),
         signal: controller.signal,
       });
@@ -221,26 +199,21 @@ exports.handler = async (event) => {
 
     return ok({ ok: true, ai: "responded", ai_intent: "price", via: "price-guard", send_status: json?.error ? "error" : "ok", send_json: json });
   }
-  // ------------------------------------------------------------
+  // -----------------------------------------------------------------------------------
 
-  // -------- Load & pass AI context so the brain knows if creds were already shown
-  const metaNow = await getContactMeta(db, contact_id);
-  const aiContext = {
-    last_intent: metaNow?.ai_last_intent || null,
-    promptedHour: metaNow?.ai_prompted_hour || null,
-    sent_credentials: metaNow?.ai_sent_credentials === true,
-  };
-
-  // Delegate to brain with context
+  // Delegate to brain (with firstTurn + agent details)
   let decision = { text: "", intent: "general" };
   try {
-    decision = (await decide({
-      text,
-      agentName,
-      calendlyLink: bookingLink,
-      tz,
-      context: aiContext, // <<< critical
-    })) || decision;
+    decision =
+      (await decide({
+        text,
+        agentName,
+        agentSite,
+        agentPhone,
+        agentEmail,
+        tz,
+        context: { firstTurn }, // gate link/verify to first message
+      })) || decision;
   } catch (e) {
     console.error("[ai-dispatch] brain error:", e?.message || e);
     return ok({ ok: true, note: "brain_error_no_send" });
@@ -266,7 +239,8 @@ exports.handler = async (event) => {
     const label =
       (decision?.meta?.label) ||
       (decision?.meta?.time_label) ||
-      (outText.match(/at\s+([0-9]{1,2}(?::[0-9]{2})?\s?(?:AM|PM))/i)?.[1]) ||
+      (outText.match(/call you at\s+([0-9]{1,2}(?::[0-9]{2})?\s?(?:AM|PM))/i)?.[1]) ||
+      (outText.match(/a las\s+([0-9]{1,2}(?::[0-9]{2})?\s?(?:AM|PM))/i)?.[1]) ||
       null;
 
     const iso = label ? parseClockLabelToNext(label, tz) : null;
@@ -288,10 +262,7 @@ exports.handler = async (event) => {
       if (error) throw error;
       createdAppointmentId = data?.id || null;
 
-      // mark contact as booked for your UI
-      try {
-        await db.from("message_contacts").update({ ai_booked: true }).eq("id", contact_id);
-      } catch {}
+      try { await db.from("message_contacts").update({ ai_booked: true }).eq("id", contact_id); } catch {}
     } catch (e) {
       console.warn("[ai-dispatch] create appointment warn:", e?.message || e);
     }
@@ -299,7 +270,6 @@ exports.handler = async (event) => {
 
   // Send via messages-send
   const sendUrl = deriveSendUrl(event);
-  console.log("[ai-dispatch] OUTBOUND_SEND_URL:", sendUrl);
   if (!sendUrl) return ok({ ok: false, error: "no_outbound_url", ai_intent: aiIntent });
 
   const controller = new AbortController();
@@ -327,36 +297,8 @@ exports.handler = async (event) => {
     clearTimeout(timeout);
   }
 
-  // Persist updated AI context on the contact (so creds only first & final)
-  try {
-    const patch = {};
-    if (decision?.meta?.context_patch) {
-      if ("last_intent" in decision.meta.context_patch) patch.ai_last_intent = decision.meta.context_patch.last_intent || null;
-      if ("promptedHour" in decision.meta.context_patch) patch.ai_prompted_hour = decision.meta.context_patch.promptedHour || null;
-      if ("sent_credentials" in decision.meta.context_patch) patch.ai_sent_credentials = !!decision.meta.context_patch.sent_credentials;
-    }
-    if (Object.keys(patch).length) {
-      await mergeContactMeta(db, contact_id, patch);
-    }
-  } catch (e) {
-    console.warn("[ai-dispatch] persist ai context warn:", e?.message || e);
-  }
-
   if (!res || !res.ok || json?.error) {
     return ok({ ok: false, error: json?.error || `status_${res?.status}`, ai_intent: aiIntent });
-  }
-
-  // Best-effort tag; ignore if your schema doesn't have these columns
-  try {
-    if (json?.id) {
-      const { error: colErr } = await db
-        .from("messages")
-        .update({ sent_by_ai: true /*, ai_intent: aiIntent*/ })
-        .eq("id", json.id);
-      if (colErr) console.warn("[ai-dispatch] messages tag warn:", colErr.message);
-    }
-  } catch (e) {
-    console.warn("[ai-dispatch] tag AI message warn:", e?.message || e);
   }
 
   return ok({
