@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { supabase } from "../../lib/supabaseClient.js";
 import { toE164 } from "../../lib/phone.js";
 
-const TABLE = "numbers_10dlc";
+const TABLE = "phone_numbers";
 
 function Row({ label, children }) {
   return (
@@ -24,22 +24,25 @@ export default function NumberPool10DLC() {
   // add form
   const [phone, setPhone] = useState("");
   const [telnyxId, setTelnyxId] = useState("");
-  const [brandId, setBrandId] = useState("");
+  const [messagingProfileId, setMessagingProfileId] = useState("");
   const [campaignId, setCampaignId] = useState("");
-  const [notes, setNotes] = useState("");
+  const [label, setLabel] = useState("");
 
   async function loadAll() {
     setLoading(true);
     setErr("");
     try {
-      // Numbers
+      // Numbers (10DLC only)
       const { data: nums, error: nErr } = await supabase
         .from(TABLE)
-        .select("id, phone_number, telnyx_number_id, brand_id, campaign_id, assigned_to, date_assigned, notes, active")
+        .select(
+          "id, e164, type, provider, telnyx_number_id, messaging_profile_id, campaign_id, area_code, capabilities_sms, capabilities_voice, status, assigned_user_id, assigned_team_id, label, created_at, updated_at"
+        )
+        .eq("type", "10dlc")
         .order("created_at", { ascending: false });
       if (nErr) throw nErr;
 
-      // Agents list (for human-friendly assignment)
+      // Agents list (for assignment)
       const { data: profs, error: pErr } = await supabase
         .from("agent_profiles")
         .select("user_id, email, full_name")
@@ -50,14 +53,7 @@ export default function NumberPool10DLC() {
       setNumbers(nums || []);
       setAgents(profs || []);
     } catch (e) {
-      // Nice message if table doesn’t exist yet
-      if (String(e?.message || "").includes(`relation "${TABLE}" does not exist`) || e?.code === "42P01") {
-        setErr(
-          `The ${TABLE} table was not found. Create it in Supabase first.`
-        );
-      } else {
-        setErr(e.message || "Failed to load 10DLC pool");
-      }
+      setErr(e.message || "Failed to load 10DLC pool");
     } finally {
       setLoading(false);
     }
@@ -69,9 +65,19 @@ export default function NumberPool10DLC() {
 
   const agentById = useMemo(() => {
     const m = new Map();
-    agents.forEach(a => m.set(a.user_id, a));
+    agents.forEach((a) => m.set(a.user_id, a));
     return m;
   }, [agents]);
+
+  function getAreaCode(e164) {
+    // e164 like +1AAAxxxxxxx
+    try {
+      if (!e164?.startsWith("+1") || e164.length < 5) return null;
+      return parseInt(e164.slice(2, 5), 10) || null;
+    } catch {
+      return null;
+    }
+  }
 
   async function addNumber() {
     setSaving(true);
@@ -81,12 +87,20 @@ export default function NumberPool10DLC() {
       if (!e164) throw new Error("Enter a valid US phone number");
 
       const payload = {
-        phone_number: e164,
+        e164,
+        type: "10dlc",
+        provider: "telnyx",
         telnyx_number_id: telnyxId || null,
-        brand_id: brandId || null,
+        messaging_profile_id: messagingProfileId || null,
         campaign_id: campaignId || null,
-        notes: notes || null,
-        active: true,
+        area_code: getAreaCode(e164),
+        capabilities_sms: true,
+        capabilities_voice: true,
+        status: "active",
+        assigned_user_id: null,
+        assigned_team_id: null,
+        label: label || null,
+        updated_at: new Date().toISOString(),
       };
 
       const { error } = await supabase.from(TABLE).insert(payload).single();
@@ -94,9 +108,9 @@ export default function NumberPool10DLC() {
 
       setPhone("");
       setTelnyxId("");
-      setBrandId("");
+      setMessagingProfileId("");
       setCampaignId("");
-      setNotes("");
+      setLabel("");
       await loadAll();
     } catch (e) {
       setErr(e.message || "Failed to add number");
@@ -105,14 +119,18 @@ export default function NumberPool10DLC() {
     }
   }
 
-  async function assignNumber(id, userId) {
+  async function assignToUser(id, userId) {
     setSaving(true);
     setErr("");
     try {
       if (!userId) throw new Error("Pick a user to assign");
       const { error } = await supabase
         .from(TABLE)
-        .update({ assigned_to: userId, date_assigned: new Date().toISOString() })
+        .update({
+          assigned_user_id: userId,
+          assigned_team_id: null, // clear team if directly assigning to user
+          updated_at: new Date().toISOString(),
+        })
         .eq("id", id);
       if (error) throw error;
       await loadAll();
@@ -123,13 +141,17 @@ export default function NumberPool10DLC() {
     }
   }
 
-  async function unassignNumber(id) {
+  async function unassign(id) {
     setSaving(true);
     setErr("");
     try {
       const { error } = await supabase
         .from(TABLE)
-        .update({ assigned_to: null, date_assigned: null })
+        .update({
+          assigned_user_id: null,
+          assigned_team_id: null,
+          updated_at: new Date().toISOString(),
+        })
         .eq("id", id);
       if (error) throw error;
       await loadAll();
@@ -140,11 +162,16 @@ export default function NumberPool10DLC() {
     }
   }
 
-  async function toggleActive(id, active) {
+  async function updateStatus(id, status) {
     setSaving(true);
     setErr("");
     try {
-      const { error } = await supabase.from(TABLE).update({ active: !!active }).eq("id", id);
+      if (!["active", "suspended", "released"].includes(status))
+        throw new Error("Invalid status");
+      const { error } = await supabase
+        .from(TABLE)
+        .update({ status, updated_at: new Date().toISOString() })
+        .eq("id", id);
       if (error) throw error;
       await loadAll();
     } catch (e) {
@@ -154,7 +181,7 @@ export default function NumberPool10DLC() {
     }
   }
 
-  async function deleteNumber(id) {
+  async function removeNumber(id) {
     if (!confirm("Delete this number from the pool?")) return;
     setSaving(true);
     setErr("");
@@ -207,11 +234,11 @@ export default function NumberPool10DLC() {
             className="w-full rounded-md border border-white/15 bg-black/40 px-3 py-2 outline-none"
           />
         </Row>
-        <Row label="Brand ID (10DLC)">
+        <Row label="Messaging Profile ID">
           <input
-            value={brandId}
-            onChange={(e) => setBrandId(e.target.value)}
-            placeholder="Brand ID"
+            value={messagingProfileId}
+            onChange={(e) => setMessagingProfileId(e.target.value)}
+            placeholder="Telnyx messaging_profile_id"
             className="w-full rounded-md border border-white/15 bg-black/40 px-3 py-2 outline-none"
           />
         </Row>
@@ -223,11 +250,11 @@ export default function NumberPool10DLC() {
             className="w-full rounded-md border border-white/15 bg-black/40 px-3 py-2 outline-none"
           />
         </Row>
-        <Row label="Notes">
+        <Row label="Label">
           <input
-            value={notes}
-            onChange={(e) => setNotes(e.target.value)}
-            placeholder="Optional"
+            value={label}
+            onChange={(e) => setLabel(e.target.value)}
+            placeholder="Optional name (e.g., Nashville AC-matcher)"
             className="w-full rounded-md border border-white/15 bg-black/40 px-3 py-2 outline-none"
           />
         </Row>
@@ -250,64 +277,71 @@ export default function NumberPool10DLC() {
             <tr>
               <th className="px-3 py-2 text-left text-white/70">Number</th>
               <th className="px-3 py-2 text-left text-white/70">Telnyx ID</th>
-              <th className="px-3 py-2 text-left text-white/70">Brand</th>
+              <th className="px-3 py-2 text-left text-white/70">Profile</th>
               <th className="px-3 py-2 text-left text-white/70">Campaign</th>
               <th className="px-3 py-2 text-left text-white/70">Assigned To</th>
-              <th className="px-3 py-2 text-left text-white/70">Assigned On</th>
-              <th className="px-3 py-2 text-left text-white/70">Active</th>
-              <th className="px-3 py-2 text-left text-white/70">Notes</th>
+              <th className="px-3 py-2 text-left text-white/70">Status</th>
+              <th className="px-3 py-2 text-left text-white/70">Label</th>
               <th className="px-3 py-2 text-left text-white/70">Actions</th>
             </tr>
           </thead>
           <tbody>
             {numbers.map((n) => {
-              const agent = n.assigned_to ? agentById.get(n.assigned_to) : null;
+              const agent = n.assigned_user_id ? agentById.get(n.assigned_user_id) : null;
               const assignedLabel = agent
-                ? `${agent.full_name || agent.email || n.assigned_to}`
-                : n.assigned_to
-                ? n.assigned_to
+                ? `${agent.full_name || agent.email || n.assigned_user_id}`
+                : n.assigned_user_id
+                ? n.assigned_user_id
+                : n.assigned_team_id
+                ? `Team ${n.assigned_team_id}`
                 : "—";
-              const date = n.date_assigned ? new Date(n.date_assigned).toLocaleString() : "—";
 
               return (
                 <tr key={n.id} className="border-t border-white/10">
-                  <td className="px-3 py-2">{n.phone_number}</td>
+                  <td className="px-3 py-2">{n.e164}</td>
                   <td className="px-3 py-2 text-white/70">{n.telnyx_number_id || "—"}</td>
-                  <td className="px-3 py-2 text-white/70">{n.brand_id || "—"}</td>
-                  <td className="px-3 py-2 text-white/70">{n.campaign_id || "—"}</td>
-                  <td className="px-3 py-2">{assignedLabel}</td>
-                  <td className="px-3 py-2 text-white/60">{date}</td>
-                  <td className="px-3 py-2">
-                    <label className="inline-flex items-center gap-2">
-                      <input
-                        type="checkbox"
-                        checked={!!n.active}
-                        onChange={(e) => toggleActive(n.id, e.target.checked)}
-                      />
-                      <span className="text-white/80">{n.active ? "Yes" : "No"}</span>
-                    </label>
+                  <td className="px-3 py-2 text-white/70">
+                    {n.messaging_profile_id || "—"}
                   </td>
-                  <td className="px-3 py-2 max-w-[280px]">
-                    <div title={n.notes || ""} className="truncate">{n.notes || "—"}</div>
+                  <td className="px-3 py-2 text-white/70">
+                    {n.campaign_id || "—"}
+                  </td>
+                  <td className="px-3 py-2">{assignedLabel}</td>
+                  <td className="px-3 py-2">
+                    <select
+                      className="rounded-md border border-white/15 bg-black/40 px-2 py-1 outline-none"
+                      value={n.status}
+                      onChange={(e) => updateStatus(n.id, e.target.value)}
+                      disabled={saving}
+                    >
+                      <option value="active">active</option>
+                      <option value="suspended">suspended</option>
+                      <option value="released">released</option>
+                    </select>
+                  </td>
+                  <td className="px-3 py-2 max-w-[220px]">
+                    <div title={n.label || ""} className="truncate">
+                      {n.label || "—"}
+                    </div>
                   </td>
                   <td className="px-3 py-2">
                     <div className="flex flex-wrap gap-2">
                       <AssignDropdown
                         agents={agents}
-                        onAssign={(userId) => assignNumber(n.id, userId)}
+                        onAssign={(userId) => assignToUser(n.id, userId)}
                         disabled={saving}
                       />
-                      {n.assigned_to ? (
+                      {(n.assigned_user_id || n.assigned_team_id) && (
                         <button
-                          onClick={() => unassignNumber(n.id)}
+                          onClick={() => unassign(n.id)}
                           className="rounded-md border border-white/20 px-2 py-1 text-xs hover:bg-white/10"
                           disabled={saving}
                         >
                           Unassign
                         </button>
-                      ) : null}
+                      )}
                       <button
-                        onClick={() => deleteNumber(n.id)}
+                        onClick={() => removeNumber(n.id)}
                         className="rounded-md border border-rose-400/30 px-2 py-1 text-xs hover:bg-rose-500/10"
                         disabled={saving}
                       >
@@ -320,7 +354,7 @@ export default function NumberPool10DLC() {
             })}
             {numbers.length === 0 && !loading && (
               <tr>
-                <td className="px-3 py-6 text-center text-white/60" colSpan={9}>
+                <td className="px-3 py-6 text-center text-white/60" colSpan={8}>
                   No numbers yet. Add your first 10DLC number above.
                 </td>
               </tr>
@@ -330,8 +364,9 @@ export default function NumberPool10DLC() {
       </div>
 
       <p className="mt-2 text-xs text-white/45">
-        Assigning a number sets <code>assigned_to</code> and <code>date_assigned</code>. Messaging code
-        should pull a user’s default 10DLC number from this table (preferring assigned numbers).
+        This list shows <code>phone_numbers</code> where <code>type='10dlc'</code>. Assignment writes{" "}
+        <code>assigned_user_id</code> (and clears <code>assigned_team_id</code>). Status maps to the{" "}
+        <code>status</code> column.
       </p>
     </div>
   );
@@ -344,17 +379,20 @@ function AssignDropdown({ agents, onAssign, disabled }) {
   const filtered = useMemo(() => {
     const q = query.toLowerCase().trim();
     if (!q) return agents.slice(0, 25);
-    return agents.filter(a =>
-      (a.email || "").toLowerCase().includes(q) ||
-      (a.full_name || "").toLowerCase().includes(q)
-    ).slice(0, 25);
+    return agents
+      .filter(
+        (a) =>
+          (a.email || "").toLowerCase().includes(q) ||
+          (a.full_name || "").toLowerCase().includes(q)
+      )
+      .slice(0, 25);
   }, [agents, query]);
 
   return (
     <div className="relative">
       <button
         className="rounded-md border border-white/20 px-2 py-1 text-xs hover:bg-white/10"
-        onClick={() => setOpen(o => !o)}
+        onClick={() => setOpen((o) => !o)}
         disabled={disabled}
       >
         Assign
@@ -368,10 +406,13 @@ function AssignDropdown({ agents, onAssign, disabled }) {
             onChange={(e) => setQuery(e.target.value)}
           />
           <div className="max-h-64 overflow-auto">
-            {filtered.map(a => (
+            {filtered.map((a) => (
               <button
                 key={a.user_id}
-                onClick={() => { onAssign(a.user_id); setOpen(false); }}
+                onClick={() => {
+                  onAssign(a.user_id);
+                  setOpen(false);
+                }}
                 className="block w-full rounded-md px-2 py-1 text-left text-xs hover:bg-white/10"
               >
                 <div className="font-medium">{a.full_name || "—"}</div>
