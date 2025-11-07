@@ -3,8 +3,8 @@ import { useEffect, useMemo, useState } from "react";
 import { supabase } from "../lib/supabaseClient.js";
 import useIsAdminAllowlist from "../hooks/useIsAdminAllowlist.js";
 
-// 🔁 REPLACE TFN section with 10DLC number pool admin
-import NumberPool10DLC from "../components/admin/NumberPool10DLC.jsx";
+// ✅ Use the TFN-style wrapper (renders the 10DLC pool)
+import PhoneNumberPoolAdminSection from "../components/admin/PhoneNumberPoolAdminSection.jsx";
 
 /* ------------------------ small helpers ------------------------ */
 function centsToUsd(cents) {
@@ -55,7 +55,7 @@ export default function AdminConsole() {
   const [saving, setSaving] = useState(false);
   const [err, setErr] = useState("");
 
-  // --- NEW: Global credit UI state ---
+  // --- Global credit UI state ---
   const [creditUsd, setCreditUsd] = useState("0.10");
   const [creditNote, setCreditNote] = useState("Thanks for being with Remie CRM!");
   const [creditBusy, setCreditBusy] = useState(false);
@@ -67,7 +67,7 @@ export default function AdminConsole() {
     setErr("");
 
     try {
-      // 1) base: agent profiles (users list)
+      // 1) agent profiles
       const { data: profiles, error: pErr } = await supabase
         .from("agent_profiles")
         .select("user_id, email, full_name, created_at")
@@ -106,7 +106,7 @@ export default function AdminConsole() {
         walletByUser.set(w.user_id, Number(w.balance_cents ?? 0));
       });
 
-      // 5) message templates (enabled map & templates)
+      // 5) message templates
       const { data: tmpl, error: mtErr } = await supabase
         .from("message_templates")
         .select("user_id, enabled, templates");
@@ -119,7 +119,7 @@ export default function AdminConsole() {
         });
       });
 
-      // 6) backup table (previous enabled)
+      // 6) backup
       const { data: backups, error: bErr } = await supabase
         .from("message_templates_backup")
         .select("user_id, enabled_backup");
@@ -148,7 +148,7 @@ export default function AdminConsole() {
         const t = tmplByUser.get(p.user_id) || { enabled: {}, templates: {} };
         const enabled_backup = backupByUser.get(p.user_id) || null;
 
-        const keyUniverse = allKeysFrom(t.enabled, t.templates);
+        const keyUniverse = Object.keys({ ...(t.enabled || {}), ...(t.templates || {}) });
         const allOff =
           keyUniverse.length > 0
             ? keyUniverse.every((k) => Boolean(t.enabled?.[k]) === false)
@@ -157,7 +157,7 @@ export default function AdminConsole() {
 
         const lead_rescue_enabled = leadRescueByUser.has(p.user_id)
           ? leadRescueByUser.get(p.user_id)
-          : true; // default ON if no row yet
+          : true; // default ON
 
         return {
           id: p.user_id,
@@ -229,6 +229,14 @@ export default function AdminConsole() {
         const templates = row._templates || {};
         const enabled_backup = row._enabled_backup || null;
 
+        const keyUniverse = new Set([...Object.keys(enabled), ...Object.keys(templates)]);
+
+        function makeAll(mapA = {}, mapB = {}, val) {
+          const out = {};
+          for (const k of new Set([...Object.keys(mapA), ...Object.keys(mapB)])) out[k] = Boolean(val);
+          return out;
+        }
+
         if (row.templates_locked) {
           const nextBackup = enabled_backup ?? enabled;
           const nextEnabled = makeAll(enabled, templates, false);
@@ -246,7 +254,9 @@ export default function AdminConsole() {
           row._enabled = nextEnabled;
           row._enabled_backup = nextBackup;
         } else {
-          const nextEnabled = enabled_backup ? enabled_backup : makeAll(enabled, templates, true);
+          const nextEnabled = enabled_backup
+            ? enabled_backup
+            : makeAll(enabled, templates, true);
 
           const { error } = await supabase
             .from("message_templates")
@@ -314,6 +324,12 @@ export default function AdminConsole() {
         const templates = r._templates || {};
         const enabled_backup = r._enabled_backup || null;
 
+        function makeAll(mapA = {}, mapB = {}, val) {
+          const out = {};
+          for (const k of new Set([...Object.keys(mapA), ...Object.keys(mapB)])) out[k] = Boolean(val);
+          return out;
+        }
+
         if (r.templates_locked) {
           const nextBackup = enabled_backup ?? enabled;
           const nextEnabled = makeAll(enabled, templates, false);
@@ -331,7 +347,9 @@ export default function AdminConsole() {
           r._enabled = nextEnabled;
           r._enabled_backup = nextBackup;
         } else {
-          const nextEnabled = enabled_backup ? enabled_backup : makeAll(enabled, templates, true);
+          const nextEnabled = enabled_backup
+            ? enabled_backup
+            : makeAll(enabled, templates, true);
 
           const { error: e1 } = await supabase
             .from("message_templates")
@@ -357,7 +375,7 @@ export default function AdminConsole() {
     }
   }
 
-  // --- NEW: call the Netlify function to credit everyone ---
+  // --- Global credit everyone ---
   async function creditEveryoneNow() {
     setCreditBusy(true);
     setErr("");
@@ -391,16 +409,13 @@ export default function AdminConsole() {
     }
   }
 
-  /* ===================== Agent Site Onboarding (NEW) ===================== */
-
-  // Manual user override: paste Supabase UUID to onboard anyone (brand-new OK)
+  /* ===================== Agent Site Onboarding (unchanged) ===================== */
   const [manualUserId, setManualUserId] = useState("");
-  const [selUserId, setSelUserId] = useState(""); // current user being edited
+  const [selUserId, setSelUserId] = useState("");
   const [apLoading, setApLoading] = useState(false);
   const [apSaving, setApSaving] = useState(false);
   const [statesSaving, setStatesSaving] = useState(false);
 
-  // agent_profiles fields
   const [ap, setAp] = useState({
     full_name: "",
     email: "",
@@ -413,7 +428,6 @@ export default function AdminConsole() {
     published: false,
   });
 
-  // simple slug
   const slug = useMemo(
     () =>
       (ap.full_name || "")
@@ -423,9 +437,7 @@ export default function AdminConsole() {
     [ap.full_name]
   );
 
-  // agent_states rows (array of {state_code, license_number, license_image_url})
   const [stateRows, setStateRows] = useState([]);
-
   function addStateRow() {
     setStateRows((s) => [...s, { state_code: "", license_number: "", license_image_url: "" }]);
   }
@@ -452,7 +464,6 @@ export default function AdminConsole() {
     setApLoading(true);
     setErr("");
     try {
-      // Try fetch existing profile
       const { data: prof, error: pErr } = await supabase
         .from("agent_profiles")
         .select("*")
@@ -460,9 +471,7 @@ export default function AdminConsole() {
         .maybeSingle();
       if (pErr) throw pErr;
 
-      // If no profile, try to pull email from auth via edge function OR let admin type it
       const emailGuess = prof?.email || "";
-
       setAp({
         full_name: prof?.full_name || "",
         email: emailGuess,
@@ -475,7 +484,6 @@ export default function AdminConsole() {
         published: !!prof?.published,
       });
 
-      // Load states
       const { data: st, error: sErr } = await supabase
         .from("agent_states")
         .select("state_code, license_number, license_image_url")
@@ -551,7 +559,6 @@ export default function AdminConsole() {
     setStatesSaving(true);
     setErr("");
     try {
-      // Validate rows
       const cleaned = stateRows
         .map((r) => ({
           state_code: (r.state_code || "").toUpperCase().trim(),
@@ -564,15 +571,10 @@ export default function AdminConsole() {
         if (!STATES.includes(r.state_code)) {
           throw new Error(`Invalid state code: ${r.state_code}`);
         }
-        if (!r.license_number) {
-          throw new Error(`Missing license number for ${r.state_code}`);
-        }
-        if (!r.license_image_url) {
-          throw new Error(`Missing license image/PDF URL for ${r.state_code}`);
-        }
+        if (!r.license_number) throw new Error(`Missing license number for ${r.state_code}`);
+        if (!r.license_image_url) throw new Error(`Missing license image/PDF URL for ${r.state_code}`);
       }
 
-      // Fetch existing for diff
       const { data: existing, error: selErr } = await supabase
         .from("agent_states")
         .select("state_code")
@@ -583,7 +585,6 @@ export default function AdminConsole() {
       const desiredSet = new Set(cleaned.map((x) => x.state_code));
       const toDelete = [...existingSet].filter((c) => !desiredSet.has(c));
 
-      // Upsert
       if (cleaned.length) {
         const upPayload = cleaned.map((r) => ({
           user_id: selUserId,
@@ -599,7 +600,6 @@ export default function AdminConsole() {
         if (upErr) throw upErr;
       }
 
-      // Delete removed
       if (toDelete.length) {
         const { error: delErr } = await supabase
           .from("agent_states")
@@ -784,12 +784,12 @@ export default function AdminConsole() {
         <code>message_templates_backup</code> so unlocking restores exactly what they had.
       </p>
 
-      {/* ---------- 10DLC Number Pool Admin Section (replaces TFN) ---------- */}
+      {/* ---------- 10DLC Number Pool (TFN-style) ---------- */}
       <div className="pt-6 border-t border-white/10">
-        <NumberPool10DLC />
+        <PhoneNumberPoolAdminSection />
       </div>
 
-      {/* ================= Agent Site Onboarding (NEW) ================= */}
+      {/* ================= Agent Site Onboarding ================= */}
       <div className="pt-6 border-t border-white/10">
         <div className="rounded-2xl border border-white/10 bg-white/[0.04] p-4 ring-1 ring-white/5">
           <div className="mb-3 flex items-center justify-between">
@@ -816,7 +816,9 @@ export default function AdminConsole() {
             </div>
           ) : (
             <>
-              <div className="text-xs text-white/60 mb-2">Editing user_id: <span className="font-mono">{selUserId}</span></div>
+              <div className="text-xs text-white/60 mb-2">
+                Editing user_id: <span className="font-mono">{selUserId}</span>
+              </div>
 
               {/* Profile form */}
               <div className="grid gap-3 md:grid-cols-2">
@@ -1007,8 +1009,6 @@ export default function AdminConsole() {
           )}
         </div>
       </div>
-
-      {/* NOTE: Partners section removed on purpose */}
     </div>
   );
 }
