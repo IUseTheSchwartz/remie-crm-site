@@ -343,18 +343,21 @@ export default function LeadsPage() {
   }, []);
 
   /* -------------------------------------------------------------------------
-     Answered promotion (lead-leg only):
-     - reacts to call_logs updates for this user
-     - verifies the event is for the LEAD leg by matching destination number
-     - accepts 'answered' or 'bridged' on the lead leg
-     - if duration fields exist, requires >= 2s talk/bill to avoid flash connects
-  ------------------------------------------------------------------------- */
+     Answered promotion (lead-leg only, agent-first flow)
+     - The platform calls the AGENT first, then dials the LEAD.
+     - We only mark Answered if the LEAD leg answered (not the agent leg).
+     - Predicate:
+       * Event must be for the LEAD leg (party/customer/callee OR 'to' matches lead phone)
+       * status === "answered"  (we do NOT use bridged by default)
+       * duration guard: talk_ms>=2000 OR bill_sec>=2 if fields exist
+       * optional: answered_by !== "machine" if present
+     ------------------------------------------------------------------------- */
   useEffect(() => {
     let chan;
 
-    const norm = (s) => String(s || "").replace(/\D/g, "").replace(/^1(?=\d{10}$)/, "");
+    const norm10 = (s) => String(s || "").replace(/\D/g, "").replace(/^1(?=\d{10}$)/, "");
     const getToNumber = (rec) =>
-      norm(rec?.to || rec?.to_number || rec?.called_number || rec?.destination || rec?.lead_number || "");
+      norm10(rec?.to || rec?.to_number || rec?.called_number || rec?.destination || rec?.lead_number || "");
 
     (async () => {
       try {
@@ -362,11 +365,10 @@ export default function LeadsPage() {
         const userId = authData?.user?.id;
         if (!userId) return;
 
-        // quick lookup maps so we can verify LEAD leg by phone
         const byId = new Map(rows.map(r => [r.id, r]));
-        const phoneById = new Map(rows.map(r => [r.id, norm(r.phone)]));
+        const phoneById = new Map(rows.map(r => [r.id, norm10(r.phone)]));
 
-        chan = supabase.channel("call_logs_lead_answer_only")
+        chan = supabase.channel("call_logs_lead_answer_only_agent_first")
           .on("postgres_changes",
             { event: "*", schema: "public", table: "call_logs", filter: `user_id=eq.${userId}` },
             async (payload) => {
@@ -376,30 +378,34 @@ export default function LeadsPage() {
 
               const status = String(rec.status || "").toLowerCase();
 
+              // Identify the LEAD leg
+              const party = String(rec.party || rec.leg || "").toLowerCase(); // e.g., "customer", "lead", "callee"
               const lead = byId.get(contactId);
               const leadPhoneNorm = phoneById.get(contactId);
               if (!lead || !leadPhoneNorm) return;
 
               const toNorm = getToNumber(rec);
-              if (!toNorm || toNorm !== leadPhoneNorm) {
-                // not the lead leg (probably agent leg) — ignore
-                return;
-              }
+              const looksLikeLeadLeg =
+                ["customer", "lead", "callee"].includes(party) || (toNorm && toNorm === leadPhoneNorm);
 
-              // Optional duration guards if present
+              if (!looksLikeLeadLeg) return; // ignore agent leg
+
+              // Duration guard (if fields exist)
               const talkMs  = Number(rec.talk_ms ?? rec.talkTimeMs ?? rec.talk_time_ms ?? 0);
               const billSec = Number(rec.bill_sec ?? rec.billsec ?? 0);
               const durationOk =
                 (Number.isFinite(talkMs) && talkMs > 0) ? talkMs >= 2000
                 : (Number.isFinite(billSec) && billSec > 0) ? billSec >= 2
-                : true; // if metrics missing, allow
+                : true;
 
-              const shouldPromote =
-                (status === "answered" || status === "bridged") && durationOk;
+              // Skip machine answers if your CDR has it
+              const answeredBy = String(rec.answered_by || rec.answeredBy || "").toLowerCase();
+              const notMachine = answeredBy ? answeredBy !== "machine" : true;
+
+              // Promote ONLY on explicit lead 'answered'
+              const shouldPromote = status === "answered" && durationOk && notMachine;
 
               if (!shouldPromote) return;
-
-              // Skip if already answered or sold
               if (lead.stage === "answered" || lead.status === "sold") return;
 
               try {
@@ -426,6 +432,7 @@ export default function LeadsPage() {
       const fromAgent = await ensureAgentPhone();
       if (!fromAgent) return;
 
+      // Agent-first dialing is handled server-side by startCall implementation.
       await startCall({ agentNumber: fromAgent, leadNumber: to, contactId });
       setServerMsg("📞 Calling…");
     } catch (e) {
