@@ -1,4 +1,3 @@
-// File: netlify/functions/messages-send.js
 // Sends an SMS via Telnyx using a template or raw body.
 // DEDUPE-SAFE using provider_message_id (pass it!)
 // Accepts: { to?, contact_id?, lead_id?, body?, templateKey?/template_key?/template?, requesterId?, provider_message_id?, sent_by_ai? }
@@ -7,10 +6,7 @@ const { getServiceClient } = require("./_supabase");
 const fetch = require("node-fetch");
 
 const TELNYX_API_KEY = process.env.TELNYX_API_KEY;
-// Accept either env name for the profile UUID (Telnyx messaging profile is a UUID like 40019936-…)
-const MESSAGING_PROFILE_ID_FALLBACK =
-  process.env.TELNYX_MESSAGING_PROFILE_ID || process.env.MESSAGING_PROFILE_ID || null;
-
+const MESSAGING_PROFILE_ID_FALLBACK = process.env.TELNYX_MESSAGING_PROFILE_ID || null;
 const AGENT_SITE_BASE = process.env.AGENT_SITE_BASE || "https://remiecrm.com";
 
 function json(obj, statusCode = 200) {
@@ -90,14 +86,13 @@ async function getBalanceCents(db, user_id) {
   return Number(data?.balance_cents ?? 0);
 }
 
-/* ====== Messaging number via ten_dlc_numbers (fits your schema) ======
-   Returns { status: 'verified'|'pending'|'none', e164?: string }
-   - Uses: phone_number, verified, assigned_to, date_assigned
-===================================================================== */
+/* ====== Messaging number via ten_dlc_numbers ======
+   Returns { status: 'verified'|'pending'|'none', e164?: string, profileId?: string }
+==================================================== */
 async function getAgentMessagingNumber(db, user_id) {
   const { data, error } = await db
     .from("ten_dlc_numbers")
-    .select("phone_number, verified, assigned_to, date_assigned")
+    .select("phone_number, verified, status, messaging_profile_id")
     .eq("assigned_to", user_id)
     .order("date_assigned", { ascending: true, nullsFirst: true })
     .limit(1)
@@ -109,9 +104,11 @@ async function getAgentMessagingNumber(db, user_id) {
   const e = toE164(data.phone_number);
   if (!e) return { status: "none" };
 
-  return data.verified
-    ? { status: "verified", e164: e }
-    : { status: "pending", e164: e };
+  const isActive = (data.status || "active") === "active";
+  const ok = !!data.verified && isActive;
+  return ok
+    ? { status: "verified", e164: e, profileId: data.messaging_profile_id || null }
+    : { status: "pending", e164: e, profileId: data.messaging_profile_id || null };
 }
 
 // ---- Telnyx send ----
@@ -193,7 +190,7 @@ async function ensureUsageRow(db, account_id, now = new Date()) {
 // segment counter
 function countSmsSegments(text = "") {
   const s = String(text);
-  const gsm7 = /^[\n\r\t\0\x0B\x0C\x1B\x20-\x7E€£¥èéùìòÇØøÅåΔ_ΦΓΛΩΠΨΣΘΞÆæßÉ^{}\[~\]|€\\]*$/.test(s);
+  const gsm7 = /^[\n\r\t\0\x0B\x0C\x1B\x20-\x7E€£¥èéùìòÇØøÅåΔ_ΦΓΛΩΠΨΣΘΞÆæßÉ^{}\[\]~|€\\]*$/.test(s);
   if (gsm7) {
     const singleLimit = 160, concatLimit = 153;
     if (s.length <= singleLimit) return 1;
@@ -349,13 +346,18 @@ exports.handler = async (event) => {
       const ap = await getAgentProfile(db, user_id);
       const slug = (ap?.slug || "").trim();
       const agent_site = slug ? `${AGENT_SITE_BASE.replace(/\/+$/,"")}/a/${slug}` : "";
+
+      // ==== CONTEXT MAPPING (patched) ====
+      // - state => from lead.state
+      // - beneficiary => from lead.beneficiary_name (your preference)
       const ctx = {
         first_name: "",
         last_name: "",
         full_name: "",
-        state: "",
-        beneficiary: "",
-        military_branch: "",
+        state: lead?.state || "",
+        beneficiary: lead?.beneficiary_name || "",
+        beneficiary_name: lead?.beneficiary_name || "",
+        military_branch: S(lead?.military_branch) || (tags.includes("military") ? "Military" : ""),
         agent_name: ap?.name || ap?.full_name || "",
         company: ap?.company || "",
         agent_phone: ap?.phone || "",
@@ -371,14 +373,17 @@ exports.handler = async (event) => {
         ctx.first_name = parts[0] || "";
         ctx.last_name = parts.slice(1).join(" ");
       }
-      ctx.state = lead?.state || "";
-      ctx.beneficiary = lead?.beneficiary || lead?.beneficiary_name || "";
-      ctx.military_branch = S(lead?.military_branch) || (tags.includes("military") ? "Military" : "");
 
       bodyText = renderTemplate(tpl, ctx);
       if (!bodyText) return json({ error: "rendered_empty_body", trace }, 400);
 
-      trace.push({ step: "template.rendered", key: keyToUse, body_len: bodyText.length });
+      trace.push({
+        step: "template.rendered",
+        key: keyToUse,
+        body_len: bodyText.length,
+        ctx_probe: { state: ctx.state, beneficiary: ctx.beneficiary } // small probe for debugging
+      });
+      // ===================================
     }
 
     // -------- Determine FROM number & profile (10DLC) --------
@@ -404,7 +409,7 @@ exports.handler = async (event) => {
       );
     }
     const fromE164 = mnum.e164;
-    const profileId = MESSAGING_PROFILE_ID_FALLBACK || null; // use env profile UUID
+    const profileId = mnum.profileId || MESSAGING_PROFILE_ID_FALLBACK || null;
 
     // -------- Free pool → Wallet flow --------
     const account_id = await resolveAccountId(db, user_id);
