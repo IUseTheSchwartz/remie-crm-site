@@ -1,27 +1,36 @@
+// File: netlify/functions/dialer-lead-first-start.js
 // Starts a LEAD-FIRST call (Auto Dialer):
 // - Calls the LEAD first (Leg A), then your existing webhook transfers to the AGENT on lead answer.
-// - Uses your existing telnyx-voice-webhook.js (lead_first branch) via client_state.kind = "crm_outbound_lead_leg"
+// - Uses telnyx-voice-webhook.js (lead_first branch) via client_state.kind = "crm_outbound_lead_leg"
 
 const fetch = require("node-fetch");
 const { createClient } = require("@supabase/supabase-js");
 
 const TELNYX_API_KEY = process.env.TELNYX_API_KEY || "";
-// Your Telnyx Call Control application / connection id (same one your agent-first uses).
-const TELNYX_VOICE_APP_ID = process.env.TELNYX_VOICE_APP_ID || process.env.TELNYX_CONNECTION_ID || "";
+// Telnyx Call Control application / connection id (same one your agent-first flow uses)
+const TELNYX_VOICE_APP_ID =
+  process.env.TELNYX_VOICE_APP_ID || process.env.TELNYX_CONNECTION_ID || "";
 
 const SUPABASE_URL = process.env.SUPABASE_URL || "";
 const SUPABASE_SERVICE_ROLE =
   process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_SERVICE_ROLE || "";
 
-const supa = (SUPABASE_URL && SUPABASE_SERVICE_ROLE)
-  ? createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE)
-  : null;
+const supa =
+  SUPABASE_URL && SUPABASE_SERVICE_ROLE
+    ? createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE)
+    : null;
 
 function json(body, statusCode = 200) {
-  return { statusCode, headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) };
+  return {
+    statusCode,
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  };
 }
 
-function onlyDigits(s) { return String(s || "").replace(/\D/g, ""); }
+function onlyDigits(s) {
+  return String(s || "").replace(/\D/g, "");
+}
 function toE164(us) {
   const d = onlyDigits(us);
   if (d.length === 11 && d.startsWith("1")) return `+${d}`;
@@ -30,19 +39,27 @@ function toE164(us) {
   return null;
 }
 
-async function getUserIdFromSupabaseJWT(authz) {
+// --- Decode Supabase JWT locally to extract the user_id (sub) ---
+function decodeJwtSub(bearer) {
+  if (!bearer) return null;
+  const token = String(bearer).replace(/^Bearer\s+/i, "");
+  const parts = token.split(".");
+  if (parts.length !== 3) return null;
   try {
-    if (!authz || !supa) return null;
-    const token = String(authz).replace(/^Bearer\s+/i, "");
-    // Create a short-lived client with the user's JWT to read the profile if needed
-    const userClient = createClient(SUPABASE_URL, token);
-    const { data } = await userClient.auth.getUser();
-    return data?.user?.id || null;
-  } catch { return null; }
+    const json = JSON.parse(Buffer.from(parts[1], "base64").toString("utf8"));
+    return json?.sub || null; // Supabase user id is in `sub`
+  } catch {
+    return null;
+  }
+}
+async function getUserIdFromSupabaseJWT(authz) {
+  return decodeJwtSub(authz);
 }
 
 exports.handler = async (event) => {
-  if (event.httpMethod !== "POST") return json({ ok: false, error: "Method not allowed" }, 405);
+  if (event.httpMethod !== "POST") {
+    return json({ ok: false, error: "Method not allowed" }, 405);
+  }
 
   // Auth (same pattern as your other functions)
   const authz = event.headers.authorization || event.headers.Authorization || "";
@@ -50,30 +67,39 @@ exports.handler = async (event) => {
   if (!user_id) return json({ ok: false, error: "Not signed in" }, 401);
 
   let body;
-  try { body = JSON.parse(event.body || "{}"); }
-  catch { return json({ ok: false, error: "Invalid JSON" }, 400); }
+  try {
+    body = JSON.parse(event.body || "{}");
+  } catch {
+    return json({ ok: false, error: "Invalid JSON" }, 400);
+  }
 
   const lead_number = toE164(body.lead_number);
   const agent_number = toE164(body.agent_number);
   const from_number = toE164(body.from_number || body.caller_id);
-  const contact_id  = body.contact_id || null;
+  const contact_id = body.contact_id || null;
 
-  const record       = !!body.record;
+  const record = !!body.record;
   const ring_timeout = Number(body.ring_timeout || 25);
   const ringback_url = body.ringback_url || ""; // optional
-  const session_id   = body.session_id || null; // optional UI session for your analytics
+  const session_id = body.session_id || null; // optional UI session id for analytics
 
   if (!TELNYX_API_KEY || !TELNYX_VOICE_APP_ID) {
-    return json({ ok: false, error: "Missing TELNYX env (API key / voice app id)" }, 500);
+    return json(
+      { ok: false, error: "Missing TELNYX env (API key / voice app id)" },
+      500
+    );
   }
   if (!lead_number || !agent_number) {
-    return json({ ok: false, error: "lead_number and agent_number are required (E.164)" }, 400);
+    return json(
+      { ok: false, error: "lead_number and agent_number are required (E.164)" },
+      400
+    );
   }
   if (!from_number) {
     return json({ ok: false, error: "from_number (caller ID) is required" }, 400);
   }
 
-  // IMPORTANT: Leg A must be the LEAD (so your webhook's lead-first branch runs)
+  // Leg A must be the LEAD so webhook's lead-first branch runs
   const clientState = {
     kind: "crm_outbound_lead_leg",
     flow: "lead_first",
@@ -84,18 +110,20 @@ exports.handler = async (event) => {
     from_number,
     record,
     ringback_url,
-    session_id
+    session_id,
   };
-  const client_state_b64 = Buffer.from(JSON.stringify(clientState), "utf8").toString("base64");
+  const client_state_b64 = Buffer.from(JSON.stringify(clientState), "utf8").toString(
+    "base64"
+  );
 
-  // Create the outbound call to the LEAD
+  // Create the outbound call to the LEAD (Leg A)
   const url = "https://api.telnyx.com/v2/calls";
   const payload = {
     to: lead_number,
     from: from_number,
     connection_id: TELNYX_VOICE_APP_ID,
     client_state: client_state_b64,
-    timeout_secs: ring_timeout
+    timeout_secs: ring_timeout,
   };
 
   let resp, data;
@@ -104,28 +132,37 @@ exports.handler = async (event) => {
       method: "POST",
       headers: {
         Authorization: `Bearer ${TELNYX_API_KEY}`,
-        "Content-Type": "application/json"
+        "Content-Type": "application/json",
       },
-      body: JSON.stringify(payload)
+      body: JSON.stringify(payload),
     });
     data = await resp.json();
   } catch (e) {
-    return json({ ok: false, error: e?.message || "Network error creating call" }, 502);
+    return json(
+      { ok: false, error: e?.message || "Network error creating call" },
+      502
+    );
   }
 
   if (!resp.ok) {
-    return json({
-      ok: false,
-      error: data?.errors?.[0]?.detail || data?.message || `Telnyx error (${resp?.status})`
-    }, 502);
+    return json(
+      {
+        ok: false,
+        error:
+          data?.errors?.[0]?.detail ||
+          data?.message ||
+          `Telnyx error (${resp?.status})`,
+      },
+      502
+    );
   }
 
   const call = data?.data || {};
-  // call.id is the call_control_id (leg A); call.call_session_id also returned by Telnyx
+  // call.id is the call_control_id (Leg A); call.call_session_id may also be returned
   return json({
     ok: true,
     call_leg_id: call?.id || null,
     call_session_id: call?.call_session_id || null,
-    contact_id
+    contact_id,
   });
 };
