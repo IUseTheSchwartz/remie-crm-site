@@ -1,7 +1,17 @@
 // netlify/functions/telnyx-voice-webhook.js
-// LEAD-FIRST flow: Lead phone rings first (from call-start). On lead answer → play ringback to lead,
-// transfer to agent, bridge on agent answer. Logs to call_logs, handles optional recording, free minutes,
-// and wallet debit. Marks lead stage=answered on bridge when contact_id is known.
+// Supports BOTH flows:
+//
+// 1) AGENT-FIRST (LeadsPage "Call" button):
+//    - Agent phone rings first (agent_number)
+//    - On agent ANSWER → (optional) speak whisper to agent ("Connecting...") → TRANSFER leg to lead_number
+//    - When bridged → start recording (if enabled) and mark stage=answered (only here)
+//
+// 2) LEAD-FIRST (Auto Dial):
+//    - Lead phone rings first (lead_number)
+//    - On lead ANSWER → (optional) play ringback to the lead → TRANSFER to agent_number
+//    - When bridged → start recording (if enabled) and mark stage=answered (only here)
+//
+// Other behavior kept: free minutes pool, wallet debits on overage, call_logs updates.
 
 const crypto = require("crypto");
 const fetch = require("node-fetch");
@@ -215,7 +225,7 @@ async function hangupCall(callControlId) {
     const url = `https://api.telnyx.com/v2/calls/${callControlId}/actions/hangup`;
     const resp = await fetch(url, {
       method: "POST",
-      headers: { Authorization: `Bearer ${TELNYX_API_KEY}`, "Content-Type": "application/json" },
+      headers: { Authorization: `Bearer ${TELNYX_API_KEY}", "Content-Type": "application/json" },
       body: JSON.stringify({})
     });
     if (!resp.ok) {
@@ -225,6 +235,25 @@ async function hangupCall(callControlId) {
       log("hangup ok");
     }
   } catch (e) { log("hangup error", e?.message); }
+}
+
+// NEW: agent whisper helper to avoid dead silence in agent-first flow
+async function speak(callControlId, text = "Connecting your prospect…", voice = "female", language = "en-US") {
+  try {
+    if (!TELNYX_API_KEY || !callControlId) return;
+    const url = `https://api.telnyx.com/v2/calls/${callControlId}/actions/speak`;
+    const resp = await fetch(url, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${TELNYX_API_KEY}`, "Content-Type": "application/json" },
+      body: JSON.stringify({ payload: text, voice, language })
+    });
+    if (!resp.ok) {
+      const j = await resp.json().catch(() => ({}));
+      log("speak failed", resp.status, j);
+    } else {
+      log("speak ok");
+    }
+  } catch (e) { log("speak error", e?.message); }
 }
 
 /* ---------------- Wallet / DB helpers ---------------- */
@@ -276,15 +305,8 @@ async function upsertInitiated({
   }
 }
 
-async function markAnswered({ legA, answered_at }) {
-  if (!supa || !legA) return;
-  const { error } = await supa
-    .from("call_logs")
-    .update({ status: "answered", answered_at: answered_at || new Date().toISOString() })
-    .eq("telnyx_leg_a_id", legA);
-  if (error) log("markAnswered err", error.message);
-}
-
+// We no longer mark "answered" on call.answered.
+// We'll mark "bridged" only (and use that as the signal that the lead truly answered).
 async function markBridged({ legA, maybeLegB }) {
   if (!supa || !legA) return;
   const updates = { status: "bridged" };
@@ -299,7 +321,7 @@ async function saveRecordingUrlByCallSession({ call_session_id, recording_url })
   if (error) log("saveRecordingUrl err", error.message);
 }
 
-/* ---- Lead pipeline helper: mark stage=answered when bridged ---- */
+/* ---- Lead pipeline helper: mark stage=answered only when bridged ---- */
 async function markLeadAnsweredStage({ contact_id }) {
   if (!supa || !contact_id) return;
   try {
@@ -435,18 +457,27 @@ exports.handler = async (event) => {
     decodeClientState(p?.client_state) ||
     decodeClientState(p?.client_state_b64) || {};
 
-  const kind = cs.kind || null;
+  // Accept multiple key shapes for compatibility
+  const kind = cs.kind || cs.compat_kind || null;
+  const flow = cs.flow || null;
+
   const user_id = cs.user_id || cs.agent_id || null;
   const contact_id = cs.contact_id || null;
-  const lead_number = cs.lead_number || p?.to || null;
-  const from_number = cs.from_number || p?.from || null;
+
+  const lead_number = cs.lead_number || cs.to || p?.to || null;
+  const from_number = cs.from_number || cs.ani || p?.from || null;
   const agent_number = cs.agent_number || null;
+
   const record_enabled = !!cs.record;
   const ringback_url = cs.ringback_url || null;
 
+  // Determine mode
+  const isAgentFirst = flow === "agent_first" || kind === "crm_outbound_agent";
+  const isLeadFirst  = flow === "lead_first"  || kind === "crm_outbound_lead_leg";
+
   log("event", eventType, {
     hasLegA: !!legA,
-    kind,
+    kind, flow, isAgentFirst, isLeadFirst,
     leadPrefix: lead_number ? String(lead_number).slice(0,4) + "…" : null,
     record_enabled
   });
@@ -470,20 +501,30 @@ exports.handler = async (event) => {
       }
 
       case "call.answered": {
-        // LEAD-FIRST: Lead answered → (optional) play ringback to the lead, then transfer to AGENT.
-        if (ringback_url && legA) await playbackStart(legA, ringback_url);
+        // NOTE: We NO LONGER mark "answered" here.
+        // We only mark "bridged" later when legs actually connect.
 
-        if (kind === "crm_outbound_lead_leg" && legA && agent_number && from_number) {
-          await transferCall({ callControlId: legA, to: agent_number, from: from_number });
+        // LEAD-FIRST: Lead answered → play ringback (optional), then transfer to agent.
+        if (isLeadFirst) {
+          if (ringback_url && legA) await playbackStart(legA, ringback_url);
+          if (legA && agent_number && from_number) {
+            await transferCall({ callControlId: legA, to: agent_number, from: from_number });
+          }
         }
 
-        if (legA) await markAnswered({ legA, answered_at: occurred_at });
+        // AGENT-FIRST: Agent answered → whisper to agent (optional), then transfer to lead.
+        if (isAgentFirst) {
+          if (legA) await speak(legA, "Connecting your prospect…");
+          if (legA && lead_number && from_number) {
+            await transferCall({ callControlId: legA, to: lead_number, from: from_number });
+          }
+        }
+
         break;
       }
 
       case "call.bridged": {
-        // Stop ringback to the lead (now bridged), update status, start recording if enabled,
-        // and mark the lead stage=answered (UI reflects without refresh).
+        // Stop any playback (if we were playing ringback to lead), set status, start recording, mark stage=answered.
         if (legA) await playbackStop(legA);
         await markBridged({ legA, maybeLegB: peerLeg || null });
         if (record_enabled && legA) startRecording(legA);
@@ -492,6 +533,7 @@ exports.handler = async (event) => {
       }
 
       case "call.transfer.completed": {
+        // If transfer failed or peer missing, end A leg to avoid endless silent calls.
         const outcome = (p?.result || p?.cause || p?.hangup_cause || "").toLowerCase();
         log("transfer.completed", { outcome, peerLeg: !!peerLeg });
         if (legA) await playbackStop(legA);
@@ -522,6 +564,7 @@ exports.handler = async (event) => {
       case "call.transfer.initiated":
       case "call.initiated.outbound":
       case "call.answered.outbound": {
+        // Some accounts emit these around bridge; keep bridged status in sync if Telnyx provides peer id here.
         if (legA && peerLeg) {
           await markBridged({ legA, maybeLegB: peerLeg });
         }
