@@ -26,7 +26,7 @@ const withinOffice = (hours = DEFAULT_HOURS, hour) =>
   hour >= Number(hours.start ?? 9) && hour <= Number(hours.end ?? 21);
 
 function shortDateTodayInTZ(tz = DEFAULT_TZ, es = false) {
-  // e.g., "Nov 7" / "7 nov"
+  // e.g., "Nov 3" / "3 nov"
   const d = new Date();
   const fmt = new Intl.DateTimeFormat(es ? "es-US" : "en-US", {
     timeZone: tz,
@@ -127,72 +127,81 @@ function hasAmbiguousBareHour(t) {
 }
 function isAMPMOnly(t = "") { return /^\s*(a\.?m\.?|p\.?m\.?|am|pm)\s*$/i.test(String(t || "")); }
 
+/* ---------------- credential-link control ---------------- */
+// Show link only on the first AI message OR on the final confirmation.
+function shouldShowCreds({ intent, context }) {
+  const already = !!(context && (context.sent_credentials === true));
+  const isFinal = intent === "confirm_time";
+  const isFirst = !already;
+
+  // Only show on first & final
+  return isFinal || isFirst;
+}
+
 /* ---------------- copy ---------------- */
 const T = {
-  // ⬅️ CHANGED: make the link a credentials/legitimacy line, not a booking CTA
-  linkLine: (es, link) =>
-    link
-      ? (es
-          ? ` Mientras tanto, si desea verificar mis credenciales, puede visitar mi sitio: ${link}`
-          : ` In the meantime, if you’d like to verify my credentials, you can visit my website: ${link}`)
+  linkLine: (es, link, show) =>
+    show && link
+      ? (es ? ` Puede elegir un horario aquí: ${link}` : ` You can grab a time here: ${link}`)
       : "",
 
-  greetGeneral: (es, n, link) =>
-    es ? `Hola—soy ${n}. Sobre su solicitud de seguro de vida—esto toma solo unos minutos.${T.linkLine(es, link)} ¿Qué hora le funciona?`
-       : `Hi there—it’s ${n}. About your life-insurance request—this only takes a few minutes.${T.linkLine(es, link)} What time works for you?`,
+  greetGeneral: (es, n, link, showLink) =>
+    es ? `Hola—soy ${n}. Sobre su solicitud de seguro de vida—esto toma solo unos minutos.${T.linkLine(es, link, showLink)} ¿Qué hora le funciona?`
+       : `Hi there—it’s ${n}. About your life-insurance request—this only takes a few minutes.${T.linkLine(es, link, showLink)} What time works for you?`,
 
-  who: (es, n, link) =>
-    es ? `Hola, soy ${n}. Usted solicitó información de seguro de vida recientemente. Podemos verlo rápido.${T.linkLine(es, link)} ¿Qué hora le conviene?`
-       : `Hey, this is ${n}. You recently requested info about life insurance. We can review it quickly.${T.linkLine(es, link)} What time works for you?`,
+  who: (es, n, link, showLink) =>
+    es ? `Hola, soy ${n}. Usted solicitó información de seguro de vida recientemente. Podemos verlo rápido.${T.linkLine(es, link, showLink)} ¿Qué hora le conviene?`
+       : `Hey, this is ${n}. You recently requested info about life insurance. We can review it quickly.${T.linkLine(es, link, showLink)} What time works for you?`,
 
-  price: (es, link) =>
-    es ? `Perfecto—las cifras dependen de edad/salud y del beneficiario. Es una llamada breve de 5–7 min.${T.linkLine(es, link)} ¿Qué hora le queda mejor?`
-       : `Totally—exact numbers depend on age/health and beneficiary. It’s a quick 5–7 min call.${T.linkLine(es, link)} What time works for you?`,
+  price: (es, link, showLink) =>
+    es ? `Perfecto—las cifras dependen de edad/salud y del beneficiario. Es una llamada breve de 5–7 min.${T.linkLine(es, link, showLink)} ¿Qué hora le queda mejor?`
+       : `Totally—exact numbers depend on age/health and beneficiary. It’s a quick 5–7 min call.${T.linkLine(es, link, showLink)} What time works for you?`,
 
-  covered: (es, link) =>
-    es ? `Genial. Igual conviene una revisión corta para no pagar de más ni perder beneficios.${T.linkLine(es, link)} ¿Qué hora le conviene?`
-       : `Good to hear. Folks still do a quick review so they’re not overpaying or missing benefits.${T.linkLine(es, link)} What time works for you?`,
+  covered: (es, link, showLink) =>
+    es ? `Genial. Igual conviene una revisión corta para no pagar de más ni perder beneficios.${T.linkLine(es, link, showLink)} ¿Qué hora le conviene?`
+       : `Good to hear. Folks still do a quick review so they’re not overpaying or missing benefits.${T.linkLine(es, link, showLink)} What time works for you?`,
 
-  brushoff: (es, link) =>
-    es ? `Entiendo—lo mantenemos breve.${T.linkLine(es, link)} ¿Qué hora le funciona?`
-       : `Totally get it—we’ll keep it quick.${T.linkLine(es, link)} What time works for you?`,
+  brushoff: (es, link, showLink) =>
+    es ? `Entiendo—lo mantenemos breve.${T.linkLine(es, link, showLink)} ¿Qué hora le funciona?`
+       : `Totally get it—we’ll keep it quick.${T.linkLine(es, link, showLink)} What time works for you?`,
 
-  spouse: (es, link) =>
-    es ? `De acuerdo—mejor cuando estén ambos.${T.linkLine(es, link)} ¿Qué hora les conviene?`
-       : `Makes sense—best when you’re both on.${T.linkLine(es, link)} What time works for you two?`,
+  spouse: (es, link, showLink) =>
+    es ? `De acuerdo—mejor cuando estén ambos.${T.linkLine(es, link, showLink)} ¿Qué hora les conviene?`
+       : `Makes sense—best when you’re both on.${T.linkLine(es, link, showLink)} What time works for you two?`,
 
   wrong: (es) =>
     es ? `Sin problema—si más adelante quiere revisar opciones, me avisa.`
        : `No worries—if you want to look at options later, just text me.`,
 
-  agree: (es, link) =>
-    es ? `Perfecto—lo dejamos rápido.${T.linkLine(es, link)} ¿Qué hora le conviene?`
-       : `Great—let’s keep it quick.${T.linkLine(es, link)} What time works for you?`,
+  agree: (es, link, showLink) =>
+    es ? `Perfecto—lo dejamos rápido.${T.linkLine(es, link, showLink)} ¿Qué hora le conviene?`
+       : `Great—let’s keep it quick.${T.linkLine(es, link, showLink)} What time works for you?`,
 
-  verify: (es, n, link) =>
-    es ? `Pregunta válida—soy ${n}, corredor autorizado. Hago seguimiento a su solicitud de seguro de vida.${T.linkLine(es, link)} ¿Qué hora le funciona?`
-       : `Fair question—this is ${n}, a licensed broker. I’m following up on your life-insurance request.${T.linkLine(es, link)} What time works for you?`,
+  verify: (es, n, link, showLink) =>
+    es ? `Pregunta válida—soy ${n}, corredor autorizado. Hago seguimiento a su solicitud de seguro de vida.${T.linkLine(es, link, showLink)} ¿Qué hora le funciona?`
+       : `Fair question—this is ${n}, a licensed broker. I’m following up on your life-insurance request.${T.linkLine(es, link, showLink)} What time works for you?`,
 
-  info: (es, link) =>
-    es ? `Puedo enviar lo básico por aquí—en la llamada confirmamos salud y beneficiario para cifras reales.${T.linkLine(es, link)} ¿Qué hora prefiere?`
-       : `I can text the basics here—on a quick call we confirm health and beneficiary for exact numbers.${T.linkLine(es, link)} What time works for you?`,
+  info: (es, link, showLink) =>
+    es ? `Puedo enviar lo básico por aquí—en la llamada confirmamos salud y beneficiario para cifras reales.${T.linkLine(es, link, showLink)} ¿Qué hora prefiere?`
+       : `I can text the basics here—on a quick call we confirm health and beneficiary for exact numbers.${T.linkLine(es, link, showLink)} What time works for you?`,
 
-  cant_talk: (es, link) =>
-    es ? `Sin problema, lo coordinamos.${T.linkLine(es, link)} ¿Qué hora más tarde le queda mejor?`
-       : `No problem—let’s line it up.${T.linkLine(es, link)} What time later today works best?`,
+  cant_talk: (es, link, showLink) =>
+    es ? `Sin problema, lo coordinamos.${T.linkLine(es, link, showLink)} ¿Qué hora más tarde le queda mejor?`
+       : `No problem—let’s line it up.${T.linkLine(es, link, showLink)} What time later today works best?`,
 
-  how_long: (es, link) =>
-    es ? `Solo 5–7 minutos para salud básica, presupuesto y beneficiario, y darle opciones claras.${T.linkLine(es, link)} ¿Qué hora le conviene?`
-       : `Just 5–7 minutes to cover basic health, budget, and beneficiary so we can show clear options.${T.linkLine(es, link)} What time works for you?`,
+  how_long: (es, link, showLink) =>
+    es ? `Solo 5–7 minutos para salud básica, presupuesto y beneficiario, y darle opciones claras.${T.linkLine(es, link, showLink)} ¿Qué hora le conviene?`
+       : `Just 5–7 minutes to cover basic health, budget, and beneficiary so we can show clear options.${T.linkLine(es, link, showLink)} What time works for you?`,
 
-  // Confirmation with date + reschedule by text + credentials website
-  timeConfirm: (es, label, link, tz) => {
+  // Confirmation with date + reschedule-by-text + optional credentials line (final allowed)
+  timeConfirm: (es, label, link, tz, includeCreds) => {
     const d = shortDateTodayInTZ(tz, es);
-    const verifyLine = link
-      ? (es
-          ? ` Mientras tanto, si desea verificar mis credenciales, puede visitar mi sitio: ${link}`
-          : ` In the meantime, if you’d like to verify my credentials, you can visit my website: ${link}`)
-      : "";
+    const verifyLine =
+      includeCreds && link
+        ? (es
+            ? ` Mientras tanto, si desea verificar mis credenciales, puede visitar mi sitio: ${link}`
+            : ` In the meantime, if you’d like to verify my credentials, you can visit my website: ${link}`)
+        : "";
     return es
       ? `Para confirmar—le llamo a las ${label} hoy (${d}). Si necesita reprogramar, envíeme un texto 30–60 minutos antes de nuestra cita.${verifyLine}`
       : `Just to make sure—I’ll call you at ${label} today (${d}). If you need to reschedule, just text me 30–60 minutes before our appointment.${verifyLine}`;
@@ -200,24 +209,24 @@ const T = {
 
   clarifyTime: (es, h) => es ? `¿Le queda mejor ${h} AM o ${h} PM?` : `Does ${h} work better AM or PM?`,
 
-  courtesy: (es, n, link) =>
-    es ? `¡Bien, gracias!${T.linkLine(es, link)} ¿Qué hora le conviene?`
-       : `Doing well, thanks!${T.linkLine(es, link)} What time works for you?`,
+  courtesy: (es, n, link, showLink) =>
+    es ? `¡Bien, gracias!${T.linkLine(es, link, showLink)} ¿Qué hora le conviene?`
+       : `Doing well, thanks!${T.linkLine(es, link, showLink)} What time works for you?`,
 };
 
 /* ---------------- planner ---------------- */
-function planNext({ intent, text, es, link, name, context, tz }) {
+function planNext({ intent, text, es, link, name, context, tz, showCreds }) {
   // AM/PM follow-up from last turn
   if (isAMPMOnly(text) && context?.promptedHour) {
     const ampm = /p/i.test(text) ? "PM" : "AM";
     const label = `${context.promptedHour} ${ampm}`;
     return {
-      text: T.timeConfirm(es, label, link, tz),
+      text: T.timeConfirm(es, label, link, tz, /*includeCreds*/ true),
       intent: "confirm_time",
       meta: {
         route: "context_am_pm",
         time_label: label,
-        context_patch: { promptedHour: null, last_intent: "confirm_time" },
+        context_patch: { promptedHour: null, last_intent: "confirm_time", sent_credentials: true },
       }
     };
   }
@@ -226,12 +235,12 @@ function planNext({ intent, text, es, link, name, context, tz }) {
   if (/\bnoon\b/i.test(text)) {
     const label = "12 PM";
     return {
-      text: T.timeConfirm(es, label, link, tz),
+      text: T.timeConfirm(es, label, link, tz, /*includeCreds*/ true),
       intent: "confirm_time",
       meta: {
         route: "deterministic",
         time_label: label,
-        context_patch: { promptedHour: null, last_intent: "confirm_time" },
+        context_patch: { promptedHour: null, last_intent: "confirm_time", sent_credentials: true },
       }
     };
   }
@@ -241,12 +250,12 @@ function planNext({ intent, text, es, link, name, context, tz }) {
       String(text).match(/\b(1?\d:\d{2})\b/);
     const label = m ? m[1].toUpperCase().replace(/\s+/g, " ") : "the time we discussed";
     return {
-      text: T.timeConfirm(es, label, link, tz),
+      text: T.timeConfirm(es, label, link, tz, /*includeCreds*/ true),
       intent: "confirm_time",
       meta: {
         route: "deterministic",
         time_label: label,
-        context_patch: { promptedHour: null, last_intent: "confirm_time" },
+        context_patch: { promptedHour: null, last_intent: "confirm_time", sent_credentials: true },
       }
     };
   }
@@ -265,8 +274,8 @@ function planNext({ intent, text, es, link, name, context, tz }) {
   if (intent === "time_window") {
     return {
       text: es
-        ? `Esa franja me funciona.${T.linkLine(es, link)} ¿Qué hora específica le queda mejor?`
-        : `That window works for me.${T.linkLine(es, link)} What specific time is best for you?`,
+        ? `Esa franja me funciona.${T.linkLine(es, link, /*show*/ false)} ¿Qué hora específica le queda mejor?`
+        : `That window works for me.${T.linkLine(es, link, /*show*/ false)} What specific time is best for you?`,
       intent: "time_window_ack",
       meta: { route: "deterministic", context_patch: { last_intent: "time_window_ack" } },
     };
@@ -275,22 +284,22 @@ function planNext({ intent, text, es, link, name, context, tz }) {
   // Directs
   if (intent === "stop")       return { text: "", intent: "stop", meta: { route: "deterministic", context_patch: { last_intent: "stop" } }, action: "opt_out" };
   if (intent === "wrong")      return { text: T.wrong(es), intent: "wrong", meta: { route: "deterministic", context_patch: { last_intent: "wrong" } }, action: "tag_wrong_number" };
-  if (intent === "greet")      return { text: T.greetGeneral(es, name, link), intent: "greet", meta: { route: "deterministic", context_patch: { last_intent: "greet" } } };
-  if (intent === "courtesy_greet") return { text: T.courtesy(es, name, link), intent: "courtesy_greet", meta: { route: "deterministic", context_patch: { last_intent: "courtesy_greet" } } };
-  if (intent === "who")        return { text: T.who(es, name, link), intent: "who", meta: { route: "deterministic", context_patch: { last_intent: "who" } } };
-  if (intent === "price")      return { text: T.price(es, link), intent: "price", meta: { route: "deterministic", context_patch: { last_intent: "price" } } };
-  if (intent === "covered")    return { text: T.covered(es, link), intent: "covered", meta: { route: "deterministic", context_patch: { last_intent: "covered" } } };
-  if (intent === "brushoff")   return { text: T.brushoff(es, link), intent: "brushoff", meta: { route: "deterministic", context_patch: { last_intent: "brushoff" } } };
-  if (intent === "spouse")     return { text: T.spouse(es, link), intent: "spouse", meta: { route: "deterministic", context_patch: { last_intent: "spouse" } } };
-  if (intent === "callme")     return { text: T.greetGeneral(es, name, link), intent: "callme", meta: { route: "deterministic", context_patch: { last_intent: "callme" } } };
-  if (intent === "agree")      return { text: T.agree(es, link), intent: "agree", meta: { route: "deterministic", context_patch: { last_intent: "agree" } } };
-  if (intent === "info")       return { text: T.info(es, link), intent: "info", meta: { route: "deterministic", context_patch: { last_intent: "info" } } };
-  if (intent === "cant_talk")  return { text: T.cant_talk(es, link), intent: "cant_talk", meta: { route: "deterministic", context_patch: { last_intent: "cant_talk" } } };
-  if (intent === "how_long")   return { text: T.how_long(es, link), intent: "how_long", meta: { route: "deterministic", context_patch: { last_intent: "how_long" } } };
-  if (intent === "verify")     return { text: T.verify(es, name, link), intent: "verify", meta: { route: "deterministic", context_patch: { last_intent: "verify" } } };
+  if (intent === "greet")      return { text: T.greetGeneral(es, name, link, showCreds), intent: "greet", meta: { route: "deterministic", context_patch: { last_intent: "greet", ...(showCreds ? { sent_credentials: true } : {}) } } };
+  if (intent === "courtesy_greet") return { text: T.courtesy(es, name, link, showCreds), intent: "courtesy_greet", meta: { route: "deterministic", context_patch: { last_intent: "courtesy_greet", ...(showCreds ? { sent_credentials: true } : {}) } } };
+  if (intent === "who")        return { text: T.who(es, name, link, showCreds), intent: "who", meta: { route: "deterministic", context_patch: { last_intent: "who", ...(showCreds ? { sent_credentials: true } : {}) } } };
+  if (intent === "price")      return { text: T.price(es, link, showCreds), intent: "price", meta: { route: "deterministic", context_patch: { last_intent: "price", ...(showCreds ? { sent_credentials: true } : {}) } } };
+  if (intent === "covered")    return { text: T.covered(es, link, showCreds), intent: "covered", meta: { route: "deterministic", context_patch: { last_intent: "covered", ...(showCreds ? { sent_credentials: true } : {}) } } };
+  if (intent === "brushoff")   return { text: T.brushoff(es, link, showCreds), intent: "brushoff", meta: { route: "deterministic", context_patch: { last_intent: "brushoff", ...(showCreds ? { sent_credentials: true } : {}) } } };
+  if (intent === "spouse")     return { text: T.spouse(es, link, showCreds), intent: "spouse", meta: { route: "deterministic", context_patch: { last_intent: "spouse", ...(showCreds ? { sent_credentials: true } : {}) } } };
+  if (intent === "callme")     return { text: T.greetGeneral(es, name, link, showCreds), intent: "callme", meta: { route: "deterministic", context_patch: { last_intent: "callme", ...(showCreds ? { sent_credentials: true } : {}) } } };
+  if (intent === "agree")      return { text: T.agree(es, link, showCreds), intent: "agree", meta: { route: "deterministic", context_patch: { last_intent: "agree", ...(showCreds ? { sent_credentials: true } : {}) } } };
+  if (intent === "info")       return { text: T.info(es, link, showCreds), intent: "info", meta: { route: "deterministic", context_patch: { last_intent: "info", ...(showCreds ? { sent_credentials: true } : {}) } } };
+  if (intent === "cant_talk")  return { text: T.cant_talk(es, link, showCreds), intent: "cant_talk", meta: { route: "deterministic", context_patch: { last_intent: "cant_talk", ...(showCreds ? { sent_credentials: true } : {}) } } };
+  if (intent === "how_long")   return { text: T.how_long(es, link, showCreds), intent: "how_long", meta: { route: "deterministic", context_patch: { last_intent: "how_long", ...(showCreds ? { sent_credentials: true } : {}) } } };
+  if (intent === "verify")     return { text: T.verify(es, name, link, showCreds), intent: "verify", meta: { route: "deterministic", context_patch: { last_intent: "verify", ...(showCreds ? { sent_credentials: true } : {}) } } };
 
   // fallback
-  return { text: T.greetGeneral(es, name, link), intent: "greet", meta: { route: "fallback", context_patch: { last_intent: "greet" } } };
+  return { text: T.greetGeneral(es, name, link, showCreds), intent: "greet", meta: { route: "fallback", context_patch: { last_intent: "greet", ...(showCreds ? { sent_credentials: true } : {}) } } };
 }
 
 /* ---------------- decide ---------------- */
@@ -318,8 +327,19 @@ async function decide({
     return { text: "", intent: "stop", meta: { route: "deterministic", context_patch: { last_intent: "stop" } }, action: "opt_out" };
   }
 
-  // Ask/confirm times & map basics
-  let best = planNext({ intent: intentDet, text, es, link, name, context, tz });
+  // compute whether credentials link should be shown this turn (first or final only)
+  const showCredsBaseline = shouldShowCreds({ intent: intentDet, context: context || {} });
+
+  let best = planNext({
+    intent: intentDet,
+    text,
+    es,
+    link,
+    name,
+    context: context || {},
+    tz,
+    showCreds: showCredsBaseline
+  });
 
   // 2) Optional: LLM classification override
   const wantLLM = typeof useLLM === "boolean" ? useLLM : LLM_ENABLED;
@@ -335,8 +355,9 @@ async function decide({
           es: /es/i.test(cls.lang || "") || es,
           link,
           name,
-          context,
+          context: context || {},
           tz,
+          showCreds: shouldShowCreds({ intent: cls.intent || intentDet, context: context || {} })
         });
         best = {
           ...detFromLLM,
