@@ -2,11 +2,11 @@
 import { useEffect, useMemo, useState } from "react";
 import { supabase } from "../../lib/supabaseClient.js";
 
-function Row({ label, children, right }) {
+function Row({ label, children }) {
   return (
     <div className="grid grid-cols-1 gap-2 sm:grid-cols-[180px_1fr] items-center py-1.5">
       <div className="text-xs sm:text-sm text-white/70">{label}</div>
-      <div className={right ? "flex justify-end" : ""}>{children}</div>
+      <div>{children}</div>
     </div>
   );
 }
@@ -61,7 +61,6 @@ export default function NumberPool10DLC() {
 
   // filters
   const [q, setQ] = useState("");
-  const [assigned, setAssigned] = useState("all"); // all | unassigned | assigned
   const [status, setStatus] = useState("active"); // active | suspended | released | all
   const [onlySMS, setOnlySMS] = useState(false);
   const [onlyVoice, setOnlyVoice] = useState(false);
@@ -84,29 +83,22 @@ export default function NumberPool10DLC() {
     messaging_profile_id: "",
     campaign_id: "",
     telnyx_number_id: "",
-    assigned_user_id: "",
-    assigned_team_id: "",
+    status: "active",
   });
 
   const whereBuilder = useMemo(() => {
     return (b) => {
       b = b.eq("type", "10dlc");
       if (status !== "all") b = b.eq("status", status);
-      if (assigned === "unassigned") {
-        b = b.is("assigned_user_id", null).is("assigned_team_id", null);
-      } else if (assigned === "assigned") {
-        b = b.or("assigned_user_id.not.is.null,assigned_team_id.not.is.null");
-      }
       if (onlySMS) b = b.eq("capabilities_sms", true);
       if (onlyVoice) b = b.eq("capabilities_voice", true);
       if (q.trim()) {
         const term = q.trim();
-        // search by number or label
         b = b.or(`e164.ilike.%${term}%,label.ilike.%${term}%`);
       }
       return b;
     };
-  }, [q, assigned, status, onlySMS, onlyVoice]);
+  }, [q, status, onlySMS, onlyVoice]);
 
   async function load(reset = false) {
     try {
@@ -118,7 +110,7 @@ export default function NumberPool10DLC() {
       let query = supabase
         .from("phone_numbers")
         .select(
-          "id,e164,type,provider,telnyx_number_id,messaging_profile_id,campaign_id,area_code,capabilities_sms,capabilities_voice,status,assigned_user_id,assigned_team_id,label,created_at,updated_at",
+          "id,e164,type,provider,telnyx_number_id,messaging_profile_id,campaign_id,area_code,capabilities_sms,capabilities_voice,status,label,created_at,updated_at",
           { count: "exact" }
         )
         .order("created_at", { ascending: false })
@@ -144,10 +136,9 @@ export default function NumberPool10DLC() {
   }
 
   useEffect(() => {
-    // reload on filter change
     load(true);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [q, assigned, status, onlySMS, onlyVoice]);
+  }, [q, status, onlySMS, onlyVoice]);
 
   function patchRowLocal(id, patch) {
     setRows((prev) => prev.map((r) => (r.id === id ? { ...r, ...patch } : r)));
@@ -167,18 +158,17 @@ export default function NumberPool10DLC() {
       messaging_profile_id: payload.messaging_profile_id || null,
       campaign_id: payload.campaign_id || null,
       telnyx_number_id: payload.telnyx_number_id || null,
-      assigned_user_id: payload.assigned_user_id || null,
-      assigned_team_id: payload.assigned_team_id || null,
       capabilities_sms: !!payload.capabilities_sms,
       capabilities_voice: !!payload.capabilities_voice,
       status: payload.status || "active",
       updated_at: new Date().toISOString(),
     };
     if (!clean.e164) throw new Error("Enter a valid phone number.");
-    const { error, data } = await supabase.from("phone_numbers").upsert(clean, {
-      onConflict: "e164",
-      defaultToNull: false,
-    }).select().maybeSingle();
+    const { error, data } = await supabase
+      .from("phone_numbers")
+      .upsert(clean, { onConflict: "e164", defaultToNull: false })
+      .select()
+      .maybeSingle();
     if (error) throw error;
     return data;
   }
@@ -197,8 +187,7 @@ export default function NumberPool10DLC() {
         messaging_profile_id: "",
         campaign_id: "",
         telnyx_number_id: "",
-        assigned_user_id: "",
-        assigned_team_id: "",
+        status: "active",
       });
       await load(true);
       setAddOpen(false);
@@ -230,8 +219,6 @@ export default function NumberPool10DLC() {
           messaging_profile_id: "",
           campaign_id: "",
           telnyx_number_id: "",
-          assigned_user_id: "",
-          assigned_team_id: "",
           status: "active",
         });
       }
@@ -259,16 +246,16 @@ export default function NumberPool10DLC() {
   }
 
   async function releaseRow(r) {
-    // mark released and clear assignment
+    // mark released (and clear any future assignment columns if they exist server-side)
     try {
       setSaving(true);
       const { error } = await supabase
         .from("phone_numbers")
         .update({
           status: "released",
-          assigned_user_id: null,
-          assigned_team_id: null,
           updated_at: new Date().toISOString(),
+          // assigned_user_id: null,
+          // assigned_team_id: null,
         })
         .eq("id", r.id);
       if (error) throw error;
@@ -328,14 +315,9 @@ export default function NumberPool10DLC() {
         </div>
       )}
 
-      {/* Filters */}
-      <div className="mb-3 grid gap-2 md:grid-cols-5">
+      {/* Filters (simplified like TFN) */}
+      <div className="mb-3 grid gap-2 md:grid-cols-4">
         <TextInput placeholder="Search number/label…" value={q} onChange={(e) => setQ(e.target.value)} />
-        <Select value={assigned} onChange={(e) => setAssigned(e.target.value)}>
-          <option value="all">All</option>
-          <option value="unassigned">Unassigned</option>
-          <option value="assigned">Assigned</option>
-        </Select>
         <Select value={status} onChange={(e) => setStatus(e.target.value)}>
           <option value="active">Status: active</option>
           <option value="suspended">Status: suspended</option>
@@ -395,20 +377,6 @@ export default function NumberPool10DLC() {
                 placeholder="num_XXXX"
               />
             </Row>
-            <Row label="Assign to user (UUID)">
-              <TextInput
-                value={form.assigned_user_id}
-                onChange={(e) => setForm((v) => ({ ...v, assigned_user_id: e.target.value }))}
-                placeholder="auth.users id"
-              />
-            </Row>
-            <Row label="Assign to team (UUID)">
-              <TextInput
-                value={form.assigned_team_id}
-                onChange={(e) => setForm((v) => ({ ...v, assigned_team_id: e.target.value }))}
-                placeholder="teams.id"
-              />
-            </Row>
             <Row label="Capabilities">
               <div className="flex items-center gap-4">
                 <Checkbox
@@ -445,7 +413,7 @@ export default function NumberPool10DLC() {
       {/* Bulk Import */}
       {bulkOpen && <BulkImporter onCancel={() => setBulkOpen(false)} onImport={onBulkImport} saving={saving} />}
 
-      {/* Table */}
+      {/* Table (simplified like TFN) */}
       <div className="overflow-x-auto rounded-xl border border-white/10">
         <table className="min-w-full text-sm">
           <thead className="bg-white/5">
@@ -457,8 +425,6 @@ export default function NumberPool10DLC() {
               <th className="px-2 py-2 text-left">Voice</th>
               <th className="px-2 py-2 text-left">MP ID</th>
               <th className="px-2 py-2 text-left">Campaign</th>
-              <th className="px-2 py-2 text-left">User</th>
-              <th className="px-2 py-2 text-left">Team</th>
               <th className="px-2 py-2 text-left">Actions</th>
             </tr>
           </thead>
@@ -474,6 +440,7 @@ export default function NumberPool10DLC() {
                   <div className="mt-1 text-[11px] text-white/50">
                     AC: {r.area_code ?? "—"} • {r.provider}
                   </div>
+                  <div className="mt-0.5 text-[11px] text-white/40">TNX: {r.telnyx_number_id || "—"}</div>
                 </td>
                 <td className="px-2 py-2">
                   <EditCell value={r.label} onChange={(v) => patchRowLocal(r.id, { label: v, _dirty: true })} />
@@ -507,26 +474,11 @@ export default function NumberPool10DLC() {
                     value={r.messaging_profile_id || ""}
                     onChange={(v) => patchRowLocal(r.id, { messaging_profile_id: v, _dirty: true })}
                   />
-                  <div className="mt-1 text-[11px] text-white/50">TNX: {r.telnyx_number_id || "—"}</div>
                 </td>
                 <td className="px-2 py-2">
                   <EditCell
                     value={r.campaign_id || ""}
                     onChange={(v) => patchRowLocal(r.id, { campaign_id: v, _dirty: true })}
-                  />
-                </td>
-                <td className="px-2 py-2">
-                  <EditCell
-                    value={r.assigned_user_id || ""}
-                    onChange={(v) => patchRowLocal(r.id, { assigned_user_id: v || null, _dirty: true })}
-                    className="font-mono"
-                  />
-                </td>
-                <td className="px-2 py-2">
-                  <EditCell
-                    value={r.assigned_team_id || ""}
-                    onChange={(v) => patchRowLocal(r.id, { assigned_team_id: v || null, _dirty: true })}
-                    className="font-mono"
                   />
                 </td>
                 <td className="px-2 py-2">
@@ -551,7 +503,7 @@ export default function NumberPool10DLC() {
             ))}
             {rows.length === 0 && !loading && (
               <tr>
-                <td className="px-3 py-6 text-center text-white/60" colSpan={10}>
+                <td className="px-3 py-6 text-center text-white/60" colSpan={8}>
                   No numbers found.
                 </td>
               </tr>
