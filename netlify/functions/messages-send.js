@@ -4,11 +4,10 @@
 // Accepts: { to?, contact_id?, lead_id?, body?, templateKey?/template_key?/template?, requesterId?, provider_message_id?, sent_by_ai? }
 
 const { getServiceClient } = require("./_supabase");
-const fetch = require("node-fetch"); // ensure fetch exists in function runtime
+const fetch = require("node-fetch");
 
 const TELNYX_API_KEY = process.env.TELNYX_API_KEY;
 const MESSAGING_PROFILE_ID = process.env.TELNYX_MESSAGING_PROFILE_ID || null;
-// Base to build public agent-site links like https://remiecrm.com/a/<slug>
 const AGENT_SITE_BASE = process.env.AGENT_SITE_BASE || "https://remiecrm.com";
 
 function json(obj, statusCode = 200) {
@@ -105,39 +104,34 @@ async function getBalanceCents(db, user_id) {
    Returns { status: 'verified'|'pending'|'none', e164?: string }
 ==================================================== */
 async function getAgentMessagingNumberStatus(db, user_id) {
-  const { data, error } = await db
-    .from("ten_dlc_numbers")
-    .select("phone_number, verified, status")
-    .eq("assigned_to", user_id)
-    .order("date_assigned", { ascending: true, nullsFirst: true })
-    .limit(1)
-    .maybeSingle();
-  if (error) throw error;
+  try {
+    const { data, error } = await db
+      .from("ten_dlc_numbers")
+      .select("phone_number, verified, status")
+      .eq("assigned_to", user_id)
+      .order("date_assigned", { ascending: true, nullsFirst: true })
+      .limit(1)
+      .maybeSingle();
+    if (error) throw error;
 
-  if (!data) return { status: "none" };
-  const e = toE164(data.phone_number);
-  if (!e) return { status: "none" };
+    if (!data) return { status: "none" };
+    const e = toE164(data.phone_number);
+    if (!e) return { status: "none" };
 
-  // If table has verified=false or status != active, treat as pending
-  const isActive = (data.status || "active") === "active";
-  return data.verified && isActive ? { status: "verified", e164: e } : { status: "pending", e164: e };
+    const isActive = (data.status || "active") === "active";
+    return data.verified && isActive ? { status: "verified", e164: e } : { status: "pending", e164: e };
+  } catch {
+    return { status: "none" };
+  }
 }
 
-// ---- Telnyx send ----
+/* ===== Telnyx ===== */
 async function telnyxSend({ from, to, text, profileId }) {
   if (!TELNYX_API_KEY) throw new Error("TELNYX_API_KEY missing");
-  const payload = {
-    to,
-    text,
-    ...(profileId ? { messaging_profile_id: profileId } : {}),
-    ...(from ? { from } : {}),
-  };
+  const payload = { to, text, ...(profileId ? { messaging_profile_id: profileId } : {}), ...(from ? { from } : {}) };
   const res = await fetch("https://api.telnyx.com/v2/messages", {
     method: "POST",
-    headers: {
-      Authorization: `Bearer ${TELNYX_API_KEY}`,
-      "Content-Type": "application/json",
-    },
+    headers: { Authorization: `Bearer ${TELNYX_API_KEY}`, "Content-Type": "application/json" },
     body: JSON.stringify(payload),
   });
   const out = await res.json().catch(() => ({}));
@@ -147,7 +141,7 @@ async function telnyxSend({ from, to, text, profileId }) {
     err.telnyx_response = out;
     throw err;
   }
-  return out; // contains data.id, etc.
+  return out;
 }
 
 function chooseFallbackKey(reqKey, { isMilitary }) {
@@ -159,6 +153,12 @@ function chooseFallbackKey(reqKey, { isMilitary }) {
 /* =========================
    Monthly free usage (SMS)
    ========================= */
+
+function monthWindow(now = new Date()) {
+  const start = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1, 0, 0, 0));
+  const end = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + 1, 1, 0, 0, 0));
+  return { period_start: start.toISOString(), period_end: end.toISOString() };
+}
 
 // account: subscription account_id (active) or fallback to user_id
 async function resolveAccountId(db, user_id) {
@@ -174,78 +174,86 @@ async function resolveAccountId(db, user_id) {
   return user_id;
 }
 
-function monthWindow(now = new Date()) {
-  const start = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1, 0, 0, 0));
-  const end = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + 1, 1, 0, 0, 0));
-  return { period_start: start.toISOString(), period_end: end.toISOString() };
-}
-
+/** Ensure row exists for this month */
 async function ensureUsageRow(db, account_id, now = new Date()) {
   const { period_start, period_end } = monthWindow(now);
-  const { data: existing, error: findErr } = await db
+  const { data: found, error: findErr } = await db
     .from("usage_counters")
-    .select("id, free_sms_total, free_sms_used")
+    .select("id, period_start, period_end")
     .eq("account_id", account_id)
     .eq("period_start", period_start)
     .eq("period_end", period_end)
     .limit(1);
   if (findErr) throw findErr;
-  if (existing && existing.length) return existing[0];
-
-  const { data: inserted, error: insErr } = await db
+  if (found && found.length) return found[0];
+  const { data: ins, error: insErr } = await db
     .from("usage_counters")
     .insert([{ account_id, period_start, period_end }])
-    .select("id, free_sms_total, free_sms_used")
+    .select("id, period_start, period_end")
     .single();
   if (insErr) throw insErr;
-  return inserted;
+  return ins;
 }
 
 // Conservative segment counter (GSM-7 vs UCS-2)
 function countSmsSegments(text = "") {
   const s = String(text);
-  const gsm7 =
-    /^[\n\r\t\0\x0B\x0C\x1B\x20-\x7E€£¥èéùìòÇØøÅåΔ_ΦΓΛΩΠΨΣΘΞÆæßÉ^{}\[~\]|€\\]*$/.test(s);
-  if (gsm7) {
-    const singleLimit = 160, concatLimit = 153;
-    if (s.length <= singleLimit) return 1;
-    return Math.ceil(s.length / concatLimit);
-  } else {
-    const singleLimit = 70, concatLimit = 67;
-    if (s.length <= singleLimit) return 1;
-    return Math.ceil(s.length / concatLimit);
-  }
+  const gsm7 = /^[\n\r\t\0\x0B\x0C\x1B\x20-\x7E€£¥èéùìòÇØøÅåΔ_ΦΓΛΩΠΨΣΘΞÆæßÉ^{}\[~\]|€\\]*$/.test(s);
+  if (gsm7) return s.length <= 160 ? 1 : Math.ceil(s.length / 153);
+  return s.length <= 70 ? 1 : Math.ceil(s.length / 67);
+}
+
+/** Read usage for this month, tolerating either column family:
+ *  (free_sms_segments_total/used) OR (free_sms_total/used)
+ */
+async function readUsageRow(db, account_id, now = new Date()) {
+  const { period_start, period_end } = monthWindow(now);
+  const { data, error } = await db
+    .from("usage_counters")
+    .select("*")
+    .eq("account_id", account_id)
+    .eq("period_start", period_start)
+    .eq("period_end", period_end)
+    .maybeSingle();
+  if (error) throw error;
+  const row = data || {};
+  const total =
+    row.free_sms_segments_total ??
+    row.free_sms_total ??
+    6000;
+  const used =
+    row.free_sms_segments_used ??
+    row.free_sms_used ??
+    0;
+  return { id: row.id, total: Number(total || 0), used: Number(used || 0) };
+}
+
+/** Write back 'used' to whichever column family exists */
+async function writeUsageRow(db, id, nextUsed) {
+  // Try segments family first
+  try {
+    const { error } = await db
+      .from("usage_counters")
+      .update({ free_sms_segments_used: nextUsed, updated_at: new Date().toISOString() })
+      .eq("id", id);
+    if (!error) return;
+  } catch {}
+  // Fallback to non-segments family
+  const { error: e2 } = await db
+    .from("usage_counters")
+    .update({ free_sms_used: nextUsed, updated_at: new Date().toISOString() })
+    .eq("id", id);
+  if (e2) throw e2;
 }
 
 /** Try to consume N SMS segments. Returns {covered, remaining_to_bill}. */
 async function tryConsumeSms(db, account_id, segments, now = new Date()) {
   await ensureUsageRow(db, account_id, now);
-  const { period_start, period_end } = monthWindow(now);
-
-  const { data: row0, error: getErr } = await db
-    .from("usage_counters")
-    .select("id, free_sms_total, free_sms_used")
-    .eq("account_id", account_id)
-    .eq("period_start", period_start)
-    .eq("period_end", period_end)
-    .single();
-  if (getErr) throw getErr;
-
-  const remaining = Math.max(0, (row0.free_sms_total || 0) - (row0.free_sms_used || 0));
+  const row = await readUsageRow(db, account_id, now);
+  const remaining = Math.max(0, row.total - row.used);
   const covered = Math.min(remaining, segments);
   const over = segments - covered;
-
-  if (covered > 0) {
-    const { error: updErr } = await db
-      .from("usage_counters")
-      .update({
-        free_sms_used: (row0.free_sms_used || 0) + covered,
-        updated_at: new Date().toISOString(),
-      })
-      .eq("id", row0.id);
-    if (updErr) throw updErr;
-  }
-
+  if (covered > 0) await writeUsageRow(db, row.id, row.used + covered);
   return { covered, remaining_to_bill: over };
 }
 
@@ -366,7 +374,6 @@ exports.handler = async (event) => {
         );
 
       const ap = await getAgentProfile(db, user_id);
-      // Build agent_site from slug, fallback to Calendly fields
       const slug = (ap?.slug || "").trim();
       const agent_site = slug ? `${AGENT_SITE_BASE.replace(/\/+$/,"")}/a/${slug}` : "";
       const ctx = {
@@ -381,13 +388,13 @@ exports.handler = async (event) => {
         agent_phone: ap?.phone || "",
         agent_email: ap?.email || "",
         agent_site,
-        calendly_link: ap?.calendly_link || ap?.calendly_url || "", // still supported if templates use it
+        calendly_link: ap?.calendly_link || ap?.calendly_url || "",
       };
 
       const fullName = lead?.name || contact?.full_name || "";
       if (fullName) {
         ctx.full_name = fullName;
-        const parts = fullName.split(/\s+/).filter(Boolean);
+        const parts = fullName split(/\s+/).filter(Boolean);
         ctx.first_name = parts[0] || "";
         ctx.last_name = parts.slice(1).join(" ");
       }
@@ -395,7 +402,6 @@ exports.handler = async (event) => {
       ctx.beneficiary = lead?.beneficiary || lead?.beneficiary_name || "";
       ctx.military_branch = S(lead?.military_branch) || (tags.includes("military") ? "Military" : "");
 
-      // Safety shim: if template still has {{calendly_link}} but agent_site exists, keep both available
       bodyText = renderTemplate(tpl, ctx);
       if (!bodyText) return json({ error: "rendered_empty_body", trace }, 400);
 
@@ -512,7 +518,6 @@ exports.handler = async (event) => {
         trace.push({ step: "insert.duplicate", provider_message_id });
         return json({ ok: true, deduped: true, provider_message_id, trace });
       }
-      console.error("[messages-send] db insert failed:", ins.error);
       return json({ error: `db_insert_failed: ${msg}`, trace }, 500);
     }
 
@@ -525,7 +530,6 @@ exports.handler = async (event) => {
       trace,
     });
   } catch (e) {
-    console.error("[messages-send] unhandled:", e);
-    return json({ error: "unhandled", detail: String(e?.message || e) });
+    return json({ error: "unhandled", detail: String(e?.message || e), trace: [] }, 500);
   }
 };
