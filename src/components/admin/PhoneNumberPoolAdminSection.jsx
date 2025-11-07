@@ -1,92 +1,63 @@
 import { useEffect, useMemo, useState } from "react";
 import { supabase } from "../../lib/supabaseClient.js";
+import { toE164 } from "../../lib/phone.js";
 
-/**
- * Unified Phone Number Pool (10DLC + Toll-free)
- *
- * Requires Supabase table `phone_numbers` with at least:
- *  - id (uuid) PK
- *  - e164 (text, unique, required)         e.g. +16155551234
- *  - type (text)                            '10dlc' | 'toll_free'
- *  - provider (text)                        'telnyx'
- *  - telnyx_number_id (text, nullable)
- *  - messaging_profile_id (text, nullable)  (should match your ENV profile typically)
- *  - campaign_id (text, nullable)           (required for type='10dlc')
- *  - area_code (int, nullable)
- *  - capabilities_sms (bool, default true)
- *  - capabilities_voice (bool, default true)
- *  - status (text, default 'active')        'active' | 'suspended' | 'released'
- *  - assigned_user_id (uuid, nullable)
- *  - assigned_team_id (uuid, nullable)
- *  - label (text, nullable)
- *  - created_at (timestamptz, default now())
- *  - updated_at (timestamptz)
- */
+const TABLE = "numbers_10dlc";
 
-const TYPES = ["all", "10dlc", "toll_free"];
-const STATUSES = ["all", "active", "suspended", "released"];
-const ASSIGN = ["all", "assigned", "unassigned"];
+function Row({ label, children }) {
+  return (
+    <div className="grid grid-cols-3 items-center gap-3 py-2">
+      <div className="text-sm text-white/70">{label}</div>
+      <div className="col-span-2">{children}</div>
+    </div>
+  );
+}
 
-export default function PhoneNumberPoolAdminSection() {
+export default function NumberPool10DLC() {
   const [loading, setLoading] = useState(false);
-  const [savingMap, setSavingMap] = useState({});
+  const [saving, setSaving] = useState(false);
   const [err, setErr] = useState("");
 
-  const [rows, setRows] = useState([]);
+  const [agents, setAgents] = useState([]);
+  const [numbers, setNumbers] = useState([]);
 
-  // filters
-  const [typeFilter, setTypeFilter] = useState("all");
-  const [statusFilter, setStatusFilter] = useState("all");
-  const [assignFilter, setAssignFilter] = useState("all");
-  const [q, setQ] = useState("");
-
-  // options for assignment
-  const [users, setUsers] = useState([]);
-  const [teams, setTeams] = useState([]);
-
-  // add modal
-  const [showAdd, setShowAdd] = useState(false);
-  const [addForm, setAddForm] = useState({
-    e164: "",
-    type: "10dlc",
-    campaign_id: "",
-    messaging_profile_id: "",
-    label: "",
-    capabilities_sms: true,
-    capabilities_voice: true,
-    status: "active",
-  });
-
-  function setSaving(id, v) {
-    setSavingMap((m) => ({ ...m, [id]: v }));
-  }
+  // add form
+  const [phone, setPhone] = useState("");
+  const [telnyxId, setTelnyxId] = useState("");
+  const [brandId, setBrandId] = useState("");
+  const [campaignId, setCampaignId] = useState("");
+  const [notes, setNotes] = useState("");
 
   async function loadAll() {
     setLoading(true);
     setErr("");
     try {
+      // Numbers
       const { data: nums, error: nErr } = await supabase
-        .from("phone_numbers")
-        .select("*")
+        .from(TABLE)
+        .select("id, phone_number, telnyx_number_id, brand_id, campaign_id, assigned_to, date_assigned, notes, active")
         .order("created_at", { ascending: false });
       if (nErr) throw nErr;
-      setRows(nums || []);
 
+      // Agents list (for human-friendly assignment)
       const { data: profs, error: pErr } = await supabase
         .from("agent_profiles")
-        .select("user_id, full_name, email")
-        .order("full_name", { ascending: true });
+        .select("user_id, email, full_name")
+        .order("created_at", { ascending: false })
+        .limit(1000);
       if (pErr) throw pErr;
-      setUsers(profs || []);
 
-      const { data: tms, error: tErr } = await supabase
-        .from("teams")
-        .select("id")
-        .order("id", { ascending: true });
-      if (tErr) throw tErr;
-      setTeams(tms || []);
+      setNumbers(nums || []);
+      setAgents(profs || []);
     } catch (e) {
-      setErr(e.message || "Failed to load numbers");
+      // Nice message if table doesn’t exist yet
+      if (String(e?.message || "").includes(`relation "${TABLE}" does not exist`) || e?.code === "42P01") {
+        setErr(
+          `The ${TABLE} table was not found. Create it in Supabase first.`
+        );
+      } else {
+        setErr(e.message || "Failed to load 10DLC pool");
+      }
     } finally {
       setLoading(false);
     }
@@ -96,181 +67,179 @@ export default function PhoneNumberPoolAdminSection() {
     loadAll();
   }, []);
 
-  const filtered = useMemo(() => {
-    return (rows || [])
-      .filter((r) => (typeFilter === "all" ? true : r.type === typeFilter))
-      .filter((r) => (statusFilter === "all" ? true : r.status === statusFilter))
-      .filter((r) =>
-        assignFilter === "all"
-          ? true
-          : assignFilter === "assigned"
-          ? !!(r.assigned_user_id || r.assigned_team_id)
-          : !(r.assigned_user_id || r.assigned_team_id)
-      )
-      .filter((r) => {
-        const hay = `${r.e164} ${r.label || ""} ${r.type} ${r.status} ${r.campaign_id || ""}`.toLowerCase();
-        return hay.includes(q.toLowerCase());
-      });
-  }, [rows, typeFilter, statusFilter, assignFilter, q]);
-
-  function areaCodeFromE164(e164) {
-    const digits = String(e164 || "").replace(/\D/g, "");
-    if (digits.length >= 11 && digits[0] === "1") {
-      return Number(digits.slice(1, 4));
-    }
-    if (digits.length >= 10) return Number(digits.slice(0, 3));
-    return null;
-  }
+  const agentById = useMemo(() => {
+    const m = new Map();
+    agents.forEach(a => m.set(a.user_id, a));
+    return m;
+  }, [agents]);
 
   async function addNumber() {
-    try {
-      const { e164, type, campaign_id, messaging_profile_id, label, capabilities_sms, capabilities_voice, status } = addForm;
-
-      if (!/^\+\d{10,15}$/.test(e164)) throw new Error("Enter a valid E.164 number like +16155551234");
-      if (!["10dlc", "toll_free"].includes(type)) throw new Error("Type must be 10dlc or toll_free");
-      if (type === "10dlc" && !campaign_id) throw new Error("10DLC numbers require a campaign_id");
-      if (type === "toll_free" && !/^\+18|^\+17|^\+18/.test(e164)) {
-        // not strictly needed; you may relax this
-      }
-
-      const now = new Date().toISOString();
-      const ac = areaCodeFromE164(e164);
-
-      const payload = {
-        e164,
-        type,
-        provider: "telnyx",
-        messaging_profile_id: messaging_profile_id || null,
-        campaign_id: type === "10dlc" ? campaign_id : null,
-        area_code: ac,
-        capabilities_sms: !!capabilities_sms,
-        capabilities_voice: !!capabilities_voice,
-        status: status || "active",
-        updated_at: now,
-      };
-
-      const { error } = await supabase.from("phone_numbers").insert([payload]);
-      if (error) throw error;
-
-      setShowAdd(false);
-      setAddForm({
-        e164: "",
-        type: "10dlc",
-        campaign_id: "",
-        messaging_profile_id: "",
-        label: "",
-        capabilities_sms: true,
-        capabilities_voice: true,
-        status: "active",
-      });
-      await loadAll();
-    } catch (e) {
-      alert(e.message || "Failed to add number");
-    }
-  }
-
-  async function saveRow(row) {
-    setSaving(row.id, true);
+    setSaving(true);
     setErr("");
     try {
-      if (!/^\+\d{10,15}$/.test(row.e164)) throw new Error("Invalid E.164 format");
-      if (row.type === "10dlc" && !row.campaign_id) throw new Error("10DLC numbers require campaign_id");
-      const now = new Date().toISOString();
+      const e164 = toE164(phone);
+      if (!e164) throw new Error("Enter a valid US phone number");
 
       const payload = {
-        ...row,
-        area_code: areaCodeFromE164(row.e164),
-        updated_at: now,
+        phone_number: e164,
+        telnyx_number_id: telnyxId || null,
+        brand_id: brandId || null,
+        campaign_id: campaignId || null,
+        notes: notes || null,
+        active: true,
       };
-      delete payload.created_at; // avoid upsert confusion
 
-      const { error } = await supabase.from("phone_numbers").upsert(payload, { onConflict: "e164" });
+      const { error } = await supabase.from(TABLE).insert(payload).single();
       if (error) throw error;
+
+      setPhone("");
+      setTelnyxId("");
+      setBrandId("");
+      setCampaignId("");
+      setNotes("");
       await loadAll();
     } catch (e) {
-      setErr(e.message || "Failed to save");
+      setErr(e.message || "Failed to add number");
     } finally {
-      setSaving(row.id, false);
+      setSaving(false);
     }
   }
 
-  async function unassign(row) {
-    await saveRow({ ...row, assigned_user_id: null, assigned_team_id: null });
+  async function assignNumber(id, userId) {
+    setSaving(true);
+    setErr("");
+    try {
+      if (!userId) throw new Error("Pick a user to assign");
+      const { error } = await supabase
+        .from(TABLE)
+        .update({ assigned_to: userId, date_assigned: new Date().toISOString() })
+        .eq("id", id);
+      if (error) throw error;
+      await loadAll();
+    } catch (e) {
+      setErr(e.message || "Failed to assign number");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function unassignNumber(id) {
+    setSaving(true);
+    setErr("");
+    try {
+      const { error } = await supabase
+        .from(TABLE)
+        .update({ assigned_to: null, date_assigned: null })
+        .eq("id", id);
+      if (error) throw error;
+      await loadAll();
+    } catch (e) {
+      setErr(e.message || "Failed to unassign number");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function toggleActive(id, active) {
+    setSaving(true);
+    setErr("");
+    try {
+      const { error } = await supabase.from(TABLE).update({ active: !!active }).eq("id", id);
+      if (error) throw error;
+      await loadAll();
+    } catch (e) {
+      setErr(e.message || "Failed to update status");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function deleteNumber(id) {
+    if (!confirm("Delete this number from the pool?")) return;
+    setSaving(true);
+    setErr("");
+    try {
+      const { error } = await supabase.from(TABLE).delete().eq("id", id);
+      if (error) throw error;
+      await loadAll();
+    } catch (e) {
+      setErr(e.message || "Failed to delete number");
+    } finally {
+      setSaving(false);
+    }
   }
 
   return (
     <div className="rounded-2xl border border-white/10 bg-white/[0.04] p-4 ring-1 ring-white/5">
-      <div className="mb-2 flex items-center justify-between">
-        <div className="font-medium">Phone Number Pool (10DLC + Toll-Free)</div>
-        <div className="flex items-center gap-2">
-          <button
-            onClick={loadAll}
-            disabled={loading}
-            className="rounded-md border border-white/20 px-3 py-1 text-sm hover:bg-white/10"
-          >
-            {loading ? "Refreshing…" : "Refresh"}
-          </button>
-          <button
-            onClick={() => setShowAdd(true)}
-            className="rounded-md border border-white/20 px-3 py-1 text-sm hover:bg-white/10"
-          >
-            + Add number
-          </button>
-        </div>
+      <div className="mb-3 flex items-center justify-between">
+        <div className="font-medium">10DLC Number Pool</div>
+        <button
+          onClick={loadAll}
+          disabled={loading}
+          className="rounded-md border border-white/20 px-3 py-1.5 text-sm hover:bg-white/10"
+        >
+          {loading ? "Refreshing…" : "Refresh"}
+        </button>
       </div>
 
       {err && (
-        <div className="mb-3 rounded-lg border border-rose-400/30 bg-rose-500/10 p-2 text-sm text-rose-200">
+        <div className="mb-3 rounded-lg border border-rose-400/30 bg-rose-500/10 p-3 text-sm text-rose-200">
           {err}
         </div>
       )}
 
-      {/* Filters */}
-      <div className="mb-3 grid gap-2 md:grid-cols-4">
-        <div>
-          <div className="mb-1 text-xs text-white/70">Type</div>
-          <select
-            value={typeFilter}
-            onChange={(e) => setTypeFilter(e.target.value)}
-            className="w-full rounded-md border border-white/15 bg-black/40 px-2 py-1 outline-none"
-          >
-            {TYPES.map((t) => (
-              <option key={t} value={t}>{t}</option>
-            ))}
-          </select>
-        </div>
-        <div>
-          <div className="mb-1 text-xs text-white/70">Status</div>
-          <select
-            value={statusFilter}
-            onChange={(e) => setStatusFilter(e.target.value)}
-            className="w-full rounded-md border border-white/15 bg-black/40 px-2 py-1 outline-none"
-          >
-            {STATUSES.map((s) => (
-              <option key={s} value={s}>{s}</option>
-            ))}
-          </select>
-        </div>
-        <div>
-          <div className="mb-1 text-xs text-white/70">Assignment</div>
-          <select
-            value={assignFilter}
-            onChange={(e) => setAssignFilter(e.target.value)}
-            className="w-full rounded-md border border-white/15 bg-black/40 px-2 py-1 outline-none"
-          >
-            {ASSIGN.map((s) => (
-              <option key={s} value={s}>{s}</option>
-            ))}
-          </select>
-        </div>
-        <div>
-          <div className="mb-1 text-xs text-white/70">Search</div>
+      {/* Add number */}
+      <div className="mb-4 rounded-xl border border-white/10 bg-white/[0.03] p-3">
+        <div className="text-sm font-medium mb-2">Add a 10DLC Number</div>
+        <Row label="Phone">
           <input
-            value={q}
-            onChange={(e) => setQ(e.target.value)}
-            placeholder="Filter by number, label, campaign…"
-            className="w-full rounded-md border border-white/15 bg-black/40 px-2 py-1 outline-none"
+            value={phone}
+            onChange={(e) => setPhone(e.target.value)}
+            placeholder="(555) 555-5555"
+            className="w-full rounded-md border border-white/15 bg-black/40 px-3 py-2 outline-none"
           />
+        </Row>
+        <Row label="Telnyx Number ID">
+          <input
+            value={telnyxId}
+            onChange={(e) => setTelnyxId(e.target.value)}
+            placeholder="ex: 129876543210987654"
+            className="w-full rounded-md border border-white/15 bg-black/40 px-3 py-2 outline-none"
+          />
+        </Row>
+        <Row label="Brand ID (10DLC)">
+          <input
+            value={brandId}
+            onChange={(e) => setBrandId(e.target.value)}
+            placeholder="Brand ID"
+            className="w-full rounded-md border border-white/15 bg-black/40 px-3 py-2 outline-none"
+          />
+        </Row>
+        <Row label="Campaign ID (10DLC)">
+          <input
+            value={campaignId}
+            onChange={(e) => setCampaignId(e.target.value)}
+            placeholder="Campaign ID"
+            className="w-full rounded-md border border-white/15 bg-black/40 px-3 py-2 outline-none"
+          />
+        </Row>
+        <Row label="Notes">
+          <input
+            value={notes}
+            onChange={(e) => setNotes(e.target.value)}
+            placeholder="Optional"
+            className="w-full rounded-md border border-white/15 bg-black/40 px-3 py-2 outline-none"
+          />
+        </Row>
+
+        <div className="flex justify-end">
+          <button
+            onClick={addNumber}
+            disabled={saving}
+            className="rounded-md border border-emerald-400/30 px-3 py-1.5 text-sm hover:bg-emerald-400/10"
+          >
+            {saving ? "Adding…" : "Add Number"}
+          </button>
         </div>
       </div>
 
@@ -280,143 +249,79 @@ export default function PhoneNumberPoolAdminSection() {
           <thead className="bg-white/5">
             <tr>
               <th className="px-3 py-2 text-left text-white/70">Number</th>
-              <th className="px-3 py-2 text-left text-white/70">Type</th>
-              <th className="px-3 py-2 text-left text-white/70">Status</th>
+              <th className="px-3 py-2 text-left text-white/70">Telnyx ID</th>
+              <th className="px-3 py-2 text-left text-white/70">Brand</th>
               <th className="px-3 py-2 text-left text-white/70">Campaign</th>
-              <th className="px-3 py-2 text-left text-white/70">Profile</th>
               <th className="px-3 py-2 text-left text-white/70">Assigned To</th>
-              <th className="px-3 py-2 text-left text-white/70">Label</th>
+              <th className="px-3 py-2 text-left text-white/70">Assigned On</th>
+              <th className="px-3 py-2 text-left text-white/70">Active</th>
+              <th className="px-3 py-2 text-left text-white/70">Notes</th>
               <th className="px-3 py-2 text-left text-white/70">Actions</th>
             </tr>
           </thead>
           <tbody>
-            {filtered.map((r) => {
-              const saving = !!savingMap[r.id];
-              const user = users.find((u) => u.user_id === r.assigned_user_id);
+            {numbers.map((n) => {
+              const agent = n.assigned_to ? agentById.get(n.assigned_to) : null;
+              const assignedLabel = agent
+                ? `${agent.full_name || agent.email || n.assigned_to}`
+                : n.assigned_to
+                ? n.assigned_to
+                : "—";
+              const date = n.date_assigned ? new Date(n.date_assigned).toLocaleString() : "—";
+
               return (
-                <tr key={r.id} className="border-t border-white/10 align-top">
+                <tr key={n.id} className="border-t border-white/10">
+                  <td className="px-3 py-2">{n.phone_number}</td>
+                  <td className="px-3 py-2 text-white/70">{n.telnyx_number_id || "—"}</td>
+                  <td className="px-3 py-2 text-white/70">{n.brand_id || "—"}</td>
+                  <td className="px-3 py-2 text-white/70">{n.campaign_id || "—"}</td>
+                  <td className="px-3 py-2">{assignedLabel}</td>
+                  <td className="px-3 py-2 text-white/60">{date}</td>
                   <td className="px-3 py-2">
-                    <div className="font-mono">{r.e164}</div>
-                    <div className="text-xs text-white/50">AC {r.area_code ?? "—"}</div>
-                    <div className="text-[11px] text-white/40">
-                      SMS {r.capabilities_sms ? "✓" : "×"} · Voice {r.capabilities_voice ? "✓" : "×"}
-                    </div>
+                    <label className="inline-flex items-center gap-2">
+                      <input
+                        type="checkbox"
+                        checked={!!n.active}
+                        onChange={(e) => toggleActive(n.id, e.target.checked)}
+                      />
+                      <span className="text-white/80">{n.active ? "Yes" : "No"}</span>
+                    </label>
+                  </td>
+                  <td className="px-3 py-2 max-w-[280px]">
+                    <div title={n.notes || ""} className="truncate">{n.notes || "—"}</div>
                   </td>
                   <td className="px-3 py-2">
-                    <span className={`rounded px-2 py-0.5 text-xs ${
-                      r.type === "10dlc" ? "bg-emerald-500/15 text-emerald-300" : "bg-sky-500/15 text-sky-300"
-                    }`}>
-                      {r.type}
-                    </span>
-                  </td>
-                  <td className="px-3 py-2">
-                    <select
-                      value={r.status || "active"}
-                      onChange={(e) => saveRow({ ...r, status: e.target.value })}
-                      className="rounded-md border border-white/15 bg-black/40 px-2 py-1 outline-none"
-                      disabled={saving}
-                    >
-                      {["active", "suspended", "released"].map((s) => (
-                        <option key={s} value={s}>{s}</option>
-                      ))}
-                    </select>
-                  </td>
-                  <td className="px-3 py-2">
-                    <input
-                      value={r.campaign_id || ""}
-                      onChange={(e) => saveRow({ ...r, campaign_id: e.target.value || null })}
-                      placeholder={r.type === "10dlc" ? "required" : "—"}
-                      className="w-44 rounded-md border border-white/15 bg-black/40 px-2 py-1 outline-none"
-                      disabled={saving || r.type !== "10dlc"}
-                    />
-                    {r.type === "10dlc" && (
-                      <div className={`mt-1 text-[11px] ${r.campaign_id ? "text-emerald-300" : "text-rose-300"}`}>
-                        {r.campaign_id ? "Campaign set" : "Missing campaign_id"}
-                      </div>
-                    )}
-                  </td>
-                  <td className="px-3 py-2">
-                    <input
-                      value={r.messaging_profile_id || ""}
-                      onChange={(e) => saveRow({ ...r, messaging_profile_id: e.target.value || null })}
-                      placeholder="profile id"
-                      className="w-44 rounded-md border border-white/15 bg-black/40 px-2 py-1 outline-none"
-                      disabled={saving}
-                    />
-                  </td>
-                  <td className="px-3 py-2">
-                    <div className="flex flex-col gap-1">
-                      <select
-                        value={r.assigned_user_id || ""}
-                        onChange={(e) => saveRow({ ...r, assigned_user_id: e.target.value || null, assigned_team_id: null })}
-                        className="w-56 rounded-md border border-white/15 bg-black/40 px-2 py-1 outline-none"
+                    <div className="flex flex-wrap gap-2">
+                      <AssignDropdown
+                        agents={agents}
+                        onAssign={(userId) => assignNumber(n.id, userId)}
                         disabled={saving}
-                      >
-                        <option value="">— assign to user —</option>
-                        {users.map((u) => (
-                          <option key={u.user_id} value={u.user_id}>
-                            {u.full_name || u.email || u.user_id}
-                          </option>
-                        ))}
-                      </select>
-
-                      <div className="text-center text-xs text-white/40">or</div>
-
-                      <select
-                        value={r.assigned_team_id || ""}
-                        onChange={(e) => saveRow({ ...r, assigned_team_id: e.target.value || null, assigned_user_id: null })}
-                        className="w-56 rounded-md border border-white/15 bg-black/40 px-2 py-1 outline-none"
-                        disabled={saving}
-                      >
-                        <option value="">— assign to team —</option>
-                        {teams.map((t) => (
-                          <option key={t.id} value={t.id}>{t.id}</option>
-                        ))}
-                      </select>
-
-                      {(r.assigned_user_id || r.assigned_team_id) && (
+                      />
+                      {n.assigned_to ? (
                         <button
-                          onClick={() => unassign(r)}
+                          onClick={() => unassignNumber(n.id)}
+                          className="rounded-md border border-white/20 px-2 py-1 text-xs hover:bg-white/10"
                           disabled={saving}
-                          className="mt-1 w-56 rounded-md border border-white/20 px-2 py-1 text-xs hover:bg-white/10"
                         >
                           Unassign
                         </button>
-                      )}
-
-                      {user && (
-                        <div className="text-[11px] text-white/50">
-                          ↳ {user.full_name || user.email}
-                        </div>
-                      )}
+                      ) : null}
+                      <button
+                        onClick={() => deleteNumber(n.id)}
+                        className="rounded-md border border-rose-400/30 px-2 py-1 text-xs hover:bg-rose-500/10"
+                        disabled={saving}
+                      >
+                        Delete
+                      </button>
                     </div>
-                  </td>
-                  <td className="px-3 py-2">
-                    <input
-                      value={r.label || ""}
-                      onChange={(e) => saveRow({ ...r, label: e.target.value || null })}
-                      className="w-44 rounded-md border border-white/15 bg-black/40 px-2 py-1 outline-none"
-                      placeholder="note/label"
-                      disabled={saving}
-                    />
-                  </td>
-                  <td className="px-3 py-2">
-                    <button
-                      onClick={() => saveRow(r)}
-                      disabled={saving}
-                      className="rounded-md border border-white/20 px-3 py-1 hover:bg-white/10"
-                    >
-                      {saving ? "Saving…" : "Save"}
-                    </button>
                   </td>
                 </tr>
               );
             })}
-
-            {filtered.length === 0 && !loading && (
+            {numbers.length === 0 && !loading && (
               <tr>
-                <td className="px-3 py-6 text-center text-white/60" colSpan={8}>
-                  No numbers.
+                <td className="px-3 py-6 text-center text-white/60" colSpan={9}>
+                  No numbers yet. Add your first 10DLC number above.
                 </td>
               </tr>
             )}
@@ -424,113 +329,58 @@ export default function PhoneNumberPoolAdminSection() {
         </table>
       </div>
 
-      {/* Add Modal */}
-      {showAdd && (
-        <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4">
-          <div className="w-full max-w-xl rounded-2xl border border-white/10 bg-zinc-900 p-4">
-            <div className="mb-2 flex items-center justify-between">
-              <div className="font-medium">Add phone number</div>
-              <button onClick={() => setShowAdd(false)} className="rounded-md border border-white/20 px-2 py-1 text-xs hover:bg-white/10">Close</button>
-            </div>
+      <p className="mt-2 text-xs text-white/45">
+        Assigning a number sets <code>assigned_to</code> and <code>date_assigned</code>. Messaging code
+        should pull a user’s default 10DLC number from this table (preferring assigned numbers).
+      </p>
+    </div>
+  );
+}
 
-            <div className="grid gap-2 md:grid-cols-2">
-              <label className="block">
-                <div className="mb-1 text-xs text-white/70">E.164</div>
-                <input
-                  value={addForm.e164}
-                  onChange={(e) => setAddForm((f) => ({ ...f, e164: e.target.value }))}
-                  placeholder="+16155551234"
-                  className="w-full rounded-md border border-white/15 bg-black/40 px-2 py-1 outline-none"
-                />
-              </label>
-              <label className="block">
-                <div className="mb-1 text-xs text-white/70">Type</div>
-                <select
-                  value={addForm.type}
-                  onChange={(e) => setAddForm((f) => ({ ...f, type: e.target.value }))}
-                  className="w-full rounded-md border border-white/15 bg-black/40 px-2 py-1 outline-none"
-                >
-                  <option value="10dlc">10DLC</option>
-                  <option value="toll_free">Toll-free</option>
-                </select>
-              </label>
+function AssignDropdown({ agents, onAssign, disabled }) {
+  const [open, setOpen] = useState(false);
+  const [query, setQuery] = useState("");
 
-              <label className="block md:col-span-2">
-                <div className="mb-1 text-xs text-white/70">Campaign ID (required for 10DLC)</div>
-                <input
-                  value={addForm.campaign_id}
-                  onChange={(e) => setAddForm((f) => ({ ...f, campaign_id: e.target.value }))}
-                  placeholder="example: CMP123abc..."
-                  className="w-full rounded-md border border-white/15 bg-black/40 px-2 py-1 outline-none"
-                  disabled={addForm.type !== "10dlc"}
-                />
-              </label>
+  const filtered = useMemo(() => {
+    const q = query.toLowerCase().trim();
+    if (!q) return agents.slice(0, 25);
+    return agents.filter(a =>
+      (a.email || "").toLowerCase().includes(q) ||
+      (a.full_name || "").toLowerCase().includes(q)
+    ).slice(0, 25);
+  }, [agents, query]);
 
-              <label className="block md:col-span-2">
-                <div className="mb-1 text-xs text-white/70">Messaging Profile ID (optional)</div>
-                <input
-                  value={addForm.messaging_profile_id}
-                  onChange={(e) => setAddForm((f) => ({ ...f, messaging_profile_id: e.target.value }))}
-                  placeholder="Telnyx messaging profile id"
-                  className="w-full rounded-md border border-white/15 bg-black/40 px-2 py-1 outline-none"
-                />
-              </label>
-
-              <label className="block md:col-span-2">
-                <div className="mb-1 text-xs text-white/70">Label (optional)</div>
-                <input
-                  value={addForm.label}
-                  onChange={(e) => setAddForm((f) => ({ ...f, label: e.target.value }))}
-                  placeholder="Note for admins"
-                  className="w-full rounded-md border border-white/15 bg-black/40 px-2 py-1 outline-none"
-                />
-              </label>
-
-              <div className="flex items-center gap-4 md:col-span-2">
-                <label className="inline-flex items-center gap-2">
-                  <input
-                    type="checkbox"
-                    checked={addForm.capabilities_sms}
-                    onChange={(e) => setAddForm((f) => ({ ...f, capabilities_sms: e.target.checked }))}
-                  />
-                  <span className="text-sm">SMS</span>
-                </label>
-                <label className="inline-flex items-center gap-2">
-                  <input
-                    type="checkbox"
-                    checked={addForm.capabilities_voice}
-                    onChange={(e) => setAddForm((f) => ({ ...f, capabilities_voice: e.target.checked }))}
-                  />
-                  <span className="text-sm">Voice</span>
-                </label>
-
-                <div className="ml-auto">
-                  <div className="mb-1 text-xs text-white/70">Status</div>
-                  <select
-                    value={addForm.status}
-                    onChange={(e) => setAddForm((f) => ({ ...f, status: e.target.value }))}
-                    className="rounded-md border border-white/15 bg-black/40 px-2 py-1 outline-none"
-                  >
-                    <option value="active">active</option>
-                    <option value="suspended">suspended</option>
-                    <option value="released">released</option>
-                  </select>
-                </div>
-              </div>
-            </div>
-
-            <div className="mt-3 flex items-center justify-end gap-2">
+  return (
+    <div className="relative">
+      <button
+        className="rounded-md border border-white/20 px-2 py-1 text-xs hover:bg-white/10"
+        onClick={() => setOpen(o => !o)}
+        disabled={disabled}
+      >
+        Assign
+      </button>
+      {open && (
+        <div className="absolute z-10 mt-1 w-64 rounded-lg border border-white/15 bg-black/90 p-2 shadow-xl">
+          <input
+            className="mb-2 w-full rounded-md border border-white/15 bg-black/40 px-2 py-1 text-xs outline-none"
+            placeholder="Search name or email…"
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+          />
+          <div className="max-h-64 overflow-auto">
+            {filtered.map(a => (
               <button
-                onClick={addNumber}
-                className="rounded-md border border-emerald-400/30 px-3 py-1.5 text-sm hover:bg-emerald-400/10"
+                key={a.user_id}
+                onClick={() => { onAssign(a.user_id); setOpen(false); }}
+                className="block w-full rounded-md px-2 py-1 text-left text-xs hover:bg-white/10"
               >
-                Save number
+                <div className="font-medium">{a.full_name || "—"}</div>
+                <div className="text-white/60">{a.email || a.user_id}</div>
               </button>
-            </div>
-
-            <p className="mt-2 text-xs text-white/45">
-              Tip: Assign numbers to users or teams after adding them. 10DLC numbers must reference an approved campaign ID.
-            </p>
+            ))}
+            {filtered.length === 0 && (
+              <div className="px-2 py-1 text-xs text-white/60">No matches</div>
+            )}
           </div>
         </div>
       )}
