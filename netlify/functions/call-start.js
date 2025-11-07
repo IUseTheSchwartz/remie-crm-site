@@ -1,4 +1,4 @@
-// netlify/functions/call-start.js
+// File: netlify/functions/call-start.js
 // LEAD-FIRST: call the LEAD first; webhook will dial the AGENT on human answer, then bridge.
 // Caller ID selection priority:
 // 1) Exact area code (NPA) match
@@ -153,7 +153,7 @@ const NPA_STATE = {
   // TN
   423:"TN",615:"TN",629:"TN",731:"TN",865:"TN",901:"TN",931:"TN",
   // TX
-  210:"TX",214:"TX",254:"TX",281:"TX",325:"TX",346:"TX",361:"TX",409:"TX",430:"TX",432:"TX",
+  210:"TX",214:"TX",254:"TX",281:"TX",346:"TX",361:"TX",409:"TX",430:"TX",432:"TX",
   469:"TX",512:"TX",682:"TX",713:"TX",726:"TX",737:"TX",806:"TX",817:"TX",830:"TX",832:"TX",
   903:"TX",915:"TX",936:"TX",940:"TX",945:"TX",956:"TX",972:"TX",979:"TX",
   // UT
