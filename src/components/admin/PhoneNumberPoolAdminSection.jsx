@@ -1,11 +1,11 @@
 // File: src/components/admin/PhoneNumberPoolAdminSection.jsx
-import NumberPool10DLC from "./NumberPool10DLC.jsx";
+import TenDLCPoolAdminSection from "./TenDLCPoolAdminSection.jsx";
 
-/** Thin wrapper to keep older imports working. */
+/** Backwards-compatible wrapper (same name you used before). */
 export default function PhoneNumberPoolAdminSection() {
   return (
     <div className="space-y-4">
-      <NumberPool10DLC />
+      <TenDLCPoolAdminSection />
     </div>
   );
 }
