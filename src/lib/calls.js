@@ -2,33 +2,42 @@
 import { supabase } from "./supabaseClient";
 
 /**
- * Call the Netlify function that starts a two-leg outbound call.
- * - Server picks the best caller ID from agent's owned DIDs
- * - Uses Telnyx Call Control Application via `connection_id` (server-side)
+ * Start an AGENT-FIRST two-leg outbound call via Netlify function.
+ * - Server selects best caller ID from agent's owned DIDs
+ * - Agent phone rings FIRST; on agent answer, webhook dials the LEAD and bridges on human
  * - Returns { ok: true, call_leg_id } on success
  */
 export async function startCall({ agentNumber, leadNumber, contactId = null }) {
-  // Ensure user is signed in; server needs agent_id to select the caller ID from agent_numbers
-  const { data: auth } = await supabase.auth.getUser();
+  // Ensure user is signed in; server uses agent_id to pick caller ID
+  const [{ data: auth }, { data: sess }] = await Promise.all([
+    supabase.auth.getUser(),
+    supabase.auth.getSession(),
+  ]);
+
   const uid = auth?.user?.id;
   if (!uid) throw new Error("Not signed in");
 
-  // POST to your Netlify function (/.netlify/functions/call-start)
+  const token = sess?.session?.access_token || null;
+
+  const payload = {
+    agent_number: agentNumber,   // E.164 (+1XXXXXXXXXX) — we call this FIRST
+    lead_number: leadNumber,     // E.164 — called by webhook AFTER agent answers
+    agent_id: uid,
+    user_id: uid,                // kept for back-compat
+    contact_id: contactId ?? null,
+  };
+
   let res, json;
   try {
     res = await fetch("/.netlify/functions/call-start", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        agent_number: agentNumber,   // E.164 (+1...)
-        lead_number: leadNumber,     // E.164
-        agent_id: uid,
-        user_id: uid,                // kept for back-compat
-        contact_id: contactId ?? null,
-      }),
+      headers: {
+        "Content-Type": "application/json",
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      },
+      body: JSON.stringify(payload),
     });
   } catch (e) {
-    // Network or CORS issue
     throw new Error(e?.message || "Network error while starting call");
   }
 
@@ -38,22 +47,23 @@ export async function startCall({ agentNumber, leadNumber, contactId = null }) {
     json = {};
   }
 
-  // Surface Telnyx detail when available
   if (!res.ok || json?.ok === false) {
     const msg =
       json?.error ||
       json?.errors?.[0]?.detail ||
-      "Failed to start call";
+      json?.message ||
+      `Failed to start call (${res.status})`;
     throw new Error(msg);
   }
 
-  return json; // { ok: true, call_leg_id: ... }
+  // { ok: true, call_leg_id }
+  return json;
 }
 
 /**
  * List recent call logs for the signed-in user.
  * Expects a `call_logs` table with RLS to auth.uid().
- * Columns used by DialerPage: to_number, from_number, status, started_at, duration_seconds, recording_url
+ * Typical columns used elsewhere: to_number, from_number, status, started_at, duration_seconds, recording_url
  */
 export async function listMyCallLogs(limit = 100) {
   const { data: auth } = await supabase.auth.getUser();
