@@ -37,13 +37,13 @@ export default function TenDLCPoolAdminSection() {
   const [saving, setSaving] = useState(false);
   const [err, setErr] = useState("");
 
-  // Simple search like the old TFN UI
+  // Search (like TFN)
   const [q, setQ] = useState("");
   const [rows, setRows] = useState([]);
   const [page, setPage] = useState(0);
   const [hasMore, setHasMore] = useState(false);
 
-  // Add + Bulk like TFN
+  // Add + Bulk (like TFN)
   const [addOpen, setAddOpen] = useState(false);
   const [bulkOpen, setBulkOpen] = useState(false);
 
@@ -53,6 +53,15 @@ export default function TenDLCPoolAdminSection() {
     verified: false,
     notes: "",
   });
+
+  // Users for assignment (claim)
+  const [users, setUsers] = useState([]);
+  const userLabel = (uid) => {
+    if (!uid) return "—";
+    const u = users.find((x) => x.user_id === uid);
+    if (!u) return uid;
+    return u.full_name ? `${u.full_name} — ${u.email}` : u.email || uid;
+  };
 
   const whereBuilder = useMemo(() => {
     return (b) => {
@@ -65,6 +74,15 @@ export default function TenDLCPoolAdminSection() {
       return b;
     };
   }, [q]);
+
+  async function loadUsers() {
+    const { data, error } = await supabase
+      .from("agent_profiles")
+      .select("user_id, full_name, email")
+      .order("created_at", { ascending: false })
+      .limit(2000);
+    if (!error) setUsers(data || []);
+  }
 
   async function load(reset = false) {
     try {
@@ -82,7 +100,6 @@ export default function TenDLCPoolAdminSection() {
         .range(offset, offset + PAGE - 1);
 
       query = whereBuilder(query);
-
       const { data, error, count } = await query;
       if (error) throw error;
 
@@ -101,6 +118,11 @@ export default function TenDLCPoolAdminSection() {
   }
 
   useEffect(() => {
+    loadUsers();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  useEffect(() => {
     load(true);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [q]);
@@ -116,6 +138,8 @@ export default function TenDLCPoolAdminSection() {
       telnyx_number_id: payload.telnyx_number_id || null,
       verified: !!payload.verified,
       notes: payload.notes || null,
+      assigned_to: payload.assigned_to || null,
+      date_assigned: payload.assigned_to ? new Date().toISOString() : null,
       updated_at: new Date().toISOString(),
     };
     if (!clean.phone_number) throw new Error("Enter a valid phone number.");
@@ -169,7 +193,11 @@ export default function TenDLCPoolAdminSection() {
     try {
       setSaving(true);
       setErr("");
-      await upsertOne(r);
+      // Preserve date_assigned if already assigned; set if newly assigned; clear if unassigned
+      const next = { ...r };
+      if (r.assigned_to && !r.date_assigned) next.date_assigned = new Date().toISOString();
+      if (!r.assigned_to) next.date_assigned = null;
+      await upsertOne(next);
       patchRowLocal(r.id, { _dirty: false });
     } catch (e) {
       setErr(e.message || "Failed to save row");
@@ -186,7 +214,24 @@ export default function TenDLCPoolAdminSection() {
       if (error) throw error;
       await load(true);
     } catch (e) {
-      setErr(e.message || "Failed to remove");
+      setErr(e.message || "Failed to release");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function unassignRow(r) {
+    try {
+      setSaving(true);
+      setErr("");
+      const { error } = await supabase
+        .from("ten_dlc_numbers")
+        .update({ assigned_to: null, date_assigned: null, updated_at: new Date().toISOString() })
+        .eq("id", r.id);
+      if (error) throw error;
+      await load(true);
+    } catch (e) {
+      setErr(e.message || "Failed to unassign");
     } finally {
       setSaving(false);
     }
@@ -295,7 +340,7 @@ export default function TenDLCPoolAdminSection() {
         />
       )}
 
-      {/* Table (TFN-style: Number, Telnyx ID, Verified, Notes, Actions) */}
+      {/* Table (TFN-style + assignment) */}
       <div className="overflow-x-auto rounded-xl border border-white/10">
         <table className="min-w-full text-sm">
           <thead className="bg-white/5">
@@ -304,67 +349,114 @@ export default function TenDLCPoolAdminSection() {
               <th className="px-2 py-2 text-left">Telnyx ID</th>
               <th className="px-2 py-2 text-left">Verified</th>
               <th className="px-2 py-2 text-left">Notes</th>
+              <th className="px-2 py-2 text-left">Assigned To</th>
               <th className="px-2 py-2 text-left">Actions</th>
             </tr>
           </thead>
           <tbody>
-            {rows.map((r) => (
-              <tr key={r.id} className="border-t border-white/10 align-top">
-                <td className="px-2 py-2">
-                  <TextInput
-                    value={r.phone_number}
-                    onChange={(e) =>
-                      patchRowLocal(r.id, { phone_number: e.target.value, _dirty: true })
-                    }
-                    className="font-mono"
-                  />
-                </td>
-                <td className="px-2 py-2">
-                  <TextInput
-                    value={r.telnyx_number_id || ""}
-                    onChange={(e) =>
-                      patchRowLocal(r.id, { telnyx_number_id: e.target.value, _dirty: true })
-                    }
-                  />
-                </td>
-                <td className="px-2 py-2">
-                  <input
-                    type="checkbox"
-                    checked={!!r.verified}
-                    onChange={(e) =>
-                      patchRowLocal(r.id, { verified: e.target.checked, _dirty: true })
-                    }
-                  />
-                </td>
-                <td className="px-2 py-2">
-                  <TextInput
-                    value={r.notes || ""}
-                    onChange={(e) => patchRowLocal(r.id, { notes: e.target.value, _dirty: true })}
-                  />
-                </td>
-                <td className="px-2 py-2">
-                  <div className="flex flex-col gap-1">
-                    <button
-                      onClick={() => saveInline(r)}
-                      disabled={saving || !r._dirty}
-                      className="rounded-md border border-white/20 px-2 py-1 text-xs hover:bg-white/10 disabled:opacity-50"
-                    >
-                      Save
-                    </button>
-                    <button
-                      onClick={() => removeRow(r)}
-                      disabled={saving}
-                      className="rounded-md border border-rose-400/30 px-2 py-1 text-xs hover:bg-rose-500/10"
-                    >
-                      Release
-                    </button>
-                  </div>
-                </td>
-              </tr>
-            ))}
+            {rows.map((r) => {
+              const isLocked = !!r.assigned_to; // lock editing when assigned (like old TFN)
+              return (
+                <tr key={r.id} className="border-t border-white/10 align-top">
+                  <td className="px-2 py-2">
+                    <TextInput
+                      value={r.phone_number}
+                      onChange={(e) =>
+                        patchRowLocal(r.id, { phone_number: e.target.value, _dirty: true })
+                      }
+                      className={`font-mono ${isLocked ? "opacity-60 pointer-events-none" : ""}`}
+                      disabled={isLocked}
+                    />
+                  </td>
+                  <td className="px-2 py-2">
+                    <TextInput
+                      value={r.telnyx_number_id || ""}
+                      onChange={(e) =>
+                        patchRowLocal(r.id, { telnyx_number_id: e.target.value, _dirty: true })
+                      }
+                      className={isLocked ? "opacity-60 pointer-events-none" : ""}
+                      disabled={isLocked}
+                    />
+                  </td>
+                  <td className="px-2 py-2">
+                    <input
+                      type="checkbox"
+                      checked={!!r.verified}
+                      onChange={(e) =>
+                        patchRowLocal(r.id, { verified: e.target.checked, _dirty: true })
+                      }
+                      disabled={isLocked}
+                    />
+                  </td>
+                  <td className="px-2 py-2">
+                    <TextInput
+                      value={r.notes || ""}
+                      onChange={(e) => patchRowLocal(r.id, { notes: e.target.value, _dirty: true })}
+                      className={isLocked ? "opacity-60 pointer-events-none" : ""}
+                      disabled={isLocked}
+                    />
+                  </td>
+                  <td className="px-2 py-2">
+                    <div className="space-y-1">
+                      <select
+                        value={r.assigned_to || ""}
+                        onChange={(e) =>
+                          patchRowLocal(r.id, {
+                            assigned_to: e.target.value || null,
+                            _dirty: true,
+                          })
+                        }
+                        className="w-full rounded-md border border-white/15 bg-black/40 px-2 py-1.5 outline-none focus:ring-2 focus:ring-indigo-500/40"
+                      >
+                        <option value="">— Unassigned —</option>
+                        {users.map((u) => (
+                          <option key={u.user_id} value={u.user_id}>
+                            {u.full_name ? `${u.full_name} — ${u.email}` : u.email || u.user_id}
+                          </option>
+                        ))}
+                      </select>
+                      <div className="text-[11px] text-white/50">
+                        {r.assigned_to ? `Assigned: ${userLabel(r.assigned_to)}` : "Available"}
+                      </div>
+                      <div className="text-[11px] text-white/40">
+                        {r.date_assigned ? `Since: ${new Date(r.date_assigned).toLocaleString()}` : ""}
+                      </div>
+                    </div>
+                  </td>
+                  <td className="px-2 py-2">
+                    <div className="flex flex-col gap-1">
+                      <button
+                        onClick={() => saveInline(r)}
+                        disabled={saving || !r._dirty}
+                        className="rounded-md border border-white/20 px-2 py-1 text-xs hover:bg-white/10 disabled:opacity-50"
+                      >
+                        {r.assigned_to && r._dirty ? "Update" : r._dirty ? "Save" : "Save"}
+                      </button>
+                      {r.assigned_to ? (
+                        <button
+                          onClick={() => unassignRow(r)}
+                          disabled={saving}
+                          className="rounded-md border border-amber-400/30 px-2 py-1 text-xs hover:bg-amber-500/10"
+                        >
+                          Unassign
+                        </button>
+                      ) : (
+                        <button
+                          onClick={() => removeRow(r)}
+                          disabled={saving}
+                          className="rounded-md border border-rose-400/30 px-2 py-1 text-xs hover:bg-rose-500/10"
+                        >
+                          Release
+                        </button>
+                      )}
+                    </div>
+                  </td>
+                </tr>
+              );
+            })}
             {rows.length === 0 && !loading && (
               <tr>
-                <td className="px-3 py-6 text-center text-white/60" colSpan={5}>
+                <td className="px-3 py-6 text-center text-white/60" colSpan={6}>
                   No numbers found.
                 </td>
               </tr>
