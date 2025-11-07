@@ -1,8 +1,8 @@
 // File: src/pages/EnablePushIOS.jsx
 import { useEffect, useRef, useState } from "react";
-import { supabase } from "../lib/supabaseClient";
+import { supabase } from "../lib/supabaseClient.js"; // ensure .js for ESM builds
 
-const VERSION = "push-ios-v3.5"; // adds Safari + A2HS gating
+const VERSION = "push-ios-v3.6"; // JS-only; fixes build error
 
 function urlB64ToUint8Array(base64String) {
   const padding = "=".repeat((4 - (base64String.length % 4)) % 4);
@@ -16,17 +16,20 @@ function urlB64ToUint8Array(base64String) {
 const FLOW_KEY = "remie:push:resume";
 
 export default function EnablePushIOS() {
-  const ua = navigator.userAgent || "";
+  // Safe UA checks
+  const ua = typeof navigator !== "undefined" ? navigator.userAgent || "" : "";
   const isIOS = /iPhone|iPad|iPod/i.test(ua);
   const isSafari = /Safari/i.test(ua) && !/CriOS|FxiOS|EdgiOS/i.test(ua);
   const isStandalone =
-    window.matchMedia?.("(display-mode: standalone)")?.matches ||
-    (window.navigator as any).standalone === true ||
+    (typeof window !== "undefined" &&
+      window.matchMedia?.("(display-mode: standalone)")?.matches) ||
+    (typeof navigator !== "undefined" &&
+      // iOS Safari exposes navigator.standalone when launched from Home Screen
+      // guard to avoid build errors in non-iOS envs
+      Object.prototype.hasOwnProperty.call(navigator, "standalone") &&
+      navigator.standalone === true) ||
     false;
 
-  const [permission, setPermission] = useState(
-    typeof Notification === "undefined" ? "unsupported" : Notification.permission
-  );
   const [busy, setBusy] = useState(false);
   const resuming = useRef(false);
 
@@ -44,9 +47,10 @@ export default function EnablePushIOS() {
   async function ensureSW() {
     if (!("serviceWorker" in navigator)) throw new Error("Service Workers not supported here");
     let reg = await navigator.serviceWorker.getRegistration();
-    if (reg) return reg;
-    reg = await navigator.serviceWorker.register("/sw.js", { updateViaCache: "none" });
-    await navigator.serviceWorker.ready;
+    if (!reg) {
+      reg = await navigator.serviceWorker.register("/sw.js", { updateViaCache: "none" });
+      await navigator.serviceWorker.ready;
+    }
     return reg;
   }
 
@@ -62,7 +66,6 @@ export default function EnablePushIOS() {
     if (typeof Notification === "undefined") throw new Error("Notifications unsupported here");
     if (Notification.permission !== "granted") {
       const perm = await Notification.requestPermission();
-      setPermission(perm);
       if (perm !== "granted") throw new Error("Permission not granted");
     }
 
@@ -87,6 +90,7 @@ export default function EnablePushIOS() {
       topics: ["leads", "messages"],
       jwt,
     };
+
     const res = await fetch("/.netlify/functions/push-subscribe", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -108,7 +112,7 @@ export default function EnablePushIOS() {
       await finishSubscription();
       alert("Notifications enabled ✅");
     } catch (e) {
-      alert(e.message || "Enable failed");
+      alert((e && e.message) || "Enable failed");
     } finally {
       setBusy(false);
     }
@@ -126,13 +130,13 @@ export default function EnablePushIOS() {
       if (!res.ok) throw new Error(j?.error || "Test failed");
       alert("Test notification sent ✅");
     } catch (e) {
-      alert(e.message || "Test failed");
+      alert((e && e.message) || "Test failed");
     } finally {
       setBusy(false);
     }
   }
 
-  // --- Render gating & instructions ---
+  // Gating states
   const notIOS = !isIOS;
   const wrongBrowser = isIOS && !isSafari;
   const needsA2HS = isIOS && isSafari && !isStandalone;
@@ -163,11 +167,11 @@ export default function EnablePushIOS() {
           <ol className="list-decimal pl-5 space-y-1">
             <li>Tap the <b>Share</b> icon in Safari (square with arrow).</li>
             <li>Scroll and choose <b>Add to Home Screen</b>.</li>
-            <li>Open Remie from your Home Screen icon.</li>
-            <li>Return to this page from the app, then tap <b>Enable Notifications</b>.</li>
+            <li>Open Remie from your new Home Screen icon.</li>
+            <li>Come back to this page in the app and tap <b>Enable Notifications</b>.</li>
           </ol>
           <div className="text-xs text-white/60">
-            Apple only lets push notifications work when the web app is opened from the Home Screen.
+            Apple only allows web push when the app is opened from the Home Screen.
           </div>
         </div>
       )}
