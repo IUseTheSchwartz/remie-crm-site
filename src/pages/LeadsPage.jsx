@@ -342,6 +342,82 @@ export default function LeadsPage() {
     })();
   }, []);
 
+  /* -------------------------------------------------------------------------
+     Answered promotion (lead-leg only):
+     - reacts to call_logs updates for this user
+     - verifies the event is for the LEAD leg by matching destination number
+     - accepts 'answered' or 'bridged' on the lead leg
+     - if duration fields exist, requires >= 2s talk/bill to avoid flash connects
+  ------------------------------------------------------------------------- */
+  useEffect(() => {
+    let chan;
+
+    const norm = (s) => String(s || "").replace(/\D/g, "").replace(/^1(?=\d{10}$)/, "");
+    const getToNumber = (rec) =>
+      norm(rec?.to || rec?.to_number || rec?.called_number || rec?.destination || rec?.lead_number || "");
+
+    (async () => {
+      try {
+        const { data: authData } = await supabase.auth.getUser();
+        const userId = authData?.user?.id;
+        if (!userId) return;
+
+        // quick lookup maps so we can verify LEAD leg by phone
+        const byId = new Map(rows.map(r => [r.id, r]));
+        const phoneById = new Map(rows.map(r => [r.id, norm(r.phone)]));
+
+        chan = supabase.channel("call_logs_lead_answer_only")
+          .on("postgres_changes",
+            { event: "*", schema: "public", table: "call_logs", filter: `user_id=eq.${userId}` },
+            async (payload) => {
+              const rec = payload.new || payload.old || {};
+              const contactId = rec.contact_id;
+              if (!contactId) return;
+
+              const status = String(rec.status || "").toLowerCase();
+
+              const lead = byId.get(contactId);
+              const leadPhoneNorm = phoneById.get(contactId);
+              if (!lead || !leadPhoneNorm) return;
+
+              const toNorm = getToNumber(rec);
+              if (!toNorm || toNorm !== leadPhoneNorm) {
+                // not the lead leg (probably agent leg) — ignore
+                return;
+              }
+
+              // Optional duration guards if present
+              const talkMs  = Number(rec.talk_ms ?? rec.talkTimeMs ?? rec.talk_time_ms ?? 0);
+              const billSec = Number(rec.bill_sec ?? rec.billsec ?? 0);
+              const durationOk =
+                (Number.isFinite(talkMs) && talkMs > 0) ? talkMs >= 2000
+                : (Number.isFinite(billSec) && billSec > 0) ? billSec >= 2
+                : true; // if metrics missing, allow
+
+              const shouldPromote =
+                (status === "answered" || status === "bridged") && durationOk;
+
+              if (!shouldPromote) return;
+
+              // Skip if already answered or sold
+              if (lead.stage === "answered" || lead.status === "sold") return;
+
+              try {
+                await saveStageChange(contactId, "answered");
+              } catch (e) {
+                console.warn("Stage promote failed:", e?.message || e);
+              }
+            }
+          )
+          .subscribe();
+      } catch (e) {
+        console.error("call_logs subscribe failed:", e);
+      }
+    })();
+
+    return () => { if (chan) supabase.removeChannel(chan); };
+  }, [rows]);
+
   /* -------------------- Single click-to-call -------------------- */
   async function onCallLead(leadNumber, contactId) {
     try {
