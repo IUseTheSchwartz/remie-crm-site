@@ -5,11 +5,7 @@ import {
   CheckCircle2, ChevronRight, X, Trash2
 } from "lucide-react";
 
-import {
-  loadLeads, saveLeads,
-  loadClients, saveClients,
-  normalizePerson
-} from "../lib/storage.js";
+import { normalizePerson } from "../lib/storage.js"; // used for ensurePipelineDefaults
 import { updatePipelineServer } from "../lib/supabaseLeads.js";
 import { supabase } from "../lib/supabaseClient.js";
 
@@ -44,7 +40,7 @@ const MAX_VISIBLE = 5;
 const SCROLL_H = CARD_H * MAX_VISIBLE + GAP_Y * (MAX_VISIBLE - 1);
 
 /* ------------------------------- Notes storage ----------------------------- */
-
+/* Notes remain local-only (unchanged) */
 const NOTES_KEY = "remie_notes_v1";
 function loadNotesMap() { try { return JSON.parse(localStorage.getItem(NOTES_KEY) || "{}"); } catch { return {}; } }
 function saveNotesMap(m) { localStorage.setItem(NOTES_KEY, JSON.stringify(m)); }
@@ -113,23 +109,16 @@ function daysInStage(iso) {
 
 function getStageMeta(id) { return STAGES.find(s => s.id === id) || STAGES[0]; }
 
-/** Parse raw text into ISO.
- * Accepts:
- * - "YYYY-MM-DDTHH:mm" (native datetime-local)
- * - "MM/DD/YYYY HH:mm"   or "... HH:mm AM/PM"
- * - "MM/DD/YYYY" (defaults to 9:00 AM)
- */
+/** Parse raw text into ISO */
 function parseFollowupRawToISO(raw) {
   if (!raw) return null;
   const s = raw.trim();
 
-  // Native datetime-local (or close)
   if (/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}/.test(s)) {
     const d = new Date(s);
     return isNaN(d.getTime()) ? null : d.toISOString();
   }
 
-  // MM/DD/YYYY [HH:MM] [AM|PM]
   const m = s.match(/^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{4})(?:[ T](\d{1,2}):(\d{2})(?:\s*([AP]M))?)?$/i);
   if (m) {
     let [, mm, dd, yyyy, hh = "9", min = "00", ampm] = m;
@@ -160,7 +149,6 @@ const normalizePhone = (s) => {
   return d.length === 11 && d.startsWith("1") ? d.slice(1) : d;
 };
 
-/** Find a contact by user+phone using normalized digits */
 async function findContactByUserAndPhone(userId, rawPhone) {
   const phoneNorm = normalizePhone(rawPhone);
   if (!phoneNorm) return null;
@@ -172,7 +160,6 @@ async function findContactByUserAndPhone(userId, rawPhone) {
   return (data || []).find((c) => normalizePhone(c.phone) === phoneNorm) || null;
 }
 
-/** Ensure contact exists, add 'appointment' tag, and store follow-up in meta (multiple keys for Calendar compatibility) */
 async function ensureAppointmentContact({ userId, person, followUpIso }) {
   if (!person?.phone) return;
 
@@ -187,7 +174,7 @@ async function ensureAppointmentContact({ userId, person, followUpIso }) {
         calendar_type: "follow_up",
         appointment: { when: followUpIso, source: "pipeline" },
       }
-    : {}; // if cleared, we don't change contacts here
+    : {};
 
   if (existing) {
     const nextTags = uniqTags([...(existing.tags || []), "appointment"]);
@@ -234,9 +221,29 @@ export default function PipelinePage() {
     return () => { body.style.overflow = prev || ""; };
   }, [selected]);
 
+  /* -------------------- Supabase-only initial load -------------------- */
   useEffect(() => {
-    setLeads(loadLeads());
-    setClients(loadClients());
+    (async () => {
+      try {
+        const { data: auth } = await supabase.auth.getUser();
+        const uid = auth?.user?.id;
+        if (!uid) return;
+
+        const { data, error } = await supabase
+          .from("leads")
+          .select("*")
+          .eq("user_id", uid)
+          .order("created_at", { ascending: false });
+
+        if (error) throw error;
+
+        const rows = (data || []).map(ensurePipelineDefaults);
+        setClients(rows.filter(r => r.status === "sold"));
+        setLeads(rows.filter(r => r.status !== "sold"));
+      } catch (e) {
+        console.error("Pipeline initial load failed:", e);
+      }
+    })();
   }, []);
 
   const all = useMemo(() => {
@@ -285,27 +292,22 @@ export default function PipelinePage() {
 
   /* ---------------------------- Mutations / actions --------------------------- */
 
+  // Supabase-only: update in-memory lists (no localStorage)
   function updatePerson(patch) {
-    const item = { ...patch };
+    const item = ensurePipelineDefaults({ ...patch });
 
-    const replaceById = (list, obj) => {
-      const idx = list.findIndex((x) => x.id === obj.id);
-      if (idx >= 0) {
-        const copy = list.slice();
-        copy[idx] = obj;
-        return copy.filter((x, i) => i === copy.findIndex(y => y.id === x.id));
-      }
-      return [obj, ...list.filter((x) => x.id !== obj.id)];
-    };
+    // Decide destination list
+    const goesToClients = item.status === "sold";
 
-    const nextClients = replaceById(clients, item);
-    const nextLeads   = replaceById(leads, item);
+    setClients(prev => {
+      const without = prev.filter(x => x.id !== item.id);
+      return goesToClients ? [item, ...without] : without;
+    });
 
-    saveClients(nextClients);
-    saveLeads(nextLeads);
-
-    setClients(nextClients);
-    setLeads(nextLeads);
+    setLeads(prev => {
+      const without = prev.filter(x => x.id !== item.id);
+      return goesToClients ? without : [item, ...without];
+    });
 
     if (selected?.id === item.id) setSelected(item);
   }
@@ -345,17 +347,10 @@ export default function PipelinePage() {
     return null;
   }
 
-  /**
-   * Save follow-up using the real Supabase UUID id.
-   * First try with `user_id = auth.uid()` (RLS-friendly). If 0 rows updated,
-   * retry without the user_id filter to detect a mismatch.
-   * Also: when a follow-up is SET (not cleared), ensure contact exists, add 'appointment' tag,
-   * and store the follow-up time in message_contacts.meta (multiple keys for calendar compatibility).
-   */
   async function setNextFollowUp(person, dateIso) {
     const withNext = { ...person, next_follow_up_at: dateIso || null };
 
-    // Update local cache/UI immediately so you see the change
+    // Update in-memory immediately
     updatePerson(withNext);
 
     let uid = null;
@@ -365,7 +360,7 @@ export default function PipelinePage() {
 
       const supaId = await resolveLeadSupabaseId(withNext);
       if (supaId) {
-        // Attempt #1: with user_id filter (common RLS policy)
+        // Attempt #1: with user_id filter
         let resp = await supabase
           .from("leads")
           .update({ next_follow_up_at: dateIso || null })
@@ -377,7 +372,7 @@ export default function PipelinePage() {
           const serverVal = resp.data[0]?.next_follow_up_at || null;
           updatePerson({ ...withNext, id: supaId, next_follow_up_at: serverVal });
         } else {
-          // Attempt #2: retry without user_id filter (diagnostic)
+          // Attempt #2: without user_id filter (diagnostic)
           resp = await supabase
             .from("leads")
             .update({ next_follow_up_at: dateIso || null })
@@ -394,12 +389,10 @@ export default function PipelinePage() {
       // swallow; UI already updated
     }
 
-    // Tag contact + ensure existence (+ stash follow-up in several meta keys) ONLY when a follow-up is set
     if (dateIso && uid) {
       try {
         await ensureAppointmentContact({ userId: uid, person: withNext, followUpIso: dateIso });
       } catch (e) {
-        // Non-fatal; continue silently
         console.error("Failed to ensure contact / add 'appointment' meta:", e);
       }
     }
@@ -408,7 +401,6 @@ export default function PipelinePage() {
   function openCard(p) { setSelected(p); }
 
   /* ---------------------------------- Notes ---------------------------------- */
-
   function notesFor(id) {
     return (notesMap[id] || []).slice().sort((a,b) => new Date(b.created_at) - new Date(a.created_at));
   }
@@ -457,7 +449,7 @@ export default function PipelinePage() {
         </button>
         <div className="ml-auto text-xs text-white/60">
           {STAGES.map(s => {
-            const count = lanes[s.id]?.length || 0;
+            const count = (lanes[s.id]?.length || 0);
             return (
               <span key={s.id} className="mr-3">
                 <span className={`rounded-full px-2 py-0.5 ${STAGE_STYLE[s.id]}`}>{s.label}</span> {count}
@@ -588,7 +580,6 @@ function Drawer({
   person, onClose, onSetStage, onUpdate, onNextFollowUp,
   notes, onAddNote, onDeleteNote, onPinNote
 }) {
-  // Text input + ref so we always read exactly what you typed
   const followRef = useRef(null);
 
   const [noteText, setNoteText] = useState("");
