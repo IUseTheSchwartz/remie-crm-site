@@ -236,6 +236,22 @@ export default function DashboardHome() {
           </div>
         </Card>
       )}
+
+      {/* New: Get Notifications & Mobile App */}
+      <Card title="Get notifications & mobile app">
+        <p className="text-white/70 mb-3">
+          Enable push notifications on iOS and add Remie to your home screen for a true mobile app experience.
+        </p>
+        <a
+          href="/app/enable-notifications"
+          className="inline-flex items-center rounded-xl bg-white text-black px-4 py-2 font-medium hover:bg-white/90"
+        >
+          Set up notifications on iOS →
+        </a>
+        <div className="mt-2 text-xs text-white/50">
+          Heads up: setup must be done from an iOS device (iPhone/iPad) in Safari.
+        </div>
+      </Card>
     </div>
   );
 }
