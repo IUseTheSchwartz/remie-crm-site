@@ -1,8 +1,7 @@
-// File: src/components/leads/AutoDialerModal.jsx
 import { useEffect, useMemo, useRef, useState } from "react";
 import { supabase } from "../../lib/supabaseClient.js";
 import { toE164 } from "../../lib/phone.js";
-import { startCall } from "../../lib/calls";
+import { startLeadFirstCall } from "../../lib/calls";
 
 const STAGE_IDS = ["no_pickup","answered","quoted","app_started","app_pending","app_submitted"];
 function labelForStage(id) {
@@ -55,10 +54,11 @@ export default function AutoDialerModal({ onClose, rows = [] }) {
   const liveStatusRef = useRef({});
   useEffect(() => { liveStatusRef.current = liveStatus; }, [liveStatus]);
 
-  // Agent phone
+  // Agent phone & caller ID (outbound caller ID to present)
   const [agentPhone, setAgentPhone] = useState("");
+  const [callerId, setCallerId] = useState(""); // +1XXXXXXXXXX (required for lead-first)
 
-  // Load agent phone
+  // Load agent phone (and optional saved caller ID if you store it in agent_profiles)
   useEffect(() => {
     (async () => {
       try {
@@ -67,10 +67,13 @@ export default function AutoDialerModal({ onClose, rows = [] }) {
         if (!userId) return;
         const { data, error } = await supabase
           .from("agent_profiles")
-          .select("phone")
+          .select("phone, outbound_caller_id")
           .eq("user_id", userId)
           .maybeSingle();
-        if (!error && data?.phone) setAgentPhone(data.phone);
+        if (!error) {
+          if (data?.phone) setAgentPhone(data.phone);
+          if (data?.outbound_caller_id) setCallerId(data.outbound_caller_id);
+        }
       } catch {}
     })();
   }, []);
@@ -148,28 +151,52 @@ export default function AutoDialerModal({ onClose, rows = [] }) {
       if (!p) return null;
       const e164 = toE164(p);
       if (!e164) { alert("That phone doesn’t look valid. Use +1XXXXXXXXXX"); return null; }
-      await saveAgentPhone(e164);
+      await saveAgentPhone({ phone: e164 });
       num = e164;
     }
     return num;
   }
-  async function saveAgentPhone(phone) {
+
+  async function ensureCallerId() {
+    let ani = callerId;
+    if (!ani) {
+      const p = prompt("Enter the caller ID to present (your purchased DID):", "+1 ");
+      if (!p) return null;
+      const e164 = toE164(p);
+      if (!e164) { alert("Caller ID looks invalid. Use +1XXXXXXXXXX"); return null; }
+      await saveAgentPhone({ outbound_caller_id: e164 });
+      ani = e164;
+    }
+    return ani;
+  }
+
+  async function saveAgentPhone({ phone, outbound_caller_id }) {
     const num = (phone || "").trim();
-    if (!num) return;
+    const ani = (outbound_caller_id || "").trim();
     try {
       const { data: auth } = await supabase.auth.getUser();
       const uid = auth?.user?.id;
       if (!uid) return;
+
       const { data: existing } = await supabase
         .from("agent_profiles")
         .select("user_id")
         .eq("user_id", uid)
         .maybeSingle();
-      if (existing) await supabase.from("agent_profiles").update({ phone: num }).eq("user_id", uid);
-      else await supabase.from("agent_profiles").insert({ user_id: uid, phone: num });
-      setAgentPhone(num);
-    } catch (e) {
-      alert("Could not save your phone. Try again later.");
+
+      const patch = {};
+      if (num) patch.phone = num;
+      if (ani) patch.outbound_caller_id = ani;
+
+      if (existing) {
+        await supabase.from("agent_profiles").update(patch).eq("user_id", uid);
+      } else {
+        await supabase.from("agent_profiles").insert({ user_id: uid, ...patch });
+      }
+      if (num) setAgentPhone(num);
+      if (ani) setCallerId(ani);
+    } catch {
+      alert("Could not save your phone/caller ID. Try again later.");
     }
   }
 
@@ -190,6 +217,9 @@ export default function AutoDialerModal({ onClose, rows = [] }) {
   async function runNext() {
     const fromAgent = await ensureAgentPhone();
     if (!fromAgent) return;
+
+    const fromCallerId = await ensureCallerId();
+    if (!fromCallerId) return;
 
     setIsRunning(true);
     isRunningRef.current = true;
@@ -214,7 +244,16 @@ export default function AutoDialerModal({ onClose, rows = [] }) {
       setQueue((q) => q.map((x, i) => i === idx ? { ...x, status: "dialing" } : x));
 
       const to = toE164(lead.phone);
-      await startCall({ agentNumber: fromAgent, leadNumber: to, contactId: lead.id });
+
+      await startLeadFirstCall({
+        agentNumber: fromAgent,
+        leadNumber: to,
+        contactId: lead.id,
+        fromNumber: fromCallerId,
+        record: true,
+        ringTimeout: 25,
+        ringbackUrl: "", // optional: supply a URL to loop for the lead while we call the agent
+      });
 
       // Optimistic “ringing” fallback
       setTimeout(() => {
@@ -296,6 +335,7 @@ export default function AutoDialerModal({ onClose, rows = [] }) {
               {stagePills}
             </div>
           </div>
+
           <div className="col-span-1">
             <label className="text-xs text-white/70">Re-dial attempts</label>
             <select
@@ -307,6 +347,26 @@ export default function AutoDialerModal({ onClose, rows = [] }) {
               <option value={2}>Double dial</option>
               <option value={3}>Triple dial</option>
             </select>
+          </div>
+
+          <div className="col-span-1">
+            <label className="text-xs text-white/70">Agent Phone (we connect you)</label>
+            <input
+              value={agentPhone}
+              onChange={(e)=>setAgentPhone(e.target.value)}
+              placeholder="+1XXXXXXXXXX"
+              className="mt-1 w-full rounded-xl border border-white/10 bg-black/40 px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-indigo-500/40"
+            />
+          </div>
+
+          <div className="col-span-1">
+            <label className="text-xs text-white/70">Caller ID to Present</label>
+            <input
+              value={callerId}
+              onChange={(e)=>setCallerId(e.target.value)}
+              placeholder="+1YourDID"
+              className="mt-1 w-full rounded-xl border border-white/10 bg-black/40 px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-indigo-500/40"
+            />
           </div>
         </div>
 
