@@ -36,15 +36,16 @@ const DEFAULTS = {
 };
 
 /* ========= Usage helpers (Free SMS) ========= */
-/** Use SMS fallback = 5000 (your schema default). 6000 is for call minutes. */
-const FREE_SMS_SEGMENTS_FALLBACK = 5000;
+const FREE_SMS_SEGMENTS_FALLBACK = 5000; // SMS allowance (segments)
 
+/* Month window helpers (UTC) */
 function monthWindow(d = new Date()) {
   const start = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), 1, 0, 0, 0));
   const end = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth() + 1, 1, 0, 0, 0));
   return { period_start: start.toISOString(), period_end: end.toISOString() };
 }
 
+/* account_id resolution mirrors your sender: active subscription → account_id, else user_id */
 async function resolveAccountId(user_id) {
   const { data, error } = await supabase
     .from("subscriptions")
@@ -56,26 +57,68 @@ async function resolveAccountId(user_id) {
   return user_id;
 }
 
-/** Robust reader for current-month SMS usage. Reads SMS columns and is resilient to timestamp mismatches. */
-async function fetchSmsUsageForCurrentMonth(user_id) {
-  if (!user_id) return { used: 0, total: FREE_SMS_SEGMENTS_FALLBACK };
+/** Ultra-tolerant reader for current-month SMS usage.
+ * Strategy:
+ *  1) Pull last 12 rows for account_id.
+ *  2) Prefer row where period_start <= now < period_end (covers now).
+ *  3) Else pick row whose period_start month/year == now’s month/year.
+ *  4) Else fall back to most recent row.
+ * If none found, show fallback 0/5000.
+ */
+async function fetchSmsUsageForCurrentMonth(user_id, debug = false) {
+  if (!user_id) return { used: 0, total: FREE_SMS_SEGMENTS_FALLBACK, _debug: { reason: "no_user" } };
 
   const account_id = await resolveAccountId(user_id);
-  const { period_start, period_end } = monthWindow();
+  const now = new Date();
 
-  // Helper to extract SMS fields from a row that may have different column names
-  function pickSms(row) {
+  // Fetch a handful of most recent rows to be resilient to timestamp mismatches
+  const { data, error } = await supabase
+    .from("usage_counters")
+    .select(
+      [
+        "id",
+        "account_id",
+        "period_start",
+        "period_end",
+        "free_sms_used",
+        "free_sms_total",
+        // Also accept legacy/alt names if they exist (won’t error if missing)
+        "free_sms_segments_used",
+        "free_sms_segments_total",
+        "free_sms_messages_used",
+        "free_sms_messages_total",
+      ].join(", ")
+    )
+    .eq("account_id", account_id)
+    .order("period_start", { ascending: false })
+    .limit(12);
+
+  if (error) {
+    return {
+      used: 0,
+      total: FREE_SMS_SEGMENTS_FALLBACK,
+      _debug: { reason: "query_error", error: error.message },
+    };
+  }
+
+  const rows = Array.isArray(data) ? data : [];
+
+  // Helper: pick usage numbers from any row shape
+  const pickSms = (row) => {
     if (!row) return null;
 
-    // Priority 1: segments columns (if you ever add them)
-    if (Number.isFinite(row.free_sms_segments_used) || Number.isFinite(row.free_sms_segments_total)) {
+    // Priority 1: explicit segments columns
+    if (
+      Number.isFinite(row.free_sms_segments_used) ||
+      Number.isFinite(row.free_sms_segments_total)
+    ) {
       return {
         used: Math.max(0, Number(row.free_sms_segments_used || 0)),
         total: Math.max(1, Number(row.free_sms_segments_total || FREE_SMS_SEGMENTS_FALLBACK)),
       };
     }
 
-    // Priority 2: your actual schema (free_sms_used/total)
+    // Priority 2: your schema columns
     if (Number.isFinite(row.free_sms_used) || Number.isFinite(row.free_sms_total)) {
       return {
         used: Math.max(0, Number(row.free_sms_used || 0)),
@@ -84,7 +127,10 @@ async function fetchSmsUsageForCurrentMonth(user_id) {
     }
 
     // Priority 3: legacy message fields
-    if (Number.isFinite(row.free_sms_messages_used) || Number.isFinite(row.free_sms_messages_total)) {
+    if (
+      Number.isFinite(row.free_sms_messages_used) ||
+      Number.isFinite(row.free_sms_messages_total)
+    ) {
       return {
         used: Math.max(0, Number(row.free_sms_messages_used || 0)),
         total: Math.max(1, Number(row.free_sms_messages_total || FREE_SMS_SEGMENTS_FALLBACK)),
@@ -92,96 +138,51 @@ async function fetchSmsUsageForCurrentMonth(user_id) {
     }
 
     return null;
-  }
+  };
 
-  // 1) Exact match (ideal)
-  {
-    const { data, error } = await supabase
-      .from("usage_counters")
-      .select(
-        [
-          "free_sms_segments_used",
-          "free_sms_segments_total",
-          "free_sms_used",
-          "free_sms_total",
-          "free_sms_messages_used",
-          "free_sms_messages_total",
-          "period_start",
-          "period_end",
-        ].join(", ")
-      )
-      .eq("account_id", account_id)
-      .eq("period_start", period_start)
-      .eq("period_end", period_end)
-      .maybeSingle();
-
-    if (!error && data) {
-      const v = pickSms(data);
-      if (v) return v;
+  // Normalize date compare
+  const within = (row, date) => {
+    try {
+      const start = new Date(row.period_start);
+      const end = new Date(row.period_end);
+      return start <= date && date < end; // treat end as exclusive
+    } catch {
+      return false;
     }
-  }
+  };
 
-  // 2) Range match for current month (in case timestamps don't exactly match)
-  {
-    const { data, error } = await supabase
-      .from("usage_counters")
-      .select(
-        [
-          "free_sms_segments_used",
-          "free_sms_segments_total",
-          "free_sms_used",
-          "free_sms_total",
-          "free_sms_messages_used",
-          "free_sms_messages_total",
-          "period_start",
-          "period_end",
-        ].join(", ")
-      )
-      .eq("account_id", account_id)
-      .gte("period_start", period_start)
-      .lt("period_end", period_end)
-      .order("period_start", { ascending: false })
-      .limit(1);
-
-    const row = !error && Array.isArray(data) ? data[0] : null;
-    if (row) {
-      const v = pickSms(row);
-      if (v) return v;
+  const sameMonth = (row, date) => {
+    try {
+      const s = new Date(row.period_start);
+      return s.getUTCFullYear() === date.getUTCFullYear() && s.getUTCMonth() === date.getUTCMonth();
+    } catch {
+      return false;
     }
+  };
+
+  // 1) Row that covers "now"
+  const covering = rows.find((r) => within(r, now));
+  if (covering) {
+    const v = pickSms(covering);
+    if (v) return { ...v, _debug: debug ? { reason: "covers_now", row: covering } : undefined };
   }
 
-  // 3) Latest row for account that *covers now*
-  {
-    const nowIso = new Date().toISOString();
-    const { data, error } = await supabase
-      .from("usage_counters")
-      .select(
-        [
-          "free_sms_segments_used",
-          "free_sms_segments_total",
-          "free_sms_used",
-          "free_sms_total",
-          "free_sms_messages_used",
-          "free_sms_messages_total",
-          "period_start",
-          "period_end",
-        ].join(", ")
-      )
-      .eq("account_id", account_id)
-      .lte("period_start", nowIso)
-      .gte("period_end", nowIso) // note: if your end is exclusive, you can replace with .gt("period_end", nowIso)
-      .order("period_start", { ascending: false })
-      .limit(1);
-
-    const row = !error && Array.isArray(data) ? data[0] : null;
-    if (row) {
-      const v = pickSms(row);
-      if (v) return v;
-    }
+  // 2) Row whose start month == current month
+  const monthMatch = rows.find((r) => sameMonth(r, now));
+  if (monthMatch) {
+    const v = pickSms(monthMatch);
+    if (v) return { ...v, _debug: debug ? { reason: "same_month", row: monthMatch } : undefined };
   }
 
-  // Fallback
-  return { used: 0, total: FREE_SMS_SEGMENTS_FALLBACK };
+  // 3) Fallback to most recent row
+  const latest = rows[0];
+  if (latest) {
+    const v = pickSms(latest);
+    if (v) return { ...v, _debug: debug ? { reason: "latest_fallback", row: latest } : undefined };
+  }
+
+  // 4) Absolute fallback
+  return { used: 0, total: FREE_SMS_SEGMENTS_FALLBACK, _debug: { reason: "no_rows" } };
 }
 
 /* Small toggle */
@@ -288,7 +289,6 @@ export default function MessagingSettings() {
   const [loading, setLoading] = useState(true);
 
   // Auth
-  theUser: null;
   const [userId, setUserId] = useState(null);
 
   // Templates
@@ -328,7 +328,8 @@ export default function MessagingSettings() {
   const [smsLoading, setSmsLoading] = useState(true);
   const [smsUsed, setSmsUsed] = useState(0);
   const [smsTotal, setSmsTotal] = useState(FREE_SMS_SEGMENTS_FALLBACK);
-  const smsLeft = Math.max(0, smsTotal - smsUsed);
+  const [smsDebugOpen, setSmsDebugOpen] = useState(false);
+  const [smsDebug, setSmsDebug] = useState(null);
   const smsPct = Math.min(100, Math.round((smsUsed / Math.max(1, smsTotal)) * 100));
 
   /* -------- Global ESC to close drawers -------- */
@@ -474,11 +475,13 @@ export default function MessagingSettings() {
     if (!uid) return;
     setSmsLoading(true);
     try {
-      const u = await fetchSmsUsageForCurrentMonth(uid);
+      const u = await fetchSmsUsageForCurrentMonth(uid, true);
       setSmsUsed(u.used);
       setSmsTotal(u.total || FREE_SMS_SEGMENTS_FALLBACK);
+      setSmsDebug(u._debug || null);
     } catch (e) {
       // keep defaults on error
+      setSmsDebug({ reason: "exception", error: String(e?.message || e) });
     } finally {
       setSmsLoading(false);
     }
@@ -595,13 +598,22 @@ export default function MessagingSettings() {
           <div className="rounded-xl border border-white/10 bg-white/[0.04] p-3 md:col-span-2">
             <div className="flex items-center justify-between">
               <div className="text-sm text-white/70">Free SMS this month (segments)</div>
-              <button
-                onClick={() => refreshSmsUsage()}
-                className="inline-flex items-center gap-1 rounded-md border border-white/15 bg-white/5 px-2 py-1 text-[11px] hover:bg-white/10"
-                title="Refresh usage"
-              >
-                <RefreshCcw className="h-3.5 w-3.5" /> Refresh
-              </button>
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={() => refreshSmsUsage()}
+                  className="inline-flex items-center gap-1 rounded-md border border-white/15 bg-white/5 px-2 py-1 text-[11px] hover:bg-white/10"
+                  title="Refresh usage"
+                >
+                  <RefreshCcw className="h-3.5 w-3.5" /> Refresh
+                </button>
+                <button
+                  onClick={() => setSmsDebugOpen((v) => !v)}
+                  className="inline-flex items-center gap-1 rounded-md border border-white/15 bg-white/5 px-2 py-1 text-[11px] hover:bg-white/10"
+                  title="Show details"
+                >
+                  Details
+                </button>
+              </div>
             </div>
             <div className="mt-2 h-2 w-full rounded-full bg-white/10 overflow-hidden">
               <div
@@ -616,6 +628,12 @@ export default function MessagingSettings() {
                 </>
               )}
             </div>
+
+            {smsDebugOpen && (
+              <pre className="mt-2 max-h-40 overflow-auto rounded-lg border border-white/10 bg-black/40 p-2 text-[11px] text-white/70">
+                {JSON.stringify(smsDebug || { note: "no debug" }, null, 2)}
+              </pre>
+            )}
           </div>
           <div className="rounded-xl border border-white/10 bg-amber-500/10 p-3">
             <div className="text-sm font-medium text-amber-200">Delivery note</div>
