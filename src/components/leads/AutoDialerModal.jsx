@@ -37,29 +37,14 @@ function parseStateFilter(s) {
     .filter(Boolean);
 }
 
-/* -------- helpers (auth + number UI) -------- */
-async function withAuthHeaders() {
-  const { data } = await supabase.auth.getSession();
-  const token = data?.session?.access_token;
-  return token ? { Authorization: `Bearer ${token}` } : {};
-}
-
-async function fetchAssignedDid() {
-  const headers = await withAuthHeaders();
-  const res = await fetch("/.netlify/functions/ten-dlc-status", { headers });
-  const j = await res.json().catch(() => ({}));
-  if (!res.ok) throw new Error(j?.error || `HTTP_${res.status}`);
-  return j?.phone_number || null; // E.164 or raw; we'll normalize
-}
-
-function maskDid(e164) {
+/* ---------- UI helpers ---------- */
+function maskForList(e164) {
   const s = String(e164 || "");
   const m = s.match(/^\+1?(\d{10})$/);
   if (!m) return s || "";
   const d = m[1];
-  return `+1 (${d.slice(0,3)}) XXX-XXXX`;
+  return `+1 (${d.slice(0,3)}) ***-${d.slice(6)}`; // area code + last4
 }
-
 function prettyE164(e164) {
   const s = String(e164 || "");
   const m = s.match(/^\+1?(\d{10})$/);
@@ -80,28 +65,37 @@ export default function AutoDialerModal({ onClose, rows = [] }) {
   const [isRunning, setIsRunning] = useState(false);
   const isRunningRef = useRef(false);
 
+  // Timer control (for Pause)
+  const pendingTimersRef = useRef([]);
+  function addTimer(id) { pendingTimersRef.current.push(id); }
+  function clearAllTimers() {
+    for (const id of pendingTimersRef.current) clearTimeout(id);
+    pendingTimersRef.current = [];
+  }
+
   // Live call status by contact_id
   const [liveStatus, setLiveStatus] = useState({});
   const liveStatusRef = useRef({});
   useEffect(() => { liveStatusRef.current = liveStatus; }, [liveStatus]);
 
-  // Auto-loaded agent phone & assigned DID
-  const [agentPhone, setAgentPhone] = useState("");       // editable
-  const [callerId, setCallerId] = useState("");           // assigned DID (not editable)
+  // Numbers
+  const [agentPhone, setAgentPhone] = useState("");     // editable
+  const [agentNums, setAgentNums] = useState([]);       // [{id, telnyx_number}]
+  const [selectedFrom, setSelectedFrom] = useState(""); // chosen caller ID (optional)
   const [loadMsg, setLoadMsg] = useState("");
-  const [saveAgentMsg, setSaveAgentMsg] = useState("");   // tiny feedback on save
+  const [saveAgentMsg, setSaveAgentMsg] = useState("");
 
-  // Load agent phone (normalize & persist if needed) and assigned DID
+  // Load agent phone and agent_numbers
   useEffect(() => {
     let mounted = true;
     (async () => {
       try {
-        setLoadMsg("Loading agent and number…");
+        setLoadMsg("Loading your numbers…");
         const { data: authData } = await supabase.auth.getUser();
         const uid = authData?.user?.id;
         if (!uid) return;
 
-        // Agent phone
+        // agent phone
         const { data: profile } = await supabase
           .from("agent_profiles")
           .select("phone")
@@ -114,15 +108,25 @@ export default function AutoDialerModal({ onClose, rows = [] }) {
           try { await supabase.from("agent_profiles").update({ phone: eNum }).eq("user_id", uid); } catch {}
           num = eNum;
         }
-        if (mounted && num) setAgentPhone(num);
+        if (mounted) setAgentPhone(num || "");
 
-        // Assigned DID (from Messaging Settings flow)
-        let did = null;
-        try {
-          const pn = await fetchAssignedDid();
-          did = toE164(pn);
-        } catch {}
-        if (mounted && did) setCallerId(did);
+        // agent_numbers list
+        const { data: nums } = await supabase
+          .from("agent_numbers")
+          .select("id, telnyx_number, is_free, purchased_at")
+          .eq("agent_id", uid)
+          .order("purchased_at", { ascending: true });
+
+        const normalized = (nums || [])
+          .map(n => ({ ...n, telnyx_number: toE164(n.telnyx_number) }))
+          .filter(n => !!n.telnyx_number);
+
+        if (mounted) {
+          setAgentNums(normalized);
+          // default select: first non-free, else first
+          const first = normalized.find(n => !n.is_free) || normalized[0];
+          setSelectedFrom(first ? first.telnyx_number : "");
+        }
       } finally {
         if (mounted) setLoadMsg("");
       }
@@ -134,7 +138,7 @@ export default function AutoDialerModal({ onClose, rows = [] }) {
     setSaveAgentMsg("");
     const eNum = toE164(agentPhone);
     if (!eNum) {
-      setSaveAgentMsg("Enter a valid US number like +1XXXXXXXXXX");
+      setSaveAgentMsg("Enter a valid +1XXXXXXXXXX");
       return;
     }
     try {
@@ -144,10 +148,10 @@ export default function AutoDialerModal({ onClose, rows = [] }) {
       await supabase.from("agent_profiles").update({ phone: eNum }).eq("user_id", uid);
       setAgentPhone(eNum);
       setSaveAgentMsg("Saved");
-      setTimeout(() => setSaveAgentMsg(""), 1200);
-    } catch (e) {
+      addTimer(setTimeout(() => setSaveAgentMsg(""), 1200));
+    } catch {
       setSaveAgentMsg("Save failed");
-      setTimeout(() => setSaveAgentMsg(""), 1500);
+      addTimer(setTimeout(() => setSaveAgentMsg(""), 1500));
     }
   }
 
@@ -217,24 +221,21 @@ export default function AutoDialerModal({ onClose, rows = [] }) {
     setLiveStatus((s) => ({ ...s, ...patch }));
   }
 
-  function requireLoadedBasics() {
+  function requireBasics() {
     const eAgent = toE164(agentPhone);
-    const eCaller = toE164(callerId);
     if (!eAgent) {
       alert("Agent phone is missing or invalid. Please enter a valid +1XXXXXXXXXX and save.");
       return null;
     }
-    if (!eCaller) {
-      alert("Your assigned caller ID (messaging number) isn’t set yet. Go to Messaging Settings and assign a number.");
-      return null;
-    }
-    return { agent: eAgent, caller: eCaller };
+    // selectedFrom is optional — if blank, Telnyx will use the connection default
+    const eFrom = selectedFrom ? toE164(selectedFrom) : null;
+    return { agent: eAgent, from: eFrom };
   }
 
   async function startAutoDial() {
     if (!queue.length) {
       buildQueue();
-      setTimeout(() => runNext(), 0);
+      addTimer(setTimeout(() => { if (!isRunningRef.current) return; runNext(); }, 0));
     } else {
       runNext();
     }
@@ -243,10 +244,11 @@ export default function AutoDialerModal({ onClose, rows = [] }) {
   function stopAutoDial() {
     setIsRunning(false);
     isRunningRef.current = false;
+    clearAllTimers();
   }
 
   async function runNext() {
-    const basics = requireLoadedBasics();
+    const basics = requireBasics();
     if (!basics) return;
 
     setIsRunning(true);
@@ -256,6 +258,7 @@ export default function AutoDialerModal({ onClose, rows = [] }) {
     if (idx >= queue.length) {
       setIsRunning(false);
       isRunningRef.current = false;
+      clearAllTimers();
       return;
     }
 
@@ -263,7 +266,7 @@ export default function AutoDialerModal({ onClose, rows = [] }) {
     const lead = rowsLookup.get(item.id);
     if (!lead || !lead.phone) {
       setCurrentIdx((i) => i + 1);
-      setTimeout(runNext, 0);
+      addTimer(setTimeout(() => { if (!isRunningRef.current) return; runNext(); }, 0));
       return;
     }
 
@@ -277,26 +280,28 @@ export default function AutoDialerModal({ onClose, rows = [] }) {
         agentNumber: basics.agent,
         leadNumber: to,
         contactId: lead.id,
-        fromNumber: basics.caller, // assigned DID
+        fromNumber: basics.from,   // optional; uses selected agent DID if chosen
         record: true,
         ringTimeout: 25,
-        ringbackUrl: "", // optional
+        ringbackUrl: "",
       });
 
       // Optimistic “ringing” fallback
-      setTimeout(() => {
+      addTimer(setTimeout(() => {
+        if (!isRunningRef.current) return;
         if (liveStatusRef.current[lead.id] === "dialing") {
           setLiveStatus((s) => ({ ...s, [lead.id]: "ringing" }));
         }
-      }, 1500);
+      }, 1500));
 
       // Safety net advance if nothing ends after 70s
-      setTimeout(() => {
+      addTimer(setTimeout(() => {
+        if (!isRunningRef.current) return;
         const st = liveStatusRef.current[lead.id];
-        if (isRunningRef.current && ["dialing","ringing","answered","bridged"].includes(st)) {
+        if (["dialing","ringing","answered","bridged"].includes(st)) {
           advanceAfterEnd(lead.id, "failed");
         }
-      }, 70000);
+      }, 70000));
     } catch {
       advanceAfterEnd(item.id, "failed");
     }
@@ -314,13 +319,13 @@ export default function AutoDialerModal({ onClose, rows = [] }) {
       if (outcome !== "completed" && attempts < maxAttempts) {
         const updated = [...old];
         updated[idx] = { ...cur, attempts, status: "queued" };
-        setTimeout(runNext, 500);
+        addTimer(setTimeout(() => { if (!isRunningRef.current) return; runNext(); }, 500));
         return updated;
       } else {
         const updated = [...old];
         updated[idx] = { ...cur, attempts, status: outcome };
         setCurrentIdx((i) => i + 1);
-        setTimeout(runNext, 300);
+        addTimer(setTimeout(() => { if (!isRunningRef.current) return; runNext(); }, 300));
         return updated;
       }
     });
@@ -353,14 +358,31 @@ export default function AutoDialerModal({ onClose, rows = [] }) {
           </div>
         )}
 
-        {/* Numbers row: masked DID + editable agent phone */}
+        {/* Numbers row: DID picker + editable agent phone */}
         <div className="mb-3 grid grid-cols-1 gap-3 md:grid-cols-2">
           <div className="rounded-xl border border-white/10 bg-white/[0.03] p-3">
-            <div className="text-[11px] text-white/60">Caller ID (Assigned DID)</div>
-            <div className="mt-1 text-sm font-medium">
-              {callerId ? maskDid(callerId) : <span className="text-amber-300">No number assigned — set one in Messaging Settings</span>}
-            </div>
+            <div className="text-[11px] text-white/60">Caller ID (pick from your numbers)</div>
+            {agentNums.length ? (
+              <select
+                value={selectedFrom}
+                onChange={(e)=>setSelectedFrom(e.target.value)}
+                className="mt-1 w-full rounded-lg border border-white/10 bg-black/40 px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-indigo-500/40"
+                title="Choose which number prospects will see"
+              >
+                {agentNums.map(n => (
+                  <option key={n.id} value={n.telnyx_number}>
+                    {maskForList(n.telnyx_number)} {n.is_free ? "(free pool)" : ""}
+                  </option>
+                ))}
+                <option value="">Use connection default</option>
+              </select>
+            ) : (
+              <div className="mt-1 text-sm text-amber-300">
+                No agent numbers found — we’ll use the connection’s default caller ID.
+              </div>
+            )}
           </div>
+
           <div className="rounded-xl border border-white/10 bg-white/[0.03] p-3">
             <div className="text-[11px] text-white/60">Agent Phone (we connect you)</div>
             <div className="mt-1 flex items-center gap-2">
@@ -432,8 +454,8 @@ export default function AutoDialerModal({ onClose, rows = [] }) {
             <button
               onClick={startAutoDial}
               className="rounded-xl border border-emerald-500/50 bg-emerald-500/10 px-3 py-2 text-sm hover:bg-emerald-500/20"
-              disabled={!callerId || !toE164(agentPhone)}
-              title={!callerId ? "Assign a messaging number first in Messaging Settings" : ""}
+              disabled={!toE164(agentPhone)}
+              title={!toE164(agentPhone) ? "Enter a valid agent phone first" : ""}
             >
               Start calling
             </button>
