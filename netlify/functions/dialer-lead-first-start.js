@@ -1,20 +1,27 @@
 // File: netlify/functions/dialer-lead-first-start.js
-
-// Use platform fetch if available; otherwise lazy-require
 let fetchFn = globalThis.fetch;
-if (!fetchFn) {
-  try { fetchFn = require("node-fetch"); } catch { /* noop, will throw later if used */ }
-}
+if (!fetchFn) { try { fetchFn = require("node-fetch"); } catch {} }
 const { createClient } = require("@supabase/supabase-js");
 
 /* ----------- ENV ----------- */
 const TELNYX_API_KEY = process.env.TELNYX_API_KEY || "";
-const TELNYX_VOICE_APP_ID = process.env.TELNYX_VOICE_APP_ID || process.env.TELNYX_CONNECTION_ID || "";
+
+// Accept multiple env names for the call control / connection id
+const TELNYX_CONNECTION_ID =
+  process.env.TELNYX_VOICE_APP_ID ||
+  process.env.TELNYX_CONNECTION_ID ||
+  process.env.TELNYX_CALL_CONTROL_APP_ID ||
+  process.env.TELNYX_CALL_CONTROL_APPLICATION_ID ||
+  "";
+
 const SUPABASE_URL = process.env.SUPABASE_URL || "";
-const SUPABASE_SERVICE_ROLE = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_SERVICE_ROLE || "";
+const SUPABASE_SERVICE_ROLE =
+  process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_SERVICE_ROLE || "";
 
 /* ---------- Supabase (service; optional) ---------- */
-const supa = (SUPABASE_URL && SUPABASE_SERVICE_ROLE) ? createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE) : null;
+const supa = (SUPABASE_URL && SUPABASE_SERVICE_ROLE)
+  ? createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE)
+  : null;
 
 /* ---------- Helpers ---------- */
 function json(body, status = 200) {
@@ -33,8 +40,6 @@ function npaOf(e164) {
   const m = String(e164 || "").match(/^\+1?(\d{10})$/);
   return m ? m[1].slice(0, 3) : null;
 }
-
-/* Pick caller ID (exact NPA → closest → first) */
 function pickBestCallerId(leadE164, agentNums = []) {
   if (!agentNums?.length || !leadE164) return null;
   const leadNpa = Number(npaOf(leadE164));
@@ -44,8 +49,7 @@ function pickBestCallerId(leadE164, agentNums = []) {
     if (exact) return exact;
     let best = null, bestDist = Infinity;
     for (const num of pool) {
-      const n = Number(npaOf(num));
-      if (!Number.isFinite(n)) continue;
+      const n = Number(npaOf(num)); if (!Number.isFinite(n)) continue;
       const dist = Math.abs(n - leadNpa);
       if (dist < bestDist) { best = num; bestDist = dist; }
     }
@@ -53,7 +57,6 @@ function pickBestCallerId(leadE164, agentNums = []) {
   }
   return pool[0] || null;
 }
-
 async function getUserIdFromSupabaseJWT(authz) {
   try {
     if (!authz || !SUPABASE_URL) return null;
@@ -66,13 +69,13 @@ async function getUserIdFromSupabaseJWT(authz) {
 
 exports.handler = async (event) => {
   if (event.httpMethod !== "POST") return json({ ok: false, error: "Method not allowed" }, 405);
-
-  if (!TELNYX_API_KEY || !TELNYX_VOICE_APP_ID) {
-    return json({ ok: false, error: "Missing TELNYX_API_KEY or TELNYX_VOICE_APP_ID env" }, 500);
+  if (!TELNYX_API_KEY || !TELNYX_CONNECTION_ID) {
+    return json({
+      ok: false,
+      error: "Missing TELNYX_API_KEY or connection id (set one of: TELNYX_VOICE_APP_ID, TELNYX_CONNECTION_ID, TELNYX_CALL_CONTROL_APP_ID, TELNYX_CALL_CONTROL_APPLICATION_ID)"
+    }, 500);
   }
-  if (!fetchFn) {
-    return json({ ok: false, error: "Fetch not available in runtime" }, 500);
-  }
+  if (!fetchFn) return json({ ok: false, error: "Fetch not available in runtime" }, 500);
 
   const authz = event.headers.authorization || event.headers.Authorization || "";
   const user_id = await getUserIdFromSupabaseJWT(authz);
@@ -96,7 +99,7 @@ exports.handler = async (event) => {
     return json({ ok: false, error: "agent_number and lead_number are required in E.164" }, 400);
   }
 
-  // Optional lookup of agent_numbers to auto-pick a DID
+  // Auto-pick DID if not provided
   if (!from_number && supa) {
     try {
       const { data: nums, error } = await supa
@@ -104,15 +107,8 @@ exports.handler = async (event) => {
         .select("telnyx_number, is_free, purchased_at")
         .eq("agent_id", user_id)
         .order("purchased_at", { ascending: true });
-      if (!error) {
-        const best = pickBestCallerId(lead_number, nums || []);
-        from_number = best || null;
-      } else {
-        console.log("[dialer] agent_numbers error:", error.message);
-      }
-    } catch (e) {
-      console.log("[dialer] agent_numbers lookup threw:", e?.message);
-    }
+      if (!error) from_number = pickBestCallerId(lead_number, nums || []) || null;
+    } catch (e) { console.log("[dialer] agent_numbers lookup:", e?.message); }
   }
 
   const clientState = {
@@ -131,7 +127,7 @@ exports.handler = async (event) => {
 
   const payload = {
     to: lead_number,
-    connection_id: TELNYX_VOICE_APP_ID,
+    connection_id: TELNYX_CONNECTION_ID,
     client_state: client_state_b64,
     timeout_secs: ring_timeout,
   };
