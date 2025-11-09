@@ -1,4 +1,3 @@
-// File: src/components/dialer/AutoDialerModal.jsx
 import { useEffect, useMemo, useRef, useState } from "react";
 import { supabase } from "../../lib/supabaseClient.js";
 import { toE164 } from "../../lib/phone.js";
@@ -33,9 +32,7 @@ const cap = (s) => String(s || "").replace(/_/g, " ").replace(/\b\w/g, m => m.to
 
 function parseStateFilter(s) {
   return String(s || "")
-    .split(/[\s,]+/)
-    .map(x => x.trim().toUpperCase())
-    .filter(Boolean);
+    .split(/[\s,]+/).map(x => x.trim().toUpperCase()).filter(Boolean);
 }
 
 /* ---------- UI helpers ---------- */
@@ -44,7 +41,7 @@ function maskForList(e164) {
   const m = s.match(/^\+1?(\d{10})$/);
   if (!m) return s || "";
   const d = m[1];
-  return `+1 (${d.slice(0,3)}) ***-${d.slice(6)}`; // area code + last4
+  return `+1 (${d.slice(0,3)}) ***-${d.slice(6)}`;
 }
 function prettyE164(e164) {
   const s = String(e164 || "");
@@ -65,6 +62,9 @@ export default function AutoDialerModal({ onClose, rows = [] }) {
   const [currentIdx, setCurrentIdx] = useState(0);
   const [isRunning, setIsRunning] = useState(false);
   const isRunningRef = useRef(false);
+
+  // Prevent double-advance per lead
+  const settledRef = useRef(new Set()); // Set<leadId>
 
   // Timer control (for Pause)
   const pendingTimersRef = useRef([]);
@@ -124,7 +124,7 @@ export default function AutoDialerModal({ onClose, rows = [] }) {
 
         if (mounted) {
           setAgentNums(normalized);
-          // IMPORTANT: keep blank default so server auto-picks best/connection default
+          // IMPORTANT: leave selectedFrom as "" by default → connection default / server auto-pick
           setSelectedFrom("");
         }
       } finally {
@@ -172,7 +172,7 @@ export default function AutoDialerModal({ onClose, rows = [] }) {
               const leadId = rec.contact_id;
               if (!leadId) return;
 
-              const status = rec.status || "";
+              const status = (rec.status || "").toLowerCase();
               const mapped =
                 status === "ringing" ? "ringing" :
                 status === "answered" ? "answered" :
@@ -215,6 +215,7 @@ export default function AutoDialerModal({ onClose, rows = [] }) {
 
     setQueue(list);
     setCurrentIdx(0);
+    settledRef.current = new Set();
 
     const patch = {};
     for (const q of list) patch[q.id] = "queued";
@@ -255,6 +256,7 @@ export default function AutoDialerModal({ onClose, rows = [] }) {
 
     const idx = currentIdx;
     if (idx >= queue.length) {
+      // done
       setIsRunning(false);
       isRunningRef.current = false;
       clearAllTimers();
@@ -285,6 +287,7 @@ export default function AutoDialerModal({ onClose, rows = [] }) {
         ringbackUrl: "",
       });
 
+      // Optimistic “ringing” fallback
       addTimer(setTimeout(() => {
         if (!isRunningRef.current) return;
         if (liveStatusRef.current[lead.id] === "dialing") {
@@ -292,6 +295,7 @@ export default function AutoDialerModal({ onClose, rows = [] }) {
         }
       }, 1500));
 
+      // Safety net advance if nothing ends after 70s
       addTimer(setTimeout(() => {
         if (!isRunningRef.current) return;
         const st = liveStatusRef.current[lead.id];
@@ -306,6 +310,11 @@ export default function AutoDialerModal({ onClose, rows = [] }) {
   }
 
   function advanceAfterEnd(leadId, outcome) {
+    // settle once
+    const settled = settledRef.current;
+    if (settled.has(leadId)) return;
+    settled.add(leadId);
+
     setQueue((old) => {
       const idx = currentIdx;
       const cur = old[idx];
@@ -317,13 +326,22 @@ export default function AutoDialerModal({ onClose, rows = [] }) {
       if (outcome !== "completed" && attempts < maxAttempts) {
         const updated = [...old];
         updated[idx] = { ...cur, attempts, status: "queued" };
-        addTimer(setTimeout(() => { if (!isRunningRef.current) return; runNext(); }, 500));
+        addTimer(setTimeout(() => { if (!isRunningRef.current) return; runNext(); }, 400));
         return updated;
       } else {
         const updated = [...old];
         updated[idx] = { ...cur, attempts, status: outcome };
-        setCurrentIdx((i) => i + 1);
-        addTimer(setTimeout(() => { if (!isRunningRef.current) return; runNext(); }, 300));
+        const nextIdx = idx + 1;
+        setCurrentIdx(nextIdx);
+
+        // If that was the last lead, stop cleanly
+        if (nextIdx >= updated.length) {
+          setIsRunning(false);
+          isRunningRef.current = false;
+          clearAllTimers();
+        } else {
+          addTimer(setTimeout(() => { if (!isRunningRef.current) return; runNext(); }, 250));
+        }
         return updated;
       }
     });
