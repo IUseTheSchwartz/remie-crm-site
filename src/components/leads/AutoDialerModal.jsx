@@ -43,7 +43,7 @@ function maskForList(e164) {
   const m = s.match(/^\+1?(\d{10})$/);
   if (!m) return s || "";
   const d = m[1];
-  return `+1 (${d.slice(0,3)}) ***-${d.slice(6)}`; // area code + last4
+  return `+1 (${d.slice(0,3)}) ***-${d.slice(6)}`;
 }
 function prettyE164(e164) {
   const s = String(e164 || "");
@@ -79,9 +79,9 @@ export default function AutoDialerModal({ onClose, rows = [] }) {
   useEffect(() => { liveStatusRef.current = liveStatus; }, [liveStatus]);
 
   // Numbers
-  const [agentPhone, setAgentPhone] = useState("");     // editable
+  const [agentPhone, setAgentPhone] = useState("");
   const [agentNums, setAgentNums] = useState([]);       // [{id, telnyx_number}]
-  const [selectedFrom, setSelectedFrom] = useState(""); // chosen caller ID (optional)
+  const [selectedFrom, setSelectedFrom] = useState(""); // default = use connection default
   const [loadMsg, setLoadMsg] = useState("");
   const [saveAgentMsg, setSaveAgentMsg] = useState("");
 
@@ -123,9 +123,8 @@ export default function AutoDialerModal({ onClose, rows = [] }) {
 
         if (mounted) {
           setAgentNums(normalized);
-          // default select: first non-free, else first
-          const first = normalized.find(n => !n.is_free) || normalized[0];
-          setSelectedFrom(first ? first.telnyx_number : "");
+          // IMPORTANT: leave selectedFrom as "" by default → connection default / server auto-pick
+          setSelectedFrom("");
         }
       } finally {
         if (mounted) setLoadMsg("");
@@ -227,8 +226,7 @@ export default function AutoDialerModal({ onClose, rows = [] }) {
       alert("Agent phone is missing or invalid. Please enter a valid +1XXXXXXXXXX and save.");
       return null;
     }
-    // selectedFrom is optional — if blank, Telnyx will use the connection default
-    const eFrom = selectedFrom ? toE164(selectedFrom) : null;
+    const eFrom = selectedFrom ? toE164(selectedFrom) : null; // blank = server auto-pick / connection default
     return { agent: eAgent, from: eFrom };
   }
 
@@ -280,13 +278,12 @@ export default function AutoDialerModal({ onClose, rows = [] }) {
         agentNumber: basics.agent,
         leadNumber: to,
         contactId: lead.id,
-        fromNumber: basics.from,   // optional; uses selected agent DID if chosen
+        fromNumber: basics.from,   // null/blank → server will auto-pick best or use connection default
         record: true,
         ringTimeout: 25,
         ringbackUrl: "",
       });
 
-      // Optimistic “ringing” fallback
       addTimer(setTimeout(() => {
         if (!isRunningRef.current) return;
         if (liveStatusRef.current[lead.id] === "dialing") {
@@ -294,7 +291,6 @@ export default function AutoDialerModal({ onClose, rows = [] }) {
         }
       }, 1500));
 
-      // Safety net advance if nothing ends after 70s
       addTimer(setTimeout(() => {
         if (!isRunningRef.current) return;
         const st = liveStatusRef.current[lead.id];
@@ -302,7 +298,8 @@ export default function AutoDialerModal({ onClose, rows = [] }) {
           advanceAfterEnd(lead.id, "failed");
         }
       }, 70000));
-    } catch {
+    } catch (e) {
+      console.error("lead-first start error:", e?.message || e);
       advanceAfterEnd(item.id, "failed");
     }
   }
@@ -361,25 +358,22 @@ export default function AutoDialerModal({ onClose, rows = [] }) {
         {/* Numbers row: DID picker + editable agent phone */}
         <div className="mb-3 grid grid-cols-1 gap-3 md:grid-cols-2">
           <div className="rounded-xl border border-white/10 bg-white/[0.03] p-3">
-            <div className="text-[11px] text-white/60">Caller ID (pick from your numbers)</div>
-            {agentNums.length ? (
+            <div className="text-[11px] text-white/60">Caller ID</div>
+            {(
               <select
                 value={selectedFrom}
                 onChange={(e)=>setSelectedFrom(e.target.value)}
                 className="mt-1 w-full rounded-lg border border-white/10 bg-black/40 px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-indigo-500/40"
                 title="Choose which number prospects will see"
               >
+                {/* FIRST: default */}
+                <option value="">Use connection default</option>
                 {agentNums.map(n => (
                   <option key={n.id} value={n.telnyx_number}>
                     {maskForList(n.telnyx_number)} {n.is_free ? "(free pool)" : ""}
                   </option>
                 ))}
-                <option value="">Use connection default</option>
               </select>
-            ) : (
-              <div className="mt-1 text-sm text-amber-300">
-                No agent numbers found — we’ll use the connection’s default caller ID.
-              </div>
             )}
           </div>
 
@@ -401,13 +395,13 @@ export default function AutoDialerModal({ onClose, rows = [] }) {
                 Save
               </button>
             </div>
-            {saveAgentMsg && (
-              <div className="mt-1 text-[11px] text-white/60">{saveAgentMsg}</div>
-            )}
             {!!agentPhone && (
               <div className="mt-1 text-[11px] text-white/40">
                 Current: {prettyE164(toE164(agentPhone) || agentPhone)}
               </div>
+            )}
+            {saveAgentMsg && (
+              <div className="mt-1 text-[11px] text-white/60">{saveAgentMsg}</div>
             )}
           </div>
         </div>
