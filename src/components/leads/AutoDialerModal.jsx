@@ -1,3 +1,4 @@
+// File: src/components/dialer/AutoDialerModal.jsx
 import { useEffect, useMemo, useRef, useState } from "react";
 import { supabase } from "../../lib/supabaseClient.js";
 import { toE164 } from "../../lib/phone.js";
@@ -43,7 +44,7 @@ function maskForList(e164) {
   const m = s.match(/^\+1?(\d{10})$/);
   if (!m) return s || "";
   const d = m[1];
-  return `+1 (${d.slice(0,3)}) ***-${d.slice(6)}`;
+  return `+1 (${d.slice(0,3)}) ***-${d.slice(6)}`; // area code + last4
 }
 function prettyE164(e164) {
   const s = String(e164 || "");
@@ -123,7 +124,7 @@ export default function AutoDialerModal({ onClose, rows = [] }) {
 
         if (mounted) {
           setAgentNums(normalized);
-          // IMPORTANT: leave selectedFrom as "" by default → connection default / server auto-pick
+          // IMPORTANT: keep blank default so server auto-picks best/connection default
           setSelectedFrom("");
         }
       } finally {
@@ -359,22 +360,20 @@ export default function AutoDialerModal({ onClose, rows = [] }) {
         <div className="mb-3 grid grid-cols-1 gap-3 md:grid-cols-2">
           <div className="rounded-xl border border-white/10 bg-white/[0.03] p-3">
             <div className="text-[11px] text-white/60">Caller ID</div>
-            {(
-              <select
-                value={selectedFrom}
-                onChange={(e)=>setSelectedFrom(e.target.value)}
-                className="mt-1 w-full rounded-lg border border-white/10 bg-black/40 px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-indigo-500/40"
-                title="Choose which number prospects will see"
-              >
-                {/* FIRST: default */}
-                <option value="">Use connection default</option>
-                {agentNums.map(n => (
-                  <option key={n.id} value={n.telnyx_number}>
-                    {maskForList(n.telnyx_number)} {n.is_free ? "(free pool)" : ""}
-                  </option>
-                ))}
-              </select>
-            )}
+            <select
+              value={selectedFrom}
+              onChange={(e)=>setSelectedFrom(e.target.value)}
+              className="mt-1 w-full rounded-lg border border-white/10 bg-black/40 px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-indigo-500/40"
+              title="Choose which number prospects will see"
+            >
+              {/* FIRST: default */}
+              <option value="">Use connection default</option>
+              {agentNums.map(n => (
+                <option key={n.id} value={n.telnyx_number}>
+                  {maskForList(n.telnyx_number)} {n.is_free ? "(free pool)" : ""}
+                </option>
+              ))}
+            </select>
           </div>
 
           <div className="rounded-xl border border-white/10 bg-white/[0.03] p-3">
