@@ -164,10 +164,10 @@ async function action(callControlId, path, body = {}) {
   return { ok: resp.ok, data };
 }
 
-// 🔧 Only include `from` when provided (prevents sending `from: null`)
+// 🔧 Transfer helper: send plain E.164 strings. Omit `from` when not set.
 async function transferCall({ callControlId, to, from, timeout_secs }) {
-  const body = { to };
-  if (from) body.from = from;
+  const body = { to };                // e.g. "+16155551234"
+  if (from) body.from = from;         // e.g. "+16155559876"
   if (timeout_secs) body.timeout_secs = timeout_secs;
   return action(callControlId, "transfer", body);
 }
@@ -423,8 +423,8 @@ exports.handler = async (event) => {
     await speak(legA, { payload: "The prospect disconnected. Connecting you to their voicemail.", voice: "female", language: "en-US" });
     // optional ringback while retrying
     if (RINGBACK_URL) await playbackStart(legA, RINGBACK_URL);
-    // retry with longer timeout to catch voicemail
-    await transferCall({ callControlId: legA, to: { type: "phone_number", phone_number: lead_number }, from: { type: "phone_number", phone_number: from_number }, timeout_secs: 55 });
+    // retry with longer timeout to catch voicemail (use plain strings)
+    await transferCall({ callControlId: legA, to: lead_number, from: from_number, timeout_secs: 55 });
   }
 
   try {
@@ -455,8 +455,8 @@ exports.handler = async (event) => {
           if (legA && lead_number) {
             await transferCall({
               callControlId: legA,
-              to: { type: "phone_number", phone_number: lead_number },
-              from: from_number ? { type: "phone_number", phone_number: from_number } : undefined
+              to: lead_number,
+              from: from_number || undefined
             });
           }
         }
@@ -471,9 +471,9 @@ exports.handler = async (event) => {
           if (legA && agent_number) {
             await transferCall({
               callControlId: legA,
-              to: { type: "phone_number", phone_number: agent_number },
+              to: agent_number,
               // allow connection default when from_number is blank
-              from: from_number ? { type: "phone_number", phone_number: from_number } : undefined
+              from: from_number || undefined
             });
           }
         }
