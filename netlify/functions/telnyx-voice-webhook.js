@@ -26,7 +26,7 @@ const supa = (SUPABASE_URL && SUPABASE_SERVICE_ROLE)
 
 function log(...args) { try { console.log("[telnyx-webhook]", ...args); } catch {} }
 
-/* small helper */
+// tiny helper to avoid whisper cut-off
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 /* ===================================================================
@@ -167,10 +167,10 @@ async function action(callControlId, path, body = {}) {
   return { ok: resp.ok, data };
 }
 
-// 🔧 Only include `from` when provided (prevents sending `from: null`)
+// >>> IMPORTANT: use E.164 strings for `to`/`from`; omit `from` if you want connection default
 async function transferCall({ callControlId, to, from, timeout_secs }) {
-  const body = { to };
-  if (from) body.from = from;
+  const body = { to };              // e.g. "+15551234567"
+  if (from) body.from = from;       // e.g. "+15557654321"
   if (timeout_secs) body.timeout_secs = timeout_secs;
   return action(callControlId, "transfer", body);
 }
@@ -214,7 +214,6 @@ async function updateByLegOrSession(legA, call_session_id, patch) {
   if (legA) {
     const { error } = await supa.from("call_logs").update(patch).eq("telnyx_leg_a_id", legA);
     if (!error) return;
-    // fall through to session fallback
   }
   if (call_session_id) {
     const { error } = await supa.from("call_logs").update(patch).eq("call_session_id", call_session_id);
@@ -228,7 +227,6 @@ async function upsertInitiated({
 }) {
   if (!supa) return;
 
-  // See if a row already exists by legA or session
   const { data: existing } = await supa
     .from("call_logs")
     .select("id")
@@ -421,15 +419,12 @@ exports.handler = async (event) => {
   // Helper: handle a transfer failure in AGENT-FIRST flow by retrying to voicemail.
   async function handleAgentFirstTransferFailure() {
     if (!legA || !lead_number) return;
-    // tell agent what's happening
     await speak(legA, { payload: "The prospect disconnected. Connecting you to their voicemail.", voice: "female", language: "en-US" });
-    // optional ringback while retrying
     if (RINGBACK_URL) await playbackStart(legA, RINGBACK_URL);
-    // retry with longer timeout to catch voicemail
     await transferCall({
       callControlId: legA,
-      to: { type: "phone_number", phone_number: lead_number },
-      from: from_number ? { type: "phone_number", phone_number: from_number } : undefined,
+      to: lead_number,                                      // E.164 string
+      from: from_number || undefined,                       // E.164 string or omit
       timeout_secs: 55
     });
   }
@@ -462,8 +457,8 @@ exports.handler = async (event) => {
           if (legA && lead_number) {
             await transferCall({
               callControlId: legA,
-              to: { type: "phone_number", phone_number: lead_number },
-              from: from_number ? { type: "phone_number", phone_number: from_number } : undefined
+              to: lead_number,                               // E.164
+              from: from_number || undefined                 // omit if not set
             });
           }
         }
@@ -478,9 +473,8 @@ exports.handler = async (event) => {
           if (legA && agent_number) {
             await transferCall({
               callControlId: legA,
-              to: { type: "phone_number", phone_number: agent_number },
-              // allow connection default when from_number is blank
-              from: from_number ? { type: "phone_number", phone_number: from_number } : undefined
+              to: agent_number,                              // E.164
+              from: from_number || undefined                 // omit if not set (use connection default)
             });
           }
         }
