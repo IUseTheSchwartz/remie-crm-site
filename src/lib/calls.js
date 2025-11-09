@@ -1,3 +1,4 @@
+// File: src/lib/calls.js
 import { supabase } from "./supabaseClient";
 
 /**
@@ -61,15 +62,16 @@ export async function startCall({ agentNumber, leadNumber, contactId = null }) {
 
 /**
  * Start a LEAD-FIRST call (Auto Dialer).
- * - Calls the LEAD first (Leg A)
- * - telnyx-voice-webhook.js (lead_first branch) dials the AGENT on lead answer and bridges
+ * - Leg A = LEAD (we dial the lead first)
+ * - Your telnyx-voice-webhook.js (lead_first branch) dials the AGENT on lead answer and bridges
+ * - If fromNumber is omitted, Telnyx uses the connection’s default caller ID
  * Returns: { ok:true, call_leg_id, call_session_id?, contact_id }
  */
 export async function startLeadFirstCall({
   agentNumber,
   leadNumber,
   contactId = null,
-  fromNumber,
+  fromNumber = null,   // optional per-call DID; omit to use connection default
   record = true,
   ringTimeout = 25,
   ringbackUrl = "",
@@ -88,7 +90,8 @@ export async function startLeadFirstCall({
     agent_number: agentNumber,
     lead_number: leadNumber,
     contact_id: contactId,
-    from_number: fromNumber,      // caller ID to present (your assigned DID)
+    // include only if explicitly chosen; backend will pass it through to Telnyx
+    ...(fromNumber ? { from_number: fromNumber } : {}),
     record,
     ring_timeout: ringTimeout,
     ringback_url: ringbackUrl,
@@ -130,7 +133,7 @@ export async function startLeadFirstCall({
 /**
  * List recent call logs for the signed-in user.
  * Expects a `call_logs` table with RLS to auth.uid().
- * Typical columns used elsewhere: to_number, from_number, status, started_at, duration_seconds, recording_url
+ * Typical columns: to_number, from_number, status, started_at, duration_seconds, recording_url
  */
 export async function listMyCallLogs(limit = 100) {
   const { data: auth } = await supabase.auth.getUser();
