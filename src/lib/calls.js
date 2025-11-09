@@ -62,7 +62,7 @@ export async function startCall({ agentNumber, leadNumber, contactId = null }) {
 /**
  * Start a LEAD-FIRST call (Auto Dialer).
  * - Calls the LEAD first (Leg A)
- * - Your telnyx-voice-webhook.js (lead_first branch) will dial the AGENT on lead answer and bridge
+ * - telnyx-voice-webhook.js (lead_first branch) dials the AGENT on lead answer and bridges
  * Returns: { ok:true, call_leg_id, call_session_id?, contact_id }
  */
 export async function startLeadFirstCall({
@@ -88,7 +88,7 @@ export async function startLeadFirstCall({
     agent_number: agentNumber,
     lead_number: leadNumber,
     contact_id: contactId,
-    from_number: fromNumber,      // REQUIRED caller ID to present
+    from_number: fromNumber,      // caller ID to present (your assigned DID)
     record,
     ring_timeout: ringTimeout,
     ringback_url: ringbackUrl,
