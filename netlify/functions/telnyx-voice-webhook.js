@@ -1,7 +1,7 @@
 // File: netlify/functions/telnyx-voice-webhook.js
 // Supports BOTH flows:
 //  - AGENT-FIRST (Leads Page click-to-call): agent answers -> speak -> transfer to lead -> bridge
-//  - LEAD-FIRST  (Auto Dialer): lead answers  -> ringback -> transfer to agent -> bridge
+//  - LEAD-FIRST  (Auto Dialer): lead answers  -> speak -> (optional ringback) -> transfer to agent -> bridge
 //
 // Stage is marked "answered" ONLY on call.bridged (never on first answer).
 // NEW: If AGENT-FIRST transfer fails (lead hangs up / busy / no answer), tell agent and retry with longer timeout to hit voicemail.
@@ -164,11 +164,14 @@ async function action(callControlId, path, body = {}) {
   return { ok: resp.ok, data };
 }
 
+// 🔧 Only include `from` when provided (prevents sending `from: null`)
 async function transferCall({ callControlId, to, from, timeout_secs }) {
-  const body = { to, from };
+  const body = { to };
+  if (from) body.from = from;
   if (timeout_secs) body.timeout_secs = timeout_secs;
   return action(callControlId, "transfer", body);
 }
+
 async function startRecording(callControlId) {
   return action(callControlId, "record_start", { channels: "dual", audio: { direction: "both" }, format: "mp3" });
 }
@@ -421,13 +424,14 @@ exports.handler = async (event) => {
     // optional ringback while retrying
     if (RINGBACK_URL) await playbackStart(legA, RINGBACK_URL);
     // retry with longer timeout to catch voicemail
-    await transferCall({ callControlId: legA, to: lead_number, from: from_number, timeout_secs: 55 });
+    await transferCall({ callControlId: legA, to: { type: "phone_number", phone_number: lead_number }, from: { type: "phone_number", phone_number: from_number }, timeout_secs: 55 });
   }
 
   try {
     switch (eventType) {
       case "call.initiated": {
-        if (legA && user_id && lead_number && from_number) {
+        if (legA && user_id && lead_number) {
+          // It's okay if from_number is null for lead-first (connection default)
           await upsertInitiated({
             user_id, contact_id,
             to_number: lead_number,
@@ -446,19 +450,31 @@ exports.handler = async (event) => {
         // === AGENT-FIRST: agent answered -> speak -> transfer to LEAD ===
         if (flow === "agent_first" && kind && kind.includes("crm_outbound_agent")) {
           if (legA) {
-            // tiny anti-silence whisper so agent doesn't hear dead air
             await speak(legA, { payload: "Connecting your prospect.", voice: "female", language: "en-US" });
           }
-          if (legA && lead_number && from_number) {
-            await transferCall({ callControlId: legA, to: lead_number, from: from_number });
+          if (legA && lead_number) {
+            await transferCall({
+              callControlId: legA,
+              to: { type: "phone_number", phone_number: lead_number },
+              from: from_number ? { type: "phone_number", phone_number: from_number } : undefined
+            });
           }
         }
 
-        // === LEAD-FIRST: lead answered -> (optional) ringback -> transfer to AGENT ===
+        // === LEAD-FIRST: lead answered -> speak -> (optional ringback) -> transfer to AGENT ===
         if (flow === "lead_first" && kind === "crm_outbound_lead_leg") {
+          if (legA) {
+            // small prompt so the lead knows what's happening
+            await speak(legA, { payload: "Connecting you to your agent.", voice: "female", language: "en-US" });
+          }
           if (ringback_url && legA) await playbackStart(legA, ringback_url);
-          if (legA && agent_number && from_number) {
-            await transferCall({ callControlId: legA, to: agent_number, from: from_number });
+          if (legA && agent_number) {
+            await transferCall({
+              callControlId: legA,
+              to: { type: "phone_number", phone_number: agent_number },
+              // allow connection default when from_number is blank
+              from: from_number ? { type: "phone_number", phone_number: from_number } : undefined
+            });
           }
         }
 
@@ -484,7 +500,7 @@ exports.handler = async (event) => {
 
         if (legA) await playbackStop(legA);
 
-        // >>> ONLY CHANGE: broaden failure detection to catch more decline strings <<<
+        // broaden failure detection to catch more decline strings
         const failed =
           !peerLeg ||
           ["busy", "no_answer", "call_rejected", "user_busy", "unallocated_number", "call_hangup",
