@@ -37,6 +37,7 @@ function parseStateFilter(s) {
     .filter(Boolean);
 }
 
+/* -------- helpers (auth + number UI) -------- */
 async function withAuthHeaders() {
   const { data } = await supabase.auth.getSession();
   const token = data?.session?.access_token;
@@ -44,12 +45,27 @@ async function withAuthHeaders() {
 }
 
 async function fetchAssignedDid() {
-  // Mirrors MessagingSettings' use of the function
   const headers = await withAuthHeaders();
   const res = await fetch("/.netlify/functions/ten-dlc-status", { headers });
   const j = await res.json().catch(() => ({}));
   if (!res.ok) throw new Error(j?.error || `HTTP_${res.status}`);
-  return j?.phone_number || null; // expect E.164 or raw; we normalize below
+  return j?.phone_number || null; // E.164 or raw; we'll normalize
+}
+
+function maskDid(e164) {
+  const s = String(e164 || "");
+  const m = s.match(/^\+1?(\d{10})$/);
+  if (!m) return s || "";
+  const d = m[1];
+  return `+1 (${d.slice(0,3)}) XXX-XXXX`;
+}
+
+function prettyE164(e164) {
+  const s = String(e164 || "");
+  const m = s.match(/^\+1?(\d{10})$/);
+  if (!m) return s || "";
+  const d = m[1];
+  return `+1 (${d.slice(0,3)}) ${d.slice(3,6)}-${d.slice(6)}`;
 }
 
 export default function AutoDialerModal({ onClose, rows = [] }) {
@@ -70,9 +86,10 @@ export default function AutoDialerModal({ onClose, rows = [] }) {
   useEffect(() => { liveStatusRef.current = liveStatus; }, [liveStatus]);
 
   // Auto-loaded agent phone & assigned DID
-  const [agentPhone, setAgentPhone] = useState("");
-  const [callerId, setCallerId] = useState(""); // assigned DID (hidden)
+  const [agentPhone, setAgentPhone] = useState("");       // editable
+  const [callerId, setCallerId] = useState("");           // assigned DID (not editable)
   const [loadMsg, setLoadMsg] = useState("");
+  const [saveAgentMsg, setSaveAgentMsg] = useState("");   // tiny feedback on save
 
   // Load agent phone (normalize & persist if needed) and assigned DID
   useEffect(() => {
@@ -94,26 +111,45 @@ export default function AutoDialerModal({ onClose, rows = [] }) {
         let num = profile?.phone || "";
         const eNum = toE164(num);
         if (eNum && eNum !== num) {
-          // persist normalized
           try { await supabase.from("agent_profiles").update({ phone: eNum }).eq("user_id", uid); } catch {}
           num = eNum;
         }
         if (mounted && num) setAgentPhone(num);
 
-        // Assigned DID (from your 10DLC status function)
+        // Assigned DID (from Messaging Settings flow)
         let did = null;
         try {
           const pn = await fetchAssignedDid();
           did = toE164(pn);
         } catch {}
         if (mounted && did) setCallerId(did);
-
       } finally {
         if (mounted) setLoadMsg("");
       }
     })();
     return () => { mounted = false; };
   }, []);
+
+  async function saveAgentPhoneNormalized() {
+    setSaveAgentMsg("");
+    const eNum = toE164(agentPhone);
+    if (!eNum) {
+      setSaveAgentMsg("Enter a valid US number like +1XXXXXXXXXX");
+      return;
+    }
+    try {
+      const { data: auth } = await supabase.auth.getUser();
+      const uid = auth?.user?.id;
+      if (!uid) return;
+      await supabase.from("agent_profiles").update({ phone: eNum }).eq("user_id", uid);
+      setAgentPhone(eNum);
+      setSaveAgentMsg("Saved");
+      setTimeout(() => setSaveAgentMsg(""), 1200);
+    } catch (e) {
+      setSaveAgentMsg("Save failed");
+      setTimeout(() => setSaveAgentMsg(""), 1500);
+    }
+  }
 
   // Realtime: call_logs -> update live status + auto-advance
   useEffect(() => {
@@ -185,7 +221,7 @@ export default function AutoDialerModal({ onClose, rows = [] }) {
     const eAgent = toE164(agentPhone);
     const eCaller = toE164(callerId);
     if (!eAgent) {
-      alert("Agent phone is missing in your profile. Add it in Settings → Profile.");
+      alert("Agent phone is missing or invalid. Please enter a valid +1XXXXXXXXXX and save.");
       return null;
     }
     if (!eCaller) {
@@ -317,17 +353,42 @@ export default function AutoDialerModal({ onClose, rows = [] }) {
           </div>
         )}
 
-        {!callerId && (
-          <div className="mb-3 rounded-lg border border-amber-400/30 bg-amber-400/10 p-2 text-xs text-amber-200">
-            No assigned caller ID found. Go to <b>Messaging Settings</b> and assign a verified number.
+        {/* Numbers row: masked DID + editable agent phone */}
+        <div className="mb-3 grid grid-cols-1 gap-3 md:grid-cols-2">
+          <div className="rounded-xl border border-white/10 bg-white/[0.03] p-3">
+            <div className="text-[11px] text-white/60">Caller ID (Assigned DID)</div>
+            <div className="mt-1 text-sm font-medium">
+              {callerId ? maskDid(callerId) : <span className="text-amber-300">No number assigned — set one in Messaging Settings</span>}
+            </div>
           </div>
-        )}
-
-        {!agentPhone && (
-          <div className="mb-3 rounded-lg border border-amber-400/30 bg-amber-400/10 p-2 text-xs text-amber-200">
-            Your agent phone is missing. Add it in <b>Settings → Profile</b>.
+          <div className="rounded-xl border border-white/10 bg-white/[0.03] p-3">
+            <div className="text-[11px] text-white/60">Agent Phone (we connect you)</div>
+            <div className="mt-1 flex items-center gap-2">
+              <input
+                value={agentPhone}
+                onChange={(e)=>setAgentPhone(e.target.value)}
+                onBlur={saveAgentPhoneNormalized}
+                placeholder="+1XXXXXXXXXX"
+                className="flex-1 rounded-lg border border-white/10 bg-black/40 px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-indigo-500/40"
+              />
+              <button
+                type="button"
+                onClick={saveAgentPhoneNormalized}
+                className="rounded-lg border border-white/15 bg-white/5 px-3 py-2 text-xs hover:bg-white/10"
+              >
+                Save
+              </button>
+            </div>
+            {saveAgentMsg && (
+              <div className="mt-1 text-[11px] text-white/60">{saveAgentMsg}</div>
+            )}
+            {!!agentPhone && (
+              <div className="mt-1 text-[11px] text-white/40">
+                Current: {prettyE164(toE164(agentPhone) || agentPhone)}
+              </div>
+            )}
           </div>
-        )}
+        </div>
 
         <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
           <div className="col-span-1">
@@ -371,6 +432,8 @@ export default function AutoDialerModal({ onClose, rows = [] }) {
             <button
               onClick={startAutoDial}
               className="rounded-xl border border-emerald-500/50 bg-emerald-500/10 px-3 py-2 text-sm hover:bg-emerald-500/20"
+              disabled={!callerId || !toE164(agentPhone)}
+              title={!callerId ? "Assign a messaging number first in Messaging Settings" : ""}
             >
               Start calling
             </button>
