@@ -178,9 +178,9 @@ async function transferCall({ callControlId, to, from, timeout_secs }) {
 async function startRecording(callControlId) {
   return action(callControlId, "record_start", { channels: "dual", audio: { direction: "both" }, format: "mp3" });
 }
-async function playbackStart(callControlId, audioUrl) {
-  if (!audioUrl) return { ok: true };
-  return action(callControlId, "playback_start", { audio_url: audioUrl, loop: true });
+async function playbackStart(callControlId) {
+  // no-op wrapper: we pass audio_url via action; leaving here for symmetry
+  return { ok: true };
 }
 async function playbackStop(callControlId) {
   return action(callControlId, "playback_stop", {});
@@ -420,7 +420,7 @@ exports.handler = async (event) => {
   async function handleAgentFirstTransferFailure() {
     if (!legA || !lead_number) return;
     await speak(legA, { payload: "The prospect disconnected. Connecting you to their voicemail.", voice: "female", language: "en-US" });
-    if (RINGBACK_URL) await playbackStart(legA, RINGBACK_URL);
+    if (RINGBACK_URL) await action(legA, "playback_start", { audio_url: RINGBACK_URL, loop: true });
     await transferCall({
       callControlId: legA,
       to: lead_number,                                      // E.164 string
@@ -469,7 +469,9 @@ exports.handler = async (event) => {
             await speak(legA, { payload: "Connecting you to your agent.", voice: "female", language: "en-US" });
             await sleep(450); // prevent whisper cut-off
           }
-          if (ringback_url && legA) await playbackStart(legA, ringback_url);
+          if (ringback_url && legA) {
+            await action(legA, "playback_start", { audio_url: ringback_url, loop: true });
+          }
           if (legA && agent_number) {
             await transferCall({
               callControlId: legA,
