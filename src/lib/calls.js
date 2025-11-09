@@ -83,8 +83,8 @@ export async function startLeadFirstCall({
   ]);
 
   const uid = auth?.user?.id;
-  if (!uid) throw new Error("Not signed in");
   const token = sess?.session?.access_token || null;
+  if (!uid || !token) throw new Error("Not signed in");
 
   const payload = {
     agent_number: agentNumber,
@@ -104,7 +104,7 @@ export async function startLeadFirstCall({
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        Authorization: `Bearer ${token}`, // <-- always send (prevents 401)
       },
       body: JSON.stringify(payload),
     });
