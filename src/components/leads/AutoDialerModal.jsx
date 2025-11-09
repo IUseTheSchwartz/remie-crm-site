@@ -37,6 +37,21 @@ function parseStateFilter(s) {
     .filter(Boolean);
 }
 
+async function withAuthHeaders() {
+  const { data } = await supabase.auth.getSession();
+  const token = data?.session?.access_token;
+  return token ? { Authorization: `Bearer ${token}` } : {};
+}
+
+async function fetchAssignedDid() {
+  // Mirrors MessagingSettings' use of the function
+  const headers = await withAuthHeaders();
+  const res = await fetch("/.netlify/functions/ten-dlc-status", { headers });
+  const j = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(j?.error || `HTTP_${res.status}`);
+  return j?.phone_number || null; // expect E.164 or raw; we normalize below
+}
+
 export default function AutoDialerModal({ onClose, rows = [] }) {
   // Filters & dialing config
   const [stateFilter, setStateFilter] = useState("");
@@ -54,28 +69,50 @@ export default function AutoDialerModal({ onClose, rows = [] }) {
   const liveStatusRef = useRef({});
   useEffect(() => { liveStatusRef.current = liveStatus; }, [liveStatus]);
 
-  // Agent phone & caller ID (outbound caller ID to present)
+  // Auto-loaded agent phone & assigned DID
   const [agentPhone, setAgentPhone] = useState("");
-  const [callerId, setCallerId] = useState(""); // +1XXXXXXXXXX (required for lead-first)
+  const [callerId, setCallerId] = useState(""); // assigned DID (hidden)
+  const [loadMsg, setLoadMsg] = useState("");
 
-  // Load agent phone (and optional saved caller ID if you store it in agent_profiles)
+  // Load agent phone (normalize & persist if needed) and assigned DID
   useEffect(() => {
+    let mounted = true;
     (async () => {
       try {
+        setLoadMsg("Loading agent and number…");
         const { data: authData } = await supabase.auth.getUser();
-        const userId = authData?.user?.id;
-        if (!userId) return;
-        const { data, error } = await supabase
+        const uid = authData?.user?.id;
+        if (!uid) return;
+
+        // Agent phone
+        const { data: profile } = await supabase
           .from("agent_profiles")
-          .select("phone, outbound_caller_id")
-          .eq("user_id", userId)
+          .select("phone")
+          .eq("user_id", uid)
           .maybeSingle();
-        if (!error) {
-          if (data?.phone) setAgentPhone(data.phone);
-          if (data?.outbound_caller_id) setCallerId(data.outbound_caller_id);
+
+        let num = profile?.phone || "";
+        const eNum = toE164(num);
+        if (eNum && eNum !== num) {
+          // persist normalized
+          try { await supabase.from("agent_profiles").update({ phone: eNum }).eq("user_id", uid); } catch {}
+          num = eNum;
         }
-      } catch {}
+        if (mounted && num) setAgentPhone(num);
+
+        // Assigned DID (from your 10DLC status function)
+        let did = null;
+        try {
+          const pn = await fetchAssignedDid();
+          did = toE164(pn);
+        } catch {}
+        if (mounted && did) setCallerId(did);
+
+      } finally {
+        if (mounted) setLoadMsg("");
+      }
     })();
+    return () => { mounted = false; };
   }, []);
 
   // Realtime: call_logs -> update live status + auto-advance
@@ -144,60 +181,18 @@ export default function AutoDialerModal({ onClose, rows = [] }) {
     setLiveStatus((s) => ({ ...s, ...patch }));
   }
 
-  async function ensureAgentPhone() {
-    let num = agentPhone;
-    if (!num) {
-      const p = prompt("Enter your phone (we call you):", "+1 ");
-      if (!p) return null;
-      const e164 = toE164(p);
-      if (!e164) { alert("That phone doesn’t look valid. Use +1XXXXXXXXXX"); return null; }
-      await saveAgentPhone({ phone: e164 });
-      num = e164;
+  function requireLoadedBasics() {
+    const eAgent = toE164(agentPhone);
+    const eCaller = toE164(callerId);
+    if (!eAgent) {
+      alert("Agent phone is missing in your profile. Add it in Settings → Profile.");
+      return null;
     }
-    return num;
-  }
-
-  async function ensureCallerId() {
-    let ani = callerId;
-    if (!ani) {
-      const p = prompt("Enter the caller ID to present (your purchased DID):", "+1 ");
-      if (!p) return null;
-      const e164 = toE164(p);
-      if (!e164) { alert("Caller ID looks invalid. Use +1XXXXXXXXXX"); return null; }
-      await saveAgentPhone({ outbound_caller_id: e164 });
-      ani = e164;
+    if (!eCaller) {
+      alert("Your assigned caller ID (messaging number) isn’t set yet. Go to Messaging Settings and assign a number.");
+      return null;
     }
-    return ani;
-  }
-
-  async function saveAgentPhone({ phone, outbound_caller_id }) {
-    const num = (phone || "").trim();
-    const ani = (outbound_caller_id || "").trim();
-    try {
-      const { data: auth } = await supabase.auth.getUser();
-      const uid = auth?.user?.id;
-      if (!uid) return;
-
-      const { data: existing } = await supabase
-        .from("agent_profiles")
-        .select("user_id")
-        .eq("user_id", uid)
-        .maybeSingle();
-
-      const patch = {};
-      if (num) patch.phone = num;
-      if (ani) patch.outbound_caller_id = ani;
-
-      if (existing) {
-        await supabase.from("agent_profiles").update(patch).eq("user_id", uid);
-      } else {
-        await supabase.from("agent_profiles").insert({ user_id: uid, ...patch });
-      }
-      if (num) setAgentPhone(num);
-      if (ani) setCallerId(ani);
-    } catch {
-      alert("Could not save your phone/caller ID. Try again later.");
-    }
+    return { agent: eAgent, caller: eCaller };
   }
 
   async function startAutoDial() {
@@ -215,11 +210,8 @@ export default function AutoDialerModal({ onClose, rows = [] }) {
   }
 
   async function runNext() {
-    const fromAgent = await ensureAgentPhone();
-    if (!fromAgent) return;
-
-    const fromCallerId = await ensureCallerId();
-    if (!fromCallerId) return;
+    const basics = requireLoadedBasics();
+    if (!basics) return;
 
     setIsRunning(true);
     isRunningRef.current = true;
@@ -246,13 +238,13 @@ export default function AutoDialerModal({ onClose, rows = [] }) {
       const to = toE164(lead.phone);
 
       await startLeadFirstCall({
-        agentNumber: fromAgent,
+        agentNumber: basics.agent,
         leadNumber: to,
         contactId: lead.id,
-        fromNumber: fromCallerId,
+        fromNumber: basics.caller, // assigned DID
         record: true,
         ringTimeout: 25,
-        ringbackUrl: "", // optional: supply a URL to loop for the lead while we call the agent
+        ringbackUrl: "", // optional
       });
 
       // Optimistic “ringing” fallback
@@ -319,6 +311,24 @@ export default function AutoDialerModal({ onClose, rows = [] }) {
           <button onClick={onClose} className="rounded-lg px-2 py-1 text-sm hover:bg-white/10">Close</button>
         </div>
 
+        {!!loadMsg && (
+          <div className="mb-3 rounded-lg border border-white/10 bg-white/[0.04] p-2 text-xs text-white/70">
+            {loadMsg}
+          </div>
+        )}
+
+        {!callerId && (
+          <div className="mb-3 rounded-lg border border-amber-400/30 bg-amber-400/10 p-2 text-xs text-amber-200">
+            No assigned caller ID found. Go to <b>Messaging Settings</b> and assign a verified number.
+          </div>
+        )}
+
+        {!agentPhone && (
+          <div className="mb-3 rounded-lg border border-amber-400/30 bg-amber-400/10 p-2 text-xs text-amber-200">
+            Your agent phone is missing. Add it in <b>Settings → Profile</b>.
+          </div>
+        )}
+
         <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
           <div className="col-span-1">
             <label className="text-xs text-white/70">States (comma or space separated)</label>
@@ -347,26 +357,6 @@ export default function AutoDialerModal({ onClose, rows = [] }) {
               <option value={2}>Double dial</option>
               <option value={3}>Triple dial</option>
             </select>
-          </div>
-
-          <div className="col-span-1">
-            <label className="text-xs text-white/70">Agent Phone (we connect you)</label>
-            <input
-              value={agentPhone}
-              onChange={(e)=>setAgentPhone(e.target.value)}
-              placeholder="+1XXXXXXXXXX"
-              className="mt-1 w-full rounded-xl border border-white/10 bg-black/40 px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-indigo-500/40"
-            />
-          </div>
-
-          <div className="col-span-1">
-            <label className="text-xs text-white/70">Caller ID to Present</label>
-            <input
-              value={callerId}
-              onChange={(e)=>setCallerId(e.target.value)}
-              placeholder="+1YourDID"
-              className="mt-1 w-full rounded-xl border border-white/10 bg-black/40 px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-indigo-500/40"
-            />
           </div>
         </div>
 
