@@ -71,13 +71,14 @@ function pickBestCallerId(leadE164, agentNums = []) {
   return pool[0] || null;
 }
 
-/** Read user_id from the Supabase JWT in Authorization header */
+/** Read user_id from the Supabase JWT in Authorization header (via service client) */
 async function getUserIdFromSupabaseJWT(authz) {
   try {
-    if (!authz) return null;
+    if (!authz || !supa) return null;
     const token = String(authz).replace(/^Bearer\s+/i, "");
-    const userClient = createClient(SUPABASE_URL, token);
-    const { data } = await userClient.auth.getUser();
+    // ✅ Correct way: use service client to validate the user JWT
+    const { data, error } = await supa.auth.getUser(token);
+    if (error) return null;
     return data?.user?.id || null;
   } catch {
     return null;
