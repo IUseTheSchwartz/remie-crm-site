@@ -3,9 +3,9 @@
 //  - AGENT-FIRST (Leads Page click-to-call): agent answers -> speak -> transfer to lead -> bridge
 //  - LEAD-FIRST  (Auto Dialer): lead answers  -> speak -> (optional ringback) -> transfer to agent -> bridge
 //
-// Stage is marked "answered" ONLY on call.bridged (never on first answer).
-// NEW: If AGENT-FIRST transfer fails (lead hangs up / busy / no answer), tell agent and retry with longer timeout to hit voicemail.
-//      Optional RINGBACK_URL will play to the agent while the voicemail retry is ringing.
+// Stage is marked "answered" on call.answered, and "bridged" only on call.bridged.
+// If AGENT-FIRST transfer fails (lead hangs up / busy / no answer), tell agent and retry with longer timeout to hit voicemail.
+// Optional RINGBACK_URL will play to the agent while the voicemail retry is ringing.
 
 const crypto = require("crypto");
 const fetch = require("node-fetch");
@@ -25,13 +25,9 @@ const supa = (SUPABASE_URL && SUPABASE_SERVICE_ROLE)
   : null;
 
 function log(...args) { try { console.log("[telnyx-webhook]", ...args); } catch {} }
-
-// tiny helper to avoid whisper cut-off
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
-/* ===================================================================
-   Monthly free-pool helpers (usage_counters for CALL MINUTES)
-   =================================================================== */
+/* ===== Usage counters (minutes) ===== */
 async function resolveAccountId(user_id) {
   if (!supa || !user_id) return user_id;
   try {
@@ -45,17 +41,14 @@ async function resolveAccountId(user_id) {
   } catch {}
   return user_id;
 }
-
 function monthWindow(now = new Date()) {
   const start = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1, 0, 0, 0));
   const end = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + 1, 1, 0, 0, 0));
   return { period_start: start.toISOString(), period_end: end.toISOString() };
 }
-
 async function ensureUsageRowMinutes(account_id, now = new Date()) {
   if (!supa || !account_id) return null;
   const { period_start, period_end } = monthWindow(now);
-
   const { data: existing } = await supa
     .from("usage_counters")
     .select("id, free_call_minutes_total, free_call_minutes_used")
@@ -64,16 +57,12 @@ async function ensureUsageRowMinutes(account_id, now = new Date()) {
     .eq("period_end", period_end)
     .limit(1);
   if (existing && existing[0]) return existing[0];
-
   const { data: inserted } = await supa
     .from("usage_counters")
     .insert([{ account_id, period_start, period_end }])
     .select("id, free_call_minutes_total, free_call_minutes_used")
     .single();
-
   if (inserted) return inserted;
-
-  // race fallback
   const { data: again } = await supa
     .from("usage_counters")
     .select("id, free_call_minutes_total, free_call_minutes_used")
@@ -83,14 +72,12 @@ async function ensureUsageRowMinutes(account_id, now = new Date()) {
     .limit(1);
   return (again && again[0]) || null;
 }
-
 async function tryConsumeCallMinutes(account_id, minutes, now = new Date()) {
   if (!supa || !account_id || !minutes || minutes <= 0) {
     return { covered: 0, remaining_to_bill: minutes || 0 };
   }
   await ensureUsageRowMinutes(account_id, now);
   const { period_start, period_end } = monthWindow(now);
-
   const { data: row0 } = await supa
     .from("usage_counters")
     .select("id, free_call_minutes_total, free_call_minutes_used")
@@ -98,13 +85,10 @@ async function tryConsumeCallMinutes(account_id, minutes, now = new Date()) {
     .eq("period_start", period_start)
     .eq("period_end", period_end)
     .single();
-
   if (!row0) return { covered: 0, remaining_to_bill: minutes };
-
   const remaining = Math.max(0, (row0.free_call_minutes_total || 0) - (row0.free_call_minutes_used || 0));
   const covered = Math.min(remaining, minutes);
   const over = minutes - covered;
-
   if (covered > 0) {
     const { error: updErr } = await supa
       .from("usage_counters")
@@ -115,12 +99,10 @@ async function tryConsumeCallMinutes(account_id, minutes, now = new Date()) {
       .eq("id", row0.id);
     if (updErr) log("usage minutes update err", updErr.message);
   }
-
   return { covered, remaining_to_bill: over };
 }
-/* =================================================================== */
 
-/* ---------------- Signature verify (optional) ---------------- */
+/* ===== Signature verify ===== */
 function verifySignature(rawBody, signatureHeader) {
   if (!TELNYX_WEBHOOK_SECRET) return true;
   if (!signatureHeader) return false;
@@ -137,7 +119,7 @@ function verifySignature(rawBody, signatureHeader) {
   } catch { return false; }
 }
 
-/* ---------------- client_state helpers ---------------- */
+/* ===== client_state helpers ===== */
 function decodeClientState(any) {
   try {
     if (!any) return null;
@@ -151,7 +133,7 @@ function decodeClientState(any) {
   } catch { return null; }
 }
 
-/* ---------------- Telnyx helpers ---------------- */
+/* ===== Telnyx helpers ===== */
 async function action(callControlId, path, body = {}) {
   if (!TELNYX_API_KEY || !callControlId) return { ok: false };
   const url = `https://api.telnyx.com/v2/calls/${callControlId}/actions/${path}`;
@@ -166,34 +148,23 @@ async function action(callControlId, path, body = {}) {
   else log(path, "ok");
   return { ok: resp.ok, data };
 }
-
-// >>> IMPORTANT: use E.164 strings for `to`/`from`; omit `from` if you want connection default
 async function transferCall({ callControlId, to, from, timeout_secs }) {
-  const body = { to };              // e.g. "+15551234567"
-  if (from) body.from = from;       // e.g. "+15557654321"
+  const body = { to };
+  if (from) body.from = from;
   if (timeout_secs) body.timeout_secs = timeout_secs;
   return action(callControlId, "transfer", body);
 }
-
 async function startRecording(callControlId) {
   return action(callControlId, "record_start", { channels: "dual", audio: { direction: "both" }, format: "mp3" });
-}
-async function playbackStart(callControlId) {
-  // no-op wrapper: we pass audio_url via action; leaving here for symmetry
-  return { ok: true };
 }
 async function playbackStop(callControlId) {
   return action(callControlId, "playback_stop", {});
 }
 async function speak(callControlId, payload) {
-  // payload: { payload: "text", voice: "female", language: "en-US" }
   return action(callControlId, "speak", payload);
 }
-async function hangupCall(callControlId) {
-  return action(callControlId, "hangup", {});
-}
 
-/* ---------------- Wallet / DB helpers ---------------- */
+/* ===== Wallet / DB helpers ===== */
 async function debitWalletForCall({ legA, user_id, cents }) {
   if (!supa || !legA || !user_id || !cents || cents <= 0) return { ok: true, skipped: true };
   const { data, error } = await supa.rpc("wallet_debit_for_call", {
@@ -208,7 +179,7 @@ async function debitWalletForCall({ legA, user_id, cents }) {
   return { ok: true, data };
 }
 
-/* --------- call_logs updaters (with session fallback) --------- */
+/* ===== call_logs updaters ===== */
 async function updateByLegOrSession(legA, call_session_id, patch) {
   if (!supa) return;
   if (legA) {
@@ -220,20 +191,14 @@ async function updateByLegOrSession(legA, call_session_id, patch) {
     if (error) log("updateByLegOrSession err", error.message);
   }
 }
-
-async function upsertInitiated({
-  user_id, contact_id, to_number, from_number, agent_number,
-  legA, call_session_id, started_at, record_enabled
-}) {
+async function upsertInitiated({ user_id, contact_id, to_number, from_number, agent_number, legA, call_session_id, started_at, record_enabled }) {
   if (!supa) return;
-
   const { data: existing } = await supa
     .from("call_logs")
     .select("id")
     .or(`telnyx_leg_a_id.eq.${legA},call_session_id.eq.${call_session_id || "null"}`)
     .limit(1)
     .maybeSingle();
-
   const baseFields = {
     user_id, contact_id,
     to_number, from_number, agent_number,
@@ -244,7 +209,6 @@ async function upsertInitiated({
     telnyx_leg_a_id: legA || null,
     direction: "outbound",
   };
-
   if (existing?.id) {
     const { error } = await supa.from("call_logs").update(baseFields).eq("id", existing.id);
     if (error) log("upsert initiated (update) err", error.message);
@@ -253,20 +217,22 @@ async function upsertInitiated({
     if (error) log("upsert initiated (insert) err", error.message);
   }
 }
-
+async function markAnswered({ legA, call_session_id, answered_at }) {
+  await updateByLegOrSession(legA, call_session_id, {
+    status: "answered",
+    answered_at: answered_at || new Date().toISOString(),
+  });
+}
 async function markBridged({ legA, call_session_id, maybeLegB }) {
   const updates = { status: "bridged" };
   if (maybeLegB) updates.telnyx_leg_b_id = maybeLegB;
   await updateByLegOrSession(legA, call_session_id, updates);
 }
-
 async function saveRecordingUrlByCallSession({ call_session_id, recording_url }) {
   if (!supa || !call_session_id || !recording_url) return;
   const { error } = await supa.from("call_logs").update({ recording_url }).eq("call_session_id", call_session_id);
   if (error) log("saveRecordingUrl err", error.message);
 }
-
-/* ---- Lead pipeline helper: mark stage=answered when bridged ---- */
 async function markLeadAnsweredStage({ contact_id }) {
   if (!supa || !contact_id) return;
   try {
@@ -279,11 +245,9 @@ async function markLeadAnsweredStage({ contact_id }) {
   }
 }
 
-/* ---------------- END logic (MINUTES pool) ---------------- */
+/* ===== Ended (minutes + wallet) ===== */
 async function markEnded({ legA, call_session_id, ended_at, hangup_cause }) {
   if (!supa) return;
-
-  // Read row (by leg, else by session) to compute duration + wallet
   let row = null;
   if (legA) {
     const { data } = await supa
@@ -314,13 +278,10 @@ async function markEnded({ legA, call_session_id, ended_at, hangup_cause }) {
     duration_seconds = Math.max(0, Math.round((t1 - t0) / 1000));
   }
 
-  // Default: failure if non-normal cause
   const failed = hangup_cause && hangup_cause !== "normal_clearing";
   const rate_cents_per_min = record_enabled ? 2 : 1;
 
-  // Bill ONLY overage minutes; minutes are rounded up
   let billed_cents = 0;
-
   if (duration_seconds != null && user_id) {
     const wholeMinutes = Math.max(1, Math.ceil(duration_seconds / 60));
     try {
@@ -328,34 +289,25 @@ async function markEnded({ legA, call_session_id, ended_at, hangup_cause }) {
       const { covered, remaining_to_bill } = await tryConsumeCallMinutes(account_id, wholeMinutes, new Date());
       const overage_minutes = Math.max(0, remaining_to_bill || 0);
       billed_cents = overage_minutes * rate_cents_per_min;
-      log("usage.calls(minutes)", { wholeMinutes, covered, overage_minutes, billed_cents, rate_cents_per_min });
     } catch (e) {
       billed_cents = Math.max(1, Math.ceil(duration_seconds / 60)) * rate_cents_per_min;
-      log("usage minutes error; fallback to full billing", e?.message);
     }
   } else if (duration_seconds != null) {
     billed_cents = Math.max(1, Math.ceil(duration_seconds / 60)) * rate_cents_per_min;
   }
 
-  const baseUpdates = {
-    status: failed ? "failed" : "completed",
-    ended_at: endedISO,
-  };
+  const baseUpdates = { status: failed ? "failed" : "completed", ended_at: endedISO };
   if (duration_seconds !== null) baseUpdates.duration_seconds = duration_seconds;
   baseUpdates.billed_cents = billed_cents;
   if (failed) baseUpdates.error = hangup_cause;
 
   await updateByLegOrSession(legA, call_session_id, baseUpdates);
-
-  // Wallet debit only for overage minutes
   if (billed_cents > 0 && user_id) {
-    const res = await debitWalletForCall({ legA: legA || null, user_id, cents: billed_cents });
-    if (!res.ok) log("wallet debit failed (non-fatal)", res.error || "unknown");
-    else log("wallet debit ok", { user_id, billed_cents, record_enabled });
+    await debitWalletForCall({ legA: legA || null, user_id, cents: billed_cents });
   }
 }
 
-/* ---------------- Handler ---------------- */
+/* ===== Handler ===== */
 exports.handler = async (event) => {
   const rawBody = event.body || "";
   const sig =
@@ -397,8 +349,8 @@ exports.handler = async (event) => {
 
   const user_id = cs.user_id || cs.agent_id || null;
   const contact_id = cs.contact_id || null;
-  const lead_number = cs.lead_number || cs.to || p?.to || null; // accept legacy "to"
-  const from_number = cs.from_number || cs.ani || p?.from || null; // accept legacy "ani"
+  const lead_number = cs.lead_number || cs.to || p?.to || null;
+  const from_number = cs.from_number || cs.ani || p?.from || null;
   const agent_number = cs.agent_number || null;
   const record_enabled = !!cs.record;
   const ringback_url = cs.ringback_url || null;
@@ -409,15 +361,14 @@ exports.handler = async (event) => {
     record_enabled
   });
 
-  // Helper: handle a transfer failure in AGENT-FIRST flow by retrying to voicemail.
   async function handleAgentFirstTransferFailure() {
     if (!legA || !lead_number) return;
     await speak(legA, { payload: "The prospect disconnected. Connecting you to their voicemail.", voice: "female", language: "en-US" });
     if (RINGBACK_URL) await action(legA, "playback_start", { audio_url: RINGBACK_URL, loop: true });
     await transferCall({
       callControlId: legA,
-      to: lead_number,                                      // E.164 string
-      from: from_number || undefined,                       // E.164 string or omit
+      to: lead_number,
+      from: from_number || undefined,
       timeout_secs: 55
     });
   }
@@ -441,7 +392,7 @@ exports.handler = async (event) => {
       }
 
       case "call.answered": {
-        // === AGENT-FIRST: agent answered -> speak -> transfer to LEAD ===
+        // AGENT-FIRST: agent answered -> speak -> transfer to LEAD
         if (flow === "agent_first" && kind && kind.includes("crm_outbound_agent")) {
           if (legA) {
             await speak(legA, { payload: "Connecting your prospect.", voice: "female", language: "en-US" });
@@ -450,17 +401,17 @@ exports.handler = async (event) => {
           if (legA && lead_number) {
             await transferCall({
               callControlId: legA,
-              to: lead_number,                               // E.164
-              from: from_number || undefined                 // omit if not set
+              to: lead_number,
+              from: from_number || undefined
             });
           }
         }
 
-        // === LEAD-FIRST: lead answered -> speak -> (optional ringback) -> transfer to AGENT ===
+        // LEAD-FIRST: lead answered -> speak -> (optional ringback) -> transfer to AGENT
         if (flow === "lead_first" && kind === "crm_outbound_lead_leg") {
           if (legA) {
             await speak(legA, { payload: "Connecting you to your agent.", voice: "female", language: "en-US" });
-            await sleep(450); // prevent whisper cut-off
+            await sleep(450);
           }
           if (ringback_url && legA) {
             await action(legA, "playback_start", { audio_url: ringback_url, loop: true });
@@ -468,13 +419,14 @@ exports.handler = async (event) => {
           if (legA && agent_number) {
             await transferCall({
               callControlId: legA,
-              to: agent_number,                              // E.164
-              from: from_number || undefined                 // omit if not set (use connection default)
+              to: agent_number,
+              from: from_number || undefined
             });
           }
         }
 
-        // ❌ Removed: await markAnswered({ legA, call_session_id, answered_at: occurred_at });
+        // ✅ Mark answered here — only fires when a leg truly answered.
+        await markAnswered({ legA, call_session_id, answered_at: occurred_at });
         break;
       }
 
@@ -530,8 +482,7 @@ exports.handler = async (event) => {
         break;
       }
 
-      // ✅ No auto-bridging on outbound meta events. call.bridged is the source of truth.
-
+      // No auto-bridging on meta outbound events; call.bridged is the source of truth.
       default:
         break;
     }
