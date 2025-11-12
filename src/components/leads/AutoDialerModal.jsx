@@ -419,7 +419,6 @@ export default function AutoDialerModal({ onClose, rows = [] }) {
     });
   }
 
-  const rowsLookup = useMemo(() => new Map(rows.map(r => [r.id, r])), [rows]); // keep existing
   const stagePills = STAGE_IDS.map((sid) => (
     <button
       key={sid}
