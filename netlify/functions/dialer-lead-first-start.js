@@ -152,8 +152,6 @@ exports.handler = async (event) => {
     connection_id: TELNYX_CALL_CONTROL_APP_ID,
     client_state: client_state_b64,
     timeout_secs: ring_timeout,
-    // ✅ Enable AMD so webhook can require human answer before transfer
-    answering_machine_detection: { mode: "detect" }
   };
   if (from_number) payload.from = from_number; // omit to use connection default
 
