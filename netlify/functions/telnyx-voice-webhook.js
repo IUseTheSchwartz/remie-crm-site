@@ -254,13 +254,6 @@ async function upsertInitiated({
   }
 }
 
-async function markAnswered({ legA, call_session_id, answered_at }) {
-  await updateByLegOrSession(legA, call_session_id, {
-    status: "answered",
-    answered_at: answered_at || new Date().toISOString(),
-  });
-}
-
 async function markBridged({ legA, call_session_id, maybeLegB }) {
   const updates = { status: "bridged" };
   if (maybeLegB) updates.telnyx_leg_b_id = maybeLegB;
@@ -481,7 +474,7 @@ exports.handler = async (event) => {
           }
         }
 
-        await markAnswered({ legA, call_session_id, answered_at: occurred_at });
+        // ❌ Removed: await markAnswered({ legA, call_session_id, answered_at: occurred_at });
         break;
       }
 
@@ -537,12 +530,7 @@ exports.handler = async (event) => {
         break;
       }
 
-      // ✅ Removed auto-bridging on outbound events to avoid any premature bridge/transfer logic.
-      // We rely on call.bridged as the single source of truth.
-      // case "call.transfer.initiated":
-      // case "call.initiated.outbound":
-      // case "call.answered.outbound":
-      //   break;
+      // ✅ No auto-bridging on outbound meta events. call.bridged is the source of truth.
 
       default:
         break;
