@@ -410,17 +410,10 @@ exports.handler = async (event) => {
   const record_enabled = !!cs.record;
   const ringback_url = cs.ringback_url || null;
 
-  // AMD (Answering Machine Detection) result if present
-  const amdResult =
-    p?.answered_by?.result ||
-    p?.answered_by ||
-    null; // values often "human" | "machine" | "fax" | etc.
-
   log("event", eventType, {
     kind, flow, hasLegA: !!legA,
     toPref: lead_number ? String(lead_number).slice(0,4) + "…" : null,
-    record_enabled,
-    amdResult: amdResult || undefined
+    record_enabled
   });
 
   // Helper: handle a transfer failure in AGENT-FIRST flow by retrying to voicemail.
@@ -470,19 +463,8 @@ exports.handler = async (event) => {
           }
         }
 
-        // === LEAD-FIRST: ONLY transfer when the LEAD actually answers (human) ===
+        // === LEAD-FIRST: lead answered -> speak -> (optional ringback) -> transfer to AGENT ===
         if (flow === "lead_first" && kind === "crm_outbound_lead_leg") {
-          // Guard: if AMD present and not "human", do NOT call the agent
-          if (amdResult && String(amdResult).toLowerCase() !== "human") {
-            log("lead_first: AMD not human → no agent transfer", { amdResult });
-            // Optional: whisper and hang up
-            if (legA) {
-              try { await speak(legA, { payload: "Sorry, we could not connect you to your agent.", voice: "female", language: "en-US" }); } catch {}
-              try { await sleep(200); } catch {}
-            }
-            break; // stop here: no transfer to agent
-          }
-
           if (legA) {
             await speak(legA, { payload: "Connecting you to your agent.", voice: "female", language: "en-US" });
             await sleep(450); // prevent whisper cut-off
@@ -555,14 +537,12 @@ exports.handler = async (event) => {
         break;
       }
 
-      case "call.transfer.initiated":
-      case "call.initiated.outbound":
-      case "call.answered.outbound": {
-        if (legA && peerLeg) {
-          await markBridged({ legA, call_session_id, maybeLegB: peerLeg });
-        }
-        break;
-      }
+      // ✅ Removed auto-bridging on outbound events to avoid any premature bridge/transfer logic.
+      // We rely on call.bridged as the single source of truth.
+      // case "call.transfer.initiated":
+      // case "call.initiated.outbound":
+      // case "call.answered.outbound":
+      //   break;
 
       default:
         break;
