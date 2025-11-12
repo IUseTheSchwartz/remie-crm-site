@@ -1,3 +1,4 @@
+// File: src/components/AutoDialerModal.jsx
 import { useEffect, useMemo, useRef, useState } from "react";
 import { supabase } from "../../lib/supabaseClient.js";
 import { toE164 } from "../../lib/phone.js";
@@ -79,6 +80,10 @@ export default function AutoDialerModal({ onClose, rows = [] }) {
   const liveStatusRef = useRef({});
   useEffect(() => { liveStatusRef.current = liveStatus; }, [liveStatus]);
 
+  // NEW: run id + map contact_id -> attempt_id (optional)
+  const [runId, setRunId] = useState(null);
+  const attemptByContactRef = useRef(new Map()); // contact_id -> attempt_id
+
   // Numbers
   const [agentPhone, setAgentPhone] = useState("");
   const [agentNums, setAgentNums] = useState([]);       // [{id, telnyx_number}]
@@ -124,7 +129,6 @@ export default function AutoDialerModal({ onClose, rows = [] }) {
 
         if (mounted) {
           setAgentNums(normalized);
-          // IMPORTANT: leave selectedFrom as "" by default → connection default / server auto-pick
           setSelectedFrom("");
         }
       } finally {
@@ -155,43 +159,48 @@ export default function AutoDialerModal({ onClose, rows = [] }) {
     }
   }
 
-  // Realtime: call_logs -> update live status + auto-advance
+  // ================================
+  // Realtime: auto_dialer_attempts (current run)
+  // ================================
   useEffect(() => {
+    if (!runId) return;
     let chan;
     (async () => {
-      try {
-        const { data: authData } = await supabase.auth.getUser();
-        const userId = authData?.user?.id;
-        if (!userId) return;
+      const { data: authData } = await supabase.auth.getUser();
+      const userId = authData?.user?.id;
+      if (!userId) return;
 
-        chan = supabase.channel("call_logs_live_dialer")
-          .on("postgres_changes",
-            { event: "*", schema: "public", table: "call_logs", filter: `user_id=eq.${userId}` },
-            (payload) => {
-              const rec = payload.new || payload.old || {};
-              const leadId = rec.contact_id;
-              if (!leadId) return;
+      chan = supabase
+        .channel(`auto_dialer_attempts_live_${runId}`)
+        .on("postgres_changes",
+          { event: "*", schema: "public", table: "auto_dialer_attempts", filter: `run_id=eq.${runId}` },
+          (payload) => {
+            const rec = payload.new || payload.old || {};
+            const leadId = rec.contact_id;
+            if (!leadId) return;
 
-              const status = (rec.status || "").toLowerCase();
-              const mapped =
-                status === "ringing" ? "ringing" :
-                status === "answered" ? "answered" :
-                status === "bridged" ? "bridged" :
-                status === "completed" ? "completed" :
-                status === "failed" ? "failed" :
-                status || "dialing";
+            const status = (rec.status || "").toLowerCase();
+            const mapped =
+              status === "dialing" ? "dialing" :
+              status === "ringing" ? "ringing" :
+              status === "answered" ? "answered" :
+              status === "bridged" ? "bridged" :
+              status === "completed" ? "completed" :
+              status === "failed" ? "failed" :
+              status || "dialing";
 
-              setLiveStatus((s) => ({ ...s, [leadId]: mapped }));
+            setLiveStatus((s) => ({ ...s, [leadId]: mapped }));
 
-              if (isRunningRef.current && (mapped === "completed" || mapped === "failed")) {
-                advanceAfterEnd(leadId, mapped);
-              }
-            })
-          .subscribe();
-      } catch {}
+            if (isRunningRef.current && (mapped === "completed" || mapped === "failed")) {
+              advanceAfterEnd(leadId, mapped);
+            }
+          }
+        )
+        .subscribe();
     })();
+
     return () => { if (chan) supabase.removeChannel(chan); };
-  }, []);
+  }, [runId]);
 
   const rowsLookup = useMemo(() => new Map(rows.map(r => [r.id, r])), [rows]);
 
@@ -203,7 +212,7 @@ export default function AutoDialerModal({ onClose, rows = [] }) {
     });
   }
 
-  function buildQueue() {
+  async function buildQueue() {
     const wantStates = new Set(parseStateFilter(stateFilter)); // empty = all
     const wantStages = stageFilters; // empty = all
 
@@ -220,6 +229,25 @@ export default function AutoDialerModal({ onClose, rows = [] }) {
     const patch = {};
     for (const q of list) patch[q.id] = "queued";
     setLiveStatus((s) => ({ ...s, ...patch }));
+
+    // NEW: create a run
+    const settings = {
+      stateFilter,
+      stageFilters: Array.from(stageFilters),
+      maxAttempts,
+      selectedFrom,
+    };
+    const { data: authData } = await supabase.auth.getUser();
+    const uid = authData?.user?.id;
+    if (uid) {
+      const { data: run } = await supabase
+        .from("auto_dialer_runs")
+        .insert([{ user_id: uid, settings, total_leads: list.length }])
+        .select("id")
+        .single();
+      setRunId(run?.id || null);
+      attemptByContactRef.current = new Map();
+    }
   }
 
   function requireBasics() {
@@ -234,7 +262,7 @@ export default function AutoDialerModal({ onClose, rows = [] }) {
 
   async function startAutoDial() {
     if (!queue.length) {
-      buildQueue();
+      await buildQueue();
       addTimer(setTimeout(() => { if (!isRunningRef.current) return; runNext(); }, 0));
     } else {
       runNext();
@@ -260,6 +288,8 @@ export default function AutoDialerModal({ onClose, rows = [] }) {
       setIsRunning(false);
       isRunningRef.current = false;
       clearAllTimers();
+      // optionally mark run ended
+      if (runId) { try { await supabase.from("auto_dialer_runs").update({ ended_at: new Date().toISOString() }).eq("id", runId); } catch {} }
       return;
     }
 
@@ -277,15 +307,46 @@ export default function AutoDialerModal({ onClose, rows = [] }) {
 
       const to = toE164(lead.phone);
 
-      await startLeadFirstCall({
+      const resp = await startLeadFirstCall({
         agentNumber: basics.agent,
         leadNumber: to,
         contactId: lead.id,
-        fromNumber: basics.from,   // null/blank → server will auto-pick best or use connection default
+        fromNumber: basics.from,
         record: true,
         ringTimeout: 25,
         ringbackUrl: "",
       });
+      // resp: { ok, call_leg_id, call_session_id, contact_id, used_from_number }
+      const call_session_id = resp?.call_session_id || null;
+      const legA = resp?.call_leg_id || null;
+
+      // NEW: insert attempt row tied to this run
+      if (runId) {
+        const { data: authData } = await supabase.auth.getUser();
+        const uid = authData?.user?.id;
+        if (uid) {
+          const { data: attempt } = await supabase
+            .from("auto_dialer_attempts")
+            .insert([{
+              run_id: runId,
+              user_id: uid,
+              contact_id: lead.id,
+              lead_number: to,
+              from_number: basics.from,
+              agent_number: basics.agent,
+              call_session_id,
+              telnyx_leg_a_id: legA,
+              status: "dialing",
+              attempts: (item.attempts || 0) + 1,
+            }])
+            .select("id")
+            .single();
+
+          if (attempt?.id) {
+            attemptByContactRef.current.set(lead.id, attempt.id);
+          }
+        }
+      }
 
       // Optimistic “ringing” fallback
       addTimer(setTimeout(() => {
@@ -309,11 +370,21 @@ export default function AutoDialerModal({ onClose, rows = [] }) {
     }
   }
 
-  function advanceAfterEnd(leadId, outcome) {
+  async function advanceAfterEnd(leadId, outcome) {
     // settle once
     const settled = settledRef.current;
     if (settled.has(leadId)) return;
     settled.add(leadId);
+
+    // optional: stamp attempt row outcome immediately
+    const attemptId = attemptByContactRef.current.get(leadId);
+    if (attemptId) {
+      try {
+        await supabase.from("auto_dialer_attempts")
+          .update({ status: outcome, ended_at: new Date().toISOString() })
+          .eq("id", attemptId);
+      } catch {}
+    }
 
     setQueue((old) => {
       const idx = currentIdx;
@@ -339,6 +410,7 @@ export default function AutoDialerModal({ onClose, rows = [] }) {
           setIsRunning(false);
           isRunningRef.current = false;
           clearAllTimers();
+          if (runId) { try { supabase.from("auto_dialer_runs").update({ ended_at: new Date().toISOString() }).eq("id", runId); } catch {} }
         } else {
           addTimer(setTimeout(() => { if (!isRunningRef.current) return; runNext(); }, 250));
         }
@@ -347,6 +419,7 @@ export default function AutoDialerModal({ onClose, rows = [] }) {
     });
   }
 
+  const rowsLookup = useMemo(() => new Map(rows.map(r => [r.id, r])), [rows]); // keep existing
   const stagePills = STAGE_IDS.map((sid) => (
     <button
       key={sid}
@@ -384,7 +457,6 @@ export default function AutoDialerModal({ onClose, rows = [] }) {
               className="mt-1 w-full rounded-lg border border-white/10 bg-black/40 px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-indigo-500/40"
               title="Choose which number prospects will see"
             >
-              {/* FIRST: default */}
               <option value="">Use connection default</option>
               {agentNums.map(n => (
                 <option key={n.id} value={n.telnyx_number}>
@@ -436,7 +508,18 @@ export default function AutoDialerModal({ onClose, rows = [] }) {
           <div className="col-span-2">
             <label className="text-xs text-white/70">Stages (leave empty for ALL)</label>
             <div className="mt-1 flex flex-wrap gap-2">
-              {stagePills}
+              {STAGE_IDS.map((sid) => (
+                <button
+                  key={sid}
+                  onClick={() => toggleStage(sid)}
+                  className={`rounded-full px-3 py-1 text-xs border ${
+                    stageFilters.has(sid) ? "border-white bg-white text-black" : "border-white/20 bg-white/5 text-white/80"
+                  }`}
+                  title={labelForStage(sid)}
+                >
+                  {labelForStage(sid)}
+                </button>
+              ))}
             </div>
           </div>
 
@@ -480,6 +563,7 @@ export default function AutoDialerModal({ onClose, rows = [] }) {
           )}
           <div className="text-xs text-white/60 ml-2">
             {queue.length ? `Lead ${Math.min(currentIdx + 1, queue.length)} of ${queue.length}` : "No queue yet"}
+            {runId ? <span className="ml-3 text-white/40">Run: {runId.slice(0,8)}…</span> : null}
           </div>
         </div>
 
