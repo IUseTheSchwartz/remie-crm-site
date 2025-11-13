@@ -3,8 +3,9 @@
 //  - AGENT-FIRST (Leads Page click-to-call): agent answers -> speak -> transfer to lead -> bridge
 //  - LEAD-FIRST  (Auto Dialer): lead answers  -> speak -> (optional ringback) -> transfer to agent -> bridge
 //
-// Stage is marked "answered" on call.answered (as before) and bridged on call.bridged.
-// NEW: For LEAD-FIRST, add a short debounce before transferring to agent so quick declines/VM don't ring agent.
+// Stage is marked "answered" ONLY on call.bridged (never on first answer).
+// If AGENT-FIRST transfer fails (lead hangs up / busy / no answer), tell agent and retry with longer timeout to hit voicemail.
+// Optional RINGBACK_URL will play to the agent while the voicemail retry is ringing.
 
 const crypto = require("crypto");
 const fetch = require("node-fetch");
@@ -16,7 +17,7 @@ const SUPABASE_URL = process.env.SUPABASE_URL || "";
 const SUPABASE_SERVICE_ROLE =
   process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_SERVICE_ROLE || "";
 
-// Optional ringback looped to the AGENT during the voicemail retry (agent-first only)
+// Optional ringback looped to the AGENT during the voicemail retry
 const RINGBACK_URL = process.env.RINGBACK_URL || "";
 
 const supa = (SUPABASE_URL && SUPABASE_SERVICE_ROLE)
@@ -24,6 +25,8 @@ const supa = (SUPABASE_URL && SUPABASE_SERVICE_ROLE)
   : null;
 
 function log(...args) { try { console.log("[telnyx-webhook]", ...args); } catch {} }
+
+// tiny helper to avoid whisper cut-off
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 /* ===================================================================
@@ -70,6 +73,7 @@ async function ensureUsageRowMinutes(account_id, now = new Date()) {
 
   if (inserted) return inserted;
 
+  // race fallback
   const { data: again } = await supa
     .from("usage_counters")
     .select("id, free_call_minutes_total, free_call_minutes_used")
@@ -175,13 +179,18 @@ async function startRecording(callControlId) {
   return action(callControlId, "record_start", { channels: "dual", audio: { direction: "both" }, format: "mp3" });
 }
 async function playbackStart(callControlId) {
+  // no-op wrapper
   return { ok: true };
 }
 async function playbackStop(callControlId) {
   return action(callControlId, "playback_stop", {});
 }
 async function speak(callControlId, payload) {
+  // payload: { payload: "text", voice: "female", language: "en-US" }
   return action(callControlId, "speak", payload);
+}
+async function hangupCall(callControlId) {
+  return action(callControlId, "hangup", {});
 }
 
 /* ---------------- Wallet / DB helpers ---------------- */
@@ -209,6 +218,39 @@ async function updateByLegOrSession(legA, call_session_id, patch) {
   if (call_session_id) {
     const { error } = await supa.from("call_logs").update(patch).eq("call_session_id", call_session_id);
     if (error) log("updateByLegOrSession err", error.message);
+  }
+}
+
+async function upsertInitiated({
+  user_id, contact_id, to_number, from_number, agent_number,
+  legA, call_session_id, started_at, record_enabled
+}) {
+  if (!supa) return;
+
+  const { data: existing } = await supa
+    .from("call_logs")
+    .select("id")
+    .or(`telnyx_leg_a_id.eq.${legA},call_session_id.eq.${call_session_id || "null"}`)
+    .limit(1)
+    .maybeSingle();
+
+  const baseFields = {
+    user_id, contact_id,
+    to_number, from_number, agent_number,
+    status: "ringing",
+    started_at: started_at || new Date().toISOString(),
+    record_enabled: !!record_enabled,
+    call_session_id: call_session_id || null,
+    telnyx_leg_a_id: legA || null,
+    direction: "outbound",
+  };
+
+  if (existing?.id) {
+    const { error } = await supa.from("call_logs").update(baseFields).eq("id", existing.id);
+    if (error) log("upsert initiated (update) err", error.message);
+  } else {
+    const { error } = await supa.from("call_logs").insert(baseFields);
+    if (error) log("upsert initiated (insert) err", error.message);
   }
 }
 
@@ -248,11 +290,12 @@ async function markLeadAnsweredStage({ contact_id }) {
 async function markEnded({ legA, call_session_id, ended_at, hangup_cause }) {
   if (!supa) return;
 
+  // Read row (by leg, else by session) to compute duration + wallet
   let row = null;
   if (legA) {
     const { data } = await supa
       .from("call_logs")
-      .select("id, started_at, user_id, record_enabled, telnyx_leg_b_id")
+      .select("id, started_at, user_id, record_enabled")
       .eq("telnyx_leg_a_id", legA)
       .maybeSingle();
     row = data || null;
@@ -260,7 +303,7 @@ async function markEnded({ legA, call_session_id, ended_at, hangup_cause }) {
   if (!row && call_session_id) {
     const { data } = await supa
       .from("call_logs")
-      .select("id, started_at, user_id, record_enabled, telnyx_leg_b_id")
+      .select("id, started_at, user_id, record_enabled")
       .eq("call_session_id", call_session_id)
       .maybeSingle();
     row = data || null;
@@ -278,10 +321,13 @@ async function markEnded({ legA, call_session_id, ended_at, hangup_cause }) {
     duration_seconds = Math.max(0, Math.round((t1 - t0) / 1000));
   }
 
+  // Default: failure if non-normal cause
   const failed = hangup_cause && hangup_cause !== "normal_clearing";
   const rate_cents_per_min = record_enabled ? 2 : 1;
 
+  // Bill ONLY overage minutes; minutes are rounded up
   let billed_cents = 0;
+
   if (duration_seconds != null && user_id) {
     const wholeMinutes = Math.max(1, Math.ceil(duration_seconds / 60));
     try {
@@ -289,8 +335,10 @@ async function markEnded({ legA, call_session_id, ended_at, hangup_cause }) {
       const { covered, remaining_to_bill } = await tryConsumeCallMinutes(account_id, wholeMinutes, new Date());
       const overage_minutes = Math.max(0, remaining_to_bill || 0);
       billed_cents = overage_minutes * rate_cents_per_min;
-    } catch {
+      log("usage.calls(minutes)", { wholeMinutes, covered, overage_minutes, billed_cents, rate_cents_per_min });
+    } catch (e) {
       billed_cents = Math.max(1, Math.ceil(duration_seconds / 60)) * rate_cents_per_min;
+      log("usage minutes error; fallback to full billing", e?.message);
     }
   } else if (duration_seconds != null) {
     billed_cents = Math.max(1, Math.ceil(duration_seconds / 60)) * rate_cents_per_min;
@@ -306,8 +354,11 @@ async function markEnded({ legA, call_session_id, ended_at, hangup_cause }) {
 
   await updateByLegOrSession(legA, call_session_id, baseUpdates);
 
+  // Wallet debit only for overage minutes
   if (billed_cents > 0 && user_id) {
-    await debitWalletForCall({ legA: legA || null, user_id, cents: billed_cents });
+    const res = await debitWalletForCall({ legA: legA || null, user_id, cents: billed_cents });
+    if (!res.ok) log("wallet debit failed (non-fatal)", res.error || "unknown");
+    else log("wallet debit ok", { user_id, billed_cents, record_enabled });
   }
 }
 
@@ -347,13 +398,14 @@ exports.handler = async (event) => {
     decodeClientState(p?.client_state) ||
     decodeClientState(p?.client_state_b64) || {};
 
-  const kind = cs.kind || cs.compat_kind || null;
+  // Unified state
+  const kind = cs.kind || cs.compat_kind || null;       // supports old/new keys
   const flow = cs.flow || (kind === "crm_outbound_lead_leg" ? "lead_first" : "agent_first");
 
   const user_id = cs.user_id || cs.agent_id || null;
   const contact_id = cs.contact_id || null;
-  const lead_number = cs.lead_number || cs.to || p?.to || null;
-  const from_number = cs.from_number || cs.ani || p?.from || null;
+  const lead_number = cs.lead_number || cs.to || p?.to || null; // accept legacy "to"
+  const from_number = cs.from_number || cs.ani || p?.from || null; // accept legacy "ani"
   const agent_number = cs.agent_number || null;
   const record_enabled = !!cs.record;
   const ringback_url = cs.ringback_url || null;
@@ -364,14 +416,15 @@ exports.handler = async (event) => {
     record_enabled
   });
 
+  // Helper: handle a transfer failure in AGENT-FIRST flow by retrying to voicemail.
   async function handleAgentFirstTransferFailure() {
     if (!legA || !lead_number) return;
     await speak(legA, { payload: "The prospect disconnected. Connecting you to their voicemail.", voice: "female", language: "en-US" });
     if (RINGBACK_URL) await action(legA, "playback_start", { audio_url: RINGBACK_URL, loop: true });
     await transferCall({
       callControlId: legA,
-      to: lead_number,
-      from: from_number || undefined,
+      to: lead_number,                                      // E.164 string
+      from: from_number || undefined,                       // E.164 string or omit
       timeout_secs: 55
     });
   }
@@ -404,8 +457,8 @@ exports.handler = async (event) => {
           if (legA && lead_number) {
             await transferCall({
               callControlId: legA,
-              to: lead_number,
-              from: from_number || undefined
+              to: lead_number,                               // E.164
+              from: from_number || undefined                 // omit if not set
             });
           }
         }
@@ -414,36 +467,31 @@ exports.handler = async (event) => {
         if (flow === "lead_first" && kind === "crm_outbound_lead_leg") {
           if (legA) {
             await speak(legA, { payload: "Connecting you to your agent.", voice: "female", language: "en-US" });
-            await sleep(450);
+            await sleep(350); // short debounce to filter instant declines/VM
           }
-
-          // If AMD present and says not human, don't transfer (treat as no-answer/VM)
           const answeredBy = (p?.answered_by || p?.amd_result || "").toLowerCase();
-          const isNonHuman = answeredBy && answeredBy !== "human";
-
-          // **Debounce**: filter out instant declines/VM pickups so agent never rings
-          if (!isNonHuman) {
-            await sleep(700);
+          const nonHuman = answeredBy && answeredBy !== "human";
+          if (!nonHuman && ringback_url && legA) {
+            await action(legA, "playback_start", { audio_url: ringback_url, loop: true });
           }
-
-          if (!isNonHuman && legA && agent_number) {
-            // attempt transfer; if the lead already hung up, this will fail silently and agent won't ring
+          if (!nonHuman && legA && agent_number) {
             await transferCall({
               callControlId: legA,
-              to: agent_number,
-              from: from_number || undefined
+              to: agent_number,                              // E.164
+              from: from_number || undefined                 // omit if not set (use connection default)
             });
           }
         }
 
-        // keep your prior behavior: mark answered on call.answered
-        await markAnswered({ legA, call_session_id, answered_at: occurred_at });
+        // DO NOT mark answered here — your rule is "only on bridged"
         break;
       }
 
       case "call.bridged": {
         if (legA) await playbackStop(legA);
         await markBridged({ legA, call_session_id, maybeLegB: peerLeg || null });
+        // Now that we have a real bridge, mark "answered"
+        await markAnswered({ legA, call_session_id, answered_at: occurred_at });
         if (record_enabled && legA) startRecording(legA);
         if (contact_id) await markLeadAnsweredStage({ contact_id });
         break;
@@ -464,6 +512,7 @@ exports.handler = async (event) => {
           await handleAgentFirstTransferFailure();
         } else if (legA && peerLeg) {
           await markBridged({ legA, call_session_id, maybeLegB: peerLeg });
+          await markAnswered({ legA, call_session_id, answered_at: occurred_at });
         }
         break;
       }
@@ -490,6 +539,18 @@ exports.handler = async (event) => {
       case "call.hangup": {
         if (legA) await playbackStop(legA);
         await markEnded({ legA, call_session_id, ended_at: occurred_at, hangup_cause: p?.hangup_cause });
+        break;
+      }
+
+      // ✅ Restore outbound fallbacks: sometimes Telnyx won't emit call.bridged,
+      // but these events include the peer leg. Treat presence of peerLeg as bridged.
+      case "call.transfer.initiated":
+      case "call.initiated.outbound":
+      case "call.answered.outbound": {
+        if (legA && peerLeg) {
+          await markBridged({ legA, call_session_id, maybeLegB: peerLeg });
+          await markAnswered({ legA, call_session_id, answered_at: occurred_at });
+        }
         break;
       }
 
