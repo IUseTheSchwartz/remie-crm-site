@@ -4,8 +4,8 @@
 //  - LEAD-FIRST  (Auto Dialer): lead answers  -> speak -> (optional ringback) -> transfer to agent -> bridge
 //
 // Stage is marked "answered" ONLY on call.bridged (never on first answer).
-// If AGENT-FIRST transfer fails (lead hangs up / busy / no answer), tell agent and retry with longer timeout to hit voicemail.
-// Optional RINGBACK_URL will play to the agent while the voicemail retry is ringing.
+// NEW: If AGENT-FIRST transfer fails (lead hangs up / busy / no answer), tell agent and retry with longer timeout to hit voicemail.
+//      Optional RINGBACK_URL will play to the agent while the voicemail retry is ringing.
 
 const crypto = require("crypto");
 const fetch = require("node-fetch");
@@ -179,7 +179,7 @@ async function startRecording(callControlId) {
   return action(callControlId, "record_start", { channels: "dual", audio: { direction: "both" }, format: "mp3" });
 }
 async function playbackStart(callControlId) {
-  // no-op wrapper
+  // no-op wrapper: we pass audio_url via action; leaving here for symmetry
   return { ok: true };
 }
 async function playbackStop(callControlId) {
@@ -467,14 +467,12 @@ exports.handler = async (event) => {
         if (flow === "lead_first" && kind === "crm_outbound_lead_leg") {
           if (legA) {
             await speak(legA, { payload: "Connecting you to your agent.", voice: "female", language: "en-US" });
-            await sleep(350); // short debounce to filter instant declines/VM
+            await sleep(450); // prevent whisper cut-off
           }
-          const answeredBy = (p?.answered_by || p?.amd_result || "").toLowerCase();
-          const nonHuman = answeredBy && answeredBy !== "human";
-          if (!nonHuman && ringback_url && legA) {
+          if (ringback_url && legA) {
             await action(legA, "playback_start", { audio_url: ringback_url, loop: true });
           }
-          if (!nonHuman && legA && agent_number) {
+          if (legA && agent_number) {
             await transferCall({
               callControlId: legA,
               to: agent_number,                              // E.164
@@ -483,15 +481,13 @@ exports.handler = async (event) => {
           }
         }
 
-        // DO NOT mark answered here — your rule is "only on bridged"
+        await markAnswered({ legA, call_session_id, answered_at: occurred_at });
         break;
       }
 
       case "call.bridged": {
         if (legA) await playbackStop(legA);
         await markBridged({ legA, call_session_id, maybeLegB: peerLeg || null });
-        // Now that we have a real bridge, mark "answered"
-        await markAnswered({ legA, call_session_id, answered_at: occurred_at });
         if (record_enabled && legA) startRecording(legA);
         if (contact_id) await markLeadAnsweredStage({ contact_id });
         break;
@@ -512,7 +508,6 @@ exports.handler = async (event) => {
           await handleAgentFirstTransferFailure();
         } else if (legA && peerLeg) {
           await markBridged({ legA, call_session_id, maybeLegB: peerLeg });
-          await markAnswered({ legA, call_session_id, answered_at: occurred_at });
         }
         break;
       }
@@ -542,14 +537,11 @@ exports.handler = async (event) => {
         break;
       }
 
-      // ✅ Restore outbound fallbacks: sometimes Telnyx won't emit call.bridged,
-      // but these events include the peer leg. Treat presence of peerLeg as bridged.
       case "call.transfer.initiated":
       case "call.initiated.outbound":
       case "call.answered.outbound": {
         if (legA && peerLeg) {
           await markBridged({ legA, call_session_id, maybeLegB: peerLeg });
-          await markAnswered({ legA, call_session_id, answered_at: occurred_at });
         }
         break;
       }
