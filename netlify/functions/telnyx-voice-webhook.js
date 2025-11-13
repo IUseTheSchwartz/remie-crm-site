@@ -416,15 +416,14 @@ exports.handler = async (event) => {
     record_enabled
   });
 
-  // Helper: handle a transfer failure in AGENT-FIRST flow by retrying to voicemail.
   async function handleAgentFirstTransferFailure() {
     if (!legA || !lead_number) return;
     await speak(legA, { payload: "The prospect disconnected. Connecting you to their voicemail.", voice: "female", language: "en-US" });
     if (RINGBACK_URL) await action(legA, "playback_start", { audio_url: RINGBACK_URL, loop: true });
     await transferCall({
       callControlId: legA,
-      to: lead_number,                                      // E.164 string
-      from: from_number || undefined,                       // E.164 string or omit
+      to: lead_number,
+      from: from_number || undefined,
       timeout_secs: 55
     });
   }
@@ -457,8 +456,8 @@ exports.handler = async (event) => {
           if (legA && lead_number) {
             await transferCall({
               callControlId: legA,
-              to: lead_number,                               // E.164
-              from: from_number || undefined                 // omit if not set
+              to: lead_number,
+              from: from_number || undefined
             });
           }
         }
@@ -467,7 +466,7 @@ exports.handler = async (event) => {
         if (flow === "lead_first" && kind === "crm_outbound_lead_leg") {
           if (legA) {
             await speak(legA, { payload: "Connecting you to your agent.", voice: "female", language: "en-US" });
-            await sleep(450); // prevent whisper cut-off
+            await sleep(450);
           }
           if (ringback_url && legA) {
             await action(legA, "playback_start", { audio_url: ringback_url, loop: true });
@@ -475,8 +474,9 @@ exports.handler = async (event) => {
           if (legA && agent_number) {
             await transferCall({
               callControlId: legA,
-              to: agent_number,                              // E.164
-              from: from_number || undefined                 // omit if not set (use connection default)
+              to: agent_number,
+              from: from_number || undefined,
+              timeout_secs: 45   // ← only change: ensure agent leg actually rings long enough
             });
           }
         }
