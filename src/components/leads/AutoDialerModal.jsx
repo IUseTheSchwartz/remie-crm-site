@@ -63,7 +63,7 @@ export default function AutoDialerModal({ onClose, rows = [] }) {
   const [agentDisplayName, setAgentDisplayName] = useState("");
   const [introTts, setIntroTts] = useState("");
   const [voicemailTts, setVoicemailTts] = useState("");
-  const [ttsVoice, setTtsVoice] = useState("female"); // NEW: voice choice
+  const [ttsVoice, setTtsVoice] = useState("female"); // voice choice
   const ttsInitializedRef = useRef(false);
 
   // Queue + status
@@ -88,7 +88,7 @@ export default function AutoDialerModal({ onClose, rows = [] }) {
   const liveStatusRef = useRef({});
   useEffect(() => { liveStatusRef.current = liveStatus; }, [liveStatus]);
 
-  // run id + map contact_id -> attempt_id (optional)
+  // run id + map contact_id -> attempt_id
   const [runId, setRunId] = useState(null);
   const attemptByContactRef = useRef(new Map()); // contact_id -> attempt_id
 
@@ -203,15 +203,30 @@ export default function AutoDialerModal({ onClose, rows = [] }) {
             const leadId = rec.contact_id;
             if (!leadId) return;
 
-            const status = (rec.status || "").toLowerCase();
-            const mapped =
-              status === "dialing" ? "dialing" :
-              status === "ringing" ? "ringing" :
-              status === "answered" ? "answered" :
-              status === "bridged" ? "bridged" :
-              status === "completed" ? "completed" :
-              status === "failed" ? "failed" :
-              status || "dialing";
+            const rawStatus = (rec.status || "").toLowerCase();
+            const prev = liveStatusRef.current[leadId] || "";
+            const hasBridgeFlag = !!rec.telnyx_leg_b_id;
+            const everBridged = prev === "bridged" || hasBridgeFlag;
+
+            let mapped;
+            // completed without ever being bridged = FAILED
+            if (rawStatus === "completed" && !everBridged) {
+              mapped = "failed";
+            } else if (rawStatus === "dialing") {
+              mapped = "dialing";
+            } else if (rawStatus === "ringing") {
+              mapped = "ringing";
+            } else if (rawStatus === "answered") {
+              mapped = "answered";
+            } else if (rawStatus === "bridged") {
+              mapped = "bridged";
+            } else if (rawStatus === "completed") {
+              mapped = "completed";
+            } else if (rawStatus === "failed") {
+              mapped = "failed";
+            } else {
+              mapped = rawStatus || "dialing";
+            }
 
             setLiveStatus((s) => ({ ...s, [leadId]: mapped }));
 
@@ -309,27 +324,56 @@ export default function AutoDialerModal({ onClose, rows = [] }) {
     setIsRunning(true);
     isRunningRef.current = true;
 
-    const idx = currentIdx;
-    if (idx >= queue.length) {
-      // done
+    let idx = currentIdx;
+    const q = queue;
+
+    // 🔑 Skip any leads that are "done" for this run:
+    // - attempts >= maxAttempts
+    // - or status completed/failed
+    while (
+      idx < q.length &&
+      (
+        (q[idx].attempts || 0) >= maxAttempts ||
+        ["completed", "failed"].includes(
+          (liveStatusRef.current[q[idx].id] || q[idx].status || "").toLowerCase()
+        )
+      )
+    ) {
+      idx++;
+    }
+
+    if (idx >= q.length) {
+      // No more leads to dial in this run
       setIsRunning(false);
       isRunningRef.current = false;
       clearAllTimers();
-      if (runId) { try { await supabase.from("auto_dialer_runs").update({ ended_at: new Date().toISOString() }).eq("id", runId); } catch {} }
+      if (runId) {
+        try {
+          await supabase
+            .from("auto_dialer_runs")
+            .update({ ended_at: new Date().toISOString() })
+            .eq("id", runId);
+        } catch {}
+      }
       return;
     }
 
-    const item = queue[idx];
+    // Make sure UI knows which lead is current
+    if (idx !== currentIdx) setCurrentIdx(idx);
+
+    const item = q[idx];
     const lead = rowsLookup.get(item.id);
     if (!lead || !lead.phone) {
-      setCurrentIdx((i) => i + 1);
+      setCurrentIdx(idx + 1);
       addTimer(setTimeout(() => { if (!isRunningRef.current) return; runNext(); }, 0));
       return;
     }
 
     try {
       setLiveStatus((s) => ({ ...s, [item.id]: "dialing" }));
-      setQueue((q) => q.map((x, i) => i === idx ? { ...x, status: "dialing" } : x));
+      setQueue((qPrev) =>
+        qPrev.map((x, i) => (i === idx ? { ...x, status: "dialing" } : x))
+      );
 
       const to = toE164(lead.phone);
 
@@ -417,13 +461,16 @@ export default function AutoDialerModal({ onClose, rows = [] }) {
     }
 
     setQueue((old) => {
-      const idx = currentIdx;
-      const cur = old[idx];
-      if (!cur || cur.id !== leadId) return old;
+      // Find this lead in the current snapshot
+      const idx = old.findIndex((q) => q.id === leadId);
+      if (idx === -1) return old;
 
+      const cur = old[idx];
       const attempts = (cur.attempts || 0) + 1;
+
       setLiveStatus((s) => ({ ...s, [leadId]: outcome }));
 
+      // Only requeue if NOT completed and still under max attempts
       if (outcome !== "completed" && attempts < maxAttempts) {
         const updated = [...old];
         updated[idx] = { ...cur, attempts, status: "queued" };
@@ -432,24 +479,40 @@ export default function AutoDialerModal({ onClose, rows = [] }) {
       } else {
         const updated = [...old];
         updated[idx] = { ...cur, attempts, status: outcome };
-        const nextIdx = idx + 1;
-        setCurrentIdx(nextIdx);
 
-        // If that was the last lead, stop cleanly
-        if (nextIdx >= updated.length) {
+        // Move index forward; runNext will skip any finished leads
+        setCurrentIdx((prev) => Math.max(prev, idx));
+
+        // If everything is finished, stop; otherwise let runNext find the next unfinished one
+        const allDone = updated.every((row) =>
+          (row.attempts || 0) >= maxAttempts ||
+          ["completed", "failed"].includes(
+            (liveStatusRef.current[row.id] || row.status || "").toLowerCase()
+          )
+        );
+
+        if (allDone) {
           setIsRunning(false);
           isRunningRef.current = false;
           clearAllTimers();
-          if (runId) { try { supabase.from("auto_dialer_runs").update({ ended_at: new Date().toISOString() }).eq("id", runId); } catch {} }
+          if (runId) {
+            try {
+              supabase
+                .from("auto_dialer_runs")
+                .update({ ended_at: new Date().toISOString() })
+                .eq("id", runId);
+            } catch {}
+          }
         } else {
           addTimer(setTimeout(() => { if (!isRunningRef.current) return; runNext(); }, 250));
         }
+
         return updated;
       }
     });
   }
 
-  // NEW: remove from queue
+  // Remove from queue
   function removeFromQueue(leadId) {
     setQueue((old) => {
       const idx = old.findIndex((q) => q.id === leadId);
@@ -457,7 +520,6 @@ export default function AutoDialerModal({ onClose, rows = [] }) {
 
       const newQueue = old.filter((q) => q.id !== leadId);
 
-      // Adjust currentIdx so we don't skip / go out of bounds
       setCurrentIdx((curIdx) => {
         if (curIdx > idx) return curIdx - 1;
         if (curIdx >= newQueue.length) return Math.max(0, newQueue.length - 1);
@@ -505,7 +567,7 @@ export default function AutoDialerModal({ onClose, rows = [] }) {
           </div>
         )}
 
-        {/* STEP 1 – TTS Scripts (this shows FIRST) */}
+        {/* STEP 1 – TTS Scripts (shown first) */}
         <div className="mb-4 rounded-xl border border-white/15 bg-white/[0.03] p-3">
           <div className="mb-1 text-xs font-semibold uppercase tracking-wide text-white/60">
             Step 1 – Voice scripts (TTS)
@@ -535,7 +597,7 @@ export default function AutoDialerModal({ onClose, rows = [] }) {
             </div>
           </div>
 
-          {/* NEW: TTS voice selector */}
+          {/* TTS voice selector */}
           <div className="mb-3 max-w-xs">
             <div className="text-[11px] text-white/60">TTS Voice</div>
             <select
@@ -645,18 +707,7 @@ export default function AutoDialerModal({ onClose, rows = [] }) {
           <div className="col-span-2">
             <label className="text-xs text-white/70">Stages (leave empty for ALL)</label>
             <div className="mt-1 flex flex-wrap gap-2">
-              {STAGE_IDS.map((sid) => (
-                <button
-                  key={sid}
-                  onClick={() => toggleStage(sid)}
-                  className={`rounded-full px-3 py-1 text-xs border ${
-                    stageFilters.has(sid) ? "border-white bg-white text-black" : "border-white/20 bg-white/5 text-white/80"
-                  }`}
-                  title={labelForStage(sid)}
-                >
-                  {labelForStage(sid)}
-                </button>
-              ))}
+              {stagePills}
             </div>
           </div>
 
