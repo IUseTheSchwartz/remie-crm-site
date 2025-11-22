@@ -52,6 +52,55 @@ function prettyE164(e164) {
   return `+1 (${d.slice(0,3)}) ${d.slice(3,6)}-${d.slice(6)}`;
 }
 
+/* ---------- WAV encoder (16-bit PCM, mono) ---------- */
+function encodeWav(buffers, sampleRate) {
+  if (!buffers.length) return null;
+  const totalLen = buffers.reduce((acc, b) => acc + b.length, 0);
+  const bytesPerSample = 2;
+  const numChannels = 1;
+  const blockAlign = numChannels * bytesPerSample;
+  const byteRate = sampleRate * blockAlign;
+  const dataSize = totalLen * bytesPerSample;
+  const buffer = new ArrayBuffer(44 + dataSize);
+  const view = new DataView(buffer);
+
+  function writeString(offset, str) {
+    for (let i = 0; i < str.length; i++) {
+      view.setUint8(offset + i, str.charCodeAt(i));
+    }
+  }
+
+  // RIFF header
+  writeString(0, "RIFF");
+  view.setUint32(4, 36 + dataSize, true);
+  writeString(8, "WAVE");
+  // fmt chunk
+  writeString(12, "fmt ");
+  view.setUint32(16, 16, true);           // PCM chunk size
+  view.setUint16(20, 1, true);            // PCM format
+  view.setUint16(22, numChannels, true);
+  view.setUint32(24, sampleRate, true);
+  view.setUint32(28, byteRate, true);
+  view.setUint16(32, blockAlign, true);
+  view.setUint16(34, 16, true);           // bits per sample
+  // data chunk
+  writeString(36, "data");
+  view.setUint32(40, dataSize, true);
+
+  // samples
+  let offset = 44;
+  for (const buf of buffers) {
+    for (let i = 0; i < buf.length; i++) {
+      let s = Math.max(-1, Math.min(1, buf[i]));
+      const val = s < 0 ? s * 0x8000 : s * 0x7FFF;
+      view.setInt16(offset, val, true);
+      offset += 2;
+    }
+  }
+
+  return new Blob([buffer], { type: "audio/wav" });
+}
+
 export default function AutoDialerModal({ onClose, rows = [] }) {
   // Filters & dialing config
   const [stateFilter, setStateFilter] = useState("");
@@ -92,7 +141,6 @@ export default function AutoDialerModal({ onClose, rows = [] }) {
   const [saveAgentMsg, setSaveAgentMsg] = useState("");
 
   // ==== NEW: Audio messages (press 1 / voicemail) ====
-  const [audioLoadMsg, setAudioLoadMsg] = useState("");
   const [press1Url, setPress1Url] = useState("");
   const [voicemailUrl, setVoicemailUrl] = useState("");
   const [press1Uploading, setPress1Uploading] = useState(false);
@@ -100,15 +148,14 @@ export default function AutoDialerModal({ onClose, rows = [] }) {
   const [press1Error, setPress1Error] = useState("");
   const [voicemailError, setVoicemailError] = useState("");
 
-  const press1RecorderRef = useRef(null);
-  const press1StreamRef = useRef(null);
-  const voicemailRecorderRef = useRef(null);
-  const voicemailStreamRef = useRef(null);
-
   const [press1Recording, setPress1Recording] = useState(false);
   const [voicemailRecording, setVoicemailRecording] = useState(false);
 
   const [currentUserId, setCurrentUserId] = useState(null);
+
+  // Web Audio recording refs
+  const press1RecRef = useRef(null);     // { audioCtx, stream, source, processor, buffers:[], sampleRate }
+  const voicemailRecRef = useRef(null);  // same shape
 
   // Load agent id once
   useEffect(() => {
@@ -129,7 +176,7 @@ export default function AutoDialerModal({ onClose, rows = [] }) {
         const uid = authData?.user?.id;
         if (!uid) return;
 
-        // agent phone
+        // agent phone + audio URLs
         const { data: profile } = await supabase
           .from("agent_profiles")
           .select("phone, press1_audio_url, voicemail_audio_url")
@@ -196,14 +243,13 @@ export default function AutoDialerModal({ onClose, rows = [] }) {
   async function uploadRecording(which, blob) {
     const userId = currentUserId;
     if (!userId) {
-      if (which === "press1") setPress1Error("Not signed in");
-      else setVoicemailError("Not signed in");
+      const msg = "Not signed in";
+      if (which === "press1") setPress1Error(msg); else setVoicemailError(msg);
       return;
     }
 
     const bucket = "dialer_audio";
-    const ext = "webm";
-    const path = `${userId}/${which}-${Date.now()}.${ext}`;
+    const path = `${userId}/${which}-${Date.now()}.wav`;
 
     try {
       if (which === "press1") {
@@ -219,7 +265,7 @@ export default function AutoDialerModal({ onClose, rows = [] }) {
         .upload(path, blob, {
           cacheControl: "3600",
           upsert: true,
-          contentType: "audio/webm",
+          contentType: "audio/wav",
         });
       if (uploadErr) throw uploadErr;
 
@@ -228,8 +274,7 @@ export default function AutoDialerModal({ onClose, rows = [] }) {
       if (!publicUrl) throw new Error("Failed to get public URL");
 
       // Save on profile
-      const column =
-        which === "press1" ? "press1_audio_url" : "voicemail_audio_url";
+      const column = which === "press1" ? "press1_audio_url" : "voicemail_audio_url";
       await supabase
         .from("agent_profiles")
         .update({ [column]: publicUrl })
@@ -250,40 +295,36 @@ export default function AutoDialerModal({ onClose, rows = [] }) {
   async function startRecording(which) {
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      const recorder = new MediaRecorder(stream);
-      const chunks = [];
+      const AudioCtx = window.AudioContext || window.webkitAudioContext;
+      const audioCtx = new AudioCtx();
+      const source = audioCtx.createMediaStreamSource(stream);
+      const processor = audioCtx.createScriptProcessor(4096, 1, 1);
+      const buffers = [];
 
-      recorder.ondataavailable = (e) => {
-        if (e.data && e.data.size > 0) {
-          chunks.push(e.data);
-        }
+      processor.onaudioprocess = (event) => {
+        const input = event.inputBuffer.getChannelData(0);
+        // copy data to avoid referencing the same buffer
+        buffers.push(new Float32Array(input));
       };
 
-      recorder.onstop = async () => {
-        const blob = new Blob(chunks, { type: "audio/webm" });
-        await uploadRecording(which, blob);
-        stream.getTracks().forEach(t => t.stop());
-        if (which === "press1") {
-          press1RecorderRef.current = null;
-          press1StreamRef.current = null;
-          setPress1Recording(false);
-        } else {
-          voicemailRecorderRef.current = null;
-          voicemailStreamRef.current = null;
-          setVoicemailRecording(false);
-        }
-      };
+      source.connect(processor);
+      processor.connect(audioCtx.destination);
 
-      recorder.start();
+      const recObj = {
+        audioCtx,
+        stream,
+        source,
+        processor,
+        buffers,
+        sampleRate: audioCtx.sampleRate || 44100,
+      };
 
       if (which === "press1") {
-        press1RecorderRef.current = recorder;
-        press1StreamRef.current = stream;
+        press1RecRef.current = recObj;
         setPress1Recording(true);
         setPress1Error("");
       } else {
-        voicemailRecorderRef.current = recorder;
-        voicemailStreamRef.current = stream;
+        voicemailRecRef.current = recObj;
         setVoicemailRecording(true);
         setVoicemailError("");
       }
@@ -294,19 +335,41 @@ export default function AutoDialerModal({ onClose, rows = [] }) {
     }
   }
 
-  function stopRecording(which) {
+  async function stopRecording(which) {
+    const recRef = which === "press1" ? press1RecRef : voicemailRecRef;
+    const rec = recRef.current;
+    if (!rec) return;
+
     try {
-      if (which === "press1") {
-        if (press1RecorderRef.current) {
-          press1RecorderRef.current.stop();
-        }
-      } else {
-        if (voicemailRecorderRef.current) {
-          voicemailRecorderRef.current.stop();
-        }
+      const { audioCtx, stream, source, processor, buffers, sampleRate } = rec;
+
+      try {
+        processor.disconnect();
+      } catch {}
+      try {
+        source.disconnect();
+      } catch {}
+      try {
+        stream.getTracks().forEach((t) => t.stop());
+      } catch {}
+      try {
+        await audioCtx.close();
+      } catch {}
+
+      recRef.current = null;
+
+      const wavBlob = encodeWav(buffers, sampleRate || 44100);
+      if (!wavBlob) {
+        const msg = "Recording was empty";
+        if (which === "press1") setPress1Error(msg);
+        else setVoicemailError(msg);
+        return;
       }
-    } catch {
-      // ignore
+
+      await uploadRecording(which, wavBlob);
+    } finally {
+      if (which === "press1") setPress1Recording(false);
+      else setVoicemailRecording(false);
     }
   }
 
@@ -483,7 +546,6 @@ export default function AutoDialerModal({ onClose, rows = [] }) {
       setIsRunning(false);
       isRunningRef.current = false;
       clearAllTimers();
-      // optionally mark run ended
       if (runId) {
         try {
           await supabase
@@ -527,7 +589,6 @@ export default function AutoDialerModal({ onClose, rows = [] }) {
         press1AudioUrl: press1Url,
         voicemailAudioUrl: voicemailUrl,
       });
-      // resp: { ok, call_leg_id, call_session_id, contact_id, used_from_number }
       const call_session_id = resp?.call_session_id || null;
       const legA = resp?.call_leg_id || null;
 
@@ -588,12 +649,10 @@ export default function AutoDialerModal({ onClose, rows = [] }) {
   }
 
   async function advanceAfterEnd(leadId, outcome) {
-    // settle once
     const settled = settledRef.current;
     if (settled.has(leadId)) return;
     settled.add(leadId);
 
-    // optional: stamp attempt row outcome immediately
     const attemptId = attemptByContactRef.current.get(leadId);
     if (attemptId) {
       try {
@@ -628,7 +687,6 @@ export default function AutoDialerModal({ onClose, rows = [] }) {
         const nextIdx = idx + 1;
         setCurrentIdx(nextIdx);
 
-        // If that was the last lead, stop cleanly
         if (nextIdx >= updated.length) {
           setIsRunning(false);
           isRunningRef.current = false;
@@ -653,21 +711,6 @@ export default function AutoDialerModal({ onClose, rows = [] }) {
       }
     });
   }
-
-  const stagePills = STAGE_IDS.map((sid) => (
-    <button
-      key={sid}
-      onClick={() => toggleStage(sid)}
-      className={`rounded-full px-3 py-1 text-xs border ${
-        stageFilters.has(sid)
-          ? "border-white bg-white text-black"
-          : "border-white/20 bg-white/5 text-white/80"
-      }`}
-      title={labelForStage(sid)}
-    >
-      {labelForStage(sid)}
-    </button>
-  ));
 
   return (
     <div className="fixed inset-0 z-50 grid bg-black/60 p-4">
@@ -705,8 +748,7 @@ export default function AutoDialerModal({ onClose, rows = [] }) {
                 Live answer message (press 1)
               </div>
               <p className="mt-1 text-[11px] text-white/60">
-                This plays when the lead picks up. Say something like:
-                &nbsp;
+                This plays when the lead picks up. Say something like:&nbsp;
                 <span className="italic text-white/75">
                   “Hey it&apos;s Jacob, I&apos;m your licensed agent. Press 1 to
                   be transferred to me now.”
@@ -742,11 +784,7 @@ export default function AutoDialerModal({ onClose, rows = [] }) {
                 )}
               </div>
               {press1Url && (
-                <audio
-                  className="mt-2 w-full"
-                  controls
-                  src={press1Url}
-                />
+                <audio className="mt-2 w-full" controls src={press1Url} />
               )}
               {press1Recording && (
                 <div className="mt-1 text-[11px] text-rose-300">
@@ -799,11 +837,7 @@ export default function AutoDialerModal({ onClose, rows = [] }) {
                 )}
               </div>
               {voicemailUrl && (
-                <audio
-                  className="mt-2 w-full"
-                  controls
-                  src={voicemailUrl}
-                />
+                <audio className="mt-2 w-full" controls src={voicemailUrl} />
               )}
               {voicemailRecording && (
                 <div className="mt-1 text-[11px] text-rose-300">
