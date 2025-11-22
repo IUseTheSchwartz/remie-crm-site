@@ -63,10 +63,7 @@ export async function startCall({ agentNumber, leadNumber, contactId = null }) {
 /**
  * Start a LEAD-FIRST call (Auto Dialer).
  * - Leg A = LEAD (we dial the lead first)
- * - Webhook will:
- *    - play your "press 1" recording using gather
- *    - if they press 1, dial the AGENT and bridge
- *    - if they don't, play your voicemail recording and never dial the agent
+ * - telnyx-voice-webhook.js (lead_first branch) dials the AGENT on lead answer + press 1, then bridges
  * - If fromNumber is omitted, Telnyx uses the connection’s default caller ID
  * Returns: { ok:true, call_leg_id, call_session_id?, contact_id }
  */
@@ -95,6 +92,7 @@ export async function startLeadFirstCall({
     agent_number: agentNumber,
     lead_number: leadNumber,
     contact_id: contactId,
+    // include only if explicitly chosen; backend will pass it through to Telnyx
     ...(fromNumber ? { from_number: fromNumber } : {}),
     record,
     ring_timeout: ringTimeout,
