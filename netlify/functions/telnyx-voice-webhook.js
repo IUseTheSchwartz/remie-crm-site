@@ -487,11 +487,10 @@ exports.handler = async (event) => {
             await action(legA, "playback_start", { audio_url: ringback_url, loop: true });
           }
           if (legA && agent_number) {
-            // NEW: ask Telnyx if the lead call is actually still active
+            // Ask Telnyx if the lead call is actually still active
             await sleep(300); // tiny delay so status is up to date
             const info = await getCallStatus(legA);
             const st = (info?.status || "").toLowerCase();
-            // If status is already completed/failed/etc, SKIP the agent leg
             const deadStatuses = [
               "completed",
               "failed",
@@ -502,8 +501,11 @@ exports.handler = async (event) => {
               "canceled",
               "cancelled"
             ];
-            if (!st || deadStatuses.includes(st)) {
-              log("lead_first: skipping agent transfer; call status =", st || "(none)");
+
+            // ❗ Only skip when Telnyx explicitly says the call is done.
+            // If we don't know the status (st is empty), fall back to old behavior and transfer.
+            if (st && deadStatuses.includes(st)) {
+              log("lead_first: skipping agent transfer; call status =", st);
             } else {
               await transferCall({
                 callControlId: legA,
