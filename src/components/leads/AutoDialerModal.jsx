@@ -261,12 +261,16 @@ export default function AutoDialerModal({ onClose, rows = [] }) {
     if (uid) {
       const { data: run } = await supabase
         .from("auto_dialer_runs")
-        .insert([{ user_id: uid, settings: {
-          stateFilter,
-          stageFilters: Array.from(stageFilters),
-          maxAttempts,
-          selectedFrom,
-        }, total_leads: list.length }])
+        .insert([{
+          user_id: uid,
+          settings: {
+            stateFilter,
+            stageFilters: Array.from(stageFilters),
+            maxAttempts,
+            selectedFrom,
+          },
+          total_leads: list.length
+        }])
         .select("id")
         .single();
       setRunId(run?.id || null);
@@ -388,7 +392,8 @@ export default function AutoDialerModal({ onClose, rows = [] }) {
       addTimer(setTimeout(() => {
         if (!isRunningRef.current) return;
         const st = liveStatusRef.current[lead.id];
-        if (["dialing","ringing","answered","bridged"].includes(st)) {
+        // CHANGED: only fail if still dialing/ringing (never connected)
+        if (["dialing","ringing"].includes(st)) {
           advanceAfterEnd(lead.id, "failed");
         }
       }, 70000));
