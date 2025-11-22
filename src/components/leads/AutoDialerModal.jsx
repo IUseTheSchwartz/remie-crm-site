@@ -58,6 +58,13 @@ export default function AutoDialerModal({ onClose, rows = [] }) {
   const [stageFilters, setStageFilters] = useState(new Set());
   const [maxAttempts, setMaxAttempts] = useState(1);
 
+  // NEW: TTS config for press-1 + voicemail
+  const [assistantName, setAssistantName] = useState("Remie");
+  const [agentDisplayName, setAgentDisplayName] = useState("");
+  const [introTts, setIntroTts] = useState("");
+  const [voicemailTts, setVoicemailTts] = useState("");
+  const ttsInitializedRef = useRef(false);
+
   // Queue + status
   const [queue, setQueue] = useState([]); // [{id, attempts, status}]
   const [currentIdx, setCurrentIdx] = useState(0);
@@ -80,33 +87,18 @@ export default function AutoDialerModal({ onClose, rows = [] }) {
   const liveStatusRef = useRef({});
   useEffect(() => { liveStatusRef.current = liveStatus; }, [liveStatus]);
 
-  // Run + attempts
+  // NEW: run id + map contact_id -> attempt_id (optional)
   const [runId, setRunId] = useState(null);
   const attemptByContactRef = useRef(new Map()); // contact_id -> attempt_id
 
-  // Numbers + agent voice URLs
+  // Numbers
   const [agentPhone, setAgentPhone] = useState("");
   const [agentNums, setAgentNums] = useState([]);       // [{id, telnyx_number}]
   const [selectedFrom, setSelectedFrom] = useState(""); // default = use connection default
   const [loadMsg, setLoadMsg] = useState("");
   const [saveAgentMsg, setSaveAgentMsg] = useState("");
 
-  // 🔊 Agent audio URLs (stored on profile, used by webhook)
-  const [press1AudioUrl, setPress1AudioUrl] = useState("");
-  const [voicemailAudioUrl, setVoicemailAudioUrl] = useState("");
-
-  // 🔴 Recording state
-  const [recordingTarget, setRecordingTarget] = useState(null); // "press1" | "voicemail" | null
-  const [isRecording, setIsRecording] = useState(false);
-  const [recordError, setRecordError] = useState("");
-  const [press1Uploading, setPress1Uploading] = useState(false);
-  const [voicemailUploading, setVoicemailUploading] = useState(false);
-  const mediaRecorderRef = useRef(null);
-  const recordedChunksRef = useRef([]);
-  const [press1PreviewUrl, setPress1PreviewUrl] = useState("");
-  const [voicemailPreviewUrl, setVoicemailPreviewUrl] = useState("");
-
-  // --------------- Load agent stuff (phone, DID, voice URLs) ---------------
+  // Load agent phone and agent_numbers + build default TTS copy
   useEffect(() => {
     let mounted = true;
     (async () => {
@@ -116,10 +108,10 @@ export default function AutoDialerModal({ onClose, rows = [] }) {
         const uid = authData?.user?.id;
         if (!uid) return;
 
-        // agent phone + voice URLs
+        // agent phone + full name
         const { data: profile } = await supabase
           .from("agent_profiles")
-          .select("phone, press1_audio_url, voicemail_audio_url")
+          .select("phone, full_name")
           .eq("user_id", uid)
           .maybeSingle();
 
@@ -130,10 +122,23 @@ export default function AutoDialerModal({ onClose, rows = [] }) {
           num = eNum;
         }
 
+        const fullName = profile?.full_name || "";
+        const firstName = fullName.trim().split(/\s+/)[0] || "";
+
         if (mounted) {
           setAgentPhone(num || "");
-          setPress1AudioUrl(profile?.press1_audio_url || "");
-          setVoicemailAudioUrl(profile?.voicemail_audio_url || "");
+          setAgentDisplayName(firstName || "your agent");
+
+          // Initialize default TTS only once
+          if (!ttsInitializedRef.current) {
+            const agent = firstName || "your agent";
+            const asst = assistantName || "your AI assistant";
+            const baseIntro = `This is ${asst}, ${agent}'s AI assistant calling in regards to the life insurance form you sent in. Press 1 to connect to ${agent}.`;
+            const baseVm = `This is ${asst}, ${agent}'s AI assistant. Sorry we missed you. We’ll send you a quick text so you can pick a better time.`;
+            setIntroTts(baseIntro);
+            setVoicemailTts(baseVm);
+            ttsInitializedRef.current = true;
+          }
         }
 
         // agent_numbers list
@@ -156,7 +161,7 @@ export default function AutoDialerModal({ onClose, rows = [] }) {
       }
     })();
     return () => { mounted = false; };
-  }, []);
+  }, [assistantName]);
 
   async function saveAgentPhoneNormalized() {
     setSaveAgentMsg("");
@@ -192,8 +197,7 @@ export default function AutoDialerModal({ onClose, rows = [] }) {
 
       chan = supabase
         .channel(`auto_dialer_attempts_live_${runId}`)
-        .on(
-          "postgres_changes",
+        .on("postgres_changes",
           { event: "*", schema: "public", table: "auto_dialer_attempts", filter: `run_id=eq.${runId}` },
           (payload) => {
             const rec = payload.new || payload.old || {};
@@ -233,136 +237,6 @@ export default function AutoDialerModal({ onClose, rows = [] }) {
     });
   }
 
-  // ----------------- Voice recording helper -----------------
-  async function uploadVoiceBlob(target, blob) {
-    setRecordError("");
-    const { data: authData, error: authErr } = await supabase.auth.getUser();
-    if (authErr || !authData?.user?.id) {
-      setRecordError("Not signed in.");
-      return;
-    }
-    const uid = authData.user.id;
-
-    const ext = "webm"; // what browser gives us; Telnyx expects mp3/wav, but this at least stores your voice
-    const path = `${uid}/${target}-${Date.now()}.${ext}`;
-
-    const bucket = "agent-voice"; // <-- make sure this bucket exists & is public
-
-    const uploadingFlag =
-      target === "press1" ? setPress1Uploading : setVoicemailUploading;
-    uploadingFlag(true);
-
-    try {
-      const { error: upErr } = await supabase
-        .storage
-        .from(bucket)
-        .upload(path, blob, {
-          cacheControl: "3600",
-          upsert: true,
-          contentType: blob.type || "audio/webm",
-        });
-      if (upErr) {
-        console.error("upload error", upErr);
-        setRecordError("Upload failed.");
-        uploadingFlag(false);
-        return;
-      }
-
-      const { data: pub } = supabase.storage.from(bucket).getPublicUrl(path);
-      const publicUrl = pub?.publicUrl || pub?.publicURL || null;
-      if (!publicUrl) {
-        setRecordError("Failed to get public URL.");
-        uploadingFlag(false);
-        return;
-      }
-
-      const update =
-        target === "press1"
-          ? { press1_audio_url: publicUrl }
-          : { voicemail_audio_url: publicUrl };
-
-      const { error: updErr } = await supabase
-        .from("agent_profiles")
-        .update(update)
-        .eq("user_id", uid);
-      if (updErr) {
-        console.error("profile update error", updErr);
-        setRecordError("Failed to save audio URL.");
-        uploadingFlag(false);
-        return;
-      }
-
-      if (target === "press1") {
-        setPress1AudioUrl(publicUrl);
-        setPress1PreviewUrl(publicUrl);
-      } else {
-        setVoicemailAudioUrl(publicUrl);
-        setVoicemailPreviewUrl(publicUrl);
-      }
-    } catch (e) {
-      console.error("uploadVoiceBlob error", e);
-      setRecordError("Unexpected error during upload.");
-    } finally {
-      uploadingFlag(false);
-    }
-  }
-
-  async function startRecording(target) {
-    setRecordError("");
-    if (!navigator.mediaDevices?.getUserMedia) {
-      setRecordError("Microphone not available in this browser.");
-      return;
-    }
-    if (isRecording) {
-      setRecordError("Already recording.");
-      return;
-    }
-
-    try {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      recordedChunksRef.current = [];
-      const mimeType = MediaRecorder.isTypeSupported("audio/webm;codecs=opus")
-        ? "audio/webm;codecs=opus"
-        : undefined;
-      const mr = new MediaRecorder(stream, mimeType ? { mimeType } : undefined);
-
-      mr.ondataavailable = (e) => {
-        if (e.data && e.data.size > 0) {
-          recordedChunksRef.current.push(e.data);
-        }
-      };
-      mr.onstop = async () => {
-        stream.getTracks().forEach((t) => t.stop());
-        setIsRecording(false);
-        setRecordingTarget(null);
-
-        const chunks = recordedChunksRef.current;
-        if (!chunks.length) return;
-        const blob = new Blob(chunks, { type: chunks[0].type || "audio/webm" });
-        await uploadVoiceBlob(target, blob);
-      };
-
-      mediaRecorderRef.current = mr;
-      setRecordingTarget(target);
-      setIsRecording(true);
-      mr.start();
-    } catch (e) {
-      console.error("startRecording error", e);
-      setRecordError("Failed to start recording.");
-    }
-  }
-
-  function stopRecording() {
-    try {
-      mediaRecorderRef.current?.stop();
-    } catch (e) {
-      console.error("stopRecording error", e);
-      setIsRecording(false);
-      setRecordingTarget(null);
-    }
-  }
-
-  // ----------------- Queue builder / dialer logic -----------------
   async function buildQueue() {
     const wantStates = new Set(parseStateFilter(stateFilter)); // empty = all
     const wantStages = stageFilters; // empty = all
@@ -381,7 +255,7 @@ export default function AutoDialerModal({ onClose, rows = [] }) {
     for (const q of list) patch[q.id] = "queued";
     setLiveStatus((s) => ({ ...s, ...patch }));
 
-    // create a run
+    // NEW: create a run
     const { data: authData } = await supabase.auth.getUser();
     const uid = authData?.user?.id;
     if (uid) {
@@ -404,10 +278,6 @@ export default function AutoDialerModal({ onClose, rows = [] }) {
     const eAgent = toE164(agentPhone);
     if (!eAgent) {
       alert("Agent phone is missing or invalid. Please enter a valid +1XXXXXXXXXX and save.");
-      return null;
-    }
-    if (!press1AudioUrl || !voicemailAudioUrl) {
-      alert("Record your intro and voicemail messages first.");
       return null;
     }
     const eFrom = selectedFrom ? toE164(selectedFrom) : null; // blank = server auto-pick / connection default
@@ -442,14 +312,8 @@ export default function AutoDialerModal({ onClose, rows = [] }) {
       setIsRunning(false);
       isRunningRef.current = false;
       clearAllTimers();
-      if (runId) {
-        try {
-          await supabase
-            .from("auto_dialer_runs")
-            .update({ ended_at: new Date().toISOString() })
-            .eq("id", runId);
-        } catch {}
-      }
+      // optionally mark run ended
+      if (runId) { try { await supabase.from("auto_dialer_runs").update({ ended_at: new Date().toISOString() }).eq("id", runId); } catch {} }
       return;
     }
 
@@ -475,15 +339,16 @@ export default function AutoDialerModal({ onClose, rows = [] }) {
         record: true,
         ringTimeout: 25,
         ringbackUrl: "",
-        // pass through agent voice URLs so webhook can play your voice
-        press1AudioUrl,
-        voicemailAudioUrl,
+        introTts,
+        voicemailTts,
+        assistantName,
+        agentDisplayName,
       });
-
+      // resp: { ok, call_leg_id, call_session_id, contact_id, used_from_number }
       const call_session_id = resp?.call_session_id || null;
       const legA = resp?.call_leg_id || null;
 
-      // attempt row tied to this run
+      // NEW: insert attempt row tied to this run
       if (runId) {
         const { data: authData } = await supabase.auth.getUser();
         const uid = authData?.user?.id;
@@ -534,15 +399,16 @@ export default function AutoDialerModal({ onClose, rows = [] }) {
   }
 
   async function advanceAfterEnd(leadId, outcome) {
+    // settle once
     const settled = settledRef.current;
     if (settled.has(leadId)) return;
     settled.add(leadId);
 
+    // optional: stamp attempt row outcome immediately
     const attemptId = attemptByContactRef.current.get(leadId);
     if (attemptId) {
       try {
-        await supabase
-          .from("auto_dialer_attempts")
+        await supabase.from("auto_dialer_attempts")
           .update({ status: outcome, ended_at: new Date().toISOString() })
           .eq("id", attemptId);
       } catch {}
@@ -567,18 +433,12 @@ export default function AutoDialerModal({ onClose, rows = [] }) {
         const nextIdx = idx + 1;
         setCurrentIdx(nextIdx);
 
+        // If that was the last lead, stop cleanly
         if (nextIdx >= updated.length) {
           setIsRunning(false);
           isRunningRef.current = false;
           clearAllTimers();
-          if (runId) {
-            try {
-              supabase
-                .from("auto_dialer_runs")
-                .update({ ended_at: new Date().toISOString() })
-                .eq("id", runId);
-            } catch {}
-          }
+          if (runId) { try { supabase.from("auto_dialer_runs").update({ ended_at: new Date().toISOString() }).eq("id", runId); } catch {} }
         } else {
           addTimer(setTimeout(() => { if (!isRunningRef.current) return; runNext(); }, 250));
         }
@@ -600,8 +460,7 @@ export default function AutoDialerModal({ onClose, rows = [] }) {
     </button>
   ));
 
-  const canStartDialing =
-    !!toE164(agentPhone) && !!press1AudioUrl && !!voicemailAudioUrl;
+  const canStartDialing = !!toE164(agentPhone);
 
   return (
     <div className="fixed inset-0 z-50 grid bg-black/60 p-4">
@@ -617,113 +476,66 @@ export default function AutoDialerModal({ onClose, rows = [] }) {
           </div>
         )}
 
-        {/* 🔊 FIRST: Voice setup section */}
+        {/* STEP 1 – TTS Scripts (this shows FIRST) */}
         <div className="mb-4 rounded-xl border border-white/15 bg-white/[0.03] p-3">
-          <div className="mb-2 text-xs font-semibold uppercase tracking-wide text-white/60">
-            Step 1 – Record your messages
+          <div className="mb-1 text-xs font-semibold uppercase tracking-wide text-white/60">
+            Step 1 – Voice scripts (TTS)
           </div>
           <p className="mb-3 text-[11px] text-white/60">
-            We&apos;ll play your intro when the lead answers, and your voicemail if they don&apos;t pick up.
+            We&apos;ll read these out with text-to-speech. This runs before anyone talks to you, and only dials you if they press 1.
           </p>
 
-          {recordError && (
-            <div className="mb-2 rounded-md border border-rose-500/40 bg-rose-500/10 px-2 py-1 text-[11px] text-rose-100">
-              {recordError}
+          <div className="mb-3 grid gap-3 md:grid-cols-2">
+            <div>
+              <div className="text-[11px] text-white/60">Assistant name</div>
+              <input
+                value={assistantName}
+                onChange={(e) => setAssistantName(e.target.value)}
+                className="mt-1 w-full rounded-lg border border-white/10 bg-black/40 px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-indigo-500/40"
+                placeholder="Remie"
+              />
             </div>
-          )}
-
-          <div className="grid gap-3 md:grid-cols-2">
-            {/* Press-1 intro */}
-            <div className="rounded-lg border border-white/10 bg-black/40 p-3">
-              <div className="text-[11px] font-semibold text-white/70">
-                Intro / Press 1 Message
-              </div>
-              <div className="mt-1 text-[11px] text-white/50">
-                Example: &quot;Hey, this is Jacob, I&apos;m your licensed agent. Press 1 to be transferred.&quot;
-              </div>
-              <div className="mt-2 flex items-center gap-2">
-                {!isRecording || recordingTarget !== "press1" ? (
-                  <button
-                    type="button"
-                    onClick={() => startRecording("press1")}
-                    className="rounded-lg border border-emerald-500/60 bg-emerald-500/10 px-3 py-1.5 text-xs hover:bg-emerald-500/20 disabled:opacity-50"
-                    disabled={isRecording}
-                  >
-                    {press1Uploading ? "Saving…" : "Record intro"}
-                  </button>
-                ) : (
-                  <button
-                    type="button"
-                    onClick={stopRecording}
-                    className="rounded-lg border border-rose-500/60 bg-rose-500/10 px-3 py-1.5 text-xs hover:bg-rose-500/20"
-                  >
-                    Stop &amp; Save
-                  </button>
-                )}
-                {press1AudioUrl && !press1Uploading && (
-                  <span className="text-[11px] text-emerald-300">
-                    Saved ✓
-                  </span>
-                )}
-              </div>
-              {press1AudioUrl && (
-                <div className="mt-2 flex items-center gap-2">
-                  <audio
-                    controls
-                    className="w-full"
-                    src={press1PreviewUrl || press1AudioUrl}
-                  />
-                </div>
-              )}
-            </div>
-
-            {/* Voicemail */}
-            <div className="rounded-lg border border-white/10 bg-black/40 p-3">
-              <div className="text-[11px] font-semibold text-white/70">
-                Voicemail Message
-              </div>
-              <div className="mt-1 text-[11px] text-white/50">
-                Example: &quot;Hey, this is Jacob, sorry I missed you. I&apos;ll shoot you a text so we can reschedule.&quot;
-              </div>
-              <div className="mt-2 flex items-center gap-2">
-                {!isRecording || recordingTarget !== "voicemail" ? (
-                  <button
-                    type="button"
-                    onClick={() => startRecording("voicemail")}
-                    className="rounded-lg border border-emerald-500/60 bg-emerald-500/10 px-3 py-1.5 text-xs hover:bg-emerald-500/20 disabled:opacity-50"
-                    disabled={isRecording}
-                  >
-                    {voicemailUploading ? "Saving…" : "Record voicemail"}
-                  </button>
-                ) : (
-                  <button
-                    type="button"
-                    onClick={stopRecording}
-                    className="rounded-lg border border-rose-500/60 bg-rose-500/10 px-3 py-1.5 text-xs hover:bg-rose-500/20"
-                  >
-                    Stop &amp; Save
-                  </button>
-                )}
-                {voicemailAudioUrl && !voicemailUploading && (
-                  <span className="text-[11px] text-emerald-300">
-                    Saved ✓
-                  </span>
-                )}
-              </div>
-              {voicemailAudioUrl && (
-                <div className="mt-2 flex items-center gap-2">
-                  <audio
-                    controls
-                    className="w-full"
-                    src={voicemailPreviewUrl || voicemailAudioUrl}
-                  />
-                </div>
-              )}
+            <div>
+              <div className="text-[11px] text-white/60">Agent name used in script</div>
+              <input
+                value={agentDisplayName}
+                onChange={(e) => setAgentDisplayName(e.target.value)}
+                className="mt-1 w-full rounded-lg border border-white/10 bg-black/40 px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-indigo-500/40"
+                placeholder="Jacksen"
+              />
             </div>
           </div>
 
-          <div className="mt-2 text-[11px] text-white/50">
-            You can re-record these anytime. Auto Dialer will always use your latest saved messages.
+          <div className="grid gap-3 md:grid-cols-2">
+            <div>
+              <div className="text-[11px] text-white/60 mb-1">
+                Intro / Press 1 script
+              </div>
+              <textarea
+                value={introTts}
+                onChange={(e) => setIntroTts(e.target.value)}
+                rows={4}
+                className="w-full rounded-lg border border-white/10 bg-black/40 px-3 py-2 text-xs outline-none focus:ring-2 focus:ring-indigo-500/40"
+              />
+              <div className="mt-1 text-[10px] text-white/40">
+                Base idea: &quot;This is (assistant), (agent)&apos;s AI assistant calling in regards to the life insurance form you sent in. Press 1 to connect to (agent).&quot;
+              </div>
+            </div>
+
+            <div>
+              <div className="text-[11px] text-white/60 mb-1">
+                Voicemail / no-press script
+              </div>
+              <textarea
+                value={voicemailTts}
+                onChange={(e) => setVoicemailTts(e.target.value)}
+                rows={4}
+                className="w-full rounded-lg border border-white/10 bg-black/40 px-3 py-2 text-xs outline-none focus:ring-2 focus:ring-indigo-500/40"
+              />
+              <div className="mt-1 text-[10px] text-white/40">
+                Played when they don&apos;t press 1. Keep it short and friendly.
+              </div>
+            </div>
           </div>
         </div>
 
@@ -788,7 +600,18 @@ export default function AutoDialerModal({ onClose, rows = [] }) {
           <div className="col-span-2">
             <label className="text-xs text-white/70">Stages (leave empty for ALL)</label>
             <div className="mt-1 flex flex-wrap gap-2">
-              {stagePills}
+              {STAGE_IDS.map((sid) => (
+                <button
+                  key={sid}
+                  onClick={() => toggleStage(sid)}
+                  className={`rounded-full px-3 py-1 text-xs border ${
+                    stageFilters.has(sid) ? "border-white bg-white text-black" : "border-white/20 bg-white/5 text-white/80"
+                  }`}
+                  title={labelForStage(sid)}
+                >
+                  {labelForStage(sid)}
+                </button>
+              ))}
             </div>
           </div>
 
@@ -818,13 +641,7 @@ export default function AutoDialerModal({ onClose, rows = [] }) {
               onClick={startAutoDial}
               className="rounded-xl border border-emerald-500/50 bg-emerald-500/10 px-3 py-2 text-sm hover:bg-emerald-500/20 disabled:opacity-40"
               disabled={!canStartDialing}
-              title={
-                !toE164(agentPhone)
-                  ? "Enter a valid agent phone first"
-                  : (!press1AudioUrl || !voicemailAudioUrl)
-                    ? "Record your intro + voicemail first"
-                    : ""
-              }
+              title={!toE164(agentPhone) ? "Enter a valid agent phone first" : ""}
             >
               Start calling
             </button>
