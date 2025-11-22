@@ -58,6 +58,18 @@ export default function AutoDialerModal({ onClose, rows = [] }) {
   const [stageFilters, setStageFilters] = useState(new Set());
   const [maxAttempts, setMaxAttempts] = useState(1);
 
+  // NEW: scripts for audio messages (TTS speaks these)
+  const [press1Script, setPress1Script] = useState(
+    "Hi, this is your licensed insurance agent calling about your request for coverage. " +
+    "If you are available to talk now, press 1 to be connected. " +
+    "If not, you can hang up and we will try you again later."
+  );
+  const [voicemailScript, setVoicemailScript] = useState(
+    "Hey, this is your licensed insurance agent. Sorry I missed you. " +
+    "I was calling about your recent request for coverage. " +
+    "I'll try you again later, but you can also call or text this number if that's easier."
+  );
+
   // Queue + status
   const [queue, setQueue] = useState([]); // [{id, attempts, status}]
   const [currentIdx, setCurrentIdx] = useState(0);
@@ -236,6 +248,9 @@ export default function AutoDialerModal({ onClose, rows = [] }) {
       stageFilters: Array.from(stageFilters),
       maxAttempts,
       selectedFrom,
+      // also store scripts for reference
+      press1Script,
+      voicemailScript,
     };
     const { data: authData } = await supabase.auth.getUser();
     const uid = authData?.user?.id;
@@ -288,8 +303,14 @@ export default function AutoDialerModal({ onClose, rows = [] }) {
       setIsRunning(false);
       isRunningRef.current = false;
       clearAllTimers();
-      // optionally mark run ended
-      if (runId) { try { await supabase.from("auto_dialer_runs").update({ ended_at: new Date().toISOString() }).eq("id", runId); } catch {} }
+      if (runId) {
+        try {
+          await supabase
+            .from("auto_dialer_runs")
+            .update({ ended_at: new Date().toISOString() })
+            .eq("id", runId);
+        } catch {}
+      }
       return;
     }
 
@@ -315,8 +336,10 @@ export default function AutoDialerModal({ onClose, rows = [] }) {
         record: true,
         ringTimeout: 25,
         ringbackUrl: "",
+        // NEW: custom scripts
+        press1Script,
+        voicemailScript,
       });
-      // resp: { ok, call_leg_id, call_session_id, contact_id, used_from_number }
       const call_session_id = resp?.call_session_id || null;
       const legA = resp?.call_leg_id || null;
 
@@ -371,12 +394,10 @@ export default function AutoDialerModal({ onClose, rows = [] }) {
   }
 
   async function advanceAfterEnd(leadId, outcome) {
-    // settle once
     const settled = settledRef.current;
     if (settled.has(leadId)) return;
     settled.add(leadId);
 
-    // optional: stamp attempt row outcome immediately
     const attemptId = attemptByContactRef.current.get(leadId);
     if (attemptId) {
       try {
@@ -405,12 +426,18 @@ export default function AutoDialerModal({ onClose, rows = [] }) {
         const nextIdx = idx + 1;
         setCurrentIdx(nextIdx);
 
-        // If that was the last lead, stop cleanly
         if (nextIdx >= updated.length) {
           setIsRunning(false);
           isRunningRef.current = false;
           clearAllTimers();
-          if (runId) { try { supabase.from("auto_dialer_runs").update({ ended_at: new Date().toISOString() }).eq("id", runId); } catch {} }
+          if (runId) {
+            try {
+              supabase
+                .from("auto_dialer_runs")
+                .update({ ended_at: new Date().toISOString() })
+                .eq("id", runId);
+            } catch {}
+          }
         } else {
           addTimer(setTimeout(() => { if (!isRunningRef.current) return; runNext(); }, 250));
         }
@@ -491,6 +518,29 @@ export default function AutoDialerModal({ onClose, rows = [] }) {
             {saveAgentMsg && (
               <div className="mt-1 text-[11px] text-white/60">{saveAgentMsg}</div>
             )}
+          </div>
+        </div>
+
+        {/* NEW: Call audio scripts (TTS) */}
+        <div className="mb-4 rounded-xl border border-white/10 bg-white/[0.02] p-3">
+          <div className="mb-2 text-xs font-semibold text-white/70">Call Audio Scripts</div>
+          <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
+            <div>
+              <div className="text-[11px] text-white/60">Live Answer Prompt (Press 1)</div>
+              <textarea
+                value={press1Script}
+                onChange={(e)=>setPress1Script(e.target.value)}
+                className="mt-1 h-24 w-full rounded-lg border border-white/10 bg-black/40 p-2 text-xs outline-none focus:ring-2 focus:ring-indigo-500/40"
+              />
+            </div>
+            <div>
+              <div className="text-[11px] text-white/60">Voicemail Message (No 1 Pressed)</div>
+              <textarea
+                value={voicemailScript}
+                onChange={(e)=>setVoicemailScript(e.target.value)}
+                className="mt-1 h-24 w-full rounded-lg border border-white/10 bg-black/40 p-2 text-xs outline-none focus:ring-2 focus:ring-indigo-500/40"
+              />
+            </div>
           </div>
         </div>
 
