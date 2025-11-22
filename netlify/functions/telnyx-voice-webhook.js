@@ -1,16 +1,15 @@
 // File: netlify/functions/telnyx-voice-webhook.js
 // Supports BOTH flows:
 //  - AGENT-FIRST (Leads Page click-to-call): agent answers -> speak -> transfer to lead -> bridge
-//  - LEAD-FIRST  (Auto Dialer): lead answers  -> TTS "press 1" gather -> if 1 then transfer to agent -> bridge
+//  - LEAD-FIRST  (Auto Dialer): lead answers  -> press-1 gather -> if 1 then transfer to agent -> bridge
 //
 // Stage is marked "answered" ONLY on call.bridged (never on first answer).
 // NEW: If AGENT-FIRST transfer fails (lead hangs up / busy / no answer), tell agent and retry with longer timeout to hit voicemail.
 //      Optional RINGBACK_URL will play to the agent while the voicemail retry is ringing.
 //
 // NEW for LEAD-FIRST:
-//  - On call.answered: use gather_using_speak to say "Press 1 to connect to your agent".
+//  - On call.answered: use gather_using_audio with press1_audio_url if present, otherwise TTS gather.
 //  - On call.gather.ended: if digits === "1" => transfer to agent; otherwise hang up (no agent call).
-//  - This guarantees: no press 1 ⇒ agent never rings, even if lead declines / hangs up.
 
 const crypto = require("crypto");
 const fetch = require("node-fetch");
@@ -527,7 +526,6 @@ exports.handler = async (event) => {
   const record_enabled = !!cs.record;
   const ringback_url = cs.ringback_url || null;
 
-  // (for future: recorded messages; not required for TTS test)
   const press1_audio_url = cs.press1_audio_url || null;
   const voicemail_audio_url = cs.voicemail_audio_url || null;
 
@@ -578,24 +576,34 @@ exports.handler = async (event) => {
           }
         }
 
-        // === LEAD-FIRST: lead answered -> TTS gather "press 1" ===
-        // We do NOT transfer here anymore; we wait for call.gather.ended and only transfer if 1 was pressed.
+        // === LEAD-FIRST: lead answered -> press-1 gather (recorded audio if available, else TTS) ===
         if (flow === "lead_first" && kind === "crm_outbound_lead_leg") {
           if (legA) {
-            log("lead_first: starting gather_using_speak for press 1");
-            await action(legA, "gather_using_speak", {
-              payload:
-                "Hi, this is your licensed agent. Press 1 now to connect to me.",
-              voice: "female",
-              language: "en-US",
-              valid_digits: "1",
-              max_digits: 1,
-              inter_digit_timeout_secs: 5,
-            });
+            if (press1_audio_url) {
+              log("lead_first: starting gather_using_audio for press 1");
+              await action(legA, "gather_using_audio", {
+                audio_url: press1_audio_url,
+                valid_digits: "1",
+                max_digits: 1,
+                inter_digit_timeout_secs: 5,
+              });
+            } else {
+              log(
+                "lead_first: press1_audio_url missing, using gather_using_speak fallback"
+              );
+              await action(legA, "gather_using_speak", {
+                payload:
+                  "Hi, this is your licensed agent. Press 1 now to connect to me.",
+                voice: "female",
+                language: "en-US",
+                valid_digits: "1",
+                max_digits: 1,
+                inter_digit_timeout_secs: 5,
+              });
+            }
           }
         }
 
-        // We still mark answered for logs / UI; call will later end as completed/failed based on hangup cause
         await markAnswered({ legA, call_session_id, answered_at: occurred_at });
         break;
       }
@@ -624,8 +632,8 @@ exports.handler = async (event) => {
             });
           } else {
             log("lead_first: no valid digit, ending call without agent");
-            // Optional: simple voicemail drop (if you later wire voicemail_audio_url)
             if (voicemail_audio_url && legA) {
+              // simple voicemail drop; no gather here, just play once and hang up
               await action(legA, "playback_start", {
                 audio_url: voicemail_audio_url,
                 loop: false,
