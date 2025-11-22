@@ -63,7 +63,7 @@ export async function startCall({ agentNumber, leadNumber, contactId = null }) {
 /**
  * Start a LEAD-FIRST call (Auto Dialer).
  * - Leg A = LEAD (we dial the lead first)
- * - telnyx-voice-webhook.js (lead_first branch) dials the AGENT on lead answer + press 1, then bridges
+ * - webhook (lead_first branch) runs a TTS "press 1" gather, and only then dials the AGENT + bridges
  * - If fromNumber is omitted, Telnyx uses the connection’s default caller ID
  * Returns: { ok:true, call_leg_id, call_session_id?, contact_id }
  */
@@ -76,8 +76,11 @@ export async function startLeadFirstCall({
   ringTimeout = 25,
   ringbackUrl = "",
   sessionId = null,
-  press1AudioUrl = null,
-  voicemailAudioUrl = null,
+  // NEW: TTS + names for press-1 and voicemail
+  introTts = null,
+  voicemailTts = null,
+  assistantName = null,
+  agentDisplayName = null,
 }) {
   const [{ data: auth }, { data: sess }] = await Promise.all([
     supabase.auth.getUser(),
@@ -92,14 +95,15 @@ export async function startLeadFirstCall({
     agent_number: agentNumber,
     lead_number: leadNumber,
     contact_id: contactId,
-    // include only if explicitly chosen; backend will pass it through to Telnyx
     ...(fromNumber ? { from_number: fromNumber } : {}),
     record,
     ring_timeout: ringTimeout,
     ringback_url: ringbackUrl,
     session_id: sessionId,
-    ...(press1AudioUrl ? { press1_audio_url: press1AudioUrl } : {}),
-    ...(voicemailAudioUrl ? { voicemail_audio_url: voicemailAudioUrl } : {}),
+    ...(introTts ? { press1_tts: introTts } : {}),
+    ...(voicemailTts ? { voicemail_tts: voicemailTts } : {}),
+    ...(assistantName ? { assistant_name: assistantName } : {}),
+    ...(agentDisplayName ? { agent_name: agentDisplayName } : {}),
   };
 
   let res, json;
