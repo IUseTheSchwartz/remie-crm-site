@@ -76,6 +76,7 @@ async function getUserIdFromSupabaseJWT(authz) {
   try {
     if (!authz || !supa) return null;
     const token = String(authz).replace(/^Bearer\s+/i, "");
+    // ✅ Correct way: use service client to validate the user JWT
     const { data, error } = await supa.auth.getUser(token);
     if (error) return null;
     return data?.user?.id || null;
@@ -111,12 +112,12 @@ exports.handler = async (event) => {
   const ringback_url = body.ringback_url || "";
   const session_id   = body.session_id || null;
 
-  // NEW: TTS fields from payload
-  const intro_tts          = body.intro_tts || "";
-  const voicemail_tts      = body.voicemail_tts || "";
-  const assistant_name     = body.assistant_name || "";
-  const agent_display_name = body.agent_display_name || "";
-  const tts_voice          = body.tts_voice || "female";
+  // NEW: TTS + voice (accept both camelCase and snake_case just in case)
+  const intro_tts     = body.intro_tts     || body.introTts     || "";
+  const voicemail_tts = body.voicemail_tts || body.voicemailTts || "";
+  const assistant_name = body.assistant_name || body.assistantName || "";
+  const agent_display_name = body.agent_display_name || body.agentDisplayName || "";
+  const tts_voice = body.tts_voice || body.ttsVoice || "female";
 
   if (!agent_number || !lead_number) {
     return json({ ok: false, error: "agent_number and lead_number are required in E.164" }, 400);
@@ -145,12 +146,12 @@ exports.handler = async (event) => {
     contact_id,
     lead_number,
     agent_number,
-    from_number,
+    from_number,   // for visibility in webhook logs
     record,
     ringback_url,
     session_id,
 
-    // pass TTS config through to webhook
+    // NEW: pass scripts + voice to webhook
     intro_tts,
     voicemail_tts,
     assistant_name,
@@ -187,15 +188,16 @@ exports.handler = async (event) => {
   }
 
   const callObj = data?.data || data || {};
+  // IMPORTANT: Telnyx returns `call_control_id` (not `id`)
   const call_leg_id = callObj.call_control_id || callObj.id || null;
   const call_session_id = callObj.call_session_id || null;
 
+  // light console trace
   try {
     console.log("[lead-first-start]", {
       call_leg_id,
       call_session_id,
       used_from_number: from_number || "(connection default)",
-      tts_voice,
     });
   } catch {}
 
