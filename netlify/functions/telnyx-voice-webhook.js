@@ -1,12 +1,17 @@
 // File: netlify/functions/telnyx-voice-webhook.js
 // Supports BOTH flows:
 //  - AGENT-FIRST (Leads Page click-to-call): agent answers -> speak -> transfer to lead -> bridge
-//  - LEAD-FIRST  (Auto Dialer): lead answers  -> TTS "press 1"  -> on 1 dial agent -> bridge
+//  - LEAD-FIRST  (Auto Dialer + Press-1): lead answers -> TTS gather (press 1) -> transfer to agent -> bridge
 //
-// Stage is marked "answered" ONLY on call.bridged (never on first answer) for the leads pipeline.
-// NEW (agent-first): If AGENT-FIRST transfer fails (lead hangs up / busy / no answer), tell agent and retry with longer timeout to hit voicemail.
-// NEW (lead-first): For LEAD-FIRST, we use gather_using_speak to prompt "press 1" and ONLY transfer to agent if digit === "1".
-//                   Declines / no-answer / wrong digit = no agent call + optional voicemail TTS.
+// Stage in the lead pipeline is marked "answered" ONLY on call.bridged (via markLeadAnsweredStage).
+// Call log status still uses answered/bridged/completed in call_logs.
+//
+// NEW for lead-first:
+//  - On call.answered (lead leg), we run gather_using_speak with intro TTS from client_state.
+//  - On call.gather.ended, if digits === "1": speak "Connecting you now" and transfer to AGENT.
+//    Otherwise: play voicemail TTS and hang up the lead leg (no agent dial).
+//
+// Agent-first voicemail retry behavior remains unchanged.
 
 const crypto = require("crypto");
 const fetch = require("node-fetch");
@@ -18,7 +23,7 @@ const SUPABASE_URL = process.env.SUPABASE_URL || "";
 const SUPABASE_SERVICE_ROLE =
   process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_SERVICE_ROLE || "";
 
-// Optional ringback looped to the AGENT during the voicemail retry or while connecting
+// Optional ringback looped to the AGENT during the voicemail retry (AGENT-FIRST only)
 const RINGBACK_URL = process.env.RINGBACK_URL || "";
 
 const supa = (SUPABASE_URL && SUPABASE_SERVICE_ROLE)
@@ -179,9 +184,9 @@ async function transferCall({ callControlId, to, from, timeout_secs }) {
 async function startRecording(callControlId) {
   return action(callControlId, "record_start", { channels: "dual", audio: { direction: "both" }, format: "mp3" });
 }
-async function playbackStart(callControlId, audio_url, loop = true) {
-  if (!audio_url) return { ok: true };
-  return action(callControlId, "playback_start", { audio_url, loop });
+async function playbackStart(callControlId) {
+  // no-op wrapper: we pass audio_url via action; leaving here for symmetry
+  return { ok: true };
 }
 async function playbackStop(callControlId) {
   return action(callControlId, "playback_stop", {});
@@ -382,9 +387,7 @@ exports.handler = async (event) => {
   catch { log("json parse error"); return { statusCode: 200, body: "ok" }; }
 
   const data = payload?.data || {};
-  const eventType =
-    data?.event_type ||
-    data?.record_type;
+  const eventType = data?.event_type || data?.record_type;
   const p = data?.payload || data;
   const occurred_at = p?.occurred_at || payload?.occurred_at || new Date().toISOString();
 
@@ -413,11 +416,26 @@ exports.handler = async (event) => {
   const record_enabled = !!cs.record;
   const ringback_url = cs.ringback_url || null;
 
-  // NEW: TTS config from client_state (for lead-first press-1 flow)
-  const assistant_name = cs.assistant_name || cs.ai_assistant_name || null;
-  const agent_name = cs.agent_name || null;
-  const press1_tts = cs.press1_tts || null;
-  const voicemail_tts = cs.voicemail_tts || null;
+  // TTS / press-1 config for lead-first auto dialer
+  const intro_tts = (cs.intro_tts || "").trim();
+  const voicemail_tts = (cs.voicemail_tts || "").trim();
+  const assistant_name = (cs.assistant_name || "").trim();
+  const agent_display_name = (cs.agent_display_name || "").trim();
+  const tts_voice = (cs.tts_voice || "female") === "male" ? "male" : "female";
+
+  function introScript() {
+    if (intro_tts) return intro_tts;
+    const asst = assistant_name || "your agent's AI assistant";
+    const agent = agent_display_name || "your agent";
+    return `This is ${asst}, ${agent}'s AI assistant calling in regards to the life insurance form you sent in. Press 1 to connect to ${agent}.`;
+  }
+
+  function voicemailScript() {
+    if (voicemail_tts) return voicemail_tts;
+    const asst = assistant_name || "your agent's AI assistant";
+    const agent = agent_display_name || "your agent";
+    return `This is ${asst}, ${agent}'s AI assistant. Sorry we missed you. We’ll send you a quick text so you can pick a better time.`;
+  }
 
   log("event", eventType, {
     kind, flow, hasLegA: !!legA,
@@ -428,7 +446,7 @@ exports.handler = async (event) => {
   async function handleAgentFirstTransferFailure() {
     if (!legA || !lead_number) return;
     await speak(legA, { payload: "The prospect disconnected. Connecting you to their voicemail.", voice: "female", language: "en-US" });
-    if (RINGBACK_URL) await playbackStart(legA, RINGBACK_URL, true);
+    if (RINGBACK_URL) await action(legA, "playback_start", { audio_url: RINGBACK_URL, loop: true });
     await transferCall({
       callControlId: legA,
       to: lead_number,
@@ -471,44 +489,41 @@ exports.handler = async (event) => {
           }
         }
 
-        // === LEAD-FIRST: lead answered -> TTS "press 1" (no agent dial yet) ===
+        // === LEAD-FIRST: lead answered -> TTS gather (press 1) ===
         if (flow === "lead_first" && kind === "crm_outbound_lead_leg") {
-          const introText =
-            press1_tts ||
-            (assistant_name && agent_name
-              ? `This is ${assistant_name}, ${agent_name}'s AI assistant calling in regards to the life insurance form you sent in. Press 1 to connect to ${agent_name}.`
-              : agent_name
-                ? `This is your agent's AI assistant for ${agent_name} calling in regards to the life insurance form you sent in. Press 1 to connect to ${agent_name}.`
-                : `This is your agent's AI assistant calling in regards to the life insurance form you sent in. Press 1 to connect to your agent.`);
-
           if (legA) {
             await action(legA, "gather_using_speak", {
-              payload: introText,
-              voice: "female",
+              payload: introScript(),
+              voice: tts_voice,
               language: "en-US",
-              valid_digits: "1",
               maximum_digits: 1,
-              inter_digit_timeout_secs: 6,
+              timeout_secs: 8,
+              interruptible: true,
             });
           }
         }
 
-        // NOTE: we still mark call_logs as "answered" on first answer
+        // Call log "answered" (we still treat this as answered; UI remaps completed-without-bridge to failed)
         await markAnswered({ legA, call_session_id, answered_at: occurred_at });
         break;
       }
 
       case "call.gather.ended": {
-        // Only care about our LEAD-FIRST press-1 flow
-        if (flow === "lead_first" && kind === "crm_outbound_lead_leg") {
-          const digits = p?.digits || p?.dtmf || p?.digit || "";
-          const result = (p?.result || "").toLowerCase();
-          log("gather.ended", { digits, result });
+        const digits =
+          (p?.digits || p?.dtmf || p?.result?.digits || "").toString().trim();
 
+        log("gather.ended", { digits, flow, kind });
+
+        if (flow === "lead_first" && kind === "crm_outbound_lead_leg") {
           if (digits === "1") {
-            // ✅ Lead explicitly accepted – now dial the agent and (on success) bridge
-            if (legA && RINGBACK_URL) {
-              await playbackStart(legA, RINGBACK_URL, true);
+            // ✅ Pressed 1 → tell them we're connecting, then transfer to agent
+            if (legA) {
+              await speak(legA, {
+                payload: "Connecting you now.",
+                voice: tts_voice,
+                language: "en-US",
+              });
+              await sleep(250);
             }
             if (legA && agent_number) {
               await transferCall({
@@ -519,15 +534,14 @@ exports.handler = async (event) => {
               });
             }
           } else {
-            // ❌ No 1 pressed (timeout / wrong digit / hangup) – treat as no connect / voicemail
-            const vmText =
-              voicemail_tts ||
-              (assistant_name && agent_name
-                ? `Sorry we missed you. This is ${assistant_name}, ${agent_name}'s AI assistant. We'll send you a quick text to reschedule.`
-                : `Sorry we missed you. We'll send you a quick text to reschedule your life insurance call.`);
-            if (legA && vmText) {
-              await speak(legA, { payload: vmText, voice: "female", language: "en-US" });
-              await sleep(500);
+            // ❌ No press / wrong digit → play voicemail TTS and hang up lead; never dial agent
+            if (legA) {
+              await speak(legA, {
+                payload: voicemailScript(),
+                voice: tts_voice,
+                language: "en-US",
+              });
+              await sleep(700);
               await hangupCall(legA);
             }
           }
