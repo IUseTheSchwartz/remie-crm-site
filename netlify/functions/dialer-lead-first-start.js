@@ -2,7 +2,9 @@
 // Starts a LEAD-FIRST call for the Auto Dialer.
 //
 // - Calls the LEAD first (Leg A).
-// - On lead answer, telnyx-voice-webhook transfers to the AGENT and bridges.
+// - On lead answer, telnyx-voice-webhook runs a press-1 IVR using your recording.
+// - If the lead presses 1, webhook dials the AGENT and bridges.
+// - If they don't press 1, webhook plays your voicemail recording and NEVER dials the agent.
 // - client_state.kind = "crm_outbound_lead_leg" to activate lead_first logic in the webhook.
 
 const fetch = require("node-fetch");
@@ -10,23 +12,31 @@ const { createClient } = require("@supabase/supabase-js");
 
 /* ----------- ENV ----------- */
 // Prefer CALL_CONTROL_APP_ID (your env), fall back to older names
-const TELNYX_API_KEY =
-  process.env.TELNYX_API_KEY || "";
+const TELNYX_API_KEY = process.env.TELNYX_API_KEY || "";
 const TELNYX_CALL_CONTROL_APP_ID =
-  process.env.TELNYX_CALL_CONTROL_APP_ID || process.env.TELNYX_VOICE_APP_ID || process.env.TELNYX_CONNECTION_ID || "";
-const SUPABASE_URL =
-  process.env.SUPABASE_URL || "";
+  process.env.TELNYX_CALL_CONTROL_APP_ID ||
+  process.env.TELNYX_VOICE_APP_ID ||
+  process.env.TELNYX_CONNECTION_ID ||
+  "";
+const SUPABASE_URL = process.env.SUPABASE_URL || "";
 const SUPABASE_SERVICE_ROLE =
-  process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_SERVICE_ROLE || "";
+  process.env.SUPABASE_SERVICE_ROLE_KEY ||
+  process.env.SUPABASE_SERVICE_ROLE ||
+  "";
 
 /* ---------- Supabase (service) ---------- */
-const supa = (SUPABASE_URL && SUPABASE_SERVICE_ROLE)
-  ? createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE)
-  : null;
+const supa =
+  SUPABASE_URL && SUPABASE_SERVICE_ROLE
+    ? createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE)
+    : null;
 
 /* ---------- Helpers ---------- */
 function json(body, status = 200) {
-  return { statusCode: status, headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) };
+  return {
+    statusCode: status,
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  };
 }
 const onlyDigits = (s) => String(s || "").replace(/\D+/g, "");
 function toE164(us) {
@@ -51,20 +61,24 @@ function npaOf(e164) {
 function pickBestCallerId(leadE164, agentNums = []) {
   if (!agentNums.length || !leadE164) return null;
   const leadNpa = Number(npaOf(leadE164)) || null;
-  const pool = Array.from(new Set(
-    agentNums.map((n) => toE164(n.telnyx_number)).filter(Boolean)
-  ));
+  const pool = Array.from(
+    new Set(agentNums.map((n) => toE164(n.telnyx_number)).filter(Boolean))
+  );
 
   if (leadNpa != null) {
     const exact = pool.find((num) => Number(npaOf(num)) === leadNpa);
     if (exact) return exact;
 
-    let best = null, bestDist = Infinity;
+    let best = null,
+      bestDist = Infinity;
     for (const num of pool) {
       const n = Number(npaOf(num));
       if (!Number.isFinite(n)) continue;
       const dist = Math.abs(n - leadNpa);
-      if (dist < bestDist) { best = num; bestDist = dist; }
+      if (dist < bestDist) {
+        best = num;
+        bestDist = dist;
+      }
     }
     if (best) return best;
   }
@@ -76,7 +90,6 @@ async function getUserIdFromSupabaseJWT(authz) {
   try {
     if (!authz || !supa) return null;
     const token = String(authz).replace(/^Bearer\s+/i, "");
-    // ✅ Correct way: use service client to validate the user JWT
     const { data, error } = await supa.auth.getUser(token);
     if (error) return null;
     return data?.user?.id || null;
@@ -86,10 +99,14 @@ async function getUserIdFromSupabaseJWT(authz) {
 }
 
 exports.handler = async (event) => {
-  if (event.httpMethod !== "POST") return json({ ok: false, error: "Method not allowed" }, 405);
+  if (event.httpMethod !== "POST")
+    return json({ ok: false, error: "Method not allowed" }, 405);
 
   if (!TELNYX_API_KEY || !TELNYX_CALL_CONTROL_APP_ID) {
-    return json({ ok: false, error: "Missing TELNYX_API_KEY or TELNYX_CALL_CONTROL_APP_ID" }, 500);
+    return json(
+      { ok: false, error: "Missing TELNYX_API_KEY or TELNYX_CALL_CONTROL_APP_ID" },
+      500
+    );
   }
   if (!supa) return json({ ok: false, error: "Supabase service role not configured" }, 500);
 
@@ -100,20 +117,30 @@ exports.handler = async (event) => {
 
   // Inputs
   let body = {};
-  try { body = JSON.parse(event.body || "{}"); } catch { return json({ ok: false, error: "Invalid JSON" }, 400); }
+  try {
+    body = JSON.parse(event.body || "{}");
+  } catch {
+    return json({ ok: false, error: "Invalid JSON" }, 400);
+  }
 
   const agent_number = toE164(body.agent_number);
-  const lead_number  = toE164(body.lead_number);
-  let from_number    = toE164(body.from_number || body.caller_id || null); // optional
-  const contact_id   = body.contact_id || null;
+  const lead_number = toE164(body.lead_number);
+  let from_number = toE164(body.from_number || body.caller_id || null); // optional
+  const contact_id = body.contact_id || null;
 
-  const record       = !!body.record;
+  const record = !!body.record;
   const ring_timeout = Number(body.ring_timeout || 25);
   const ringback_url = body.ringback_url || "";
-  const session_id   = body.session_id || null;
+  const session_id = body.session_id || null;
+
+  const press1_audio_url = body.press1_audio_url || "";
+  const voicemail_audio_url = body.voicemail_audio_url || "";
 
   if (!agent_number || !lead_number) {
-    return json({ ok: false, error: "agent_number and lead_number are required in E.164" }, 400);
+    return json(
+      { ok: false, error: "agent_number and lead_number are required in E.164" },
+      400
+    );
   }
 
   // If UI didn’t pass a DID, try to pick best; else fall back to connection default
@@ -139,12 +166,16 @@ exports.handler = async (event) => {
     contact_id,
     lead_number,
     agent_number,
-    from_number,   // for visibility in webhook logs
+    from_number, // for visibility in webhook logs
     record,
     ringback_url,
     session_id,
+    press1_audio_url,
+    voicemail_audio_url,
   };
-  const client_state_b64 = Buffer.from(JSON.stringify(clientState), "utf8").toString("base64");
+  const client_state_b64 = Buffer.from(JSON.stringify(clientState), "utf8").toString(
+    "base64"
+  );
 
   // Build Telnyx payload
   const payload = {
@@ -160,25 +191,30 @@ exports.handler = async (event) => {
   try {
     resp = await fetch("https://api.telnyx.com/v2/calls", {
       method: "POST",
-      headers: { Authorization: `Bearer ${TELNYX_API_KEY}`, "Content-Type": "application/json" },
+      headers: {
+        Authorization: `Bearer ${TELNYX_API_KEY}`,
+        "Content-Type": "application/json",
+      },
       body: JSON.stringify(payload),
     });
     data = await resp.json().catch(() => ({}));
   } catch (e) {
-    return json({ ok: false, error: e?.message || "Network error creating call" }, 502);
+    return json(
+      { ok: false, error: e?.message || "Network error creating call" },
+      502
+    );
   }
 
   if (!resp.ok) {
-    const errMsg = data?.errors?.[0]?.detail || data?.message || `Telnyx error (${resp.status})`;
+    const errMsg =
+      data?.errors?.[0]?.detail || data?.message || `Telnyx error (${resp.status})`;
     return json({ ok: false, error: errMsg }, 502);
   }
 
   const callObj = data?.data || data || {};
-  // IMPORTANT: Telnyx returns `call_control_id` (not `id`)
   const call_leg_id = callObj.call_control_id || callObj.id || null;
   const call_session_id = callObj.call_session_id || null;
 
-  // light console trace
   try {
     console.log("[lead-first-start]", {
       call_leg_id,
