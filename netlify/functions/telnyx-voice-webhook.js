@@ -301,6 +301,79 @@ async function markLeadAnsweredStage({ contact_id }) {
   }
 }
 
+/* ---- Lead-first guard: did the lead leg already end before transfer? ---- */
+async function isLeadLegDeadBeforeTransfer({ legA, call_session_id }) {
+  // If we don't have Supabase, fall back to Telnyx status only
+  if (!supa) {
+    const info = await getCallStatus(legA);
+    const st = (info?.status || "").toLowerCase();
+    const telnyxDead = [
+      "completed",
+      "failed",
+      "busy",
+      "no_answer",
+      "disconnected",
+      "hangup",
+      "canceled",
+      "cancelled",
+    ];
+    return !!st && telnyxDead.includes(st);
+  }
+
+  // 1) Give Telnyx + webhooks a moment to process a fast decline/hangup
+  await sleep(900);
+
+  // 2) Check call_logs for an ended/failed status
+  let row = null;
+  if (legA) {
+    const { data } = await supa
+      .from("call_logs")
+      .select("status, ended_at")
+      .eq("telnyx_leg_a_id", legA)
+      .maybeSingle();
+    row = data || null;
+  }
+  if (!row && call_session_id) {
+    const { data } = await supa
+      .from("call_logs")
+      .select("status, ended_at")
+      .eq("call_session_id", call_session_id)
+      .maybeSingle();
+    row = data || null;
+  }
+
+  if (row) {
+    if (row.ended_at) {
+      log("lead_first guard: call_logs shows ended_at; treat as dead");
+      return true;
+    }
+    if (row.status && (row.status === "failed" || row.status === "completed")) {
+      log("lead_first guard: call_logs status =", row.status, "→ treat as dead");
+      return true;
+    }
+  }
+
+  // 3) Extra safety: also ask Telnyx for current leg status
+  const info = await getCallStatus(legA);
+  const st = (info?.status || "").toLowerCase();
+  const telnyxDead = [
+    "completed",
+    "failed",
+    "busy",
+    "no_answer",
+    "disconnected",
+    "hangup",
+    "canceled",
+    "cancelled",
+  ];
+  if (st && telnyxDead.includes(st)) {
+    log("lead_first guard: Telnyx status =", st, "→ treat as dead");
+    return true;
+  }
+
+  return false;
+}
+
 /* ---------------- END logic (MINUTES pool) ---------------- */
 async function markEnded({ legA, call_session_id, ended_at, hangup_cause }) {
   if (!supa) return;
@@ -487,25 +560,10 @@ exports.handler = async (event) => {
             await action(legA, "playback_start", { audio_url: ringback_url, loop: true });
           }
           if (legA && agent_number) {
-            // Ask Telnyx if the lead call is actually still active
-            await sleep(300); // tiny delay so status is up to date
-            const info = await getCallStatus(legA);
-            const st = (info?.status || "").toLowerCase();
-            const deadStatuses = [
-              "completed",
-              "failed",
-              "busy",
-              "no_answer",
-              "disconnected",
-              "hangup",
-              "canceled",
-              "cancelled"
-            ];
-
-            // ❗ Only skip when Telnyx explicitly says the call is done.
-            // If we don't know the status (st is empty), fall back to old behavior and transfer.
-            if (st && deadStatuses.includes(st)) {
-              log("lead_first: skipping agent transfer; call status =", st);
+            // NEW: Only transfer if the lead leg has NOT already ended/failed
+            const dead = await isLeadLegDeadBeforeTransfer({ legA, call_session_id });
+            if (dead) {
+              log("lead_first: skipping agent transfer; lead leg already ended/failed");
             } else {
               await transferCall({
                 callControlId: legA,
