@@ -264,6 +264,10 @@ export default function LeadsPage() {
   // Auto Dial modal toggle (logic moved to component)
   const [showAutoDial, setShowAutoDial] = useState(false);
 
+  // NEW: toggle for automatic new-lead texts (Zapier/imported leads)
+  const [autoNewLeadTextsEnabled, setAutoNewLeadTextsEnabled] = useState(true);
+  const [autoNewLeadTextsSaving, setAutoNewLeadTextsSaving] = useState(false);
+
   // Billing hint
   useEffect(() => {
     const prev = window.__REMIE_BILLING_HINT__;
@@ -323,7 +327,7 @@ export default function LeadsPage() {
     return () => { if (channel) supabase.removeChannel(channel); };
   }, []);
 
-  /* -------------------- Load agent phone -------------------- */
+  /* -------------------- Load agent phone + auto-text setting -------------------- */
   useEffect(() => {
     (async () => {
       try {
@@ -332,26 +336,24 @@ export default function LeadsPage() {
         if (!userId) return;
         const { data, error } = await supabase
           .from("agent_profiles")
-          .select("phone")
+          .select("phone, auto_new_lead_texts_enabled")
           .eq("user_id", userId)
           .maybeSingle();
-        if (!error && data?.phone) setAgentPhone(data.phone);
+        if (!error && data) {
+          if (data.phone) setAgentPhone(data.phone);
+          if (typeof data.auto_new_lead_texts_enabled === "boolean") {
+            setAutoNewLeadTextsEnabled(data.auto_new_lead_texts_enabled);
+          }
+        }
       } catch (e) {
-        console.error("load agent phone failed:", e);
+        console.error("load agent phone / auto-text setting failed:", e);
       }
     })();
   }, []);
 
   /* -------------------------------------------------------------------------
      Answered promotion (lead-leg only, agent-first flow)
-     - The platform calls the AGENT first, then dials the LEAD.
-     - We only mark Answered if the LEAD leg answered (not the agent leg).
-     - Predicate:
-       * Event must be for the LEAD leg (party/customer/callee OR 'to' matches lead phone)
-       * status === "answered"  (we do NOT use bridged by default)
-       * duration guard: talk_ms>=2000 OR bill_sec>=2 if fields exist
-       * optional: answered_by !== "machine" if present
-     ------------------------------------------------------------------------- */
+  ------------------------------------------------------------------------- */
   useEffect(() => {
     let chan;
 
@@ -452,6 +454,7 @@ export default function LeadsPage() {
     }
     return fromAgent;
   }
+
   async function saveAgentPhone(phone) {
     const num = (phone || "").trim();
     if (!num) return;
@@ -464,12 +467,58 @@ export default function LeadsPage() {
         .select("user_id")
         .eq("user_id", uid)
         .maybeSingle();
-      if (existing) await supabase.from("agent_profiles").update({ phone: num }).eq("user_id", uid);
-      else await supabase.from("agent_profiles").insert({ user_id: uid, phone: num });
+      if (existing) {
+        await supabase.from("agent_profiles").update({ phone: num }).eq("user_id", uid);
+      } else {
+        await supabase.from("agent_profiles").insert({
+          user_id: uid,
+          phone: num,
+          // make sure the toggle value is persisted if this is the first time we create the profile
+          auto_new_lead_texts_enabled: autoNewLeadTextsEnabled,
+        });
+      }
       setAgentPhone(num);
     } catch (e) {
       console.error("saveAgentPhone failed", e);
       alert("Could not save your phone. Try again on the Dialer page.");
+    }
+  }
+
+  // NEW: update auto new-lead texts toggle (per user)
+  async function updateAutoNewLeadTexts(enabled) {
+    setAutoNewLeadTextsEnabled(enabled);
+    setAutoNewLeadTextsSaving(true);
+    try {
+      const { data: auth } = await supabase.auth.getUser();
+      const uid = auth?.user?.id;
+      if (!uid) return;
+      const { data: existing } = await supabase
+        .from("agent_profiles")
+        .select("user_id")
+        .eq("user_id", uid)
+        .maybeSingle();
+
+      if (existing) {
+        await supabase
+          .from("agent_profiles")
+          .update({ auto_new_lead_texts_enabled: enabled })
+          .eq("user_id", uid);
+      } else {
+        await supabase
+          .from("agent_profiles")
+          .insert({ user_id: uid, auto_new_lead_texts_enabled: enabled });
+      }
+
+      setServerMsg(enabled
+        ? "✅ Auto new-lead texts enabled"
+        : "⏸️ Auto new-lead texts paused");
+    } catch (e) {
+      console.error("updateAutoNewLeadTexts failed", e);
+      setServerMsg(`⚠️ Could not update auto-text setting: ${e.message || e}`);
+      // revert local state if failed
+      setAutoNewLeadTextsEnabled((prev) => !prev);
+    } finally {
+      setAutoNewLeadTextsSaving(false);
     }
   }
 
@@ -646,6 +695,26 @@ export default function LeadsPage() {
         >
           Auto Dial
         </button>
+
+        {/* NEW: Toggle for automatic new-lead texts */}
+        <div className="flex items-center gap-2 text-xs text-white/70">
+          <span>Auto-text new leads</span>
+          <button
+            type="button"
+            onClick={() => !autoNewLeadTextsSaving && updateAutoNewLeadTexts(!autoNewLeadTextsEnabled)}
+            className={`relative inline-flex h-6 w-11 items-center rounded-full border px-0 transition
+              ${autoNewLeadTextsEnabled ? "border-emerald-400 bg-emerald-500/20" : "border-white/20 bg-white/5"}
+              ${autoNewLeadTextsSaving ? "opacity-60 cursor-wait" : "cursor-pointer"}`}
+            aria-pressed={autoNewLeadTextsEnabled}
+            aria-label="Toggle automatic new-lead messages"
+            disabled={autoNewLeadTextsSaving}
+          >
+            <span
+              className={`inline-block h-5 w-5 transform rounded-full bg-white shadow transition
+                ${autoNewLeadTextsEnabled ? "translate-x-5" : "translate-x-1"}`}
+            />
+          </button>
+        </div>
 
         <div className="ml-auto flex items-center gap-3">
           <CsvImportControl
