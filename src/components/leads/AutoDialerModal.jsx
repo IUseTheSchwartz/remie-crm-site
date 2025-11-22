@@ -58,11 +58,12 @@ export default function AutoDialerModal({ onClose, rows = [] }) {
   const [stageFilters, setStageFilters] = useState(new Set());
   const [maxAttempts, setMaxAttempts] = useState(1);
 
-  // NEW: TTS config for press-1 + voicemail
+  // TTS config for press-1 + voicemail
   const [assistantName, setAssistantName] = useState("Remie");
   const [agentDisplayName, setAgentDisplayName] = useState("");
   const [introTts, setIntroTts] = useState("");
   const [voicemailTts, setVoicemailTts] = useState("");
+  const [ttsVoice, setTtsVoice] = useState("female"); // NEW: voice choice
   const ttsInitializedRef = useRef(false);
 
   // Queue + status
@@ -87,7 +88,7 @@ export default function AutoDialerModal({ onClose, rows = [] }) {
   const liveStatusRef = useRef({});
   useEffect(() => { liveStatusRef.current = liveStatus; }, [liveStatus]);
 
-  // NEW: run id + map contact_id -> attempt_id (optional)
+  // run id + map contact_id -> attempt_id (optional)
   const [runId, setRunId] = useState(null);
   const attemptByContactRef = useRef(new Map()); // contact_id -> attempt_id
 
@@ -184,9 +185,7 @@ export default function AutoDialerModal({ onClose, rows = [] }) {
     }
   }
 
-  // ================================
   // Realtime: auto_dialer_attempts (current run)
-  // ================================
   useEffect(() => {
     if (!runId) return;
     let chan;
@@ -255,7 +254,7 @@ export default function AutoDialerModal({ onClose, rows = [] }) {
     for (const q of list) patch[q.id] = "queued";
     setLiveStatus((s) => ({ ...s, ...patch }));
 
-    // NEW: create a run
+    // create a run
     const { data: authData } = await supabase.auth.getUser();
     const uid = authData?.user?.id;
     if (uid) {
@@ -316,7 +315,6 @@ export default function AutoDialerModal({ onClose, rows = [] }) {
       setIsRunning(false);
       isRunningRef.current = false;
       clearAllTimers();
-      // optionally mark run ended
       if (runId) { try { await supabase.from("auto_dialer_runs").update({ ended_at: new Date().toISOString() }).eq("id", runId); } catch {} }
       return;
     }
@@ -347,12 +345,12 @@ export default function AutoDialerModal({ onClose, rows = [] }) {
         voicemailTts,
         assistantName,
         agentDisplayName,
+        ttsVoice,
       });
-      // resp: { ok, call_leg_id, call_session_id, contact_id, used_from_number }
       const call_session_id = resp?.call_session_id || null;
       const legA = resp?.call_leg_id || null;
 
-      // NEW: insert attempt row tied to this run
+      // insert attempt row tied to this run
       if (runId) {
         const { data: authData } = await supabase.auth.getUser();
         const uid = authData?.user?.id;
@@ -388,11 +386,10 @@ export default function AutoDialerModal({ onClose, rows = [] }) {
         }
       }, 1500));
 
-      // Safety net advance if nothing ends after 70s
+      // Safety net: only fail if STILL dialing/ringing after 70s (never connected)
       addTimer(setTimeout(() => {
         if (!isRunningRef.current) return;
         const st = liveStatusRef.current[lead.id];
-        // CHANGED: only fail if still dialing/ringing (never connected)
         if (["dialing","ringing"].includes(st)) {
           advanceAfterEnd(lead.id, "failed");
         }
@@ -452,6 +449,33 @@ export default function AutoDialerModal({ onClose, rows = [] }) {
     });
   }
 
+  // NEW: remove from queue
+  function removeFromQueue(leadId) {
+    setQueue((old) => {
+      const idx = old.findIndex((q) => q.id === leadId);
+      if (idx === -1) return old;
+
+      const newQueue = old.filter((q) => q.id !== leadId);
+
+      // Adjust currentIdx so we don't skip / go out of bounds
+      setCurrentIdx((curIdx) => {
+        if (curIdx > idx) return curIdx - 1;
+        if (curIdx >= newQueue.length) return Math.max(0, newQueue.length - 1);
+        return curIdx;
+      });
+
+      return newQueue;
+    });
+
+    setLiveStatus((prev) => {
+      const { [leadId]: _omit, ...rest } = prev;
+      return rest;
+    });
+
+    settledRef.current.delete(leadId);
+    attemptByContactRef.current.delete(leadId);
+  }
+
   const stagePills = STAGE_IDS.map((sid) => (
     <button
       key={sid}
@@ -508,6 +532,22 @@ export default function AutoDialerModal({ onClose, rows = [] }) {
                 className="mt-1 w-full rounded-lg border border-white/10 bg-black/40 px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-indigo-500/40"
                 placeholder="Jacksen"
               />
+            </div>
+          </div>
+
+          {/* NEW: TTS voice selector */}
+          <div className="mb-3 max-w-xs">
+            <div className="text-[11px] text-white/60">TTS Voice</div>
+            <select
+              value={ttsVoice}
+              onChange={(e) => setTtsVoice(e.target.value)}
+              className="mt-1 w-full rounded-lg border border-white/10 bg-black/40 px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-indigo-500/40"
+            >
+              <option value="female">Female (default)</option>
+              <option value="male">Male</option>
+            </select>
+            <div className="mt-1 text-[10px] text-white/40">
+              Affects both the intro and voicemail messages.
             </div>
           </div>
 
@@ -674,16 +714,22 @@ export default function AutoDialerModal({ onClose, rows = [] }) {
                 <th className="px-3 py-2 text-left font-medium">State</th>
                 <th className="px-3 py-2 text-left font-medium">Attempts</th>
                 <th className="px-3 py-2 text-left font-medium">Status</th>
+                <th className="px-3 py-2 text-left font-medium">Actions</th>
               </tr>
             </thead>
             <tbody>
               {queue.length === 0 ? (
-                <tr><td colSpan={6} className="px-3 py-4 text-center text-white/60">Build a queue to preview calls.</td></tr>
+                <tr>
+                  <td colSpan={7} className="px-3 py-4 text-center text-white/60">
+                    Build a queue to preview calls.
+                  </td>
+                </tr>
               ) : queue.map((q, i) => {
                 const r = rowsLookup.get(q.id) || {};
                 const uiStatus = liveStatus[q.id] || q.status || "queued";
+                const isCurrent = i === currentIdx;
                 return (
-                  <tr key={q.id} className={`border-t border-white/10 ${i === currentIdx ? "bg-white/[0.03]" : ""}`}>
+                  <tr key={q.id} className={`border-t border-white/10 ${isCurrent ? "bg-white/[0.03]" : ""}`}>
                     <td className="px-3 py-2">{i + 1}</td>
                     <td className="px-3 py-2">{r.name || r.email || r.phone || r.id}</td>
                     <td className="px-3 py-2"><PhoneMono>{r.phone || "—"}</PhoneMono></td>
@@ -691,6 +737,16 @@ export default function AutoDialerModal({ onClose, rows = [] }) {
                     <td className="px-3 py-2">{q.attempts || 0}/{maxAttempts}</td>
                     <td className="px-3 py-2">
                       <span className={`rounded-full px-2 py-0.5 text-xs ${badgeClass(uiStatus)}`}>{cap(uiStatus)}</span>
+                    </td>
+                    <td className="px-3 py-2">
+                      <button
+                        type="button"
+                        onClick={() => removeFromQueue(q.id)}
+                        disabled={isRunning && isCurrent}
+                        className="text-[11px] rounded-full border border-white/20 px-2 py-0.5 text-white/70 hover:bg-white/10 disabled:opacity-40"
+                      >
+                        Remove
+                      </button>
                     </td>
                   </tr>
                 );
