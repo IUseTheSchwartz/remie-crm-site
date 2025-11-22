@@ -2,7 +2,7 @@
 // Starts a LEAD-FIRST call for the Auto Dialer.
 //
 // - Calls the LEAD first (Leg A).
-// - On lead answer, telnyx-voice-webhook runs TTS "press 1" and, on 1, transfers to the AGENT and bridges.
+// - On lead answer, telnyx-voice-webhook transfers to the AGENT and bridges.
 // - client_state.kind = "crm_outbound_lead_leg" to activate lead_first logic in the webhook.
 
 const fetch = require("node-fetch");
@@ -76,7 +76,6 @@ async function getUserIdFromSupabaseJWT(authz) {
   try {
     if (!authz || !supa) return null;
     const token = String(authz).replace(/^Bearer\s+/i, "");
-    // ✅ Correct way: use service client to validate the user JWT
     const { data, error } = await supa.auth.getUser(token);
     if (error) return null;
     return data?.user?.id || null;
@@ -112,11 +111,12 @@ exports.handler = async (event) => {
   const ringback_url = body.ringback_url || "";
   const session_id   = body.session_id || null;
 
-  // NEW: TTS + names from UI
-  const press1_tts      = body.press1_tts || null;
-  const voicemail_tts   = body.voicemail_tts || null;
-  const assistant_name  = body.assistant_name || null;
-  const agent_name      = body.agent_name || null;
+  // NEW: TTS fields from payload
+  const intro_tts          = body.intro_tts || "";
+  const voicemail_tts      = body.voicemail_tts || "";
+  const assistant_name     = body.assistant_name || "";
+  const agent_display_name = body.agent_display_name || "";
+  const tts_voice          = body.tts_voice || "female";
 
   if (!agent_number || !lead_number) {
     return json({ ok: false, error: "agent_number and lead_number are required in E.164" }, 400);
@@ -145,15 +145,17 @@ exports.handler = async (event) => {
     contact_id,
     lead_number,
     agent_number,
-    from_number,   // for visibility in webhook logs
+    from_number,
     record,
     ringback_url,
     session_id,
-    // NEW: TTS config for press-1 + voicemail
-    press1_tts,
+
+    // pass TTS config through to webhook
+    intro_tts,
     voicemail_tts,
     assistant_name,
-    agent_name,
+    agent_display_name,
+    tts_voice,
   };
   const client_state_b64 = Buffer.from(JSON.stringify(clientState), "utf8").toString("base64");
 
@@ -185,16 +187,15 @@ exports.handler = async (event) => {
   }
 
   const callObj = data?.data || data || {};
-  // IMPORTANT: Telnyx returns `call_control_id` (not `id`)
   const call_leg_id = callObj.call_control_id || callObj.id || null;
   const call_session_id = callObj.call_session_id || null;
 
-  // light console trace
   try {
     console.log("[lead-first-start]", {
       call_leg_id,
       call_session_id,
       used_from_number: from_number || "(connection default)",
+      tts_voice,
     });
   } catch {}
 
