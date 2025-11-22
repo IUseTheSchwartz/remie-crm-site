@@ -275,7 +275,7 @@ function LandingPage() {
       name: "Remie CRM",
       blurb: "All-in-one CRM for agents — pipeline, automations, and more.",
       monthly: 249,
-      buyUrl: "https://buy.stripe.com/4gMfZjaX05vM5EGd4U8Ra0e",
+      buyUrl: "https://buy.stripe.com/cNieVf4yC1fw9UW4yo8Ra0f",
       features: [
         "AI rebuttal helper",
         "Automated message system",
