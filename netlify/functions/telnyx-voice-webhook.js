@@ -3,7 +3,7 @@
 //  - AGENT-FIRST (Leads Page click-to-call): agent answers -> speak -> transfer to lead -> bridge
 //  - LEAD-FIRST  (Auto Dialer): lead answers  -> speak -> (optional ringback) -> transfer to agent -> bridge
 //
-// Stage is marked "answered" ONLY on call.bridged (never on first answer).
+// Stage is marked "answered" ONLY when we have a real bridge (call.bridged / successful transfer).
 // If AGENT-FIRST transfer fails (lead hangs up / busy / no answer), tell agent and retry with longer timeout to hit voicemail.
 // Optional RINGBACK_URL will play to the agent while the voicemail retry is ringing.
 
@@ -26,7 +26,7 @@ const supa = (SUPABASE_URL && SUPABASE_SERVICE_ROLE)
 
 function log(...args) { try { console.log("[telnyx-webhook]", ...args); } catch {} }
 
-// tiny helper to avoid whisper cut-off
+// tiny helper
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 /* ===================================================================
@@ -178,10 +178,6 @@ async function transferCall({ callControlId, to, from, timeout_secs }) {
 async function startRecording(callControlId) {
   return action(callControlId, "record_start", { channels: "dual", audio: { direction: "both" }, format: "mp3" });
 }
-async function playbackStart(callControlId) {
-  // no-op wrapper: we pass audio_url via action; leaving here for symmetry
-  return { ok: true };
-}
 async function playbackStop(callControlId) {
   return action(callControlId, "playback_stop", {});
 }
@@ -191,6 +187,25 @@ async function speak(callControlId, payload) {
 }
 async function hangupCall(callControlId) {
   return action(callControlId, "hangup", {});
+}
+
+// Query Telnyx for the current status of a call (for lead-first guard)
+async function getCallStatus(callControlId) {
+  if (!TELNYX_API_KEY || !callControlId) return null;
+  try {
+    const url = `https://api.telnyx.com/v2/calls/${callControlId}`;
+    const resp = await fetch(url, { headers: { Authorization: `Bearer ${TELNYX_API_KEY}` }});
+    const json = await resp.json().catch(() => ({}));
+    if (!resp.ok) {
+      log("getCallStatus failed", resp.status, json);
+      return null;
+    }
+    const status = json?.data?.status || json?.status || null;
+    return { status: status ? String(status).toLowerCase() : null, raw: json };
+  } catch (e) {
+    log("getCallStatus error", e?.message);
+    return null;
+  }
 }
 
 /* ---------------- Wallet / DB helpers ---------------- */
@@ -284,34 +299,6 @@ async function markLeadAnsweredStage({ contact_id }) {
   } catch (e) {
     log("markLeadAnsweredStage err", e?.message);
   }
-}
-
-/* ---- Helper: is this call still active? (for lead-first guard) ---- */
-async function isCallStillActive({ legA, call_session_id }) {
-  if (!supa) return true; // if we can't check, fall back to old behavior
-
-  let row = null;
-  if (legA) {
-    const { data } = await supa
-      .from("call_logs")
-      .select("status, ended_at")
-      .eq("telnyx_leg_a_id", legA)
-      .maybeSingle();
-    row = data || null;
-  }
-  if (!row && call_session_id) {
-    const { data } = await supa
-      .from("call_logs")
-      .select("status, ended_at")
-      .eq("call_session_id", call_session_id)
-      .maybeSingle();
-    row = data || null;
-  }
-
-  if (!row) return true;
-  if (row.ended_at) return false;
-  if (row.status && (row.status === "completed" || row.status === "failed")) return false;
-  return true;
 }
 
 /* ---------------- END logic (MINUTES pool) ---------------- */
@@ -500,11 +487,23 @@ exports.handler = async (event) => {
             await action(legA, "playback_start", { audio_url: ringback_url, loop: true });
           }
           if (legA && agent_number) {
-            // Guard: give Telnyx time to send call.ended if the lead declined
-            await sleep(800);
-            const stillActive = await isCallStillActive({ legA, call_session_id });
-            if (!stillActive) {
-              log("lead_first: call already ended before transfer; skipping agent leg");
+            // NEW: ask Telnyx if the lead call is actually still active
+            await sleep(300); // tiny delay so status is up to date
+            const info = await getCallStatus(legA);
+            const st = (info?.status || "").toLowerCase();
+            // If status is already completed/failed/etc, SKIP the agent leg
+            const deadStatuses = [
+              "completed",
+              "failed",
+              "busy",
+              "no_answer",
+              "disconnected",
+              "hangup",
+              "canceled",
+              "cancelled"
+            ];
+            if (!st || deadStatuses.includes(st)) {
+              log("lead_first: skipping agent transfer; call status =", st || "(none)");
             } else {
               await transferCall({
                 callControlId: legA,
@@ -516,11 +515,8 @@ exports.handler = async (event) => {
           }
         }
 
-        // For AGENT-FIRST we still want "answered" when the agent picks up.
-        // For LEAD-FIRST, we'll only mark answered when there's a real bridge.
-        if (flow === "agent_first") {
-          await markAnswered({ legA, call_session_id, answered_at: occurred_at });
-        }
+        // IMPORTANT: we DO NOT mark "answered" here.
+        // We only mark answered when there is a real bridge between lead and agent.
         break;
       }
 
