@@ -2,9 +2,7 @@
 // Starts a LEAD-FIRST call for the Auto Dialer.
 //
 // - Calls the LEAD first (Leg A).
-// - On lead answer, telnyx-voice-webhook runs a press-1 IVR using your recording.
-// - If the lead presses 1, webhook dials the AGENT and bridges.
-// - If they don't press 1, webhook plays your voicemail recording and NEVER dials the agent.
+// - On lead answer + press 1, telnyx-voice-webhook transfers to the AGENT and bridges.
 // - client_state.kind = "crm_outbound_lead_leg" to activate lead_first logic in the webhook.
 
 const fetch = require("node-fetch");
@@ -90,6 +88,7 @@ async function getUserIdFromSupabaseJWT(authz) {
   try {
     if (!authz || !supa) return null;
     const token = String(authz).replace(/^Bearer\s+/i, "");
+    // ✅ Correct way: use service client to validate the user JWT
     const { data, error } = await supa.auth.getUser(token);
     if (error) return null;
     return data?.user?.id || null;
@@ -108,7 +107,8 @@ exports.handler = async (event) => {
       500
     );
   }
-  if (!supa) return json({ ok: false, error: "Supabase service role not configured" }, 500);
+  if (!supa)
+    return json({ ok: false, error: "Supabase service role not configured" }, 500);
 
   // Auth
   const authz = event.headers.authorization || event.headers.Authorization || "";
@@ -133,8 +133,11 @@ exports.handler = async (event) => {
   const ringback_url = body.ringback_url || "";
   const session_id = body.session_id || null;
 
-  const press1_audio_url = body.press1_audio_url || "";
-  const voicemail_audio_url = body.voicemail_audio_url || "";
+  // NEW: recorded audio URLs (sent from frontend)
+  const press1_audio_url =
+    body.press1_audio_url || body.press1AudioUrl || "";
+  const voicemail_audio_url =
+    body.voicemail_audio_url || body.voicemailAudioUrl || "";
 
   if (!agent_number || !lead_number) {
     return json(
@@ -170,8 +173,8 @@ exports.handler = async (event) => {
     record,
     ringback_url,
     session_id,
-    press1_audio_url,
-    voicemail_audio_url,
+    press1_audio_url: press1_audio_url || null,
+    voicemail_audio_url: voicemail_audio_url || null,
   };
   const client_state_b64 = Buffer.from(JSON.stringify(clientState), "utf8").toString(
     "base64"
@@ -207,14 +210,18 @@ exports.handler = async (event) => {
 
   if (!resp.ok) {
     const errMsg =
-      data?.errors?.[0]?.detail || data?.message || `Telnyx error (${resp.status})`;
+      data?.errors?.[0]?.detail ||
+      data?.message ||
+      `Telnyx error (${resp.status})`;
     return json({ ok: false, error: errMsg }, 502);
   }
 
   const callObj = data?.data || data || {};
+  // IMPORTANT: Telnyx returns `call_control_id` (not `id`)
   const call_leg_id = callObj.call_control_id || callObj.id || null;
   const call_session_id = callObj.call_session_id || null;
 
+  // light console trace
   try {
     console.log("[lead-first-start]", {
       call_leg_id,
