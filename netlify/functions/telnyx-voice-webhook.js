@@ -472,8 +472,7 @@ exports.handler = async (event) => {
             await action(legA, "playback_start", { audio_url: ringback_url, loop: true });
           }
           if (legA && agent_number) {
-            // EXTRA GUARD: small delay to avoid dialing the agent
-            // if the lead immediately declines / hangs up.
+            // small guard delay so instant hangups don't get treated as full connects
             await sleep(800);
             await transferCall({
               callControlId: legA,
@@ -518,8 +517,7 @@ exports.handler = async (event) => {
         if (failed && flow === "agent_first") {
           await handleAgentFirstTransferFailure();
         } else if (legA && peerLeg) {
-          // In case some integrations rely on transfer.completed instead of call.bridged,
-          // also treat this as the real "answered + bridged" moment.
+          // Also treat this as "answered + bridged" if Telnyx reports a success here.
           await markAnswered({ legA, call_session_id, answered_at: occurred_at });
           await markBridged({ legA, call_session_id, maybeLegB: peerLeg });
         }
@@ -551,10 +549,11 @@ exports.handler = async (event) => {
         break;
       }
 
+      // Fallback bridge marker — now ONLY for AGENT-FIRST
       case "call.transfer.initiated":
       case "call.initiated.outbound":
       case "call.answered.outbound": {
-        if (legA && peerLeg) {
+        if (flow === "agent_first" && legA && peerLeg) {
           await markBridged({ legA, call_session_id, maybeLegB: peerLeg });
         }
         break;
