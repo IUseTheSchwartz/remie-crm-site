@@ -3,12 +3,8 @@ import { supabase } from "./supabaseClient";
 
 /**
  * Start an AGENT-FIRST two-leg outbound call via Netlify function.
- * - Server selects best caller ID from agent's owned DIDs
- * - Agent phone rings FIRST; on agent answer, webhook dials the LEAD and bridges on human
- * - Returns { ok: true, call_leg_id } on success
  */
 export async function startCall({ agentNumber, leadNumber, contactId = null }) {
-  // Ensure user is signed in; server uses agent_id to pick caller ID
   const [{ data: auth }, { data: sess }] = await Promise.all([
     supabase.auth.getUser(),
     supabase.auth.getSession(),
@@ -20,10 +16,10 @@ export async function startCall({ agentNumber, leadNumber, contactId = null }) {
   const token = sess?.session?.access_token || null;
 
   const payload = {
-    agent_number: agentNumber,   // E.164 (+1XXXXXXXXXX) — we call this FIRST
-    lead_number: leadNumber,     // E.164 — called by webhook AFTER agent answers
+    agent_number: agentNumber,
+    lead_number: leadNumber,
     agent_id: uid,
-    user_id: uid,                // kept for back-compat
+    user_id: uid,
     contact_id: contactId ?? null,
   };
 
@@ -56,26 +52,23 @@ export async function startCall({ agentNumber, leadNumber, contactId = null }) {
     throw new Error(msg);
   }
 
-  // { ok: true, call_leg_id }
   return json;
 }
 
 /**
  * Start a LEAD-FIRST call (Auto Dialer).
- * - Leg A = LEAD (we dial the lead first)
- * - Your telnyx-voice-webhook.js (lead_first branch) dials the AGENT on lead answer and bridges
- * - If fromNumber is omitted, Telnyx uses the connection’s default caller ID
- * Returns: { ok:true, call_leg_id, call_session_id?, contact_id }
  */
 export async function startLeadFirstCall({
   agentNumber,
   leadNumber,
   contactId = null,
-  fromNumber = null,   // optional per-call DID; omit to use connection default
+  fromNumber = null,
   record = true,
   ringTimeout = 25,
   ringbackUrl = "",
   sessionId = null,
+  press1Script = "",
+  voicemailScript = "",
 }) {
   const [{ data: auth }, { data: sess }] = await Promise.all([
     supabase.auth.getUser(),
@@ -90,12 +83,14 @@ export async function startLeadFirstCall({
     agent_number: agentNumber,
     lead_number: leadNumber,
     contact_id: contactId,
-    // include only if explicitly chosen; backend will pass it through to Telnyx
     ...(fromNumber ? { from_number: fromNumber } : {}),
     record,
     ring_timeout: ringTimeout,
     ringback_url: ringbackUrl,
     session_id: sessionId,
+    // NEW: scripts
+    press1_script: press1Script || "",
+    voicemail_script: voicemailScript || "",
   };
 
   let res, json;
@@ -104,7 +99,7 @@ export async function startLeadFirstCall({
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        Authorization: `Bearer ${token}`, // <-- always send (prevents 401)
+        Authorization: `Bearer ${token}`,
       },
       body: JSON.stringify(payload),
     });
@@ -127,13 +122,11 @@ export async function startLeadFirstCall({
     throw new Error(msg);
   }
 
-  return json; // { ok:true, call_leg_id, call_session_id?, contact_id }
+  return json;
 }
 
 /**
  * List recent call logs for the signed-in user.
- * Expects a `call_logs` table with RLS to auth.uid().
- * Typical columns: to_number, from_number, status, started_at, duration_seconds, recording_url
  */
 export async function listMyCallLogs(limit = 100) {
   const { data: auth } = await supabase.auth.getUser();
