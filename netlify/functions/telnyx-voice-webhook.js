@@ -1,15 +1,12 @@
 // File: netlify/functions/telnyx-voice-webhook.js
 // Supports BOTH flows:
 //  - AGENT-FIRST (Leads Page click-to-call): agent answers -> speak -> transfer to lead -> bridge
-//  - LEAD-FIRST  (Auto Dialer): lead answers  -> press-1 gather -> if 1 then transfer to agent -> bridge
+//  - LEAD-FIRST  (Auto Dialer): lead answers  -> TTS "press 1"  -> on 1 dial agent -> bridge
 //
-// Stage is marked "answered" ONLY on call.bridged (never on first answer).
-// NEW: If AGENT-FIRST transfer fails (lead hangs up / busy / no answer), tell agent and retry with longer timeout to hit voicemail.
-//      Optional RINGBACK_URL will play to the agent while the voicemail retry is ringing.
-//
-// NEW for LEAD-FIRST:
-//  - On call.answered: use gather_using_audio with press1_audio_url if present, otherwise TTS gather.
-//  - On call.gather.ended: if digits === "1" => transfer to agent; otherwise hang up (no agent call).
+// Stage is marked "answered" ONLY on call.bridged (never on first answer) for the leads pipeline.
+// NEW (agent-first): If AGENT-FIRST transfer fails (lead hangs up / busy / no answer), tell agent and retry with longer timeout to hit voicemail.
+// NEW (lead-first): For LEAD-FIRST, we use gather_using_speak to prompt "press 1" and ONLY transfer to agent if digit === "1".
+//                   Declines / no-answer / wrong digit = no agent call + optional voicemail TTS.
 
 const crypto = require("crypto");
 const fetch = require("node-fetch");
@@ -19,23 +16,16 @@ const TELNYX_API_KEY = process.env.TELNYX_API_KEY || "";
 const TELNYX_WEBHOOK_SECRET = process.env.TELNYX_WEBHOOK_SECRET || ""; // optional HMAC
 const SUPABASE_URL = process.env.SUPABASE_URL || "";
 const SUPABASE_SERVICE_ROLE =
-  process.env.SUPABASE_SERVICE_ROLE_KEY ||
-  process.env.SUPABASE_SERVICE_ROLE ||
-  "";
+  process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_SERVICE_ROLE || "";
 
-// Optional ringback looped to the AGENT during the voicemail retry
+// Optional ringback looped to the AGENT during the voicemail retry or while connecting
 const RINGBACK_URL = process.env.RINGBACK_URL || "";
 
-const supa =
-  SUPABASE_URL && SUPABASE_SERVICE_ROLE
-    ? createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE)
-    : null;
+const supa = (SUPABASE_URL && SUPABASE_SERVICE_ROLE)
+  ? createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE)
+  : null;
 
-function log(...args) {
-  try {
-    console.log("[telnyx-webhook]", ...args);
-  } catch {}
-}
+function log(...args) { try { console.log("[telnyx-webhook]", ...args); } catch {} }
 
 // tiny helper to avoid whisper cut-off
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -58,12 +48,8 @@ async function resolveAccountId(user_id) {
 }
 
 function monthWindow(now = new Date()) {
-  const start = new Date(
-    Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1, 0, 0, 0)
-  );
-  const end = new Date(
-    Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + 1, 1, 0, 0, 0)
-  );
+  const start = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1, 0, 0, 0));
+  const end = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + 1, 1, 0, 0, 0));
   return { period_start: start.toISOString(), period_end: end.toISOString() };
 }
 
@@ -116,10 +102,7 @@ async function tryConsumeCallMinutes(account_id, minutes, now = new Date()) {
 
   if (!row0) return { covered: 0, remaining_to_bill: minutes };
 
-  const remaining = Math.max(
-    0,
-    (row0.free_call_minutes_total || 0) - (row0.free_call_minutes_used || 0)
-  );
+  const remaining = Math.max(0, (row0.free_call_minutes_total || 0) - (row0.free_call_minutes_used || 0));
   const covered = Math.min(remaining, minutes);
   const over = minutes - covered;
 
@@ -143,23 +126,16 @@ function verifySignature(rawBody, signatureHeader) {
   if (!TELNYX_WEBHOOK_SECRET) return true;
   if (!signatureHeader) return false;
   try {
-    const parts = String(signatureHeader)
-      .split(",")
-      .map((s) => s.trim());
-    const ts = parts.find((p) => p.startsWith("t="))?.split("=")[1];
-    const sig = parts.find((p) => p.startsWith("sig="))?.split("=")[1];
+    const parts = String(signatureHeader).split(",").map(s => s.trim());
+    const ts = parts.find(p => p.startsWith("t="))?.split("=")[1];
+    const sig = parts.find(p => p.startsWith("sig="))?.split("=")[1];
     if (!ts || !sig) return false;
     const payload = `${ts}.${rawBody}`;
     const hmac = crypto.createHmac("sha256", TELNYX_WEBHOOK_SECRET);
     hmac.update(payload);
     const digest = hmac.digest("hex");
-    return crypto.timingSafeEqual(
-      Buffer.from(digest),
-      Buffer.from(sig)
-    );
-  } catch {
-    return false;
-  }
+    return crypto.timingSafeEqual(Buffer.from(digest), Buffer.from(sig));
+  } catch { return false; }
 }
 
 /* ---------------- client_state helpers ---------------- */
@@ -173,9 +149,7 @@ function decodeClientState(any) {
       return JSON.parse(json);
     }
     return JSON.parse(s);
-  } catch {
-    return null;
-  }
+  } catch { return null; }
 }
 
 /* ---------------- Telnyx helpers ---------------- */
@@ -184,16 +158,11 @@ async function action(callControlId, path, body = {}) {
   const url = `https://api.telnyx.com/v2/calls/${callControlId}/actions/${path}`;
   const resp = await fetch(url, {
     method: "POST",
-    headers: {
-      Authorization: `Bearer ${TELNYX_API_KEY}`,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify(body),
+    headers: { Authorization: `Bearer ${TELNYX_API_KEY}`, "Content-Type": "application/json" },
+    body: JSON.stringify(body)
   });
   let data = {};
-  try {
-    data = await resp.json();
-  } catch {}
+  try { data = await resp.json(); } catch {}
   if (!resp.ok) log(path, "failed", resp.status, data);
   else log(path, "ok");
   return { ok: resp.ok, data };
@@ -201,22 +170,18 @@ async function action(callControlId, path, body = {}) {
 
 // >>> IMPORTANT: use E.164 strings for `to`/`from`; omit `from` if you want connection default
 async function transferCall({ callControlId, to, from, timeout_secs }) {
-  const body = { to }; // e.g. "+15551234567"
-  if (from) body.from = from; // e.g. "+15557654321"
+  const body = { to };              // e.g. "+15551234567"
+  if (from) body.from = from;       // e.g. "+15557654321"
   if (timeout_secs) body.timeout_secs = timeout_secs;
   return action(callControlId, "transfer", body);
 }
 
 async function startRecording(callControlId) {
-  return action(callControlId, "record_start", {
-    channels: "dual",
-    audio: { direction: "both" },
-    format: "mp3",
-  });
+  return action(callControlId, "record_start", { channels: "dual", audio: { direction: "both" }, format: "mp3" });
 }
-async function playbackStart(callControlId) {
-  // no-op wrapper: we pass audio_url via action; leaving here for symmetry
-  return { ok: true };
+async function playbackStart(callControlId, audio_url, loop = true) {
+  if (!audio_url) return { ok: true };
+  return action(callControlId, "playback_start", { audio_url, loop });
 }
 async function playbackStop(callControlId) {
   return action(callControlId, "playback_stop", {});
@@ -231,8 +196,7 @@ async function hangupCall(callControlId) {
 
 /* ---------------- Wallet / DB helpers ---------------- */
 async function debitWalletForCall({ legA, user_id, cents }) {
-  if (!supa || !legA || !user_id || !cents || cents <= 0)
-    return { ok: true, skipped: true };
+  if (!supa || !legA || !user_id || !cents || cents <= 0) return { ok: true, skipped: true };
   const { data, error } = await supa.rpc("wallet_debit_for_call", {
     _leg_a: legA,
     _user_id: user_id,
@@ -249,51 +213,31 @@ async function debitWalletForCall({ legA, user_id, cents }) {
 async function updateByLegOrSession(legA, call_session_id, patch) {
   if (!supa) return;
   if (legA) {
-    const { error } = await supa
-      .from("call_logs")
-      .update(patch)
-      .eq("telnyx_leg_a_id", legA);
+    const { error } = await supa.from("call_logs").update(patch).eq("telnyx_leg_a_id", legA);
     if (!error) return;
   }
   if (call_session_id) {
-    const { error } = await supa
-      .from("call_logs")
-      .update(patch)
-      .eq("call_session_id", call_session_id);
+    const { error } = await supa.from("call_logs").update(patch).eq("call_session_id", call_session_id);
     if (error) log("updateByLegOrSession err", error.message);
   }
 }
 
 async function upsertInitiated({
-  user_id,
-  contact_id,
-  to_number,
-  from_number,
-  agent_number,
-  legA,
-  call_session_id,
-  started_at,
-  record_enabled,
+  user_id, contact_id, to_number, from_number, agent_number,
+  legA, call_session_id, started_at, record_enabled
 }) {
   if (!supa) return;
 
   const { data: existing } = await supa
     .from("call_logs")
     .select("id")
-    .or(
-      `telnyx_leg_a_id.eq.${legA},call_session_id.eq.${
-        call_session_id || "null"
-      }`
-    )
+    .or(`telnyx_leg_a_id.eq.${legA},call_session_id.eq.${call_session_id || "null"}`)
     .limit(1)
     .maybeSingle();
 
   const baseFields = {
-    user_id,
-    contact_id,
-    to_number,
-    from_number,
-    agent_number,
+    user_id, contact_id,
+    to_number, from_number, agent_number,
     status: "ringing",
     started_at: started_at || new Date().toISOString(),
     record_enabled: !!record_enabled,
@@ -303,10 +247,7 @@ async function upsertInitiated({
   };
 
   if (existing?.id) {
-    const { error } = await supa
-      .from("call_logs")
-      .update(baseFields)
-      .eq("id", existing.id);
+    const { error } = await supa.from("call_logs").update(baseFields).eq("id", existing.id);
     if (error) log("upsert initiated (update) err", error.message);
   } else {
     const { error } = await supa.from("call_logs").insert(baseFields);
@@ -329,10 +270,7 @@ async function markBridged({ legA, call_session_id, maybeLegB }) {
 
 async function saveRecordingUrlByCallSession({ call_session_id, recording_url }) {
   if (!supa || !call_session_id || !recording_url) return;
-  const { error } = await supa
-    .from("call_logs")
-    .update({ recording_url })
-    .eq("call_session_id", call_session_id);
+  const { error } = await supa.from("call_logs").update({ recording_url }).eq("call_session_id", call_session_id);
   if (error) log("saveRecordingUrl err", error.message);
 }
 
@@ -342,10 +280,7 @@ async function markLeadAnsweredStage({ contact_id }) {
   try {
     await supa
       .from("leads")
-      .update({
-        stage: "answered",
-        stage_changed_at: new Date().toISOString(),
-      })
+      .update({ stage: "answered", stage_changed_at: new Date().toISOString() })
       .eq("id", contact_id);
   } catch (e) {
     log("markLeadAnsweredStage err", e?.message);
@@ -398,28 +333,16 @@ async function markEnded({ legA, call_session_id, ended_at, hangup_cause }) {
     const wholeMinutes = Math.max(1, Math.ceil(duration_seconds / 60));
     try {
       const account_id = await resolveAccountId(user_id);
-      const { covered, remaining_to_bill } = await tryConsumeCallMinutes(
-        account_id,
-        wholeMinutes,
-        new Date()
-      );
+      const { covered, remaining_to_bill } = await tryConsumeCallMinutes(account_id, wholeMinutes, new Date());
       const overage_minutes = Math.max(0, remaining_to_bill || 0);
       billed_cents = overage_minutes * rate_cents_per_min;
-      log("usage.calls(minutes)", {
-        wholeMinutes,
-        covered,
-        overage_minutes,
-        billed_cents,
-        rate_cents_per_min,
-      });
+      log("usage.calls(minutes)", { wholeMinutes, covered, overage_minutes, billed_cents, rate_cents_per_min });
     } catch (e) {
-      billed_cents =
-        Math.max(1, Math.ceil(duration_seconds / 60)) * rate_cents_per_min;
+      billed_cents = Math.max(1, Math.ceil(duration_seconds / 60)) * rate_cents_per_min;
       log("usage minutes error; fallback to full billing", e?.message);
     }
   } else if (duration_seconds != null) {
-    billed_cents =
-      Math.max(1, Math.ceil(duration_seconds / 60)) * rate_cents_per_min;
+    billed_cents = Math.max(1, Math.ceil(duration_seconds / 60)) * rate_cents_per_min;
   }
 
   const baseUpdates = {
@@ -434,40 +357,10 @@ async function markEnded({ legA, call_session_id, ended_at, hangup_cause }) {
 
   // Wallet debit only for overage minutes
   if (billed_cents > 0 && user_id) {
-    const res = await debitWalletForCall({
-      legA: legA || null,
-      user_id,
-      cents: billed_cents,
-    });
-    if (!res.ok)
-      log("wallet debit failed (non-fatal)", res.error || "unknown");
+    const res = await debitWalletForCall({ legA: legA || null, user_id, cents: billed_cents });
+    if (!res.ok) log("wallet debit failed (non-fatal)", res.error || "unknown");
     else log("wallet debit ok", { user_id, billed_cents, record_enabled });
   }
-}
-
-/* ---------------- Helper for AGENT-FIRST retry ---------------- */
-async function handleAgentFirstTransferFailure({
-  legA,
-  lead_number,
-  from_number,
-}) {
-  if (!legA || !lead_number) return;
-  await speak(legA, {
-    payload: "The prospect disconnected. Connecting you to their voicemail.",
-    voice: "female",
-    language: "en-US",
-  });
-  if (RINGBACK_URL)
-    await action(legA, "playback_start", {
-      audio_url: RINGBACK_URL,
-      loop: true,
-    });
-  await transferCall({
-    callControlId: legA,
-    to: lead_number,
-    from: from_number || undefined,
-    timeout_secs: 55,
-  });
 }
 
 /* ---------------- Handler ---------------- */
@@ -485,18 +378,15 @@ exports.handler = async (event) => {
   }
 
   let payload;
-  try {
-    payload = JSON.parse(rawBody);
-  } catch {
-    log("json parse error");
-    return { statusCode: 200, body: "ok" };
-  }
+  try { payload = JSON.parse(rawBody); }
+  catch { log("json parse error"); return { statusCode: 200, body: "ok" }; }
 
   const data = payload?.data || {};
-  const eventType = data?.event_type || data?.record_type;
+  const eventType =
+    data?.event_type ||
+    data?.record_type;
   const p = data?.payload || data;
-  const occurred_at =
-    p?.occurred_at || payload?.occurred_at || new Date().toISOString();
+  const occurred_at = p?.occurred_at || payload?.occurred_at || new Date().toISOString();
 
   const legA = p?.call_control_id || p?.call_control_ids?.[0] || null;
   const call_session_id = p?.call_session_id || null;
@@ -509,14 +399,11 @@ exports.handler = async (event) => {
 
   const cs =
     decodeClientState(p?.client_state) ||
-    decodeClientState(p?.client_state_b64) ||
-    {};
+    decodeClientState(p?.client_state_b64) || {};
 
   // Unified state
-  const kind = cs.kind || cs.compat_kind || null; // supports old/new keys
-  const flow =
-    cs.flow ||
-    (kind === "crm_outbound_lead_leg" ? "lead_first" : "agent_first");
+  const kind = cs.kind || cs.compat_kind || null;       // supports old/new keys
+  const flow = cs.flow || (kind === "crm_outbound_lead_leg" ? "lead_first" : "agent_first");
 
   const user_id = cs.user_id || cs.agent_id || null;
   const contact_id = cs.contact_id || null;
@@ -526,31 +413,43 @@ exports.handler = async (event) => {
   const record_enabled = !!cs.record;
   const ringback_url = cs.ringback_url || null;
 
-  const press1_audio_url = cs.press1_audio_url || null;
-  const voicemail_audio_url = cs.voicemail_audio_url || null;
+  // NEW: TTS config from client_state (for lead-first press-1 flow)
+  const assistant_name = cs.assistant_name || cs.ai_assistant_name || null;
+  const agent_name = cs.agent_name || null;
+  const press1_tts = cs.press1_tts || null;
+  const voicemail_tts = cs.voicemail_tts || null;
 
   log("event", eventType, {
-    kind,
-    flow,
-    hasLegA: !!legA,
-    toPref: lead_number ? String(lead_number).slice(0, 4) + "…" : null,
-    record_enabled,
+    kind, flow, hasLegA: !!legA,
+    toPref: lead_number ? String(lead_number).slice(0,4) + "…" : null,
+    record_enabled
   });
+
+  async function handleAgentFirstTransferFailure() {
+    if (!legA || !lead_number) return;
+    await speak(legA, { payload: "The prospect disconnected. Connecting you to their voicemail.", voice: "female", language: "en-US" });
+    if (RINGBACK_URL) await playbackStart(legA, RINGBACK_URL, true);
+    await transferCall({
+      callControlId: legA,
+      to: lead_number,
+      from: from_number || undefined,
+      timeout_secs: 55
+    });
+  }
 
   try {
     switch (eventType) {
       case "call.initiated": {
         if (legA && user_id && lead_number) {
           await upsertInitiated({
-            user_id,
-            contact_id,
+            user_id, contact_id,
             to_number: lead_number,
             from_number,
             agent_number,
             legA,
             call_session_id,
             started_at: occurred_at,
-            record_enabled,
+            record_enabled
           });
         }
         break;
@@ -560,159 +459,115 @@ exports.handler = async (event) => {
         // === AGENT-FIRST: agent answered -> speak -> transfer to LEAD ===
         if (flow === "agent_first" && kind && kind.includes("crm_outbound_agent")) {
           if (legA) {
-            await speak(legA, {
-              payload: "Connecting your prospect.",
-              voice: "female",
-              language: "en-US",
-            });
+            await speak(legA, { payload: "Connecting your prospect.", voice: "female", language: "en-US" });
             await sleep(300);
           }
           if (legA && lead_number) {
             await transferCall({
               callControlId: legA,
               to: lead_number,
-              from: from_number || undefined,
+              from: from_number || undefined
             });
           }
         }
 
-        // === LEAD-FIRST: lead answered -> press-1 gather (recorded audio if available, else TTS) ===
+        // === LEAD-FIRST: lead answered -> TTS "press 1" (no agent dial yet) ===
         if (flow === "lead_first" && kind === "crm_outbound_lead_leg") {
+          const introText =
+            press1_tts ||
+            (assistant_name && agent_name
+              ? `This is ${assistant_name}, ${agent_name}'s AI assistant calling in regards to the life insurance form you sent in. Press 1 to connect to ${agent_name}.`
+              : agent_name
+                ? `This is your agent's AI assistant for ${agent_name} calling in regards to the life insurance form you sent in. Press 1 to connect to ${agent_name}.`
+                : `This is your agent's AI assistant calling in regards to the life insurance form you sent in. Press 1 to connect to your agent.`);
+
           if (legA) {
-            if (press1_audio_url) {
-              log("lead_first: starting gather_using_audio for press 1");
-              await action(legA, "gather_using_audio", {
-                audio_url: press1_audio_url,
-                valid_digits: "1",
-                max_digits: 1,
-                inter_digit_timeout_secs: 5,
-              });
-            } else {
-              log(
-                "lead_first: press1_audio_url missing, using gather_using_speak fallback"
-              );
-              await action(legA, "gather_using_speak", {
-                payload:
-                  "Hi, this is your licensed agent. Press 1 now to connect to me.",
-                voice: "female",
-                language: "en-US",
-                valid_digits: "1",
-                max_digits: 1,
-                inter_digit_timeout_secs: 5,
-              });
-            }
+            await action(legA, "gather_using_speak", {
+              payload: introText,
+              voice: "female",
+              language: "en-US",
+              valid_digits: "1",
+              maximum_digits: 1,
+              inter_digit_timeout_secs: 6,
+            });
           }
         }
 
+        // NOTE: we still mark call_logs as "answered" on first answer
         await markAnswered({ legA, call_session_id, answered_at: occurred_at });
         break;
       }
 
-      // === PRESS 1 HANDLER (LEAD-FIRST) ===
       case "call.gather.ended": {
-        const digits =
-          (p?.digits || p?.dtmf || p?.digit || "").toString().trim();
-        log("gather.ended", { digits, flow, kind });
-
+        // Only care about our LEAD-FIRST press-1 flow
         if (flow === "lead_first" && kind === "crm_outbound_lead_leg") {
-          // Only transfer if 1 pressed; otherwise no agent call
-          if (digits === "1" && legA && agent_number) {
-            log("lead_first: digit 1 received, transferring to agent");
-            if (ringback_url && legA) {
-              await action(legA, "playback_start", {
-                audio_url: ringback_url,
-                loop: true,
+          const digits = p?.digits || p?.dtmf || p?.digit || "";
+          const result = (p?.result || "").toLowerCase();
+          log("gather.ended", { digits, result });
+
+          if (digits === "1") {
+            // ✅ Lead explicitly accepted – now dial the agent and (on success) bridge
+            if (legA && RINGBACK_URL) {
+              await playbackStart(legA, RINGBACK_URL, true);
+            }
+            if (legA && agent_number) {
+              await transferCall({
+                callControlId: legA,
+                to: agent_number,
+                from: from_number || undefined,
+                timeout_secs: 45,
               });
             }
-            await transferCall({
-              callControlId: legA,
-              to: agent_number,
-              from: from_number || undefined,
-              timeout_secs: 45,
-            });
           } else {
-            log("lead_first: no valid digit, ending call without agent");
-            if (voicemail_audio_url && legA) {
-              // simple voicemail drop; no gather here, just play once and hang up
-              await action(legA, "playback_start", {
-                audio_url: voicemail_audio_url,
-                loop: false,
-              });
-              await sleep(12000);
+            // ❌ No 1 pressed (timeout / wrong digit / hangup) – treat as no connect / voicemail
+            const vmText =
+              voicemail_tts ||
+              (assistant_name && agent_name
+                ? `Sorry we missed you. This is ${assistant_name}, ${agent_name}'s AI assistant. We'll send you a quick text to reschedule.`
+                : `Sorry we missed you. We'll send you a quick text to reschedule your life insurance call.`);
+            if (legA && vmText) {
+              await speak(legA, { payload: vmText, voice: "female", language: "en-US" });
+              await sleep(500);
+              await hangupCall(legA);
             }
-            if (legA) await hangupCall(legA);
           }
         }
-
         break;
       }
 
       case "call.bridged": {
         if (legA) await playbackStop(legA);
-        await markBridged({
-          legA,
-          call_session_id,
-          maybeLegB: peerLeg || null,
-        });
+        await markBridged({ legA, call_session_id, maybeLegB: peerLeg || null });
         if (record_enabled && legA) startRecording(legA);
         if (contact_id) await markLeadAnsweredStage({ contact_id });
         break;
       }
 
       case "call.transfer.completed": {
-        const outcome = (
-          p?.result ||
-          p?.cause ||
-          p?.hangup_cause ||
-          ""
-        ).toLowerCase();
-        log("transfer.completed", { outcome, peerLeg: !!peerLeg, flow });
+        const outcome = (p?.result || p?.cause || p?.hangup_cause || "").toLowerCase();
+        log("transfer.completed", { outcome, peerLeg: !!peerLeg });
 
         if (legA) await playbackStop(legA);
 
         const failed =
           !peerLeg ||
-          [
-            "busy",
-            "no_answer",
-            "call_rejected",
-            "user_busy",
-            "unallocated_number",
-            "call_hangup",
-            "hangup",
-            "cancelled",
-            "canceled",
-            "no_user_response",
-            "",
-          ].includes(outcome);
+          ["busy", "no_answer", "call_rejected", "user_busy", "unallocated_number", "call_hangup",
+           "hangup", "cancelled", "canceled", "no_user_response", ""].includes(outcome);
 
-        // Only AGENT-FIRST uses the voicemail retry behavior
         if (failed && flow === "agent_first") {
-          await handleAgentFirstTransferFailure({
-            legA,
-            lead_number,
-            from_number,
-          });
+          await handleAgentFirstTransferFailure();
         } else if (legA && peerLeg) {
-          await markBridged({
-            legA,
-            call_session_id,
-            maybeLegB: peerLeg,
-          });
+          await markBridged({ legA, call_session_id, maybeLegB: peerLeg });
         }
         break;
       }
 
       case "call.transfer.failed":
       case "call.transfer.hangup": {
-        log(eventType, { cause: p?.cause || p?.hangup_cause, flow });
+        log(eventType, { cause: p?.cause || p?.hangup_cause });
         if (legA) await playbackStop(legA);
         if (flow === "agent_first") {
-          await handleAgentFirstTransferFailure({
-            legA,
-            lead_number,
-            from_number,
-          });
+          await handleAgentFirstTransferFailure();
         }
         break;
       }
@@ -720,10 +575,7 @@ exports.handler = async (event) => {
       case "call.recording.saved": {
         const url = p?.recording_urls?.mp3 || p?.recording_url || null;
         if (call_session_id && url) {
-          await saveRecordingUrlByCallSession({
-            call_session_id,
-            recording_url: url,
-          });
+          await saveRecordingUrlByCallSession({ call_session_id, recording_url: url });
         }
         break;
       }
@@ -731,12 +583,7 @@ exports.handler = async (event) => {
       case "call.ended":
       case "call.hangup": {
         if (legA) await playbackStop(legA);
-        await markEnded({
-          legA,
-          call_session_id,
-          ended_at: occurred_at,
-          hangup_cause: p?.hangup_cause,
-        });
+        await markEnded({ legA, call_session_id, ended_at: occurred_at, hangup_cause: p?.hangup_cause });
         break;
       }
 
@@ -744,11 +591,7 @@ exports.handler = async (event) => {
       case "call.initiated.outbound":
       case "call.answered.outbound": {
         if (legA && peerLeg) {
-          await markBridged({
-            legA,
-            call_session_id,
-            maybeLegB: peerLeg,
-          });
+          await markBridged({ legA, call_session_id, maybeLegB: peerLeg });
         }
         break;
       }
