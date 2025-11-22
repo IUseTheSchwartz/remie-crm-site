@@ -4,8 +4,8 @@
 //  - LEAD-FIRST  (Auto Dialer): lead answers  -> speak -> (optional ringback) -> transfer to agent -> bridge
 //
 // Stage is marked "answered" ONLY on call.bridged (never on first answer).
-// NEW: If AGENT-FIRST transfer fails (lead hangs up / busy / no answer), tell agent and retry with longer timeout to hit voicemail.
-//      Optional RINGBACK_URL will play to the agent while the voicemail retry is ringing.
+// If AGENT-FIRST transfer fails (lead hangs up / busy / no answer), tell agent and retry with longer timeout to hit voicemail.
+// Optional RINGBACK_URL will play to the agent while the voicemail retry is ringing.
 
 const crypto = require("crypto");
 const fetch = require("node-fetch");
@@ -286,6 +286,34 @@ async function markLeadAnsweredStage({ contact_id }) {
   }
 }
 
+/* ---- Helper: is this call still active? (for lead-first guard) ---- */
+async function isCallStillActive({ legA, call_session_id }) {
+  if (!supa) return true; // if we can't check, fall back to old behavior
+
+  let row = null;
+  if (legA) {
+    const { data } = await supa
+      .from("call_logs")
+      .select("status, ended_at")
+      .eq("telnyx_leg_a_id", legA)
+      .maybeSingle();
+    row = data || null;
+  }
+  if (!row && call_session_id) {
+    const { data } = await supa
+      .from("call_logs")
+      .select("status, ended_at")
+      .eq("call_session_id", call_session_id)
+      .maybeSingle();
+    row = data || null;
+  }
+
+  if (!row) return true;
+  if (row.ended_at) return false;
+  if (row.status && (row.status === "completed" || row.status === "failed")) return false;
+  return true;
+}
+
 /* ---------------- END logic (MINUTES pool) ---------------- */
 async function markEnded({ legA, call_session_id, ended_at, hangup_cause }) {
   if (!supa) return;
@@ -472,14 +500,19 @@ exports.handler = async (event) => {
             await action(legA, "playback_start", { audio_url: ringback_url, loop: true });
           }
           if (legA && agent_number) {
-            // small guard delay so instant hangups don't get treated as full connects
+            // Guard: give Telnyx time to send call.ended if the lead declined
             await sleep(800);
-            await transferCall({
-              callControlId: legA,
-              to: agent_number,
-              from: from_number || undefined,
-              timeout_secs: 45
-            });
+            const stillActive = await isCallStillActive({ legA, call_session_id });
+            if (!stillActive) {
+              log("lead_first: call already ended before transfer; skipping agent leg");
+            } else {
+              await transferCall({
+                callControlId: legA,
+                to: agent_number,
+                from: from_number || undefined,
+                timeout_secs: 45
+              });
+            }
           }
         }
 
@@ -549,7 +582,7 @@ exports.handler = async (event) => {
         break;
       }
 
-      // Fallback bridge marker — now ONLY for AGENT-FIRST
+      // Fallback bridge marker — ONLY for AGENT-FIRST
       case "call.transfer.initiated":
       case "call.initiated.outbound":
       case "call.answered.outbound": {
