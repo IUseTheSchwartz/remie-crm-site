@@ -472,22 +472,33 @@ exports.handler = async (event) => {
             await action(legA, "playback_start", { audio_url: ringback_url, loop: true });
           }
           if (legA && agent_number) {
+            // EXTRA GUARD: small delay to avoid dialing the agent
+            // if the lead immediately declines / hangs up.
+            await sleep(800);
             await transferCall({
               callControlId: legA,
               to: agent_number,
               from: from_number || undefined,
-              timeout_secs: 45   // ← only change: ensure agent leg actually rings long enough
+              timeout_secs: 45
             });
           }
         }
 
-        await markAnswered({ legA, call_session_id, answered_at: occurred_at });
+        // For AGENT-FIRST we still want "answered" when the agent picks up.
+        // For LEAD-FIRST, we'll only mark answered when there's a real bridge.
+        if (flow === "agent_first") {
+          await markAnswered({ legA, call_session_id, answered_at: occurred_at });
+        }
         break;
       }
 
       case "call.bridged": {
         if (legA) await playbackStop(legA);
+
+        // At the MOMENT of real bridge, treat as answered for BOTH flows.
+        await markAnswered({ legA, call_session_id, answered_at: occurred_at });
         await markBridged({ legA, call_session_id, maybeLegB: peerLeg || null });
+
         if (record_enabled && legA) startRecording(legA);
         if (contact_id) await markLeadAnsweredStage({ contact_id });
         break;
@@ -507,6 +518,9 @@ exports.handler = async (event) => {
         if (failed && flow === "agent_first") {
           await handleAgentFirstTransferFailure();
         } else if (legA && peerLeg) {
+          // In case some integrations rely on transfer.completed instead of call.bridged,
+          // also treat this as the real "answered + bridged" moment.
+          await markAnswered({ legA, call_session_id, answered_at: occurred_at });
           await markBridged({ legA, call_session_id, maybeLegB: peerLeg });
         }
         break;
