@@ -303,29 +303,12 @@ async function markLeadAnsweredStage({ contact_id }) {
 
 /* ---- Lead-first guard: did the lead leg already end before transfer? ---- */
 async function isLeadLegDeadBeforeTransfer({ legA, call_session_id }) {
-  // If we don't have Supabase, fall back to Telnyx status only
-  if (!supa) {
-    const info = await getCallStatus(legA);
-    const st = (info?.status || "").toLowerCase();
-    const telnyxDead = [
-      "completed",
-      "failed",
-      "busy",
-      "no_answer",
-      "disconnected",
-      "hangup",
-      "canceled",
-      "cancelled",
-    ];
-    return !!st && telnyxDead.includes(st);
-  }
-
   // 1) Give Telnyx + webhooks a moment to process a fast decline/hangup
   await sleep(900);
 
   // 2) Check call_logs for an ended/failed status
   let row = null;
-  if (legA) {
+  if (supa && legA) {
     const { data } = await supa
       .from("call_logs")
       .select("status, ended_at")
@@ -333,7 +316,7 @@ async function isLeadLegDeadBeforeTransfer({ legA, call_session_id }) {
       .maybeSingle();
     row = data || null;
   }
-  if (!row && call_session_id) {
+  if (supa && !row && call_session_id) {
     const { data } = await supa
       .from("call_logs")
       .select("status, ended_at")
@@ -341,6 +324,13 @@ async function isLeadLegDeadBeforeTransfer({ legA, call_session_id }) {
       .maybeSingle();
     row = data || null;
   }
+
+  log("lead_first guard: call_logs snapshot", {
+    legA,
+    call_session_id,
+    status: row?.status || null,
+    ended_at: row?.ended_at || null,
+  });
 
   if (row) {
     if (row.ended_at) {
@@ -366,11 +356,14 @@ async function isLeadLegDeadBeforeTransfer({ legA, call_session_id }) {
     "canceled",
     "cancelled",
   ];
+  log("lead_first guard: telnyx status check", { legA, status: st });
+
   if (st && telnyxDead.includes(st)) {
     log("lead_first guard: Telnyx status =", st, "→ treat as dead");
     return true;
   }
 
+  log("lead_first guard: lead leg considered ALIVE (will transfer)");
   return false;
 }
 
@@ -552,6 +545,13 @@ exports.handler = async (event) => {
 
         // === LEAD-FIRST: lead answered -> speak -> (optional ringback) -> transfer to AGENT ===
         if (flow === "lead_first" && kind === "crm_outbound_lead_leg") {
+          log("lead_first: call.answered handler entered", {
+            legA,
+            call_session_id,
+            agent_number,
+            lead_number
+          });
+
           if (legA) {
             await speak(legA, { payload: "Connecting you to your agent.", voice: "female", language: "en-US" });
             await sleep(450);
@@ -560,11 +560,18 @@ exports.handler = async (event) => {
             await action(legA, "playback_start", { audio_url: ringback_url, loop: true });
           }
           if (legA && agent_number) {
-            // NEW: Only transfer if the lead leg has NOT already ended/failed
+            log("lead_first: about to run isLeadLegDeadBeforeTransfer");
             const dead = await isLeadLegDeadBeforeTransfer({ legA, call_session_id });
+            log("lead_first: isLeadLegDeadBeforeTransfer result =", dead);
+
             if (dead) {
               log("lead_first: skipping agent transfer; lead leg already ended/failed");
             } else {
+              log("lead_first: proceeding to transfer to agent", {
+                legA,
+                agent_number,
+                from_number,
+              });
               await transferCall({
                 callControlId: legA,
                 to: agent_number,
