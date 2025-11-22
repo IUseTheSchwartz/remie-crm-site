@@ -63,7 +63,7 @@ export async function startCall({ agentNumber, leadNumber, contactId = null }) {
 /**
  * Start a LEAD-FIRST call (Auto Dialer).
  * - Leg A = LEAD (we dial the lead first)
- * - webhook (lead_first branch) runs a TTS "press 1" gather, and only then dials the AGENT + bridges
+ * - telnyx-voice-webhook.js (lead_first branch) dials the AGENT on lead answer and bridges
  * - If fromNumber is omitted, Telnyx uses the connection’s default caller ID
  * Returns: { ok:true, call_leg_id, call_session_id?, contact_id }
  */
@@ -76,11 +76,13 @@ export async function startLeadFirstCall({
   ringTimeout = 25,
   ringbackUrl = "",
   sessionId = null,
-  // NEW: TTS + names for press-1 and voicemail
-  introTts = null,
-  voicemailTts = null,
-  assistantName = null,
-  agentDisplayName = null,
+
+  // NEW: TTS settings
+  introTts = "",
+  voicemailTts = "",
+  assistantName = "",
+  agentDisplayName = "",
+  ttsVoice = "female",
 }) {
   const [{ data: auth }, { data: sess }] = await Promise.all([
     supabase.auth.getUser(),
@@ -100,10 +102,13 @@ export async function startLeadFirstCall({
     ring_timeout: ringTimeout,
     ringback_url: ringbackUrl,
     session_id: sessionId,
-    ...(introTts ? { press1_tts: introTts } : {}),
-    ...(voicemailTts ? { voicemail_tts: voicemailTts } : {}),
-    ...(assistantName ? { assistant_name: assistantName } : {}),
-    ...(agentDisplayName ? { agent_name: agentDisplayName } : {}),
+
+    // TTS-related fields (snake_case for backend/client_state)
+    intro_tts: introTts,
+    voicemail_tts: voicemailTts,
+    assistant_name: assistantName,
+    agent_display_name: agentDisplayName,
+    tts_voice: ttsVoice,
   };
 
   let res, json;
@@ -112,7 +117,7 @@ export async function startLeadFirstCall({
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        Authorization: `Bearer ${token}`, // <-- always send (prevents 401)
+        Authorization: `Bearer ${token}`,
       },
       body: JSON.stringify(payload),
     });
@@ -140,8 +145,6 @@ export async function startLeadFirstCall({
 
 /**
  * List recent call logs for the signed-in user.
- * Expects a `call_logs` table with RLS to auth.uid().
- * Typical columns: to_number, from_number, status, started_at, duration_seconds, recording_url
  */
 export async function listMyCallLogs(limit = 100) {
   const { data: auth } = await supabase.auth.getUser();
