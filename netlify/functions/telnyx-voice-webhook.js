@@ -1,14 +1,16 @@
 // File: netlify/functions/telnyx-voice-webhook.js
 // Supports BOTH flows:
 //  - AGENT-FIRST (Leads Page click-to-call): agent answers -> speak -> transfer to lead -> bridge
-//  - LEAD-FIRST  (Auto Dialer): lead answers -> press-1 IVR (your recording) -> on "1" dial agent -> bridge
+//  - LEAD-FIRST  (Auto Dialer): lead answers  -> TTS "press 1" gather -> if 1 then transfer to agent -> bridge
 //
 // Stage is marked "answered" ONLY on call.bridged (never on first answer).
 // NEW: If AGENT-FIRST transfer fails (lead hangs up / busy / no answer), tell agent and retry with longer timeout to hit voicemail.
 //      Optional RINGBACK_URL will play to the agent while the voicemail retry is ringing.
-// NEW (lead-first with recordings):
-//  - We NEVER dial the agent unless the lead actually presses "1" during gather.
-//  - If they hang up / don't press anything / voicemail picks up, agent is never called; call ends as failed and UI shows failed.
+//
+// NEW for LEAD-FIRST:
+//  - On call.answered: use gather_using_speak to say "Press 1 to connect to your agent".
+//  - On call.gather.ended: if digits === "1" => transfer to agent; otherwise hang up (no agent call).
+//  - This guarantees: no press 1 ⇒ agent never rings, even if lead declines / hangs up.
 
 const crypto = require("crypto");
 const fetch = require("node-fetch");
@@ -22,7 +24,7 @@ const SUPABASE_SERVICE_ROLE =
   process.env.SUPABASE_SERVICE_ROLE ||
   "";
 
-// Optional ringback looped to the AGENT during the voicemail retry (agent-first only)
+// Optional ringback looped to the AGENT during the voicemail retry
 const RINGBACK_URL = process.env.RINGBACK_URL || "";
 
 const supa =
@@ -117,8 +119,7 @@ async function tryConsumeCallMinutes(account_id, minutes, now = new Date()) {
 
   const remaining = Math.max(
     0,
-    (row0.free_call_minutes_total || 0) -
-      (row0.free_call_minutes_used || 0)
+    (row0.free_call_minutes_total || 0) - (row0.free_call_minutes_used || 0)
   );
   const covered = Math.min(remaining, minutes);
   const over = minutes - covered;
@@ -153,7 +154,10 @@ function verifySignature(rawBody, signatureHeader) {
     const hmac = crypto.createHmac("sha256", TELNYX_WEBHOOK_SECRET);
     hmac.update(payload);
     const digest = hmac.digest("hex");
-    return crypto.timingSafeEqual(Buffer.from(digest), Buffer.from(sig));
+    return crypto.timingSafeEqual(
+      Buffer.from(digest),
+      Buffer.from(sig)
+    );
   } catch {
     return false;
   }
@@ -198,8 +202,8 @@ async function action(callControlId, path, body = {}) {
 
 // >>> IMPORTANT: use E.164 strings for `to`/`from`; omit `from` if you want connection default
 async function transferCall({ callControlId, to, from, timeout_secs }) {
-  const body = { to };
-  if (from) body.from = from;
+  const body = { to }; // e.g. "+15551234567"
+  if (from) body.from = from; // e.g. "+15557654321"
   if (timeout_secs) body.timeout_secs = timeout_secs;
   return action(callControlId, "transfer", body);
 }
@@ -306,9 +310,7 @@ async function upsertInitiated({
       .eq("id", existing.id);
     if (error) log("upsert initiated (update) err", error.message);
   } else {
-    const { error } = await supa
-      .from("call_logs")
-      .insert(baseFields);
+    const { error } = await supa.from("call_logs").insert(baseFields);
     if (error) log("upsert initiated (insert) err", error.message);
   }
 }
@@ -414,10 +416,7 @@ async function markEnded({ legA, call_session_id, ended_at, hangup_cause }) {
     } catch (e) {
       billed_cents =
         Math.max(1, Math.ceil(duration_seconds / 60)) * rate_cents_per_min;
-      log(
-        "usage minutes error; fallback to full billing",
-        e?.message
-      );
+      log("usage minutes error; fallback to full billing", e?.message);
     }
   } else if (duration_seconds != null) {
     billed_cents =
@@ -441,9 +440,35 @@ async function markEnded({ legA, call_session_id, ended_at, hangup_cause }) {
       user_id,
       cents: billed_cents,
     });
-    if (!res.ok) log("wallet debit failed (non-fatal)", res.error || "unknown");
+    if (!res.ok)
+      log("wallet debit failed (non-fatal)", res.error || "unknown");
     else log("wallet debit ok", { user_id, billed_cents, record_enabled });
   }
+}
+
+/* ---------------- Helper for AGENT-FIRST retry ---------------- */
+async function handleAgentFirstTransferFailure({
+  legA,
+  lead_number,
+  from_number,
+}) {
+  if (!legA || !lead_number) return;
+  await speak(legA, {
+    payload: "The prospect disconnected. Connecting you to their voicemail.",
+    voice: "female",
+    language: "en-US",
+  });
+  if (RINGBACK_URL)
+    await action(legA, "playback_start", {
+      audio_url: RINGBACK_URL,
+      loop: true,
+    });
+  await transferCall({
+    callControlId: legA,
+    to: lead_number,
+    from: from_number || undefined,
+    timeout_secs: 55,
+  });
 }
 
 /* ---------------- Handler ---------------- */
@@ -502,10 +527,9 @@ exports.handler = async (event) => {
   const record_enabled = !!cs.record;
   const ringback_url = cs.ringback_url || null;
 
+  // (for future: recorded messages; not required for TTS test)
   const press1_audio_url = cs.press1_audio_url || null;
   const voicemail_audio_url = cs.voicemail_audio_url || null;
-  const press1_script = cs.press1_script || null;
-  const voicemail_script = cs.voicemail_script || null;
 
   log("event", eventType, {
     kind,
@@ -514,27 +538,6 @@ exports.handler = async (event) => {
     toPref: lead_number ? String(lead_number).slice(0, 4) + "…" : null,
     record_enabled,
   });
-
-  async function handleAgentFirstTransferFailure() {
-    if (!legA || !lead_number) return;
-    await speak(legA, {
-      payload:
-        "The prospect disconnected. Connecting you to their voicemail.",
-      voice: "female",
-      language: "en-US",
-    });
-    if (RINGBACK_URL)
-      await action(legA, "playback_start", {
-        audio_url: RINGBACK_URL,
-        loop: true,
-      });
-    await transferCall({
-      callControlId: legA,
-      to: lead_number,
-      from: from_number || undefined,
-      timeout_secs: 55,
-    });
-  }
 
   try {
     switch (eventType) {
@@ -557,11 +560,7 @@ exports.handler = async (event) => {
 
       case "call.answered": {
         // === AGENT-FIRST: agent answered -> speak -> transfer to LEAD ===
-        if (
-          flow === "agent_first" &&
-          kind &&
-          String(kind).includes("crm_outbound_agent")
-        ) {
+        if (flow === "agent_first" && kind && kind.includes("crm_outbound_agent")) {
           if (legA) {
             await speak(legA, {
               payload: "Connecting your prospect.",
@@ -579,77 +578,64 @@ exports.handler = async (event) => {
           }
         }
 
-        // === LEAD-FIRST: lead answered -> play your press-1 recording with gather ===
+        // === LEAD-FIRST: lead answered -> TTS gather "press 1" ===
+        // We do NOT transfer here anymore; we wait for call.gather.ended and only transfer if 1 was pressed.
         if (flow === "lead_first" && kind === "crm_outbound_lead_leg") {
           if (legA) {
-            if (press1_audio_url) {
-              // Your own recording, press-1 IVR
-              await action(legA, "gather_using_audio", {
-                audio_url: press1_audio_url,
-                // we'll inspect digits via call.gather.ended; no need to set valid_digits
-              });
-            } else {
-              // Fallback to TTS if no recording (shouldn't happen because UI requires recording)
-              const prompt =
-                press1_script ||
-                "Hi, this is your agent. Press 1 to be connected now.";
-              await action(legA, "gather_using_speak", {
-                payload: prompt,
-                voice: "female",
-                language: "en-US",
-              });
-            }
+            log("lead_first: starting gather_using_speak for press 1");
+            await action(legA, "gather_using_speak", {
+              payload:
+                "Hi, this is your licensed agent. Press 1 now to connect to me.",
+              voice: "female",
+              language: "en-US",
+              valid_digits: "1",
+              max_digits: 1,
+              inter_digit_timeout_secs: 5,
+            });
           }
         }
 
-        await markAnswered({
-          legA,
-          call_session_id,
-          answered_at: occurred_at,
-        });
+        // We still mark answered for logs / UI; call will later end as completed/failed based on hangup cause
+        await markAnswered({ legA, call_session_id, answered_at: occurred_at });
         break;
       }
 
+      // === PRESS 1 HANDLER (LEAD-FIRST) ===
       case "call.gather.ended": {
-        // Lead-first IVR result (press-1 or not)
-        if (flow === "lead_first" && kind === "crm_outbound_lead_leg" && legA) {
-          const digits = (p?.digits || "").trim();
-          log("gather.ended", { digits });
+        const digits =
+          (p?.digits || p?.dtmf || p?.digit || "").toString().trim();
+        log("gather.ended", { digits, flow, kind });
 
-          if (digits === "1") {
-            // LEAD pressed 1 => we now dial the AGENT
-            if (ringback_url) {
+        if (flow === "lead_first" && kind === "crm_outbound_lead_leg") {
+          // Only transfer if 1 pressed; otherwise no agent call
+          if (digits === "1" && legA && agent_number) {
+            log("lead_first: digit 1 received, transferring to agent");
+            if (ringback_url && legA) {
               await action(legA, "playback_start", {
                 audio_url: ringback_url,
                 loop: true,
               });
             }
-            if (agent_number) {
-              await transferCall({
-                callControlId: legA,
-                to: agent_number,
-                from: from_number || undefined,
-                timeout_secs: 45,
-              });
-            }
+            await transferCall({
+              callControlId: legA,
+              to: agent_number,
+              from: from_number || undefined,
+              timeout_secs: 45,
+            });
           } else {
-            // No valid digit => treat as no-answer / voicemail:
-            // Play voicemail recording if we have one; NEVER dial the agent.
-            if (voicemail_audio_url) {
+            log("lead_first: no valid digit, ending call without agent");
+            // Optional: simple voicemail drop (if you later wire voicemail_audio_url)
+            if (voicemail_audio_url && legA) {
               await action(legA, "playback_start", {
                 audio_url: voicemail_audio_url,
+                loop: false,
               });
-            } else if (voicemail_script) {
-              await speak(legA, {
-                payload: voicemail_script,
-                voice: "female",
-                language: "en-US",
-              });
+              await sleep(12000);
             }
-            // We do NOT hang up here; remote voicemail / lead will eventually hang up,
-            // and call.ended will handle status + billing.
+            if (legA) await hangupCall(legA);
           }
         }
+
         break;
       }
 
@@ -672,7 +658,7 @@ exports.handler = async (event) => {
           p?.hangup_cause ||
           ""
         ).toLowerCase();
-        log("transfer.completed", { outcome, peerLeg: !!peerLeg });
+        log("transfer.completed", { outcome, peerLeg: !!peerLeg, flow });
 
         if (legA) await playbackStop(legA);
 
@@ -692,8 +678,13 @@ exports.handler = async (event) => {
             "",
           ].includes(outcome);
 
+        // Only AGENT-FIRST uses the voicemail retry behavior
         if (failed && flow === "agent_first") {
-          await handleAgentFirstTransferFailure();
+          await handleAgentFirstTransferFailure({
+            legA,
+            lead_number,
+            from_number,
+          });
         } else if (legA && peerLeg) {
           await markBridged({
             legA,
@@ -706,10 +697,14 @@ exports.handler = async (event) => {
 
       case "call.transfer.failed":
       case "call.transfer.hangup": {
-        log(eventType, { cause: p?.cause || p?.hangup_cause });
+        log(eventType, { cause: p?.cause || p?.hangup_cause, flow });
         if (legA) await playbackStop(legA);
         if (flow === "agent_first") {
-          await handleAgentFirstTransferFailure();
+          await handleAgentFirstTransferFailure({
+            legA,
+            lead_number,
+            from_number,
+          });
         }
         break;
       }
