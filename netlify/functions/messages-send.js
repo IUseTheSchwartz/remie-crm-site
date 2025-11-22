@@ -1,3 +1,4 @@
+// File: netlify/functions/messages-send.js
 // Sends an SMS via Telnyx using a template or raw body.
 // DEDUPE-SAFE using provider_message_id (pass it!)
 // Accepts: { to?, contact_id?, lead_id?, body?, templateKey?/template_key?/template?, requesterId?, provider_message_id?, sent_by_ai? }
@@ -336,7 +337,16 @@ exports.handler = async (event) => {
 
       if (!tpl) return json({ error: "template_not_found", requested: templateKey, tried: keyToUse, trace }, 404);
 
+      // -------- NEW: respect per-agent toggle for auto new-lead texts --------
       const ap = await getAgentProfile(db, user_id);
+      const isNewLeadAuto = keyToUse === "new_lead" || keyToUse === "new_lead_military";
+      const autoNewLeadEnabled = ap?.auto_new_lead_texts_enabled;
+
+      if (isNewLeadAuto && autoNewLeadEnabled === false) {
+        trace.push({ step: "auto_new_lead.disabled", templateKey: keyToUse });
+        return json({ status: "auto_new_lead_texts_disabled", templateKey: keyToUse, trace }, 200);
+      }
+
       const slug = (ap?.slug || "").trim();
       const agent_site = slug ? `${AGENT_SITE_BASE.replace(/\/+$/,"")}/a/${slug}` : "";
       const ctx = {
