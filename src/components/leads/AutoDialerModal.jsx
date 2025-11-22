@@ -22,7 +22,7 @@ function badgeClass(status) {
     case "dialing": return "bg-white/10 text-white/80";
     case "ringing": return "bg-amber-500/15 text-amber-300";
     case "answered": return "bg-sky-500/15 text-sky-300";
-    case "bridged": return "bg-indigo-500/15 text-indigo-300";
+    case "bridged": return "bg-emerald-500/15 text-emerald-300";   // Pressed 1 (green)
     case "completed": return "bg-emerald-500/15 text-emerald-300";
     case "failed": return "bg-rose-500/15 text-rose-300";
     default: return "bg-white/10 text-white/70";
@@ -217,7 +217,8 @@ export default function AutoDialerModal({ onClose, rows = [] }) {
             } else if (rawStatus === "ringing") {
               mapped = "ringing";
             } else if (rawStatus === "answered") {
-              mapped = "answered";
+              // don't show a separate "Answered" state; keep whatever we had, default to ringing
+              mapped = liveStatusRef.current[leadId] || "ringing";
             } else if (rawStatus === "bridged") {
               mapped = "bridged";
             } else if (rawStatus === "completed") {
@@ -371,6 +372,7 @@ export default function AutoDialerModal({ onClose, rows = [] }) {
 
     try {
       setLiveStatus((s) => ({ ...s, [item.id]: "dialing" }));
+
       setQueue((qPrev) =>
         qPrev.map((x, i) => (i === idx ? { ...x, status: "dialing" } : x))
       );
@@ -779,6 +781,18 @@ export default function AutoDialerModal({ onClose, rows = [] }) {
                 const r = rowsLookup.get(q.id) || {};
                 const uiStatus = liveStatus[q.id] || q.status || "queued";
                 const isCurrent = i === currentIdx;
+
+                // UI label:
+                // - bridged  -> "Pressed 1" (green)
+                // - failed   -> "Press 1" (red, means they didn't press 1)
+                // - completed-> "Completed"
+                // - others   -> default label
+                const statusLabel =
+                  uiStatus === "bridged"   ? "Pressed 1" :
+                  uiStatus === "failed"    ? "Press 1"   :
+                  uiStatus === "completed" ? "Completed" :
+                  cap(uiStatus);
+
                 return (
                   <tr key={q.id} className={`border-t border-white/10 ${isCurrent ? "bg-white/[0.03]" : ""}`}>
                     <td className="px-3 py-2">{i + 1}</td>
@@ -787,7 +801,7 @@ export default function AutoDialerModal({ onClose, rows = [] }) {
                     <td className="px-3 py-2">{r.state || "—"}</td>
                     <td className="px-3 py-2">{q.attempts || 0}/{maxAttempts}</td>
                     <td className="px-3 py-2">
-                      <span className={`rounded-full px-2 py-0.5 text-xs ${badgeClass(uiStatus)}`}>{cap(uiStatus)}</span>
+                      <span className={`rounded-full px-2 py-0.5 text-xs ${badgeClass(uiStatus)}`}>{statusLabel}</span>
                     </td>
                     <td className="px-3 py-2">
                       <button
