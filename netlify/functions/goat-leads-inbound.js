@@ -49,7 +49,6 @@ function safeString(v) {
 
 async function trySendNewLeadText({ user_id, lead_id, isMilitary }) {
   try {
-    // This function uses service role; we just call messages-send directly.
     const url = `${FN_BASE.replace(/\/$/, "")}/messages-send`;
 
     const preferredKey = isMilitary ? "new_lead_military" : "new_lead";
@@ -58,7 +57,6 @@ async function trySendNewLeadText({ user_id, lead_id, isMilitary }) {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        // tell messages-send which user this is if it can't derive from lead_id
       },
       body: JSON.stringify({
         requesterId: user_id,
@@ -73,8 +71,6 @@ async function trySendNewLeadText({ user_id, lead_id, isMilitary }) {
 
     const out = await res.json().catch(() => ({}));
     console.log("[goat-leads-inbound] messages-send response:", out);
-
-    // We don't fail the webhook if texting fails; just log it.
     return out;
   } catch (e) {
     console.warn("[goat-leads-inbound] auto-text failed:", e?.message || e);
@@ -94,11 +90,11 @@ exports.handler = async (event) => {
       return json({ ok: false, error: "missing_token" }, 400);
     }
 
-    // 1) Resolve user_id from token
+    // 1) Resolve user_id from agent_profiles.goat_webhook_token
     const { data: tokenRow, error: tokenErr } = await db
-      .from("goat_webhook_tokens")
+      .from("agent_profiles")
       .select("user_id")
-      .eq("token", token)
+      .eq("goat_webhook_token", token)
       .maybeSingle();
 
     if (tokenErr) {
@@ -171,7 +167,7 @@ exports.handler = async (event) => {
       src.military_status,
       src["Military Status"]
     );
-    const military_branch = military_status; // we just store the text
+    const military_branch = military_status;
 
     const lead_type = safeString(
       src.lead_type,
@@ -200,16 +196,14 @@ exports.handler = async (event) => {
       email,
       state,
       dob,
-      beneficiary: beneficiary_name, // keep both filled
+      beneficiary: beneficiary_name,
       beneficiary_name,
       gender,
       military_branch,
       lead_type,
       source,
-      // stage, status, created_at, etc. should default in DB
     };
 
-    // Remove undefined to avoid Postgrest complaining
     Object.keys(row).forEach((k) => {
       if (row[k] === undefined) delete row[k];
     });
