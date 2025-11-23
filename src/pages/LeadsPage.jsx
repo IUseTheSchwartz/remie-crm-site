@@ -147,7 +147,7 @@ async function sendSoldAutoText({ leadId }) {
 }
 
 /* =============================================================================
-   Inbound Webhook Drawer Panel (unchanged)
+   Inbound Webhook Drawer Panel (Google Sheet based)
 ============================================================================= */
 function InboundWebhookPanel() {
   const [username, setUsername] = useState("");
@@ -155,6 +155,7 @@ function InboundWebhookPanel() {
   const [loading, setLoading] = useState(true);
   const [copied, setCopied] = useState({ u: false, p: false, addr: false });
   const LEADS_EMAIL = "remiecrmleads@gmail.com";
+
   useEffect(() => {
     (async () => {
       try {
@@ -173,6 +174,7 @@ function InboundWebhookPanel() {
       } finally { setLoading(false); }
     })();
   }, []);
+
   function copy(val, k) {
     try {
       navigator.clipboard.writeText(val);
@@ -180,32 +182,46 @@ function InboundWebhookPanel() {
       setTimeout(() => setCopied((c) => ({ ...c, [k]: false })), 1200);
     } catch {}
   }
+
   return (
     <div className="rounded-2xl border border-white/15 bg-white/[0.03] p-4">
-      <div className="mb-2 text-base font-semibold">Auto-Import Leads</div>
+      <div className="mb-2 text-base font-semibold">Auto-Import Leads (Google Sheet)</div>
       <p className="mb-4 text-sm text-white/70">
         Send leads straight into Remie via webhook. Authenticate with <b>Basic Auth</b> using your Username &amp; Password.
       </p>
       <div className="grid gap-3 md:grid-cols-[160px_1fr_auto] items-center">
         <div className="text-xs text-white/60">Username</div>
         <div className="flex items-center gap-2">
-          <input readOnly value={loading ? "Loading…" : username || "—"}
-                 className="w-full rounded-lg border border-white/15 bg-black/40 px-3 py-2 text-sm outline-none"/>
-          <button type="button" onClick={() => copy(username, "u")}
-                  className="rounded-lg border border-white/15 bg-white/5 px-3 py-2 text-xs hover:bg-white/10"
-                  disabled={!username}>
+          <input
+            readOnly
+            value={loading ? "Loading…" : username || "—"}
+            className="w-full rounded-lg border border-white/15 bg-black/40 px-3 py-2 text-sm outline-none"
+          />
+          <button
+            type="button"
+            onClick={() => copy(username, "u")}
+            className="rounded-lg border border-white/15 bg-white/5 px-3 py-2 text-xs hover:bg-white/10"
+            disabled={!username}
+          >
             {copied.u ? "Copied!" : "Copy"}
           </button>
         </div>
         <div />
         <div className="text-xs text-white/60">Password</div>
         <div className="flex items-center gap-2">
-          <input readOnly type="password" value={loading ? "" : secret}
-                 placeholder={loading ? "Loading…" : secret ? "********" : "No password yet"}
-                 className="w-full rounded-lg border border-white/15 bg-black/40 px-3 py-2 text-sm outline-none"/>
-          <button type="button" onClick={() => copy(secret, "p")}
-                  className="rounded-lg border border-white/15 bg-white/5 px-3 py-2 text-xs hover:bg-white/10"
-                  disabled={!secret}>
+          <input
+            readOnly
+            type="password"
+            value={loading ? "" : secret}
+            placeholder={loading ? "Loading…" : secret ? "********" : "No password yet"}
+            className="w-full rounded-lg border border-white/15 bg-black/40 px-3 py-2 text-sm outline-none"
+          />
+          <button
+            type="button"
+            onClick={() => copy(secret, "p")}
+            className="rounded-lg border border-white/15 bg-white/5 px-3 py-2 text-xs hover:bg-white/10"
+            disabled={!secret}
+          >
             {copied.p ? "Copied!" : "Copy"}
           </button>
         </div>
@@ -226,13 +242,129 @@ function InboundWebhookPanel() {
           </li>
         </ol>
         <div className="mt-3 flex flex-wrap items-center gap-2">
-          <button type="button" onClick={() => copy(LEADS_EMAIL, "addr")}
-                  className="rounded-lg border border-white/15 bg-white/5 px-3 py-2 text-sm hover:bg-white/10">
+          <button
+            type="button"
+            onClick={() => copy(LEADS_EMAIL, "addr")}
+            className="rounded-lg border border-white/15 bg-white/5 px-3 py-2 text-sm hover:bg-white/10"
+          >
             {copied.addr ? "Copied!" : "Copy email address"}
           </button>
         </div>
         <p className="mt-2 text-xs text-white/50">
           I’ll complete setup and email you when it’s done. After that, new rows in your sheet will auto-import into Remie.
+        </p>
+      </div>
+    </div>
+  );
+}
+
+/* =============================================================================
+   NEW: Goat Leads Webhook Panel (direct webhook URL for Goat Leads)
+============================================================================= */
+function GoatLeadsWebhookPanel() {
+  const [url, setUrl] = useState("");
+  const [loading, setLoading] = useState(true);
+  const [copied, setCopied] = useState(false);
+  const [saving, setSaving] = useState(false);
+
+  // Load existing URL if it already exists
+  useEffect(() => {
+    (async () => {
+      try {
+        setLoading(true);
+        const { data: sess } = await supabase.auth.getSession();
+        const token = sess?.session?.access_token;
+        if (!token) { setUrl(""); return; }
+
+        const res = await fetch("/.netlify/functions/user-webhook-goat", {
+          method: "GET",
+          headers: { Authorization: `Bearer ${token}` },
+        });
+        const json = await res.json().catch(() => ({}));
+        if (res.ok && json?.url) {
+          setUrl(json.url);
+        } else {
+          setUrl("");
+        }
+      } catch {
+        setUrl("");
+      } finally {
+        setLoading(false);
+      }
+    })();
+  }, []);
+
+  async function generateUrl() {
+    try {
+      setSaving(true);
+      const { data: sess } = await supabase.auth.getSession();
+      const token = sess?.session?.access_token;
+      if (!token) return;
+
+      const res = await fetch("/.netlify/functions/user-webhook-goat", {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${token}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({}),
+      });
+      const json = await res.json().catch(() => ({}));
+      if (res.ok && json?.url) {
+        setUrl(json.url);
+      }
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  function copy() {
+    try {
+      if (!url) return;
+      navigator.clipboard.writeText(url);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1200);
+    } catch {}
+  }
+
+  return (
+    <div className="rounded-2xl border border-white/15 bg-white/[0.03] p-4">
+      <div className="mb-2 text-base font-semibold">Goat Leads Webhook</div>
+      <p className="mb-3 text-sm text-white/70">
+        Use this URL as the <b>Webhook URL</b> inside Goat Leads. New leads from Goat will drop straight into your Remie leads
+        and trigger your new-lead text (if enabled).
+      </p>
+
+      <div className="space-y-3">
+        <div className="text-xs text-white/60">Your Goat Leads Webhook URL</div>
+        <div className="flex items-center gap-2">
+          <input
+            readOnly
+            value={loading ? "Loading…" : url || "Not created yet"}
+            className="w-full rounded-lg border border-white/15 bg-black/40 px-3 py-2 text-xs sm:text-sm outline-none"
+          />
+          <button
+            type="button"
+            onClick={copy}
+            disabled={!url}
+            className="rounded-lg border border-white/15 bg-white/5 px-3 py-2 text-xs hover:bg-white/10 disabled:opacity-40"
+          >
+            {copied ? "Copied!" : "Copy"}
+          </button>
+        </div>
+
+        <button
+          type="button"
+          onClick={generateUrl}
+          disabled={saving}
+          className="rounded-lg border border-emerald-500/50 bg-emerald-500/10 px-3 py-2 text-xs font-medium hover:bg-emerald-500/20 disabled:opacity-60"
+        >
+          {url ? "Regenerate URL" : "Generate URL"}
+        </button>
+
+        <p className="text-[11px] text-white/50">
+          Paste this into Goat Leads under <span className="font-mono">Webhook URL</span> for your campaign. You can regenerate it
+          anytime if you want to rotate the link.
         </p>
       </div>
     </div>
@@ -572,6 +704,7 @@ export default function LeadsPage() {
       setServerMsg(`⚠️ Contact delete failed: ${e.message || e}`);
     }
   }
+
   function toggleSelect(id) {
     setSelectedIds((prev) => {
       const next = new Set(prev);
@@ -579,6 +712,7 @@ export default function LeadsPage() {
       return next;
     });
   }
+
   function toggleSelectAll() {
     setSelectedIds((prev) => {
       const next = new Set(prev);
@@ -588,6 +722,40 @@ export default function LeadsPage() {
       else { for (const id of visibleIds) next.add(id); }
       return next;
     });
+  }
+
+  async function removeSelected() {
+    const idsToDelete = Array.from(selectedIds);
+    if (!idsToDelete.length) return;
+    if (!confirm(`Delete ${idsToDelete.length} selected lead(s)? This deletes from Supabase and removes the matching Contacts.`)) return;
+
+    const recs = rows.filter((r) => idsToDelete.includes(r.id));
+    const phones = recs.map((r) => r.phone).filter(Boolean);
+
+    setRows((prev) => prev.filter((r) => !idsToDelete.includes(r.id)));
+    if (selected && idsToDelete.includes(selected.id)) setSelected(null);
+    setSelectedIds(new Set());
+
+    try {
+      setServerMsg("Deleting selected leads on Supabase…");
+      await Promise.all(idsToDelete.map((id) => deleteLeadServer(id)));
+      setServerMsg("🗑️ Deleted selected leads in Supabase");
+    } catch (e) {
+      console.error("Bulk delete server error:", e);
+      setServerMsg(`⚠️ Could not delete some leads on Supabase: ${e.message || e}`);
+    }
+
+    try {
+      const { data: auth } = await supabase.auth.getUser();
+      const userId = auth?.user?.id;
+      if (userId && phones.length) {
+        await deleteContactsByPhones(userId, phones);
+        setServerMsg("🧹 Deleted matching contacts for selected leads");
+      }
+    } catch (e) {
+      console.error("Bulk contact delete error:", e);
+      setServerMsg(`⚠️ Contact delete failed for some leads: ${e.message || e}`);
+    }
   }
 
   /* -------------------- SOLD save -------------------- */
@@ -750,7 +918,10 @@ export default function LeadsPage() {
 
       {showConnector && (
         <div id="auto-import-panel" className="my-4 rounded-2xl border border-white/15 bg-white/[0.03] p-4">
-          <InboundWebhookPanel />
+          <div className="grid gap-4 lg:grid-cols-2">
+            <InboundWebhookPanel />
+            <GoatLeadsWebhookPanel />
+          </div>
         </div>
       )}
 
@@ -1011,42 +1182,78 @@ function SoldDrawer({ initial, allClients, onClose, onSave }) {
         <form onSubmit={submit} className="grid gap-3">
           <div className="grid gap-3 sm:grid-cols-2">
             <Field label="Name">
-              <input value={form.name} onChange={(e)=>setForm({...form, name:e.target.value})}
-                     className="inp" placeholder="Jane Doe" />
+              <input
+                value={form.name}
+                onChange={(e)=>setForm({...form, name:e.target.value})}
+                className="inp"
+                placeholder="Jane Doe"
+              />
             </Field>
             <Field label="Phone">
-              <input value={form.phone} onChange={(e)=>setForm({...form, phone:e.target.value})}
-                     className="inp" placeholder="(555) 123-4567" />
+              <input
+                value={form.phone}
+                onChange={(e)=>setForm({...form, phone:e.target.value})}
+                className="inp"
+                placeholder="(555) 123-4567"
+              />
             </Field>
           </div>
           <Field label="Email">
-            <input value={form.email} onChange={(e)=>setForm({...form, email:e.target.value})}
-                   className="inp" placeholder="jane@example.com" />
+            <input
+              value={form.email}
+              onChange={(e)=>setForm({...form, email:e.target.value})}
+              className="inp"
+              placeholder="jane@example.com"
+            />
           </Field>
           <div className="grid gap-3 sm:grid-cols-2">
             <Field label="Carrier sold">
-              <input value={form.carrier} onChange={(e)=>setForm({...form, carrier:e.target.value})}
-                     className="inp" placeholder="Mutual of Omaha" />
+              <input
+                value={form.carrier}
+                onChange={(e)=>setForm({...form, carrier:e.target.value})}
+                className="inp"
+                placeholder="Mutual of Omaha"
+              />
             </Field>
             <Field label="Face amount">
-              <input value={form.faceAmount} onChange={(e)=>setForm({...form, faceAmount:e.target.value})}
-                     className="inp" placeholder="250,000" />
+              <input
+                value={form.faceAmount}
+                onChange={(e)=>setForm({...form, faceAmount:e.target.value})}
+                className="inp"
+                placeholder="250,000"
+              />
             </Field>
             <Field label="AP (Annual premium)">
-              <input value={form.premium} onChange={(e)=>setForm({...form, premium:e.target.value})}
-                     className="inp" placeholder="3,000" />
+              <input
+                value={form.premium}
+                onChange={(e)=>setForm({...form, premium:e.target.value})}
+                className="inp"
+                placeholder="3,000"
+              />
             </Field>
             <Field label="Monthly payment">
-              <input value={form.monthlyPayment} onChange={(e)=>setForm({...form, monthlyPayment:e.target.value})}
-                     className="inp" placeholder="250" />
+              <input
+                value={form.monthlyPayment}
+                onChange={(e)=>setForm({...form, monthlyPayment:e.target.value})}
+                className="inp"
+                placeholder="250"
+              />
             </Field>
             <Field label="Policy number">
-              <input value={form.policyNumber} onChange={(e)=>setForm({...form, policyNumber:e.target.value})}
-                     className="inp" placeholder="ABC123456789" />
+              <input
+                value={form.policyNumber}
+                onChange={(e)=>setForm({...form, policyNumber:e.target.value})}
+                className="inp"
+                placeholder="ABC123456789"
+              />
             </Field>
             <Field label="Policy start date">
-              <input type="date" value={form.startDate} onChange={(e)=>setForm({...form, startDate:e.target.value})}
-                     className="inp" />
+              <input
+                type="date"
+                value={form.startDate}
+                onChange={(e)=>setForm({...form, startDate:e.target.value})}
+                className="inp"
+              />
             </Field>
           </div>
           <div className="rounded-2xl border border-white/15 bg-white/[0.03] p-3">
@@ -1069,12 +1276,17 @@ function SoldDrawer({ initial, allClients, onClose, onSave }) {
             </div>
           </div>
           <div className="mt-3 flex items-center justify-end gap-2">
-            <button type="button" onClick={onClose}
-              className="rounded-xl border border-white/15 px-4 py-2 text-sm hover:bg-white/10">
+            <button
+              type="button"
+              onClick={onClose}
+              className="rounded-xl border border-white/15 px-4 py-2 text-sm hover:bg-white/10"
+            >
               Cancel
             </button>
-            <button type="submit"
-              className="rounded-xl bg-white px-4 py-2 text-sm font-medium text-black hover:bg-white/90">
+            <button
+              type="submit"
+              className="rounded-xl bg-white px-4 py-2 text-sm font-medium text-black hover:bg-white/90"
+            >
               Save as SOLD
             </button>
           </div>
