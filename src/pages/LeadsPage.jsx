@@ -15,11 +15,11 @@ import AutoDialerModal from "../components/leads/AutoDialerModal.jsx";
 
 /* ---------------- Stage labels/styles (match PipelinePage) ------------------ */
 const STAGE_STYLE = {
-  no_pickup:     "bg-white/10 text-white/80",
-  answered:      "bg-sky-500/15 text-sky-300",
-  quoted:        "bg-amber-500/15 text-amber-300",
-  app_started:   "bg-indigo-500/15 text-indigo-300",
-  app_pending:   "bg-fuchsia-500/15 text-fuchsia-300",
+  no_pickup: "bg-white/10 text-white/80",
+  answered: "bg-sky-500/15 text-sky-300",
+  quoted: "bg-amber-500/15 text-amber-300",
+  app_started: "bg-indigo-500/15 text-indigo-300",
+  app_pending: "bg-fuchsia-500/15 text-fuchsia-300",
   app_submitted: "bg-emerald-500/15 text-emerald-300",
 };
 function labelForStage(id) {
@@ -33,7 +33,7 @@ function labelForStage(id) {
   };
   return m[id] || "No Pickup";
 }
-const STAGE_IDS = ["no_pickup","answered","quoted","app_started","app_pending","app_submitted"];
+const STAGE_IDS = ["no_pickup", "answered", "quoted", "app_started", "app_pending", "app_submitted"];
 
 /* ------------------------ Small helpers ----------------------- */
 const PhoneMono = ({ children }) => <span className="font-mono whitespace-nowrap">{children}</span>;
@@ -61,7 +61,7 @@ async function upsertSoldContact({ userId, phone, fullName, addBdayHoliday, addP
   if (!phoneE164) throw new Error(`Invalid phone: ${phone}`);
   const existing = await findContactByUserAndPhone(userId, phone);
   const buildSoldTags = (currentTags) => {
-    const base = (currentTags || []).filter((t) => !["lead","military","sold"].includes(normalizeTag(t)));
+    const base = (currentTags || []).filter((t) => !["lead", "military", "sold"].includes(normalizeTag(t)));
     const out = [...base, "sold"];
     if (addBdayHoliday) out.push("birthday_text", "holiday_text");
     if (addPaymentReminder) out.push("payment_reminder");
@@ -79,7 +79,7 @@ async function upsertSoldContact({ userId, phone, fullName, addBdayHoliday, addP
     const nextTags = buildSoldTags([]);
     const { data, error } = await supabase
       .from("message_contacts")
-      .insert([{ user_id: userId, phone: phoneE164, full_name: fullName || null, tags: [ ...nextTags ] }])
+      .insert([{ user_id: userId, phone: phoneE164, full_name: fullName || null, tags: [...nextTags] }])
       .select("id")
       .single();
     if (error) throw error;
@@ -121,7 +121,7 @@ async function sendSoldAutoText({ leadId }) {
     const userId = authUser?.user?.id;
     const token = sess?.session?.access_token;
     if (!userId || !leadId) return;
-    const tryKeys = ["sold","sold_welcome","policy_info","sold_policy","policy"];
+    const tryKeys = ["sold", "sold_welcome", "policy_info", "sold_policy", "policy"];
     for (const templateKey of tryKeys) {
       const res = await fetch(`${FN_BASE}/messages-send`, {
         method: "POST",
@@ -147,7 +147,7 @@ async function sendSoldAutoText({ leadId }) {
 }
 
 /* =============================================================================
-   Inbound Webhook Drawer Panel (Google Sheet based)
+   Inbound Webhook Drawer Panel (existing Google Sheet flow)
 ============================================================================= */
 function InboundWebhookPanel() {
   const [username, setUsername] = useState("");
@@ -155,26 +155,34 @@ function InboundWebhookPanel() {
   const [loading, setLoading] = useState(true);
   const [copied, setCopied] = useState({ u: false, p: false, addr: false });
   const LEADS_EMAIL = "remiecrmleads@gmail.com";
-
   useEffect(() => {
     (async () => {
       try {
         setLoading(true);
         const { data: sess } = await supabase.auth.getSession();
         const token = sess?.session?.access_token;
-        if (!token) { setUsername(""); setSecret(""); return; }
+        if (!token) {
+          setUsername("");
+          setSecret("");
+          return;
+        }
         const res = await fetch("/.netlify/functions/user-webhook", {
           method: "GET",
           headers: { Authorization: `Bearer ${token}` },
         });
         const json = await res.json().catch(() => ({}));
-        if (!res.ok || !json?.id) { setUsername(""); setSecret(""); return; }
+        if (!res.ok || !json?.id) {
+          setUsername("");
+          setSecret("");
+          return;
+        }
         setUsername(json.id);
         setSecret(json.secret || "");
-      } finally { setLoading(false); }
+      } finally {
+        setLoading(false);
+      }
     })();
   }, []);
-
   function copy(val, k) {
     try {
       navigator.clipboard.writeText(val);
@@ -182,14 +190,14 @@ function InboundWebhookPanel() {
       setTimeout(() => setCopied((c) => ({ ...c, [k]: false })), 1200);
     } catch {}
   }
-
   return (
     <div className="rounded-2xl border border-white/15 bg-white/[0.03] p-4">
-      <div className="mb-2 text-base font-semibold">Auto-Import Leads (Google Sheet)</div>
+      <div className="mb-2 text-base font-semibold">Auto-Import Leads</div>
       <p className="mb-4 text-sm text-white/70">
-        Send leads straight into Remie via webhook. Authenticate with <b>Basic Auth</b> using your Username &amp; Password.
+        Send leads straight into Remie via webhook. Authenticate with <b>Basic Auth</b> using your Username &amp;
+        Password.
       </p>
-      <div className="grid gap-3 md:grid-cols-[160px_1fr_auto] items-center">
+      <div className="grid items-center gap-3 md:grid-cols-[160px_1fr_auto]">
         <div className="text-xs text-white/60">Username</div>
         <div className="flex items-center gap-2">
           <input
@@ -228,15 +236,19 @@ function InboundWebhookPanel() {
         <div />
       </div>
       <div className="mt-5 rounded-xl border border-white/10 bg-gradient-to-r from-black/40 to-black/10 p-4">
-        <div className="font-medium mb-2">Steps:</div>
+        <div className="mb-2 font-medium">Steps:</div>
         <ol className="list-decimal space-y-2 pl-5 text-sm">
-          <li>Share your Google Sheet with <span className="font-mono">remiecrmleads@gmail.com</span>.</li>
+          <li>
+            Share your Google Sheet with <span className="font-mono">remiecrmleads@gmail.com</span>.
+          </li>
           <li>
             Email me the details:
             <ul className="mt-2 list-disc space-y-1 pl-5">
               <li>Lead type(s) — e.g., FEX, Veteran, EG</li>
               <li>CRM login email</li>
-              <li><b>Username</b> &amp; <b>Password</b> (shown above)</li>
+              <li>
+                <b>Username</b> &amp; <b>Password</b> (shown above)
+              </li>
               <li>Google Sheet name</li>
             </ul>
           </li>
@@ -251,7 +263,8 @@ function InboundWebhookPanel() {
           </button>
         </div>
         <p className="mt-2 text-xs text-white/50">
-          I’ll complete setup and email you when it’s done. After that, new rows in your sheet will auto-import into Remie.
+          I’ll complete setup and email you when it’s done. After that, new rows in your sheet will auto-import into
+          Remie.
         </p>
       </div>
     </div>
@@ -259,24 +272,28 @@ function InboundWebhookPanel() {
 }
 
 /* =============================================================================
-   NEW: Goat Leads Webhook Panel (direct webhook URL for Goat Leads)
+   Goat Leads Webhook Panel (new)
 ============================================================================= */
-function GoatLeadsWebhookPanel() {
+function GoatWebhookPanel() {
   const [url, setUrl] = useState("");
   const [loading, setLoading] = useState(true);
-  const [copied, setCopied] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [copied, setCopied] = useState(false);
+  const [error, setError] = useState("");
 
-  // Load existing URL if it already exists
+  // Load existing Goat URL (or create if missing)
   useEffect(() => {
     (async () => {
       try {
         setLoading(true);
+        setError("");
         const { data: sess } = await supabase.auth.getSession();
         const token = sess?.session?.access_token;
-        if (!token) { setUrl(""); return; }
-
-        const res = await fetch("/.netlify/functions/user-webhook-goat", {
+        if (!token) {
+          setUrl("");
+          return;
+        }
+        const res = await fetch("/.netlify/functions/user-goat-webhook", {
           method: "GET",
           headers: { Authorization: `Bearer ${token}` },
         });
@@ -285,88 +302,93 @@ function GoatLeadsWebhookPanel() {
           setUrl(json.url);
         } else {
           setUrl("");
+          if (json?.error) setError(json.error);
         }
-      } catch {
-        setUrl("");
+      } catch (e) {
+        setError(e?.message || "Failed to load Goat URL");
       } finally {
         setLoading(false);
       }
     })();
   }, []);
 
-  async function generateUrl() {
+  async function handleGenerate() {
     try {
       setSaving(true);
+      setError("");
       const { data: sess } = await supabase.auth.getSession();
       const token = sess?.session?.access_token;
-      if (!token) return;
-
-      const res = await fetch("/.netlify/functions/user-webhook-goat", {
-        method: "POST",
-        headers: {
-          Authorization: `Bearer ${token}`,
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({}),
+      if (!token) {
+        setError("You must be logged in.");
+        return;
+      }
+      const res = await fetch("/.netlify/functions/user-goat-webhook", {
+        method: "GET", // GET creates-or-returns the token (same as you tested manually)
+        headers: { Authorization: `Bearer ${token}` },
       });
       const json = await res.json().catch(() => ({}));
       if (res.ok && json?.url) {
         setUrl(json.url);
+      } else {
+        setError(json?.error || "Could not generate URL");
       }
+    } catch (e) {
+      setError(e?.message || "Could not generate URL");
     } finally {
       setSaving(false);
     }
   }
 
-  function copy() {
+  function handleCopy() {
+    if (!url) return;
     try {
-      if (!url) return;
       navigator.clipboard.writeText(url);
       setCopied(true);
       setTimeout(() => setCopied(false), 1200);
     } catch {}
   }
 
+  const displayVal = loading ? "Loading…" : url || "Not created yet";
+
   return (
-    <div className="rounded-2xl border border-white/15 bg-white/[0.03] p-4">
+    <div className="mt-6 rounded-2xl border border-white/15 bg-white/[0.03] p-4">
       <div className="mb-2 text-base font-semibold">Goat Leads Webhook</div>
-      <p className="mb-3 text-sm text-white/70">
-        Use this URL as the <b>Webhook URL</b> inside Goat Leads. New leads from Goat will drop straight into your Remie leads
-        and trigger your new-lead text (if enabled).
+      <p className="mb-4 text-sm text-white/70">
+        Use this URL as the <b>Webhook URL</b> inside Goat Leads. New leads from Goat will drop straight into your
+        Remie leads and trigger your new-lead text (if enabled).
       </p>
 
-      <div className="space-y-3">
-        <div className="text-xs text-white/60">Your Goat Leads Webhook URL</div>
-        <div className="flex items-center gap-2">
-          <input
-            readOnly
-            value={loading ? "Loading…" : url || "Not created yet"}
-            className="w-full rounded-lg border border-white/15 bg-black/40 px-3 py-2 text-xs sm:text-sm outline-none"
-          />
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
+        <input
+          readOnly
+          value={displayVal}
+          className="flex-1 rounded-lg border border-white/15 bg-black/40 px-3 py-2 text-xs sm:text-sm outline-none"
+        />
+        <div className="flex gap-2">
           <button
             type="button"
-            onClick={copy}
-            disabled={!url}
-            className="rounded-lg border border-white/15 bg-white/5 px-3 py-2 text-xs hover:bg-white/10 disabled:opacity-40"
+            onClick={handleGenerate}
+            disabled={loading || saving}
+            className="rounded-lg border border-emerald-500/60 bg-emerald-500/10 px-3 py-2 text-xs sm:text-sm hover:bg-emerald-500/20 disabled:opacity-60"
+          >
+            {saving ? "Generating…" : "Generate URL"}
+          </button>
+          <button
+            type="button"
+            onClick={handleCopy}
+            disabled={!url || loading}
+            className="rounded-lg border border-white/15 bg-white/5 px-3 py-2 text-xs sm:text-sm hover:bg-white/10 disabled:opacity-50"
           >
             {copied ? "Copied!" : "Copy"}
           </button>
         </div>
-
-        <button
-          type="button"
-          onClick={generateUrl}
-          disabled={saving}
-          className="rounded-lg border border-emerald-500/50 bg-emerald-500/10 px-3 py-2 text-xs font-medium hover:bg-emerald-500/20 disabled:opacity-60"
-        >
-          {url ? "Regenerate URL" : "Generate URL"}
-        </button>
-
-        <p className="text-[11px] text-white/50">
-          Paste this into Goat Leads under <span className="font-mono">Webhook URL</span> for your campaign. You can regenerate it
-          anytime if you want to rotate the link.
-        </p>
       </div>
+
+      <p className="mt-2 text-xs text-white/50">
+        Paste this into Goat Leads under <b>Webhook URL</b> for your campaign. You can regenerate it anytime if you want
+        to rotate the link.
+      </p>
+      {error && <p className="mt-2 text-xs text-rose-400">⚠️ {error}</p>}
     </div>
   );
 }
@@ -404,7 +426,9 @@ export default function LeadsPage() {
   useEffect(() => {
     const prev = window.__REMIE_BILLING_HINT__;
     window.__REMIE_BILLING_HINT__ = "free_first";
-    return () => { window.__REMIE_BILLING_HINT__ = prev; };
+    return () => {
+      window.__REMIE_BILLING_HINT__ = prev;
+    };
   }, []);
 
   /* -------------------- Initial fetch -------------------- */
@@ -438,25 +462,34 @@ export default function LeadsPage() {
         const userId = authData?.user?.id;
         if (!userId) return;
 
-        channel = supabase.channel("leads_changes")
-          .on("postgres_changes",
+        channel = supabase
+          .channel("leads_changes")
+          .on(
+            "postgres_changes",
             { event: "INSERT", schema: "public", table: "leads", filter: `user_id=eq.${userId}` },
             (payload) => {
-              setRows((prev) => prev.some((r) => r.id === payload.new.id) ? prev : [payload.new, ...prev]);
+              setRows((prev) => (prev.some((r) => r.id === payload.new.id) ? prev : [payload.new, ...prev]));
               setServerMsg("✅ New lead arrived");
-            })
-          .on("postgres_changes",
+            }
+          )
+          .on(
+            "postgres_changes",
             { event: "UPDATE", schema: "public", table: "leads", filter: `user_id=eq.${userId}` },
-            (payload) => setRows((prev) => prev.map((r) => (r.id === payload.new.id ? payload.new : r))))
-          .on("postgres_changes",
+            (payload) => setRows((prev) => prev.map((r) => (r.id === payload.new.id ? payload.new : r)))
+          )
+          .on(
+            "postgres_changes",
             { event: "DELETE", schema: "public", table: "leads", filter: `user_id=eq.${userId}` },
-            (payload) => setRows((prev) => prev.filter((r) => r.id !== payload.old.id)))
+            (payload) => setRows((prev) => prev.filter((r) => r.id !== payload.old.id))
+          )
           .subscribe();
       } catch (e) {
         console.error("Realtime subscribe failed:", e);
       }
     })();
-    return () => { if (channel) supabase.removeChannel(channel); };
+    return () => {
+      if (channel) supabase.removeChannel(channel);
+    };
   }, []);
 
   /* -------------------- Load agent phone + auto-text setting -------------------- */
@@ -499,11 +532,13 @@ export default function LeadsPage() {
         const userId = authData?.user?.id;
         if (!userId) return;
 
-        const byId = new Map(rows.map(r => [r.id, r]));
-        const phoneById = new Map(rows.map(r => [r.id, norm10(r.phone)]));
+        const byId = new Map(rows.map((r) => [r.id, r]));
+        const phoneById = new Map(rows.map((r) => [r.id, norm10(r.phone)]));
 
-        chan = supabase.channel("call_logs_lead_answer_only_agent_first")
-          .on("postgres_changes",
+        chan = supabase
+          .channel("call_logs_lead_answer_only_agent_first")
+          .on(
+            "postgres_changes",
             { event: "*", schema: "public", table: "call_logs", filter: `user_id=eq.${userId}` },
             async (payload) => {
               const rec = payload.new || payload.old || {};
@@ -525,12 +560,14 @@ export default function LeadsPage() {
               if (!looksLikeLeadLeg) return; // ignore agent leg
 
               // Duration guard (if fields exist)
-              const talkMs  = Number(rec.talk_ms ?? rec.talkTimeMs ?? rec.talk_time_ms ?? 0);
+              const talkMs = Number(rec.talk_ms ?? rec.talkTimeMs ?? rec.talk_time_ms ?? 0);
               const billSec = Number(rec.bill_sec ?? rec.billsec ?? 0);
               const durationOk =
-                (Number.isFinite(talkMs) && talkMs > 0) ? talkMs >= 2000
-                : (Number.isFinite(billSec) && billSec > 0) ? billSec >= 2
-                : true;
+                Number.isFinite(talkMs) && talkMs > 0
+                  ? talkMs >= 2000
+                  : Number.isFinite(billSec) && billSec > 0
+                  ? billSec >= 2
+                  : true;
 
               // Skip machine answers if your CDR has it
               const answeredBy = String(rec.answered_by || rec.answeredBy || "").toLowerCase();
@@ -555,7 +592,9 @@ export default function LeadsPage() {
       }
     })();
 
-    return () => { if (chan) supabase.removeChannel(chan); };
+    return () => {
+      if (chan) supabase.removeChannel(chan);
+    };
   }, [rows]);
 
   /* -------------------- Single click-to-call -------------------- */
@@ -580,7 +619,10 @@ export default function LeadsPage() {
       const p = prompt("Enter your phone (we call you):", "+1 ");
       if (!p) return null;
       const e164 = toE164(p);
-      if (!e164) { alert("That phone doesn’t look valid. Use +1XXXXXXXXXX"); return null; }
+      if (!e164) {
+        alert("That phone doesn’t look valid. Use +1XXXXXXXXXX");
+        return null;
+      }
       await saveAgentPhone(e164);
       fromAgent = e164;
     }
@@ -631,19 +673,12 @@ export default function LeadsPage() {
         .maybeSingle();
 
       if (existing) {
-        await supabase
-          .from("agent_profiles")
-          .update({ auto_new_lead_texts_enabled: enabled })
-          .eq("user_id", uid);
+        await supabase.from("agent_profiles").update({ auto_new_lead_texts_enabled: enabled }).eq("user_id", uid);
       } else {
-        await supabase
-          .from("agent_profiles")
-          .insert({ user_id: uid, auto_new_lead_texts_enabled: enabled });
+        await supabase.from("agent_profiles").insert({ user_id: uid, auto_new_lead_texts_enabled: enabled });
       }
 
-      setServerMsg(enabled
-        ? "✅ Auto new-lead texts enabled"
-        : "⏸️ Auto new-lead texts paused");
+      setServerMsg(enabled ? "✅ Auto new-lead texts enabled" : "⏸️ Auto new-lead texts paused");
     } catch (e) {
       console.error("updateAutoNewLeadTexts failed", e);
       setServerMsg(`⚠️ Could not update auto-text setting: ${e.message || e}`);
@@ -704,58 +739,26 @@ export default function LeadsPage() {
       setServerMsg(`⚠️ Contact delete failed: ${e.message || e}`);
     }
   }
-
   function toggleSelect(id) {
     setSelectedIds((prev) => {
       const next = new Set(prev);
-      if (next.has(id)) next.delete(id); else next.add(id);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
       return next;
     });
   }
-
   function toggleSelectAll() {
     setSelectedIds((prev) => {
       const next = new Set(prev);
       const visibleIds = visible.map((v) => v.id);
       const allSelected = visibleIds.length > 0 && visibleIds.every((id) => next.has(id));
-      if (allSelected) { for (const id of visibleIds) next.delete(id); }
-      else { for (const id of visibleIds) next.add(id); }
+      if (allSelected) {
+        for (const id of visibleIds) next.delete(id);
+      } else {
+        for (const id of visibleIds) next.add(id);
+      }
       return next;
     });
-  }
-
-  async function removeSelected() {
-    const idsToDelete = Array.from(selectedIds);
-    if (!idsToDelete.length) return;
-    if (!confirm(`Delete ${idsToDelete.length} selected lead(s)? This deletes from Supabase and removes the matching Contacts.`)) return;
-
-    const recs = rows.filter((r) => idsToDelete.includes(r.id));
-    const phones = recs.map((r) => r.phone).filter(Boolean);
-
-    setRows((prev) => prev.filter((r) => !idsToDelete.includes(r.id)));
-    if (selected && idsToDelete.includes(selected.id)) setSelected(null);
-    setSelectedIds(new Set());
-
-    try {
-      setServerMsg("Deleting selected leads on Supabase…");
-      await Promise.all(idsToDelete.map((id) => deleteLeadServer(id)));
-      setServerMsg("🗑️ Deleted selected leads in Supabase");
-    } catch (e) {
-      console.error("Bulk delete server error:", e);
-      setServerMsg(`⚠️ Could not delete some leads on Supabase: ${e.message || e}`);
-    }
-
-    try {
-      const { data: auth } = await supabase.auth.getUser();
-      const userId = auth?.user?.id;
-      if (userId && phones.length) {
-        await deleteContactsByPhones(userId, phones);
-        setServerMsg("🧹 Deleted matching contacts for selected leads");
-      }
-    } catch (e) {
-      console.error("Bulk contact delete error:", e);
-      setServerMsg(`⚠️ Contact delete failed for some leads: ${e.message || e}`);
-    }
   }
 
   /* -------------------- SOLD save -------------------- */
@@ -789,8 +792,12 @@ export default function LeadsPage() {
             addPaymentReminder: false,
           });
         }
-      } catch (e) { console.warn("[sold] contact upsert failed:", e?.message || e); }
-      try { await sendSoldAutoText({ leadId: id }); } catch {}
+      } catch (e) {
+        console.warn("[sold] contact upsert failed:", e?.message || e);
+      }
+      try {
+        await sendSoldAutoText({ leadId: id });
+      } catch {}
       setServerMsg("✅ Saved SOLD info");
       setSelected(null);
     } catch (e) {
@@ -800,14 +807,22 @@ export default function LeadsPage() {
   }
 
   /* -------------------- Derived lists -------------------- */
-  const onlySold  = useMemo(() => rows.filter((c) => c.status === "sold"), [rows]);
+  const onlySold = useMemo(() => rows.filter((c) => c.status === "sold"), [rows]);
   const visible = useMemo(() => {
     const src = tab === "clients" ? rows : onlySold;
     const q = filter.trim().toLowerCase();
     return q
       ? src.filter((r) =>
-          [r.name, r.email, r.phone, r.state, r.gender, r.beneficiary_name, r.military_branch, labelForStage(r.stage)]
-            .some((v) => (v || "").toString().toLowerCase().includes(q))
+          [
+            r.name,
+            r.email,
+            r.phone,
+            r.state,
+            r.gender,
+            r.beneficiary_name,
+            r.military_branch,
+            labelForStage(r.stage),
+          ].some((v) => (v || "").toString().toLowerCase().includes(q))
         )
       : src;
   }, [tab, rows, onlySold, filter]);
@@ -823,22 +838,33 @@ export default function LeadsPage() {
   }, [editingStageId]);
 
   /* -------------------- Render -------------------- */
-  const baseHeaders = ["Name","Phone","Email","DOB","State","Beneficiary","Beneficiary Name","Gender","Military Branch","Stage"];
+  const baseHeaders = [
+    "Name",
+    "Phone",
+    "Email",
+    "DOB",
+    "State",
+    "Beneficiary",
+    "Beneficiary Name",
+    "Gender",
+    "Military Branch",
+    "Stage",
+  ];
   const colCount = baseHeaders.length + 2; // + Select + Actions
 
   return (
-    <div className="space-y-6 min-w-0 overflow-x-hidden">
+    <div className="min-w-0 space-y-6 overflow-x-hidden">
       {/* Toolbar */}
       <div className="flex flex-wrap items-center gap-3">
         <div className="inline-flex rounded-full border border-white/15 bg-white/5 p-1 text-sm">
           {[
-            { id:"clients", label:"Leads" },
-            { id:"sold",    label:"Sold"  },
-          ].map(t => (
+            { id: "clients", label: "Leads" },
+            { id: "sold", label: "Sold" },
+          ].map((t) => (
             <button
               key={t.id}
               onClick={() => setTab(t.id)}
-              className={`rounded-full px-3 py-1 ${tab===t.id ? "bg-white text-black" : "text-white/80"}`}
+              className={`rounded-full px-3 py-1 ${tab === t.id ? "bg-white text-black" : "text-white/80"}`}
             >
               {t.label}
             </button>
@@ -846,7 +872,7 @@ export default function LeadsPage() {
         </div>
 
         <button
-          onClick={() => setShowConnector(s => !s)}
+          onClick={() => setShowConnector((s) => !s)}
           className="rounded-xl border border-white/15 bg-white/5 px-3 py-2 text-sm"
           aria-expanded={showConnector}
           aria-controls="auto-import-panel"
@@ -872,7 +898,7 @@ export default function LeadsPage() {
             onClick={() => !autoNewLeadTextsSaving && updateAutoNewLeadTexts(!autoNewLeadTextsEnabled)}
             className={`relative inline-flex h-6 w-11 items-center rounded-full border px-0 transition
               ${autoNewLeadTextsEnabled ? "border-emerald-400 bg-emerald-500/20" : "border-white/20 bg-white/5"}
-              ${autoNewLeadTextsSaving ? "opacity-60 cursor-wait" : "cursor-pointer"}`}
+              ${autoNewLeadTextsSaving ? "cursor-wait opacity-60" : "cursor-pointer"}`}
             aria-pressed={autoNewLeadTextsEnabled}
             aria-label="Toggle automatic new-lead messages"
             disabled={autoNewLeadTextsSaving}
@@ -899,10 +925,12 @@ export default function LeadsPage() {
           <button
             onClick={() => {
               const idsToDelete = visible.filter((v) => selectedIds.has(v.id)).map((v) => v.id);
-              if (idsToDelete.length) removeSelected();
+              if (idsToDelete.length) removeSelected(idsToDelete);
             }}
             disabled={selectedIds.size === 0}
-            className={`rounded-xl border ${selectedIds.size ? "border-rose-500/60 bg-rose-500/10" : "border-white/10 bg-white/5"} px-3 py-2 text-sm`}
+            className={`rounded-xl border ${
+              selectedIds.size ? "border-rose-500/60 bg-rose-500/10" : "border-white/10 bg-white/5"
+            } px-3 py-2 text-sm`}
             title="Delete selected leads (Supabase + Contacts)"
           >
             Delete selected ({selectedIds.size})
@@ -918,10 +946,8 @@ export default function LeadsPage() {
 
       {showConnector && (
         <div id="auto-import-panel" className="my-4 rounded-2xl border border-white/15 bg-white/[0.03] p-4">
-          <div className="grid gap-4 lg:grid-cols-2">
-            <InboundWebhookPanel />
-            <GoatLeadsWebhookPanel />
-          </div>
+          <InboundWebhookPanel />
+          <GoatWebhookPanel />
         </div>
       )}
 
@@ -937,18 +963,20 @@ export default function LeadsPage() {
 
       {/* Table */}
       <div className="overflow-x-auto rounded-2xl border border-white/10">
-        <table className="min-w-[1200px] w-full border-collapse text-sm">
+        <table className="w-full min-w-[1200px] border-collapse text-sm">
           <thead className="bg-white/[0.04] text-white/70">
             <tr>
               <Th>
                 <input
                   type="checkbox"
                   onChange={toggleSelectAll}
-                  checked={visible.length > 0 && visible.every(v => selectedIds.has(v.id))}
+                  checked={visible.length > 0 && visible.every((v) => selectedIds.has(v.id))}
                   aria-label="Select all visible"
                 />
               </Th>
-              {baseHeaders.map(h => <Th key={h}>{h}</Th>)}
+              {baseHeaders.map((h) => (
+                <Th key={h}>{h}</Th>
+              ))}
               <Th>Actions</Th>
             </tr>
           </thead>
@@ -980,11 +1008,21 @@ export default function LeadsPage() {
                           className="inline-flex items-center gap-1 rounded-lg border border-emerald-500/40 bg-emerald-500/10 px-2 py-1 hover:bg-emerald-500/15"
                           title="Call this lead"
                         >
-                          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="16" height="16" fill="currentColor"><path d="M6.62 10.79a15.05 15.05 0 006.59 6.59l2.2-2.2a1 1 0 011.01-.24c1.11.37 2.31.57 3.58.57a1 1 0 011 1V21a1 1 0 01-1 1C10.07 22 2 13.93 2 3a1 1 0 011-1h3.5a1 1 0 011 1c0 1.27.2 2.47.57 3.58a1 1 0 01-.24 1.01l-2.21 2.2z"/></svg>
+                          <svg
+                            xmlns="http://www.w3.org/2000/svg"
+                            viewBox="0 0 24 24"
+                            width="16"
+                            height="16"
+                            fill="currentColor"
+                          >
+                            <path d="M6.62 10.79a15.05 15.05 0 006.59 6.59l2.2-2.2a1 1 0 011.01-.24c1.11.37 2.31.57 3.58.57a1 1 0 011 1V21a1 1 0 01-1 1C10.07 22 2 13.93 2 3a1 1 0 011-1h3.5a1 1 0 011 1c0 1.27.2 2.47.57 3.58a1 1 0 01-.24 1.01l-2.21 2.2z" />
+                          </svg>
                           <span>Call</span>
                         </button>
                       </div>
-                    ) : "—"}
+                    ) : (
+                      "—"
+                    )}
                   </Td>
                   <Td>{p.email || "—"}</Td>
                   <Td>{p.dob || "—"}</Td>
@@ -1015,8 +1053,10 @@ export default function LeadsPage() {
                             onBlur={() => setEditingStageId(null)}
                             className="rounded-full border border-white/15 bg-black/60 px-2 py-1 text-xs outline-none"
                           >
-                            {STAGE_IDS.map(sid => (
-                              <option key={sid} value={sid}>{labelForStage(sid)}</option>
+                            {STAGE_IDS.map((sid) => (
+                              <option key={sid} value={sid}>
+                                {labelForStage(sid)}
+                              </option>
                             ))}
                           </select>
                         )}
@@ -1076,23 +1116,27 @@ export default function LeadsPage() {
       )}
 
       {/* View SOLD */}
-      {viewSelected && (
-        <PolicyViewer person={viewSelected} onClose={() => setViewSelected(null)} />
-      )}
+      {viewSelected && <PolicyViewer person={viewSelected} onClose={() => setViewSelected(null)} />}
 
       {/* Auto Dial Modal — now fully isolated */}
-      {showAutoDial && (
-        <AutoDialerModal
-          onClose={() => setShowAutoDial(false)}
-          rows={rows}
-        />
-      )}
+      {showAutoDial && <AutoDialerModal onClose={() => setShowAutoDial(false)} rows={rows} />}
     </div>
   );
+
+  function removeSelected(idsToDelete) {
+    if (!idsToDelete.length) return;
+    if (!confirm(`Delete ${idsToDelete.length} selected lead(s)? This also deletes matching Contacts.`)) return;
+    idsToDelete.forEach((id) => removeOne(id));
+    setSelectedIds(new Set());
+  }
 }
 
-function Th({ children }) { return <th className="px-3 py-2 text-left font-medium">{children}</th>; }
-function Td({ children }) { return <td className="px-3 py-2">{children}</td>; }
+function Th({ children }) {
+  return <th className="px-3 py-2 text-left font-medium">{children}</th>;
+}
+function Td({ children }) {
+  return <td className="px-3 py-2">{children}</td>;
+}
 
 /* ------------------------------ Policy Viewer ------------------------------ */
 function PolicyViewer({ person, onClose }) {
@@ -1102,18 +1146,39 @@ function PolicyViewer({ person, onClose }) {
       <div className="relative m-auto w-full max-w-3xl rounded-2xl border border-white/15 bg-neutral-950 p-5">
         <div className="mb-3 text-lg font-semibold">Policy File</div>
         <div className="grid gap-3 sm:grid-cols-2">
-          <Field label="Name"><div className="ro">{s.name || person?.name || "—"}</div></Field>
-          <Field label="Phone"><div className="ro">{s.phone || person?.phone || "—"}</div></Field>
-          <Field label="Email"><div className="ro break-all">{s.email || person?.email || "—"}</div></Field>
-          <Field label="Carrier"><div className="ro">{s.carrier || "—"}</div></Field>
-          <Field label="Face Amount"><div className="ro">{s.faceAmount || "—"}</div></Field>
-          <Field label="AP (Annual premium)"><div className="ro">{s.premium || "—"}</div></Field>
-          <Field label="Monthly Payment"><div className="ro">{s.monthlyPayment || "—"}</div></Field>
-          <Field label="Policy #"><div className="ro">{s.policyNumber || "—"}</div></Field>
-          <Field label="Start Date"><div className="ro">{s.startDate || "—"}</div></Field>
+          <Field label="Name">
+            <div className="ro">{s.name || person?.name || "—"}</div>
+          </Field>
+          <Field label="Phone">
+            <div className="ro">{s.phone || person?.phone || "—"}</div>
+          </Field>
+          <Field label="Email">
+            <div className="ro break-all">{s.email || person?.email || "—"}</div>
+          </Field>
+          <Field label="Carrier">
+            <div className="ro">{s.carrier || "—"}</div>
+          </Field>
+          <Field label="Face Amount">
+            <div className="ro">{s.faceAmount || "—"}</div>
+          </Field>
+          <Field label="AP (Annual premium)">
+            <div className="ro">{s.premium || "—"}</div>
+          </Field>
+          <Field label="Monthly Payment">
+            <div className="ro">{s.monthlyPayment || "—"}</div>
+          </Field>
+          <Field label="Policy #">
+            <div className="ro">{s.policyNumber || "—"}</div>
+          </Field>
+          <Field label="Start Date">
+            <div className="ro">{s.startDate || "—"}</div>
+          </Field>
         </div>
         <div className="mt-4 flex items-center justify-end">
-          <button onClick={onClose} className="rounded-xl border border-white/15 px-4 py-2 text-sm hover:bg-white/10">
+          <button
+            onClick={onClose}
+            className="rounded-xl border border-white/15 px-4 py-2 text-sm hover:bg-white/10"
+          >
             Close
           </button>
         </div>
@@ -1126,7 +1191,9 @@ function PolicyViewer({ person, onClose }) {
 /* ------------------------------ Sold Drawer ------------------------------- */
 function SoldDrawer({ initial, allClients, onClose, onSave }) {
   const [form, setForm] = useState({
-    id: initial?.id || (self && self.crypto && self.crypto.randomUUID ? self.crypto.randomUUID() : Math.random().toString(36).slice(2)),
+    id:
+      initial?.id ||
+      (self && self.crypto && self.crypto.randomUUID ? self.crypto.randomUUID() : Math.random().toString(36).slice(2)),
     name: initial?.name || "",
     phone: initial?.phone || "",
     email: initial?.email || "",
@@ -1140,7 +1207,7 @@ function SoldDrawer({ initial, allClients, onClose, onSave }) {
   });
 
   function pickClient(id) {
-    const c = allClients.find(x => x.id === id);
+    const c = allClients.find((x) => x.id === id);
     if (!c) return;
     setForm((f) => ({
       ...f,
@@ -1160,7 +1227,9 @@ function SoldDrawer({ initial, allClients, onClose, onSave }) {
       <div className="relative m-auto w/full max-w-xl rounded-2xl border border-white/15 bg-neutral-950 p-4">
         <div className="mb-2 flex items-center justify-between">
           <div className="text-base font-semibold">Mark as SOLD</div>
-          <button onClick={onClose} className="rounded-lg px-2 py-1 text-sm hover:bg-white/10">Close</button>
+          <button onClick={onClose} className="rounded-lg px-2 py-1 text-sm hover:bg-white/10">
+            Close
+          </button>
         </div>
 
         <div className="mb-3">
@@ -1170,8 +1239,10 @@ function SoldDrawer({ initial, allClients, onClose, onSave }) {
             onChange={(e) => e.target.value && pickClient(e.target.value)}
             defaultValue=""
           >
-            <option value="" disabled>Choose from Leads…</option>
-            {allClients.map(c => (
+            <option value="" disabled>
+              Choose from Leads…
+            </option>
+            {allClients.map((c) => (
               <option key={c.id} value={c.id}>
                 {c.name || c.email || c.phone || c.id}
               </option>
@@ -1184,7 +1255,7 @@ function SoldDrawer({ initial, allClients, onClose, onSave }) {
             <Field label="Name">
               <input
                 value={form.name}
-                onChange={(e)=>setForm({...form, name:e.target.value})}
+                onChange={(e) => setForm({ ...form, name: e.target.value })}
                 className="inp"
                 placeholder="Jane Doe"
               />
@@ -1192,7 +1263,7 @@ function SoldDrawer({ initial, allClients, onClose, onSave }) {
             <Field label="Phone">
               <input
                 value={form.phone}
-                onChange={(e)=>setForm({...form, phone:e.target.value})}
+                onChange={(e) => setForm({ ...form, phone: e.target.value })}
                 className="inp"
                 placeholder="(555) 123-4567"
               />
@@ -1201,7 +1272,7 @@ function SoldDrawer({ initial, allClients, onClose, onSave }) {
           <Field label="Email">
             <input
               value={form.email}
-              onChange={(e)=>setForm({...form, email:e.target.value})}
+              onChange={(e) => setForm({ ...form, email: e.target.value })}
               className="inp"
               placeholder="jane@example.com"
             />
@@ -1210,7 +1281,7 @@ function SoldDrawer({ initial, allClients, onClose, onSave }) {
             <Field label="Carrier sold">
               <input
                 value={form.carrier}
-                onChange={(e)=>setForm({...form, carrier:e.target.value})}
+                onChange={(e) => setForm({ ...form, carrier: e.target.value })}
                 className="inp"
                 placeholder="Mutual of Omaha"
               />
@@ -1218,7 +1289,7 @@ function SoldDrawer({ initial, allClients, onClose, onSave }) {
             <Field label="Face amount">
               <input
                 value={form.faceAmount}
-                onChange={(e)=>setForm({...form, faceAmount:e.target.value})}
+                onChange={(e) => setForm({ ...form, faceAmount: e.target.value })}
                 className="inp"
                 placeholder="250,000"
               />
@@ -1226,7 +1297,7 @@ function SoldDrawer({ initial, allClients, onClose, onSave }) {
             <Field label="AP (Annual premium)">
               <input
                 value={form.premium}
-                onChange={(e)=>setForm({...form, premium:e.target.value})}
+                onChange={(e) => setForm({ ...form, premium: e.target.value })}
                 className="inp"
                 placeholder="3,000"
               />
@@ -1234,7 +1305,7 @@ function SoldDrawer({ initial, allClients, onClose, onSave }) {
             <Field label="Monthly payment">
               <input
                 value={form.monthlyPayment}
-                onChange={(e)=>setForm({...form, monthlyPayment:e.target.value})}
+                onChange={(e) => setForm({ ...form, monthlyPayment: e.target.value })}
                 className="inp"
                 placeholder="250"
               />
@@ -1242,7 +1313,7 @@ function SoldDrawer({ initial, allClients, onClose, onSave }) {
             <Field label="Policy number">
               <input
                 value={form.policyNumber}
-                onChange={(e)=>setForm({...form, policyNumber:e.target.value})}
+                onChange={(e) => setForm({ ...form, policyNumber: e.target.value })}
                 className="inp"
                 placeholder="ABC123456789"
               />
@@ -1251,7 +1322,7 @@ function SoldDrawer({ initial, allClients, onClose, onSave }) {
               <input
                 type="date"
                 value={form.startDate}
-                onChange={(e)=>setForm({...form, startDate:e.target.value})}
+                onChange={(e) => setForm({ ...form, startDate: e.target.value })}
                 className="inp"
               />
             </Field>
@@ -1264,13 +1335,11 @@ function SoldDrawer({ initial, allClients, onClose, onSave }) {
                   type="checkbox"
                   className="mt-1"
                   checked={form.enableBdayHolidayTexts}
-                  onChange={(e)=>setForm({...form, enableBdayHolidayTexts:e.target.checked})}
+                  onChange={(e) => setForm({ ...form, enableBdayHolidayTexts: e.target.checked })}
                 />
                 <div className="flex-1">
                   <div className="text-sm">Bday Texts + Holiday Texts</div>
-                  <p className="mt-1 text-xs text-white/50">
-                    Opt-in to automated birthday &amp; holiday greetings.
-                  </p>
+                  <p className="mt-1 text-xs text-white/50">Opt-in to automated birthday &amp; holiday greetings.</p>
                 </div>
               </label>
             </div>
