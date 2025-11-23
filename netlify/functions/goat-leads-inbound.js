@@ -1,9 +1,18 @@
-// File: netlify/functions/goat-leads-inbound.js
-// Accepts Goat Leads style JSON, finds user by ?token=,
-// inserts into leads, tags contact, and fires messages-send (new_lead / new_lead_military).
+// netlify/functions/goat-leads-inbound.js
+// Accepts Goat Leads (or test JSON) and inserts into `leads` for the user
+// whose token matches ?token=... in the URL. Also can trigger auto-text
+// via messages-send (new_lead / new_lead_military) if templates + toggle
+// are enabled.
 
 const { getServiceClient } = require("./_supabase");
 const fetch = require("node-fetch");
+
+const FN_BASE =
+  process.env.FN_BASE ||
+  process.env.VITE_FUNCTIONS_BASE ||
+  "/.netlify/functions";
+
+/* ---------------- helpers ---------------- */
 
 function json(body, statusCode = 200) {
   return {
@@ -14,7 +23,6 @@ function json(body, statusCode = 200) {
 }
 
 const onlyDigits = (s) => String(s || "").replace(/\D/g, "");
-const norm10 = (s) => onlyDigits(s).slice(-10);
 function toE164(p) {
   const d = onlyDigits(p);
   if (!d) return null;
@@ -24,208 +32,228 @@ function toE164(p) {
   return null;
 }
 
-function getFnBase() {
-  const base =
-    process.env.SITE_URL ||
-    process.env.URL ||
-    process.env.DEPLOY_PRIME_URL ||
-    "https://remiecrm.com";
-  return `${String(base).replace(/\/+$/, "")}/.netlify/functions`;
+function firstNonEmpty(...vals) {
+  for (const v of vals) {
+    if (v !== undefined && v !== null && String(v).trim() !== "") return v;
+  }
+  return null;
 }
+
+function safeString(v) {
+  if (v === undefined || v === null) return null;
+  const s = String(v).trim();
+  return s === "" ? null : s;
+}
+
+/* ---------------- auto-text helper ---------------- */
+
+async function trySendNewLeadText({ user_id, lead_id, isMilitary }) {
+  try {
+    // This function uses service role; we just call messages-send directly.
+    const url = `${FN_BASE.replace(/\/$/, "")}/messages-send`;
+
+    const preferredKey = isMilitary ? "new_lead_military" : "new_lead";
+
+    const res = await fetch(url, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        // tell messages-send which user this is if it can't derive from lead_id
+      },
+      body: JSON.stringify({
+        requesterId: user_id,
+        lead_id,
+        templateKey: preferredKey,
+        billing: "free_first",
+        preferFreeSegments: true,
+        sent_by_ai: true,
+        provider_message_id: `goat_new_lead_${lead_id}`, // dedupe-safe
+      }),
+    });
+
+    const out = await res.json().catch(() => ({}));
+    console.log("[goat-leads-inbound] messages-send response:", out);
+
+    // We don't fail the webhook if texting fails; just log it.
+    return out;
+  } catch (e) {
+    console.warn("[goat-leads-inbound] auto-text failed:", e?.message || e);
+  }
+}
+
+/* ---------------- main handler ---------------- */
 
 exports.handler = async (event) => {
   const db = getServiceClient();
 
   try {
-    const token =
-      (event.queryStringParameters &&
-        event.queryStringParameters.token &&
-        String(event.queryStringParameters.token)) ||
-      null;
+    const qs = event.queryStringParameters || {};
+    const token = qs.token || qs.Token || null;
 
     if (!token) {
       return json({ ok: false, error: "missing_token" }, 400);
     }
 
-    // Find which user this token belongs to
-    const { data: ap, error: apErr } = await db
-      .from("agent_profiles")
+    // 1) Resolve user_id from token
+    const { data: tokenRow, error: tokenErr } = await db
+      .from("goat_webhook_tokens")
       .select("user_id")
-      .eq("goat_webhook_token", token)
+      .eq("token", token)
       .maybeSingle();
-    if (apErr) throw apErr;
-    if (!ap || !ap.user_id) {
-      return json({ ok: false, error: "invalid_token" }, 404);
-    }
-    const user_id = ap.user_id;
 
-    // Parse body (Goat sent you JSON like the sample you pasted)
+    if (tokenErr) {
+      console.error("[goat-leads-inbound] token lookup error:", tokenErr);
+      return json(
+        {
+          ok: false,
+          error: "token_lookup_failed",
+          detail: tokenErr.message || String(tokenErr),
+        },
+        500
+      );
+    }
+
+    if (!tokenRow || !tokenRow.user_id) {
+      return json({ ok: false, error: "invalid_token" }, 401);
+    }
+
+    const user_id = tokenRow.user_id;
+
+    // 2) Parse JSON body
     let payload = {};
     try {
       payload = JSON.parse(event.body || "{}");
-    } catch (e) {
-      console.error("[goat-leads-inbound] invalid JSON", e);
+    } catch {
       return json({ ok: false, error: "invalid_json" }, 400);
     }
 
-    // Extract fields from Goat payload
-    const firstName =
-      payload["First Name"] || payload.first_name || payload.firstname || "";
-    const lastName =
-      payload["Last Name"] || payload.last_name || payload.lastname || "";
-    const phoneRaw = payload["Phone"] || payload.phone || "";
-    const email = payload["Email"] || payload.email || "";
-    const state = payload["State"] || payload.state || "";
-    const dob = payload["DOB"] || payload.dob || null;
-    const beneficiary =
-      payload["Beneficiary"] || payload.beneficiary || null;
-    const beneficiaryName =
-      payload["Beneficiary Name"] ||
-      payload.beneficiary_name ||
-      payload.beneficiaryName ||
-      null;
-    const gender = payload["Gender"] || payload.gender || null;
-    const militaryStatus =
-      payload["Military Status"] || payload.military_status || "";
-    const leadType = payload["Lead Type"] || payload.lead_type || null;
-    const agedBucket = payload["Aged Bucket"] || payload.aged_bucket || null;
-    const externalId = payload["ID"] || payload.id || null;
+    const src = payload || {};
 
-    const fullName = `${firstName || ""} ${lastName || ""}`.trim() || null;
-    const phoneE164 = toE164(phoneRaw);
+    // 3) Map Goat fields -> our schema
+    const first_name = safeString(
+      src.first_name,
+      src.firstName,
+      src["First Name"]
+    );
+    const last_name = safeString(
+      src.last_name,
+      src.lastName,
+      src["Last Name"]
+    );
+    const name = safeString(
+      src.name,
+      src.Name,
+      [first_name, last_name].filter(Boolean).join(" ")
+    );
 
-    if (!phoneE164) {
-      console.error("[goat-leads-inbound] missing/invalid phone", phoneRaw);
-      return json({ ok: false, error: "invalid_phone" }, 400);
+    const phoneRaw = firstNonEmpty(
+      src.phone,
+      src.phone_number,
+      src["Phone"],
+      src["Phone Number"]
+    );
+    const phone = toE164(phoneRaw);
+
+    const email = safeString(src.email, src.Email);
+    const state = safeString(src.state, src.State, src.Region, src.Province);
+
+    const dob = safeString(src.dob, src.DOB, src["Date of Birth"]);
+    const beneficiary_name = safeString(
+      src.beneficiary_name,
+      src["Beneficiary Name"],
+      src.Beneficiary
+    );
+
+    const gender = safeString(src.gender, src.Gender);
+
+    const military_status = safeString(
+      src.military_branch,
+      src.military_status,
+      src["Military Status"]
+    );
+    const military_branch = military_status; // we just store the text
+
+    const lead_type = safeString(
+      src.lead_type,
+      src["Lead Type"],
+      src["Lead Sub-Type"]
+    );
+
+    const source = safeString(
+      src.source,
+      src.Source,
+      src["Aged Bucket"] ? `goat_${src["Aged Bucket"]}` : "goat_leads"
+    );
+
+    if (!phone) {
+      return json(
+        { ok: false, error: "invalid_or_missing_phone", original: phoneRaw },
+        400
+      );
     }
 
-    const isMilitary =
-      String(militaryStatus || "").toLowerCase().includes("veteran") ||
-      String(leadType || "").toLowerCase().includes("veteran");
-
-    // Insert into leads table
-    const leadRow = {
+    // 4) Build insert row — only columns we know exist
+    const row = {
       user_id,
-      name: fullName,
-      phone: phoneE164,
+      name,
+      phone,
       email,
-      dob,
       state,
-      beneficiary: beneficiary || null,
-      beneficiary_name: beneficiaryName || null,
-      gender: gender || null,
-      military_branch: militaryStatus || (isMilitary ? "Veteran" : null),
-      status: "new",
-      stage: "no_pickup",
-      // optional extras if these columns exist; if not, harmless in Postgrest
-      lead_type: leadType || null,
-      aged_bucket: agedBucket || null,
-      external_id: externalId || null,
-      source: "goat_leads",
+      dob,
+      beneficiary: beneficiary_name, // keep both filled
+      beneficiary_name,
+      gender,
+      military_branch,
+      lead_type,
+      source,
+      // stage, status, created_at, etc. should default in DB
     };
 
-    const insLead = await db
-      .from("leads")
-      .insert([leadRow])
-      .select("id, phone, name");
-    if (insLead.error) {
-      console.error("[goat-leads-inbound] insert lead error", insLead.error);
-      return json({ ok: false, error: "insert_lead_failed" }, 500);
-    }
-    const lead = insLead.data && insLead.data[0];
-    const lead_id = lead.id;
-
-    // Upsert contact with tags lead / military
-    const last10 = norm10(phoneE164);
-    const { data: contacts, error: cErr } = await db
-      .from("message_contacts")
-      .select("id, phone, tags")
-      .eq("user_id", user_id);
-    if (cErr) throw cErr;
-
-    let contactId = null;
-    const existing =
-      (contacts || []).find((c) => norm10(c.phone) === last10) || null;
-
-    const tagToUse = isMilitary ? "military" : "lead";
-
-    if (existing) {
-      const currentTags = Array.isArray(existing.tags)
-        ? existing.tags.map(String)
-        : [];
-      const nextTags = [tagToUse];
-      // keep other non-status tags
-      for (const t of currentTags) {
-        const lt = String(t || "").toLowerCase();
-        if (["lead", "military", "sold"].includes(lt)) continue;
-        if (!nextTags.includes(t)) nextTags.push(t);
-      }
-
-      const upd = await db
-        .from("message_contacts")
-        .update({
-          phone: phoneE164,
-          full_name: fullName,
-          tags: nextTags,
-        })
-        .eq("id", existing.id)
-        .select("id");
-      if (upd.error) throw upd.error;
-      contactId = upd.data[0].id;
-    } else {
-      const ins = await db
-        .from("message_contacts")
-        .insert([
-          {
-            user_id,
-            phone: phoneE164,
-            full_name: fullName,
-            tags: [tagToUse],
-            subscribed: true,
-          },
-        ])
-        .select("id");
-      if (ins.error) throw ins.error;
-      contactId = ins.data[0].id;
-    }
-
-    // Fire new-lead auto-text via messages-send
-    try {
-      const fnBase = getFnBase();
-      const templateKey = isMilitary ? "new_lead_military" : "new_lead";
-
-      const res = await fetch(`${fnBase}/messages-send`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "X-Remie-Billing": "free_first",
-        },
-        body: JSON.stringify({
-          requesterId: user_id,
-          lead_id,
-          templateKey,
-          billing: "free_first",
-          preferFreeSegments: true,
-        }),
-      });
-
-      const out = await res.json().catch(() => ({}));
-      console.log("[goat-leads-inbound] messages-send result:", {
-        status: res.status,
-        out,
-      });
-    } catch (e) {
-      console.error("[goat-leads-inbound] messages-send failed:", e);
-      // but don’t fail the webhook; lead is already in CRM
-    }
-
-    return json({
-      ok: true,
-      lead_id,
-      contact_id: contactId,
+    // Remove undefined to avoid Postgrest complaining
+    Object.keys(row).forEach((k) => {
+      if (row[k] === undefined) delete row[k];
     });
+
+    // 5) Insert into `leads`
+    const { data: ins, error: insErr } = await db
+      .from("leads")
+      .insert([row])
+      .select("id")
+      .single();
+
+    if (insErr) {
+      console.error("[goat-leads-inbound] insert error:", insErr);
+      return json(
+        {
+          ok: false,
+          error: "insert_lead_failed",
+          detail: insErr.message || String(insErr),
+          code: insErr.code || null,
+        },
+        500
+      );
+    }
+
+    const lead_id = ins.id;
+
+    // 6) Try auto-text (doesn't affect success/fail)
+    const looksMilitary =
+      (military_branch || "").toLowerCase().includes("vet") ||
+      (military_branch || "").toLowerCase().includes("military");
+    trySendNewLeadText({ user_id, lead_id, isMilitary: looksMilitary }).catch(
+      () => {}
+    );
+
+    return json({ ok: true, lead_id });
   } catch (e) {
     console.error("[goat-leads-inbound] unhandled error:", e);
-    return json({ ok: false, error: e.message || String(e) }, 500);
+    return json(
+      {
+        ok: false,
+        error: "unhandled",
+        detail: e?.message || String(e),
+      },
+      500
+    );
   }
 };
