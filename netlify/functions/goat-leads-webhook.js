@@ -1,6 +1,6 @@
 // File: netlify/functions/goat-leads-webhook.js
 // Webhook for Goat Leads → creates a lead row, then triggers messages-send
-// URL pattern (for now): /.netlify/functions/goat-leads-webhook?uid=<user_id>
+// Public URL pattern:  <base>/.netlify/functions/goat-leads-webhook?uid=<user_id>
 
 const { getServiceClient } = require("./_supabase");
 const fetch = require("node-fetch");
@@ -40,7 +40,7 @@ function parseBody(raw) {
 }
 
 exports.handler = async (event) => {
-  // Goat (or their infra) may send HEAD/GET pings just to verify the URL
+  // Goat (or infra) may ping with HEAD to verify URL
   if (event.httpMethod === "HEAD") {
     return { statusCode: 200, body: "" };
   }
@@ -63,9 +63,10 @@ exports.handler = async (event) => {
   }
 
   const data = parseBody(event.body || "");
-  const get = (k) => (Object.prototype.hasOwnProperty.call(data, k) ? data[k] : null);
+  const get = (k) =>
+    Object.prototype.hasOwnProperty.call(data, k) ? data[k] : null;
 
-  // Map Goat fields → leads columns
+  // Map Goat fields → leads columns (only ones we KNOW exist)
   const firstName = get("First Name") || "";
   const lastName = get("Last Name") || "";
   const fullName =
@@ -76,19 +77,12 @@ exports.handler = async (event) => {
   const email = get("Email") || null;
   const state = get("State") || null;
   const dob = get("DOB") || null;
-  const age = get("Age") || null;
   const gender = get("Gender") || null;
   const beneficiary = get("Beneficiary") || null;
   const beneficiary_name = get("Beneficiary Name") || null;
   const military_status = get("Military Status") || null;
 
-  const leadType = get("Lead Type") || null;          // "Veteran Lead"
-  const leadSubType = get("Lead Sub-Type") || null;   // "Premium"
-  const agedBucket = get("Aged Bucket") || null;      // "FRESH"
-  const vendorId = get("ID") || null;
-  const trustedFormUrl = get("Trusted Form URL") || null;
-  const ipAddress = get("IP Address") || null;
-
+  // build row only with safe columns
   const leadRow = {
     user_id,
     name: fullName,
@@ -96,24 +90,15 @@ exports.handler = async (event) => {
     email,
     state,
     dob,
-    age,
     gender,
     beneficiary,
     beneficiary_name,
     military_branch: military_status,
-    lead_type: leadType,
-    lead_subtype: leadSubType,
-    aged_bucket: agedBucket,
-    external_id: vendorId ? String(vendorId) : null,
-    source: "goat_leads",
-    trusted_form_url: trustedFormUrl,
-    ip_address: ipAddress,
-    raw_vendor: data,       // JSONB column is ideal; if you don't have it, you can drop this
     stage: "no_pickup",
     status: "open",
   };
 
-  // Strip null/undefined so we don't hit missing columns
+  // Strip null/undefined
   for (const k of Object.keys(leadRow)) {
     if (leadRow[k] == null) delete leadRow[k];
   }
@@ -128,7 +113,10 @@ exports.handler = async (event) => {
     if (error) {
       console.error("[goat-leads] insert error:", error);
       return json(
-        { error: "db_insert_failed", detail: error.message || String(error) },
+        {
+          error: "db_insert_failed",
+          detail: error.message || String(error),
+        },
         500
       );
     }
@@ -140,7 +128,7 @@ exports.handler = async (event) => {
 
   const lead_id = inserted?.id;
 
-  // Fire-and-forget: trigger your existing messages-send function
+  // Fire-and-forget: trigger your existing messages-send function.
   // It will respect templates + auto_new_lead_texts_enabled toggle.
   try {
     const base =
@@ -158,12 +146,12 @@ exports.handler = async (event) => {
       body: JSON.stringify({
         lead_id,
         requesterId: user_id,
-        // no templateKey → messages-send will choose new_lead vs new_lead_military
+        // no templateKey → messages-send picks new_lead / new_lead_military
       }),
     });
   } catch (e) {
     console.error("[goat-leads] messages-send failed (non-fatal):", e);
-    // we still return 200 to Goat so they don't retry forever
+    // Still return 200 so Goat doesn't retry forever
   }
 
   return json({ ok: true, lead_id });
