@@ -169,17 +169,7 @@ exports.handler = async (event) => {
     );
     const military_branch = military_status;
 
-    const lead_type = safeString(
-      src.lead_type,
-      src["Lead Type"],
-      src["Lead Sub-Type"]
-    );
-
-    const source = safeString(
-      src.source,
-      src.Source,
-      src["Aged Bucket"] ? `goat_${src["Aged Bucket"]}` : "goat_leads"
-    );
+    // we don't have lead_type/source columns on the leads table, so we don't insert them
 
     if (!phone) {
       return json(
@@ -188,22 +178,39 @@ exports.handler = async (event) => {
       );
     }
 
-    // 4) Build insert row — only columns we know exist
+    // 4) Build insert row — ONLY columns that exist in your leads table:
+    // user_id, status, name, phone, email, notes, dob, state, beneficiary,
+    // beneficiary_name, company, gender, sold, created_at, updated_at,
+    // owner_user_id, stage, stage_changed_at, next_follow_up_at,
+    // last_outcome, call_attempts, priority, pipeline, military_branch
+
     const row = {
       user_id,
+      status: "lead",
       name,
       phone,
       email,
-      state,
       dob,
+      state,
       beneficiary: beneficiary_name,
       beneficiary_name,
       gender,
       military_branch,
-      lead_type,
-      source,
+      // optional fields left null by default:
+      notes: null,
+      company: null,
+      sold: null,
+      owner_user_id: null,
+      stage: null,
+      stage_changed_at: null,
+      next_follow_up_at: null,
+      last_outcome: null,
+      call_attempts: null,
+      priority: null,
+      pipeline: null,
     };
 
+    // strip undefined so PostgREST doesn't complain
     Object.keys(row).forEach((k) => {
       if (row[k] === undefined) delete row[k];
     });
