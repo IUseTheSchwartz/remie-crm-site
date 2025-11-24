@@ -2,10 +2,15 @@
 // Accepts Goat Leads (or test JSON) and inserts into `leads` for the user
 // whose token matches ?token=... in the URL. Also can trigger auto-text
 // via messages-send (new_lead / new_lead_military) if templates + toggle
-// are enabled.
+// are enabled, and upserts a matching message_contacts row.
 
 const { getServiceClient } = require("./_supabase");
 const fetch = require("node-fetch");
+
+const FN_BASE =
+  process.env.FN_BASE ||
+  process.env.VITE_FUNCTIONS_BASE ||
+  "/.netlify/functions";
 
 /* ---------------- helpers ---------------- */
 
@@ -40,19 +45,40 @@ function safeString(v) {
   return s === "" ? null : s;
 }
 
+// Small helpers for tags/strings (match other functions)
+const S = (v) =>
+  v == null ? "" : typeof v === "string" ? v.trim() : String(v).trim();
+const normalizeTag = (s) => String(s ?? "").trim().toLowerCase().replace(/\s+/g, "_");
+const uniqTags = (arr) =>
+  Array.from(new Set((arr || []).map(normalizeTag))).filter(Boolean);
+
 /* ---------------- auto-text helper ---------------- */
-/**
- * baseUrl should be like "https://remiecrm.com"
- */
-async function trySendNewLeadText({ user_id, lead_id, isMilitary, baseUrl }) {
+
+// Build absolute base URL inside Netlify (same pattern as zap-webhook)
+function resolveBaseUrl(event) {
+  const proto =
+    event.headers["x-forwarded-proto"] ||
+    event.headers["X-Forwarded-Proto"] ||
+    "https";
+  const host =
+    event.headers.host ||
+    (process.env.URL || process.env.SITE_URL || "").replace(/^https?:\/\//, "");
+  const envBase = process.env.SITE_URL || process.env.URL || null;
+  if (envBase) return envBase.replace(/\/$/, "");
+  if (proto && host) return `${proto}://${host}`;
+  return null;
+}
+
+async function trySendNewLeadText({ user_id, lead_id, isMilitary, event }) {
   try {
-    if (!baseUrl) {
-      console.warn("[goat-leads-inbound] missing baseUrl; skipping auto-text");
+    const base = resolveBaseUrl(event);
+    if (!base) {
+      console.warn("[goat-leads-inbound] could not resolve base URL for messages-send");
       return;
     }
 
-    const url = `${String(baseUrl).replace(/\/$/, "")}/.netlify/functions/messages-send`;
     const preferredKey = isMilitary ? "new_lead_military" : "new_lead";
+    const url = `${base}/.netlify/functions/messages-send`;
 
     const res = await fetch(url, {
       method: "POST",
@@ -127,18 +153,21 @@ exports.handler = async (event) => {
     const src = payload || {};
 
     // 3) Map Goat fields -> our schema
-
-    // First + last: accept multiple possible keys
     const first_name = safeString(
-      src.first_name || src.firstName || src["First Name"]
+      src.first_name,
+      src.firstName,
+      src["First Name"]
     );
     const last_name = safeString(
-      src.last_name || src.lastName || src["Last Name"]
+      src.last_name,
+      src.lastName,
+      src["Last Name"]
     );
-
-    // Combine first + last, but let an explicit name override if present
-    const combinedName = [first_name, last_name].filter(Boolean).join(" ");
-    const name = safeString(src.name || src.Name || combinedName);
+    const name = safeString(
+      src.name,
+      src.Name,
+      [first_name, last_name].filter(Boolean).join(" ")
+    );
 
     const phoneRaw = firstNonEmpty(
       src.phone,
@@ -148,24 +177,22 @@ exports.handler = async (event) => {
     );
     const phone = toE164(phoneRaw);
 
-    const email = safeString(src.email || src.Email);
+    const email = safeString(src.email, src.Email);
+    const state = safeString(src.state, src.State, src.Region, src.Province);
 
-    const state = safeString(
-      src.state || src.State || src.Region || src.Province
-    );
-
-    const dob = safeString(src.dob || src.DOB || src["Date of Birth"]);
-
+    const dob = safeString(src.dob, src.DOB, src["Date of Birth"]);
     const beneficiary_name = safeString(
-      src.beneficiary_name || src["Beneficiary Name"] || src.Beneficiary
+      src.beneficiary_name,
+      src["Beneficiary Name"],
+      src.Beneficiary
     );
 
-    const gender = safeString(src.gender || src.Gender);
+    const gender = safeString(src.gender, src.Gender);
 
     const military_status = safeString(
-      src.military_branch ||
-        src.military_status ||
-        src["Military Status"]
+      src.military_branch,
+      src.military_status,
+      src["Military Status"]
     );
     const military_branch = military_status;
 
@@ -219,7 +246,7 @@ exports.handler = async (event) => {
     const { data: ins, error: insErr } = await db
       .from("leads")
       .insert([row])
-      .select("id")
+      .select("id, name, phone, military_branch")
       .single();
 
     if (insErr) {
@@ -237,20 +264,60 @@ exports.handler = async (event) => {
 
     const lead_id = ins.id;
 
-    // 6) Build base URL exactly like zap-webhook.js
-    const proto =
-      event.headers["x-forwarded-proto"] ||
-      event.headers["X-Forwarded-Proto"] ||
-      "https";
-    const host =
-      event.headers.host ||
-      event.headers.Host ||
-      (process.env.URL || process.env.SITE_URL || "").replace(
-        /^https?:\/\//,
-        ""
+    /* 6) Upsert message_contacts entry (so Contact page stays in sync) */
+    try {
+      if (ins.phone) {
+        const e164 = toE164(ins.phone);
+        if (e164) {
+          const phoneDigits = onlyDigits(e164);
+
+          const { data: existingRows, error: selErr } = await db
+            .from("message_contacts")
+            .select("id, phone, tags")
+            .eq("user_id", user_id)
+            .order("created_at", { ascending: false });
+
+          if (selErr) throw selErr;
+
+          const existing =
+            (existingRows || []).find(
+              (r) => onlyDigits(r.phone) === phoneDigits
+            ) || null;
+
+          const statusTag = S(ins.military_branch) ? "military" : "lead";
+          const base = {
+            user_id,
+            phone: e164,
+            full_name: ins.name || null,
+            subscribed: true,
+            meta: { lead_id },
+          };
+
+          if (existing?.id) {
+            const cur = Array.isArray(existing.tags) ? existing.tags : [];
+            const withoutStatus = cur.filter(
+              (t) =>
+                !["lead", "military"].includes(String(t).toLowerCase())
+            );
+            const nextTags = uniqTags([...withoutStatus, statusTag]);
+            await db
+              .from("message_contacts")
+              .update({ ...base, tags: nextTags })
+              .eq("id", existing.id);
+          } else {
+            await db
+              .from("message_contacts")
+              .insert([{ ...base, tags: [statusTag] }]);
+          }
+        }
+      }
+    } catch (e) {
+      console.warn(
+        "[goat-leads-inbound] contact upsert warning:",
+        e?.message || e
       );
-    const baseUrl =
-      process.env.SITE_URL || (proto && host ? `${proto}://${host}` : null);
+      // non-fatal
+    }
 
     // 7) Try auto-text (doesn't affect success/fail)
     const looksMilitary =
@@ -260,7 +327,7 @@ exports.handler = async (event) => {
       user_id,
       lead_id,
       isMilitary: looksMilitary,
-      baseUrl,
+      event,
     }).catch(() => {});
 
     return json({ ok: true, lead_id });
