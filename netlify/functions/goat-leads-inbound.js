@@ -2,15 +2,12 @@
 // Accepts Goat Leads (or test JSON) and inserts into `leads` for the user
 // whose token matches ?token=... in the URL. Also can trigger auto-text
 // via messages-send (new_lead / new_lead_military) if templates + toggle
-// are enabled, and upserts a matching message_contacts row.
+// are enabled, and upserts a message_contact for the lead.
 
 const { getServiceClient } = require("./_supabase");
 const fetch = require("node-fetch");
 
-const FN_BASE =
-  process.env.FN_BASE ||
-  process.env.VITE_FUNCTIONS_BASE ||
-  "/.netlify/functions";
+const db = getServiceClient();
 
 /* ---------------- helpers ---------------- */
 
@@ -23,6 +20,7 @@ function json(body, statusCode = 200) {
 }
 
 const onlyDigits = (s) => String(s || "").replace(/\D/g, "");
+
 function toE164(p) {
   const d = onlyDigits(p);
   if (!d) return null;
@@ -32,48 +30,94 @@ function toE164(p) {
   return null;
 }
 
+// returns the first non-empty trimmed string or null
 function firstNonEmpty(...vals) {
   for (const v of vals) {
-    if (v !== undefined && v !== null && String(v).trim() !== "") return v;
+    if (v === undefined || v === null) continue;
+    const s = String(v).trim();
+    if (s !== "") return s;
   }
   return null;
 }
 
-function safeString(v) {
-  if (v === undefined || v === null) return null;
-  const s = String(v).trim();
-  return s === "" ? null : s;
+// alias used in mapping
+function safeString(...vals) {
+  const v = firstNonEmpty(...vals);
+  return v == null ? null : v;
 }
 
-// Small helpers for tags/strings (match other functions)
-const S = (v) =>
-  v == null ? "" : typeof v === "string" ? v.trim() : String(v).trim();
-const normalizeTag = (s) => String(s ?? "").trim().toLowerCase().replace(/\s+/g, "_");
+const normalizeTag = (s) =>
+  String(s ?? "").trim().toLowerCase().replace(/\s+/g, "_");
 const uniqTags = (arr) =>
   Array.from(new Set((arr || []).map(normalizeTag))).filter(Boolean);
 
-/* ---------------- auto-text helper ---------------- */
+/* ---------------- contact upsert helper ---------------- */
 
-// Build absolute base URL inside Netlify (same pattern as zap-webhook)
-function resolveBaseUrl(event) {
-  const proto =
-    event.headers["x-forwarded-proto"] ||
-    event.headers["X-Forwarded-Proto"] ||
-    "https";
-  const host =
-    event.headers.host ||
-    (process.env.URL || process.env.SITE_URL || "").replace(/^https?:\/\//, "");
-  const envBase = process.env.SITE_URL || process.env.URL || null;
-  if (envBase) return envBase.replace(/\/$/, "");
-  if (proto && host) return `${proto}://${host}`;
-  return null;
+async function upsertContactForLead({ user_id, phone, name, military_branch, lead_id }) {
+  try {
+    const e164 = toE164(phone);
+    if (!e164) return;
+
+    const digits = onlyDigits(e164);
+    const { data, error } = await db
+      .from("message_contacts")
+      .select("id, phone, tags")
+      .eq("user_id", user_id);
+
+    if (error) throw error;
+
+    const existing =
+      (data || []).find((c) => onlyDigits(c.phone) === digits) || null;
+
+    const statusTag = military_branch ? "military" : "lead";
+    const base = {
+      user_id,
+      phone: e164,
+      full_name: name || null,
+      subscribed: true,
+      meta: { lead_id },
+    };
+
+    if (existing?.id) {
+      const cur = Array.isArray(existing.tags) ? existing.tags : [];
+      const without = cur.filter(
+        (t) => !["lead", "military"].includes(String(t).toLowerCase())
+      );
+      const nextTags = uniqTags([...without, statusTag]);
+      await db
+        .from("message_contacts")
+        .update({ ...base, tags: nextTags })
+        .eq("id", existing.id);
+    } else {
+      await db.from("message_contacts").insert([
+        {
+          ...base,
+          tags: [statusTag],
+        },
+      ]);
+    }
+  } catch (e) {
+    console.warn(
+      "[goat-leads-inbound] contact upsert failed:",
+      e?.message || e
+    );
+  }
 }
 
-async function trySendNewLeadText({ user_id, lead_id, isMilitary, event }) {
+/* ---------------- auto-text helper ---------------- */
+
+async function trySendNewLeadText({ user_id, lead_id, isMilitary, baseUrl }) {
   try {
-    const base = resolveBaseUrl(event);
+    const base =
+      (baseUrl || process.env.SITE_URL || process.env.URL || "").replace(
+        /\/+$/,
+        ""
+      );
+
     if (!base) {
-      console.warn("[goat-leads-inbound] could not resolve base URL for messages-send");
+      console.warn(
+        "[goat-leads-inbound] no base URL available for messages-send; skipping auto-text"
+      );
       return;
     }
 
@@ -97,7 +141,7 @@ async function trySendNewLeadText({ user_id, lead_id, isMilitary, event }) {
     });
 
     const out = await res.json().catch(() => ({}));
-    console.log("[goat-leads-inbound] messages-send response:", res.status, out);
+    console.log("[goat-leads-inbound] messages-send response:", out);
     return out;
   } catch (e) {
     console.warn("[goat-leads-inbound] auto-text failed:", e?.message || e);
@@ -107,8 +151,6 @@ async function trySendNewLeadText({ user_id, lead_id, isMilitary, event }) {
 /* ---------------- main handler ---------------- */
 
 exports.handler = async (event) => {
-  const db = getServiceClient();
-
   try {
     const qs = event.queryStringParameters || {};
     const token = qs.token || qs.Token || null;
@@ -153,6 +195,7 @@ exports.handler = async (event) => {
     const src = payload || {};
 
     // 3) Map Goat fields -> our schema
+
     const first_name = safeString(
       src.first_name,
       src.firstName,
@@ -163,44 +206,58 @@ exports.handler = async (event) => {
       src.lastName,
       src["Last Name"]
     );
-    const name = safeString(
-      src.name,
-      src.Name,
-      [first_name, last_name].filter(Boolean).join(" ")
-    );
+    const combinedName = [first_name, last_name].filter(Boolean).join(" ");
+
+    const name = safeString(src.name, src.Name, combinedName);
 
     const phoneRaw = firstNonEmpty(
       src.phone,
       src.phone_number,
       src["Phone"],
-      src["Phone Number"]
+      src["Phone Number"],
+      src.primary_phone,
+      src["Primary Phone"]
     );
     const phone = toE164(phoneRaw);
 
     const email = safeString(src.email, src.Email);
-    const state = safeString(src.state, src.State, src.Region, src.Province);
+    let state = safeString(
+      src.state,
+      src.State,
+      src.region,
+      src.Region,
+      src.province,
+      src.Province
+    );
+    if (state) state = state.toUpperCase();
 
     const dob = safeString(src.dob, src.DOB, src["Date of Birth"]);
+
     const beneficiary_name = safeString(
       src.beneficiary_name,
+      src.beneficiaryName,
       src["Beneficiary Name"],
       src.Beneficiary
     );
 
-    const gender = safeString(src.gender, src.Gender);
+    const gender = safeString(src.gender, src.Gender, src.sex, src.Sex);
 
     const military_status = safeString(
       src.military_branch,
       src.military_status,
-      src["Military Status"]
+      src["Military Status"],
+      src["Veteran Status"],
+      src["militaryBranch"]
     );
     const military_branch = military_status;
 
-    // we don't have lead_type/source columns on the leads table, so we don't insert them
-
     if (!phone) {
       return json(
-        { ok: false, error: "invalid_or_missing_phone", original: phoneRaw },
+        {
+          ok: false,
+          error: "invalid_or_missing_phone",
+          original: phoneRaw,
+        },
         400
       );
     }
@@ -211,10 +268,12 @@ exports.handler = async (event) => {
     // owner_user_id, stage, stage_changed_at, next_follow_up_at,
     // last_outcome, call_attempts, priority, pipeline, military_branch
 
+    const nowISO = new Date().toISOString();
+
     const row = {
       user_id,
       status: "lead",
-      name,
+      name: name,
       phone,
       email,
       dob,
@@ -223,18 +282,19 @@ exports.handler = async (event) => {
       beneficiary_name,
       gender,
       military_branch,
+      // pipeline defaults
+      stage: "no_pickup",
+      stage_changed_at: nowISO,
       // optional fields left null by default:
       notes: null,
       company: null,
       sold: null,
       owner_user_id: null,
-      stage: null,
-      stage_changed_at: null,
       next_follow_up_at: null,
       last_outcome: null,
-      call_attempts: null,
-      priority: null,
-      pipeline: null,
+      call_attempts: 0,
+      priority: "medium",
+      pipeline: {},
     };
 
     // strip undefined so PostgREST doesn't complain
@@ -246,7 +306,7 @@ exports.handler = async (event) => {
     const { data: ins, error: insErr } = await db
       .from("leads")
       .insert([row])
-      .select("id, name, phone, military_branch")
+      .select("id, phone, name, military_branch")
       .single();
 
     if (insErr) {
@@ -264,70 +324,48 @@ exports.handler = async (event) => {
 
     const lead_id = ins.id;
 
-    /* 6) Upsert message_contacts entry (so Contact page stays in sync) */
-    try {
-      if (ins.phone) {
-        const e164 = toE164(ins.phone);
-        if (e164) {
-          const phoneDigits = onlyDigits(e164);
+    // 6) Upsert into message_contacts (non-fatal if it fails)
+    await upsertContactForLead({
+      user_id,
+      phone: ins.phone || phone,
+      name: ins.name || name,
+      military_branch: ins.military_branch || military_branch,
+      lead_id,
+    });
 
-          const { data: existingRows, error: selErr } = await db
-            .from("message_contacts")
-            .select("id, phone, tags")
-            .eq("user_id", user_id)
-            .order("created_at", { ascending: false });
+    // 7) Build base URL for messages-send (absolute, not relative)
+    const headers = event.headers || {};
+    const protoHeader =
+      headers["x-forwarded-proto"] ||
+      headers["X-Forwarded-Proto"] ||
+      "https";
+    const hostHeader = headers.host || headers.Host || "";
+    const envSite =
+      process.env.SITE_URL ||
+      process.env.URL ||
+      "";
 
-          if (selErr) throw selErr;
-
-          const existing =
-            (existingRows || []).find(
-              (r) => onlyDigits(r.phone) === phoneDigits
-            ) || null;
-
-          const statusTag = S(ins.military_branch) ? "military" : "lead";
-          const base = {
-            user_id,
-            phone: e164,
-            full_name: ins.name || null,
-            subscribed: true,
-            meta: { lead_id },
-          };
-
-          if (existing?.id) {
-            const cur = Array.isArray(existing.tags) ? existing.tags : [];
-            const withoutStatus = cur.filter(
-              (t) =>
-                !["lead", "military"].includes(String(t).toLowerCase())
-            );
-            const nextTags = uniqTags([...withoutStatus, statusTag]);
-            await db
-              .from("message_contacts")
-              .update({ ...base, tags: nextTags })
-              .eq("id", existing.id);
-          } else {
-            await db
-              .from("message_contacts")
-              .insert([{ ...base, tags: [statusTag] }]);
-          }
-        }
+    let baseUrl = envSite.replace(/\/+$/, "");
+    if (!baseUrl) {
+      const fallbackHost = envSite.replace(/^https?:\/\//, "");
+      const host = hostHeader || fallbackHost;
+      if (host) {
+        baseUrl = `${protoHeader}://${host}`.replace(/\/+$/, "");
       }
-    } catch (e) {
-      console.warn(
-        "[goat-leads-inbound] contact upsert warning:",
-        e?.message || e
-      );
-      // non-fatal
     }
 
-    // 7) Try auto-text (doesn't affect success/fail)
+    // 8) Try auto-text (doesn't affect success/fail)
+    const lowerBranch = String(
+      ins.military_branch || military_branch || ""
+    ).toLowerCase();
     const looksMilitary =
-      (military_branch || "").toLowerCase().includes("vet") ||
-      (military_branch || "").toLowerCase().includes("military");
+      lowerBranch.includes("vet") || lowerBranch.includes("military");
+
     trySendNewLeadText({
       user_id,
       lead_id,
       isMilitary: looksMilitary,
-      event,
+      baseUrl,
     }).catch(() => {});
 
     return json({ ok: true, lead_id });
