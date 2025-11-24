@@ -40,7 +40,7 @@ function firstNonEmpty(...vals) {
   return null;
 }
 
-// alias used in mapping
+// alias used in mapping – accepts multiple fallbacks
 function safeString(...vals) {
   const v = firstNonEmpty(...vals);
   return v == null ? null : v;
@@ -88,6 +88,7 @@ async function upsertContactForLead({ user_id, phone, name, military_branch, lea
         .from("message_contacts")
         .update({ ...base, tags: nextTags })
         .eq("id", existing.id);
+      console.log("[goat-leads-inbound] updated existing contact", existing.id);
     } else {
       await db.from("message_contacts").insert([
         {
@@ -95,56 +96,13 @@ async function upsertContactForLead({ user_id, phone, name, military_branch, lea
           tags: [statusTag],
         },
       ]);
+      console.log("[goat-leads-inbound] inserted new contact for", e164);
     }
   } catch (e) {
     console.warn(
       "[goat-leads-inbound] contact upsert failed:",
       e?.message || e
     );
-  }
-}
-
-/* ---------------- auto-text helper ---------------- */
-
-async function trySendNewLeadText({ user_id, lead_id, isMilitary, baseUrl }) {
-  try {
-    const base =
-      (baseUrl || process.env.SITE_URL || process.env.URL || "").replace(
-        /\/+$/,
-        ""
-      );
-
-    if (!base) {
-      console.warn(
-        "[goat-leads-inbound] no base URL available for messages-send; skipping auto-text"
-      );
-      return;
-    }
-
-    const preferredKey = isMilitary ? "new_lead_military" : "new_lead";
-    const url = `${base}/.netlify/functions/messages-send`;
-
-    const res = await fetch(url, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        requesterId: user_id,
-        lead_id,
-        templateKey: preferredKey,
-        billing: "free_first",
-        preferFreeSegments: true,
-        sent_by_ai: true,
-        provider_message_id: `goat_new_lead_${lead_id}`, // dedupe-safe
-      }),
-    });
-
-    const out = await res.json().catch(() => ({}));
-    console.log("[goat-leads-inbound] messages-send response:", out);
-    return out;
-  } catch (e) {
-    console.warn("[goat-leads-inbound] auto-text failed:", e?.message || e);
   }
 }
 
@@ -247,7 +205,7 @@ exports.handler = async (event) => {
       src.military_status,
       src["Military Status"],
       src["Veteran Status"],
-      src["militaryBranch"]
+      src.militaryBranch
     );
     const military_branch = military_status;
 
@@ -333,40 +291,71 @@ exports.handler = async (event) => {
       lead_id,
     });
 
-    // 7) Build base URL for messages-send (absolute, not relative)
-    const headers = event.headers || {};
-    const protoHeader =
-      headers["x-forwarded-proto"] ||
-      headers["X-Forwarded-Proto"] ||
-      "https";
-    const hostHeader = headers.host || headers.Host || "";
-    const envSite =
-      process.env.SITE_URL ||
-      process.env.URL ||
-      "";
+    // 7) Auto-send initial template (same pattern as zap-webhook)
+    try {
+      const lowerBranch = String(
+        ins.military_branch || military_branch || ""
+      ).toLowerCase();
+      const isMilitary =
+        lowerBranch.includes("vet") || lowerBranch.includes("military");
 
-    let baseUrl = envSite.replace(/\/+$/, "");
-    if (!baseUrl) {
-      const fallbackHost = envSite.replace(/^https?:\/\//, "");
-      const host = hostHeader || fallbackHost;
-      if (host) {
-        baseUrl = `${protoHeader}://${host}`.replace(/\/+$/, "");
+      const templateKey = isMilitary ? "new_lead_military" : "new_lead";
+      const provider_message_id = `lead:${lead_id}:tpl:${templateKey}`;
+
+      const headers = event.headers || {};
+      const proto =
+        headers["x-forwarded-proto"] ||
+        headers["X-Forwarded-Proto"] ||
+        "https";
+      const host =
+        headers.host ||
+        headers.Host ||
+        (process.env.URL || process.env.SITE_URL || "").replace(
+          /^https?:\/\//,
+          ""
+        );
+      const base =
+        process.env.SITE_URL ||
+        (proto && host ? `${proto}://${host}` : null);
+
+      if (base) {
+        const url = `${base.replace(
+          /\/+$/,
+          ""
+        )}/.netlify/functions/messages-send`;
+        console.log(
+          "[goat-leads-inbound] calling messages-send at",
+          url,
+          "with lead",
+          lead_id
+        );
+
+        const res = await fetch(url, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            lead_id,
+            templateKey, // messages-send accepts templateKey | template_key | template
+            provider_message_id,
+          }),
+        });
+        const out = await res.json().catch(() => ({}));
+        console.log(
+          "[goat-leads-inbound] messages-send:",
+          res.status,
+          out?.ok || out?.deduped ? "ok" : out
+        );
+      } else {
+        console.warn(
+          "[goat-leads-inbound] no base URL for messages-send; skipping auto-text"
+        );
       }
+    } catch (e) {
+      console.warn(
+        "[goat-leads-inbound] auto-send warning:",
+        e?.message || e
+      );
     }
-
-    // 8) Try auto-text (doesn't affect success/fail)
-    const lowerBranch = String(
-      ins.military_branch || military_branch || ""
-    ).toLowerCase();
-    const looksMilitary =
-      lowerBranch.includes("vet") || lowerBranch.includes("military");
-
-    trySendNewLeadText({
-      user_id,
-      lead_id,
-      isMilitary: looksMilitary,
-      baseUrl,
-    }).catch(() => {});
 
     return json({ ok: true, lead_id });
   } catch (e) {
