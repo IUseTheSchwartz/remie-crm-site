@@ -7,11 +7,6 @@
 const { getServiceClient } = require("./_supabase");
 const fetch = require("node-fetch");
 
-const FN_BASE =
-  process.env.FN_BASE ||
-  process.env.VITE_FUNCTIONS_BASE ||
-  "/.netlify/functions";
-
 /* ---------------- helpers ---------------- */
 
 function json(body, statusCode = 200) {
@@ -46,11 +41,17 @@ function safeString(v) {
 }
 
 /* ---------------- auto-text helper ---------------- */
-
-async function trySendNewLeadText({ user_id, lead_id, isMilitary }) {
+/**
+ * baseUrl should be like "https://remiecrm.com"
+ */
+async function trySendNewLeadText({ user_id, lead_id, isMilitary, baseUrl }) {
   try {
-    const url = `${FN_BASE.replace(/\/$/, "")}/messages-send`;
+    if (!baseUrl) {
+      console.warn("[goat-leads-inbound] missing baseUrl; skipping auto-text");
+      return;
+    }
 
+    const url = `${String(baseUrl).replace(/\/$/, "")}/.netlify/functions/messages-send`;
     const preferredKey = isMilitary ? "new_lead_military" : "new_lead";
 
     const res = await fetch(url, {
@@ -70,7 +71,7 @@ async function trySendNewLeadText({ user_id, lead_id, isMilitary }) {
     });
 
     const out = await res.json().catch(() => ({}));
-    console.log("[goat-leads-inbound] messages-send response:", out);
+    console.log("[goat-leads-inbound] messages-send response:", res.status, out);
     return out;
   } catch (e) {
     console.warn("[goat-leads-inbound] auto-text failed:", e?.message || e);
@@ -236,13 +237,31 @@ exports.handler = async (event) => {
 
     const lead_id = ins.id;
 
-    // 6) Try auto-text (doesn't affect success/fail)
+    // 6) Build base URL exactly like zap-webhook.js
+    const proto =
+      event.headers["x-forwarded-proto"] ||
+      event.headers["X-Forwarded-Proto"] ||
+      "https";
+    const host =
+      event.headers.host ||
+      event.headers.Host ||
+      (process.env.URL || process.env.SITE_URL || "").replace(
+        /^https?:\/\//,
+        ""
+      );
+    const baseUrl =
+      process.env.SITE_URL || (proto && host ? `${proto}://${host}` : null);
+
+    // 7) Try auto-text (doesn't affect success/fail)
     const looksMilitary =
       (military_branch || "").toLowerCase().includes("vet") ||
       (military_branch || "").toLowerCase().includes("military");
-    trySendNewLeadText({ user_id, lead_id, isMilitary: looksMilitary }).catch(
-      () => {}
-    );
+    trySendNewLeadText({
+      user_id,
+      lead_id,
+      isMilitary: looksMilitary,
+      baseUrl,
+    }).catch(() => {});
 
     return json({ ok: true, lead_id });
   } catch (e) {
