@@ -126,21 +126,18 @@ exports.handler = async (event) => {
     const src = payload || {};
 
     // 3) Map Goat fields -> our schema
+
+    // First + last: accept multiple possible keys
     const first_name = safeString(
-      src.first_name,
-      src.firstName,
-      src["First Name"]
+      src.first_name || src.firstName || src["First Name"]
     );
     const last_name = safeString(
-      src.last_name,
-      src.lastName,
-      src["Last Name"]
+      src.last_name || src.lastName || src["Last Name"]
     );
-    const name = safeString(
-      src.name,
-      src.Name,
-      [first_name, last_name].filter(Boolean).join(" ")
-    );
+
+    // Combine first + last, but let an explicit name override if present
+    const combinedName = [first_name, last_name].filter(Boolean).join(" ");
+    const name = safeString(src.name || src.Name || combinedName);
 
     const phoneRaw = firstNonEmpty(
       src.phone,
@@ -150,22 +147,24 @@ exports.handler = async (event) => {
     );
     const phone = toE164(phoneRaw);
 
-    const email = safeString(src.email, src.Email);
-    const state = safeString(src.state, src.State, src.Region, src.Province);
+    const email = safeString(src.email || src.Email);
 
-    const dob = safeString(src.dob, src.DOB, src["Date of Birth"]);
-    const beneficiary_name = safeString(
-      src.beneficiary_name,
-      src["Beneficiary Name"],
-      src.Beneficiary
+    const state = safeString(
+      src.state || src.State || src.Region || src.Province
     );
 
-    const gender = safeString(src.gender, src.Gender);
+    const dob = safeString(src.dob || src.DOB || src["Date of Birth"]);
+
+    const beneficiary_name = safeString(
+      src.beneficiary_name || src["Beneficiary Name"] || src.Beneficiary
+    );
+
+    const gender = safeString(src.gender || src.Gender);
 
     const military_status = safeString(
-      src.military_branch,
-      src.military_status,
-      src["Military Status"]
+      src.military_branch ||
+        src.military_status ||
+        src["Military Status"]
     );
     const military_branch = military_status;
 
