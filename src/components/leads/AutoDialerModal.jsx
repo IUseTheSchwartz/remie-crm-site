@@ -36,6 +36,50 @@ function parseStateFilter(s) {
     .split(/[\s,]+/).map(x => x.trim().toUpperCase()).filter(Boolean);
 }
 
+/* ---------- usage helpers (same logic as DialerPage) ---------- */
+const FREE_CALL_MINUTES_TOTAL = 6000; // 100 hours/month = 6,000 minutes
+
+async function resolveAccountId(user_id) {
+  const { data, error } = await supabase
+    .from("subscriptions")
+    .select("account_id, status")
+    .eq("user_id", user_id)
+    .eq("status", "active")
+    .limit(1);
+
+  if (!error && data && data[0]?.account_id) return data[0].account_id;
+  return user_id;
+}
+
+/** Reads current period free call usage from usage_counters:
+ *  - uses free_call_minutes_used / free_call_minutes_total
+ *  - picks the row where NOW() is between period_start and period_end
+ */
+async function fetchCallUsageForCurrentMonth(user_id) {
+  if (!user_id) return { used: 0, total: FREE_CALL_MINUTES_TOTAL };
+  const account_id = await resolveAccountId(user_id);
+  const nowIso = new Date().toISOString();
+
+  const { data, error } = await supabase
+    .from("usage_counters")
+    .select("free_call_minutes_used, free_call_minutes_total, period_start, period_end")
+    .eq("account_id", account_id)
+    .lte("period_start", nowIso)  // period_start <= now
+    .gt("period_end", nowIso)     // period_end > now
+    .order("period_start", { ascending: false })
+    .limit(1)
+    .maybeSingle();
+
+  if (error || !data) {
+    return { used: 0, total: FREE_CALL_MINUTES_TOTAL };
+  }
+
+  return {
+    used: Math.max(0, Number(data.free_call_minutes_used || 0)),
+    total: Math.max(1, Number(data.free_call_minutes_total || FREE_CALL_MINUTES_TOTAL)),
+  };
+}
+
 /* ---------- UI helpers ---------- */
 function maskForList(e164) {
   const s = String(e164 || "");
@@ -99,7 +143,14 @@ export default function AutoDialerModal({ onClose, rows = [] }) {
   const [loadMsg, setLoadMsg] = useState("");
   const [saveAgentMsg, setSaveAgentMsg] = useState("");
 
-  // Load agent phone and agent_numbers + build default TTS copy
+  // Usage state (shared free minutes)
+  const [usageLoading, setUsageLoading] = useState(true);
+  const [minutesUsed, setMinutesUsed] = useState(0);
+  const [minutesTotal, setMinutesTotal] = useState(FREE_CALL_MINUTES_TOTAL);
+  const minutesLeft = Math.max(0, minutesTotal - minutesUsed);
+  const minutesPct = Math.min(100, Math.round((minutesUsed / Math.max(1, minutesTotal)) * 100));
+
+  // Load agent phone and agent_numbers + build default TTS copy + usage
   useEffect(() => {
     let mounted = true;
     (async () => {
@@ -157,12 +208,31 @@ export default function AutoDialerModal({ onClose, rows = [] }) {
           setAgentNums(normalized);
           setSelectedFrom("");
         }
+
+        // usage counters
+        await refreshCallUsage(uid);
       } finally {
         if (mounted) setLoadMsg("");
       }
     })();
     return () => { mounted = false; };
   }, [assistantName]);
+
+  async function refreshCallUsage(uidParam) {
+    try {
+      setUsageLoading(true);
+      const { data: auth } = await supabase.auth.getUser();
+      const uid = uidParam || auth?.user?.id;
+      if (!uid) return;
+      const u = await fetchCallUsageForCurrentMonth(uid);
+      setMinutesUsed(u.used);
+      setMinutesTotal(u.total || FREE_CALL_MINUTES_TOTAL);
+    } catch {
+      // keep defaults
+    } finally {
+      setUsageLoading(false);
+    }
+  }
 
   async function saveAgentPhoneNormalized() {
     setSaveAgentMsg("");
@@ -356,6 +426,8 @@ export default function AutoDialerModal({ onClose, rows = [] }) {
             .eq("id", runId);
         } catch {}
       }
+      // refresh usage once at the end
+      refreshCallUsage();
       return;
     }
 
@@ -505,6 +577,8 @@ export default function AutoDialerModal({ onClose, rows = [] }) {
                 .eq("id", runId);
             } catch {}
           }
+          // refresh usage at the end of a run
+          refreshCallUsage();
         } else {
           addTimer(setTimeout(() => { if (!isRunningRef.current) return; runNext(); }, 250));
         }
@@ -558,9 +632,38 @@ export default function AutoDialerModal({ onClose, rows = [] }) {
   return (
     <div className="fixed inset-0 z-50 grid bg-black/60 p-4">
       <div className="relative m-auto w-full max-w-3xl rounded-2xl border border-white/15 bg-neutral-950 p-5">
-        <div className="mb-3 flex items-center justify-between">
-          <div className="text-lg font-semibold">Auto Dial</div>
-          <button onClick={onClose} className="rounded-lg px-2 py-1 text-sm hover:bg-white/10">Close</button>
+        <div className="mb-3 flex items-center justify-between gap-3">
+          <div>
+            <div className="text-lg font-semibold">Auto Dial</div>
+            <div className="mt-1 flex items-center gap-2 text-[11px] text-white/60">
+              <div className="flex-1 max-w-[220px]">
+                <div className="h-1.5 w-full rounded-full bg-white/10 overflow-hidden">
+                  <div
+                    className="h-full rounded-full"
+                    style={{ width: `${minutesPct}%`, background: "linear-gradient(90deg,#6b8cff,#9b5cff)" }}
+                  />
+                </div>
+                <div className="mt-0.5">
+                  {usageLoading
+                    ? "Loading free minutes…"
+                    : `${minutesUsed}/${minutesTotal} min used • ${minutesLeft} left`}
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => refreshCallUsage()}
+                className="rounded-full border border-white/20 bg-white/5 px-2 py-0.5 text-[10px] hover:bg-white/10"
+              >
+                Refresh
+              </button>
+            </div>
+          </div>
+          <button
+            onClick={onClose}
+            className="self-start rounded-lg px-2 py-1 text-sm hover:bg-white/10"
+          >
+            Close
+          </button>
         </div>
 
         {!!loadMsg && (
