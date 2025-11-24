@@ -59,40 +59,33 @@ async function resolveAccountId(user_id) {
   return user_id;
 }
 
-/** Reads this month's free call usage. Supports either:
- *  - minutes columns: free_call_minutes_used, free_call_minutes_total
- *  - seconds columns: free_call_seconds_used, free_call_seconds_total (converted to minutes, ceiling)
+/** Reads this month's free call usage from usage_counters:
+ *  - uses free_call_minutes_used / free_call_minutes_total
+ *  - picks the row where NOW() is between period_start and period_end
  */
 async function fetchCallUsageForCurrentMonth(user_id) {
   if (!user_id) return { used: 0, total: FREE_CALL_MINUTES_TOTAL };
   const account_id = await resolveAccountId(user_id);
-  const { period_start, period_end } = monthWindow();
+  const nowIso = new Date().toISOString();
 
   const { data, error } = await supabase
     .from("usage_counters")
-    .select(
-      "free_call_minutes_used, free_call_minutes_total, free_call_seconds_used, free_call_seconds_total"
-    )
+    .select("free_call_minutes_used, free_call_minutes_total, period_start, period_end")
     .eq("account_id", account_id)
-    .eq("period_start", period_start)
-    .eq("period_end", period_end)
+    .lte("period_start", nowIso)  // period_start <= now
+    .gt("period_end", nowIso)     // period_end > now
+    .order("period_start", { ascending: false })
+    .limit(1)
     .maybeSingle();
 
-  if (error || !data) return { used: 0, total: FREE_CALL_MINUTES_TOTAL };
-
-  if (typeof data.free_call_minutes_used === "number" || typeof data.free_call_minutes_total === "number") {
-    return {
-      used: Math.max(0, Number(data.free_call_minutes_used || 0)),
-      total: Math.max(1, Number(data.free_call_minutes_total || FREE_CALL_MINUTES_TOTAL)),
-    };
+  if (error || !data) {
+    return { used: 0, total: FREE_CALL_MINUTES_TOTAL };
   }
 
-  // Fallback: seconds → started minutes
-  const secUsed = Number(data.free_call_seconds_used || 0);
-  const secTotal = Number(data.free_call_seconds_total || 0);
-  const usedMin = Math.max(0, Math.ceil(secUsed / 60));
-  const totalMin = Math.max(1, Math.ceil(secTotal / 60) || FREE_CALL_MINUTES_TOTAL);
-  return { used: usedMin, total: totalMin };
+  return {
+    used: Math.max(0, Number(data.free_call_minutes_used || 0)),
+    total: Math.max(1, Number(data.free_call_minutes_total || FREE_CALL_MINUTES_TOTAL)),
+  };
 }
 
 export default function DialerPage() {
