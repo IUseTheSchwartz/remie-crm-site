@@ -23,7 +23,7 @@ export function AuthProvider({ children }) {
   useEffect(() => {
     let cancelled = false;
 
-    // 1) Initial restore (faster & more reliable than getUser on first paint)
+    // 1) Initial restore
     refreshSession();
 
     // 2) Stay in sync with any changes (token refresh, sign-in/out, other tabs)
@@ -50,7 +50,6 @@ export function AuthProvider({ children }) {
     };
   }, []);
 
-  // Simple helpers (optional)
   const signup = async ({ email, password }) => {
     const origin =
       typeof window !== "undefined" && window.location?.origin
@@ -61,7 +60,7 @@ export function AuthProvider({ children }) {
       email,
       password,
       options: {
-        // Where Supabase will send them AFTER they click the email link
+        // Where Supabase sends them AFTER they click the email link
         emailRedirectTo: `${origin}/auth/confirmed`,
       },
     });
