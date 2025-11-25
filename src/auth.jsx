@@ -52,7 +52,20 @@ export function AuthProvider({ children }) {
 
   // Simple helpers (optional)
   const signup = async ({ email, password }) => {
-    const { error } = await supabase.auth.signUp({ email, password });
+    const origin =
+      typeof window !== "undefined" && window.location?.origin
+        ? window.location.origin
+        : "https://remiecrm.com";
+
+    const { error } = await supabase.auth.signUp({
+      email,
+      password,
+      options: {
+        // Where Supabase will send them AFTER they click the email link
+        emailRedirectTo: `${origin}/auth/confirmed`,
+      },
+    });
+
     if (error) throw error;
     await refreshSession();
     return true;
