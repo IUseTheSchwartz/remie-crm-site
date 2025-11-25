@@ -20,6 +20,7 @@ import LoginPage from "./pages/LoginPage.jsx";
 import SignupPage from "./pages/SignupPage.jsx";
 import AgentPublic from "./pages/AgentPublic.jsx";
 import AcceptInvite from "./pages/AcceptInvite.jsx";
+import ConfirmEmailPage from "./pages/ConfirmEmailPage.jsx"; // ← NEW
 
 // Supabase
 import { supabase } from "./lib/supabaseClient.js";
@@ -579,6 +580,7 @@ export default function App() {
         <Route path="/" element={<LandingPage />} />
         <Route path="/login" element={<LoginPage />} />
         <Route path="/signup" element={<SignupPage />} />
+        <Route path="/auth/confirmed" element={<ConfirmEmailPage />} /> {/* ← NEW */}
         <Route path="/a/:slug" element={<AgentPublic />} />
         <Route path="/invite/:token" element={<AcceptInvite />} />
 
