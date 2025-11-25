@@ -20,8 +20,7 @@ export default function ConfirmEmailPage() {
 
         <h1 className="text-2xl font-semibold">Email confirmed 🎉</h1>
         <p className="mt-2 text-sm text-white/70">
-          Thanks for confirming your email.
-          You can now log in and start using your workspace.
+          Thanks for confirming your email. You can now log in to your workspace.
         </p>
 
         <Link
