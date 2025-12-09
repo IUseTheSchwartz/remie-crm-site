@@ -71,7 +71,10 @@ async function fetchCallUsageForCurrentMonth(user_id) {
     .maybeSingle();
 
   if (error || !data) {
-    return { used: 0, total: FREE_CALL_MINUTES_TOTAL };
+    return {
+      used: 0,
+      total: FREE_CALL_MINUTES_TOTAL,
+    };
   }
 
   return {
@@ -107,7 +110,7 @@ export default function AutoDialerModal({ onClose, rows = [] }) {
   const [agentDisplayName, setAgentDisplayName] = useState("");
   const [introTts, setIntroTts] = useState("");
   const [voicemailTts, setVoicemailTts] = useState("");
-  const [ttsVoice, setTtsVoice] = useState("female"); // voice choice
+  const [ttsVoice, setTtsVoice] = useState("female"); // still passed to backend, but not editable in UI
   const ttsInitializedRef = useRef(false);
 
   // Queue + status
@@ -130,7 +133,9 @@ export default function AutoDialerModal({ onClose, rows = [] }) {
   // Live call status by contact_id
   const [liveStatus, setLiveStatus] = useState({});
   const liveStatusRef = useRef({});
-  useEffect(() => { liveStatusRef.current = liveStatus; }, [liveStatus]);
+  useEffect(() => {
+    liveStatusRef.current = liveStatus;
+  }, [liveStatus]);
 
   // run id + map contact_id -> attempt_id
   const [runId, setRunId] = useState(null);
@@ -170,7 +175,9 @@ export default function AutoDialerModal({ onClose, rows = [] }) {
         let num = profile?.phone || "";
         const eNum = toE164(num);
         if (eNum && eNum !== num) {
-          try { await supabase.from("agent_profiles").update({ phone: eNum }).eq("user_id", uid); } catch {}
+          try {
+            await supabase.from("agent_profiles").update({ phone: eNum }).eq("user_id", uid);
+          } catch {}
           num = eNum;
         }
 
@@ -184,9 +191,14 @@ export default function AutoDialerModal({ onClose, rows = [] }) {
           // Initialize default TTS only once
           if (!ttsInitializedRef.current) {
             const agent = firstName || "your agent";
-            const asst = assistantName || "your AI assistant";
-            const baseIntro = `This is ${asst}, ${agent}'s AI assistant calling in regards to the life insurance form you sent in. Press 1 to connect to ${agent}.`;
-            const baseVm = `This is ${asst}, ${agent}'s AI assistant. Sorry we missed you. We’ll send you a quick text so you can pick a better time.`;
+
+            const baseIntro =
+              `Hi, this is ${agent} calling from the VA benefits office, please press 1 to connect.`;
+
+            const baseVm =
+              `Hi, this is ${agent} calling from the VA benefits office. ` +
+              `Sorry we missed you. We'll send you a quick text so you can pick a better time.`;
+
             setIntroTts(baseIntro);
             setVoicemailTts(baseVm);
             ttsInitializedRef.current = true;
@@ -215,7 +227,9 @@ export default function AutoDialerModal({ onClose, rows = [] }) {
         if (mounted) setLoadMsg("");
       }
     })();
-    return () => { mounted = false; };
+    return () => {
+      mounted = false;
+    };
   }, [assistantName]);
 
   async function refreshCallUsage(uidParam) {
@@ -266,8 +280,14 @@ export default function AutoDialerModal({ onClose, rows = [] }) {
 
       chan = supabase
         .channel(`auto_dialer_attempts_live_${runId}`)
-        .on("postgres_changes",
-          { event: "*", schema: "public", table: "auto_dialer_attempts", filter: `run_id=eq.${runId}` },
+        .on(
+          "postgres_changes",
+          {
+            event: "*",
+            schema: "public",
+            table: "auto_dialer_attempts",
+            filter: `run_id=eq.${runId}`,
+          },
           (payload) => {
             const rec = payload.new || payload.old || {};
             const leadId = rec.contact_id;
@@ -309,15 +329,21 @@ export default function AutoDialerModal({ onClose, rows = [] }) {
         .subscribe();
     })();
 
-    return () => { if (chan) supabase.removeChannel(chan); };
+    return () => {
+      if (chan) supabase.removeChannel(chan);
+    };
   }, [runId]);
 
-  const rowsLookup = useMemo(() => new Map(rows.map(r => [r.id, r])), [rows]);
+  const rowsLookup = useMemo(
+    () => new Map(rows.map((r) => [r.id, r])),
+    [rows]
+  );
 
   function toggleStage(id) {
     setStageFilters((prev) => {
       const next = new Set(prev);
-      if (next.has(id)) next.delete(id); else next.add(id);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
       return next;
     });
   }
@@ -327,10 +353,14 @@ export default function AutoDialerModal({ onClose, rows = [] }) {
     const wantStages = stageFilters; // empty = all
 
     const list = rows
-      .filter(r => r.phone)
-      .filter(r => (wantStates.size ? wantStates.has((r.state || "").toUpperCase()) : true))
-      .filter(r => (wantStages.size ? wantStages.has((r.stage || "no_pickup")) : true))
-      .map(r => ({ id: r.id, attempts: 0, status: "queued" }));
+      .filter((r) => r.phone)
+      .filter((r) =>
+        wantStates.size ? wantStates.has((r.state || "").toUpperCase()) : true
+      )
+      .filter((r) =>
+        wantStages.size ? wantStages.has((r.stage || "no_pickup")) : true
+      )
+      .map((r) => ({ id: r.id, attempts: 0, status: "queued" }));
 
     setQueue(list);
     setCurrentIdx(0);
@@ -346,16 +376,18 @@ export default function AutoDialerModal({ onClose, rows = [] }) {
     if (uid) {
       const { data: run } = await supabase
         .from("auto_dialer_runs")
-        .insert([{
-          user_id: uid,
-          settings: {
-            stateFilter,
-            stageFilters: Array.from(stageFilters),
-            maxAttempts,
-            selectedFrom,
+        .insert([
+          {
+            user_id: uid,
+            settings: {
+              stateFilter,
+              stageFilters: Array.from(stageFilters),
+              maxAttempts,
+              selectedFrom,
+            },
+            total_leads: list.length,
           },
-          total_leads: list.length
-        }])
+        ])
         .select("id")
         .single();
       setRunId(run?.id || null);
@@ -366,7 +398,9 @@ export default function AutoDialerModal({ onClose, rows = [] }) {
   function requireBasics() {
     const eAgent = toE164(agentPhone);
     if (!eAgent) {
-      alert("Agent phone is missing or invalid. Please enter a valid +1XXXXXXXXXX and save.");
+      alert(
+        "Agent phone is missing or invalid. Please enter a valid +1XXXXXXXXXX and save."
+      );
       return null;
     }
     const eFrom = selectedFrom ? toE164(selectedFrom) : null; // blank = server auto-pick / connection default
@@ -376,7 +410,12 @@ export default function AutoDialerModal({ onClose, rows = [] }) {
   async function startAutoDial() {
     if (!queue.length) {
       await buildQueue();
-      addTimer(setTimeout(() => { if (!isRunningRef.current) return; runNext(); }, 0));
+      addTimer(
+        setTimeout(() => {
+          if (!isRunningRef.current) return;
+          runNext();
+        }, 0)
+      );
     } else {
       runNext();
     }
@@ -403,12 +442,10 @@ export default function AutoDialerModal({ onClose, rows = [] }) {
     // - or status completed/failed
     while (
       idx < q.length &&
-      (
-        (q[idx].attempts || 0) >= maxAttempts ||
+      ((q[idx].attempts || 0) >= maxAttempts ||
         ["completed", "failed"].includes(
           (liveStatusRef.current[q[idx].id] || q[idx].status || "").toLowerCase()
-        )
-      )
+        ))
     ) {
       idx++;
     }
@@ -438,7 +475,12 @@ export default function AutoDialerModal({ onClose, rows = [] }) {
     const lead = rowsLookup.get(item.id);
     if (!lead || !lead.phone) {
       setCurrentIdx(idx + 1);
-      addTimer(setTimeout(() => { if (!isRunningRef.current) return; runNext(); }, 0));
+      addTimer(
+        setTimeout(() => {
+          if (!isRunningRef.current) return;
+          runNext();
+        }, 0)
+      );
       return;
     }
 
@@ -475,18 +517,20 @@ export default function AutoDialerModal({ onClose, rows = [] }) {
         if (uid) {
           const { data: attempt } = await supabase
             .from("auto_dialer_attempts")
-            .insert([{
-              run_id: runId,
-              user_id: uid,
-              contact_id: lead.id,
-              lead_number: to,
-              from_number: basics.from,
-              agent_number: basics.agent,
-              call_session_id,
-              telnyx_leg_a_id: legA,
-              status: "dialing",
-              attempts: (item.attempts || 0) + 1,
-            }])
+            .insert([
+              {
+                run_id: runId,
+                user_id: uid,
+                contact_id: lead.id,
+                lead_number: to,
+                from_number: basics.from,
+                agent_number: basics.agent,
+                call_session_id,
+                telnyx_leg_a_id: legA,
+                status: "dialing",
+                attempts: (item.attempts || 0) + 1,
+              },
+            ])
             .select("id")
             .single();
 
@@ -497,21 +541,25 @@ export default function AutoDialerModal({ onClose, rows = [] }) {
       }
 
       // Optimistic “ringing” fallback
-      addTimer(setTimeout(() => {
-        if (!isRunningRef.current) return;
-        if (liveStatusRef.current[lead.id] === "dialing") {
-          setLiveStatus((s) => ({ ...s, [lead.id]: "ringing" }));
-        }
-      }, 1500));
+      addTimer(
+        setTimeout(() => {
+          if (!isRunningRef.current) return;
+          if (liveStatusRef.current[lead.id] === "dialing") {
+            setLiveStatus((s) => ({ ...s, [lead.id]: "ringing" }));
+          }
+        }, 1500)
+      );
 
       // Safety net: only fail if STILL dialing/ringing after 70s (never connected)
-      addTimer(setTimeout(() => {
-        if (!isRunningRef.current) return;
-        const st = liveStatusRef.current[lead.id];
-        if (["dialing","ringing"].includes(st)) {
-          advanceAfterEnd(lead.id, "failed");
-        }
-      }, 70000));
+      addTimer(
+        setTimeout(() => {
+          if (!isRunningRef.current) return;
+          const st = liveStatusRef.current[lead.id];
+          if (["dialing", "ringing"].includes(st)) {
+            advanceAfterEnd(lead.id, "failed");
+          }
+        }, 70000)
+      );
     } catch (e) {
       console.error("lead-first start error:", e?.message || e);
       advanceAfterEnd(item.id, "failed");
@@ -528,7 +576,8 @@ export default function AutoDialerModal({ onClose, rows = [] }) {
     const attemptId = attemptByContactRef.current.get(leadId);
     if (attemptId) {
       try {
-        await supabase.from("auto_dialer_attempts")
+        await supabase
+          .from("auto_dialer_attempts")
           .update({ status: outcome, ended_at: new Date().toISOString() })
           .eq("id", attemptId);
       } catch {}
@@ -548,7 +597,12 @@ export default function AutoDialerModal({ onClose, rows = [] }) {
       if (outcome !== "completed" && attempts < maxAttempts) {
         const updated = [...old];
         updated[idx] = { ...cur, attempts, status: "queued" };
-        addTimer(setTimeout(() => { if (!isRunningRef.current) return; runNext(); }, 400));
+        addTimer(
+          setTimeout(() => {
+            if (!isRunningRef.current) return;
+            runNext();
+          }, 400)
+        );
         return updated;
       } else {
         const updated = [...old];
@@ -558,11 +612,12 @@ export default function AutoDialerModal({ onClose, rows = [] }) {
         setCurrentIdx((prev) => Math.max(prev, idx));
 
         // If everything is finished, stop; otherwise let runNext find the next unfinished one
-        const allDone = updated.every((row) =>
-          (row.attempts || 0) >= maxAttempts ||
-          ["completed", "failed"].includes(
-            (liveStatusRef.current[row.id] || row.status || "").toLowerCase()
-          )
+        const allDone = updated.every(
+          (row) =>
+            (row.attempts || 0) >= maxAttempts ||
+            ["completed", "failed"].includes(
+              (liveStatusRef.current[row.id] || row.status || "").toLowerCase()
+            )
         );
 
         if (allDone) {
@@ -580,7 +635,12 @@ export default function AutoDialerModal({ onClose, rows = [] }) {
           // refresh usage at the end of a run
           refreshCallUsage();
         } else {
-          addTimer(setTimeout(() => { if (!isRunningRef.current) return; runNext(); }, 250));
+          addTimer(
+            setTimeout(() => {
+              if (!isRunningRef.current) return;
+              runNext();
+            }, 250)
+          );
         }
 
         return updated;
@@ -619,7 +679,9 @@ export default function AutoDialerModal({ onClose, rows = [] }) {
       key={sid}
       onClick={() => toggleStage(sid)}
       className={`rounded-full px-3 py-1 text-xs border ${
-        stageFilters.has(sid) ? "border-white bg-white text-black" : "border-white/20 bg-white/5 text-white/80"
+        stageFilters.has(sid)
+          ? "border-white bg-white text-black"
+          : "border-white/20 bg-white/5 text-white/80"
       }`}
       title={labelForStage(sid)}
     >
@@ -640,7 +702,10 @@ export default function AutoDialerModal({ onClose, rows = [] }) {
                 <div className="h-1.5 w-full rounded-full bg-white/10 overflow-hidden">
                   <div
                     className="h-full rounded-full"
-                    style={{ width: `${minutesPct}%`, background: "linear-gradient(90deg,#6b8cff,#9b5cff)" }}
+                    style={{
+                      width: `${minutesPct}%`,
+                      background: "linear-gradient(90deg,#6b8cff,#9b5cff)",
+                    }}
                   />
                 </div>
                 <div className="mt-0.5">
@@ -678,46 +743,11 @@ export default function AutoDialerModal({ onClose, rows = [] }) {
             Step 1 – Voice scripts (TTS)
           </div>
           <p className="mb-3 text-[11px] text-white/60">
-            We&apos;ll read these out with text-to-speech. This runs before anyone talks to you, and only dials you if they press 1.
+            We&apos;ll read these out with text-to-speech. This runs before anyone
+            talks to you, and only dials you if they press 1.
           </p>
 
-          <div className="mb-3 grid gap-3 md:grid-cols-2">
-            <div>
-              <div className="text-[11px] text-white/60">Assistant name</div>
-              <input
-                value={assistantName}
-                onChange={(e) => setAssistantName(e.target.value)}
-                className="mt-1 w-full rounded-lg border border-white/10 bg-black/40 px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-indigo-500/40"
-                placeholder="Remie"
-              />
-            </div>
-            <div>
-              <div className="text-[11px] text-white/60">Agent name used in script</div>
-              <input
-                value={agentDisplayName}
-                onChange={(e) => setAgentDisplayName(e.target.value)}
-                className="mt-1 w-full rounded-lg border border-white/10 bg-black/40 px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-indigo-500/40"
-                placeholder="Jacksen"
-              />
-            </div>
-          </div>
-
-          {/* TTS voice selector */}
-          <div className="mb-3 max-w-xs">
-            <div className="text-[11px] text-white/60">TTS Voice</div>
-            <select
-              value={ttsVoice}
-              onChange={(e) => setTtsVoice(e.target.value)}
-              className="mt-1 w-full rounded-lg border border-white/10 bg-black/40 px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-indigo-500/40"
-            >
-              <option value="female">Female (default)</option>
-              <option value="male">Male</option>
-            </select>
-            <div className="mt-1 text-[10px] text-white/40">
-              Affects both the intro and voicemail messages.
-            </div>
-          </div>
-
+          {/* Only the two script textareas now */}
           <div className="grid gap-3 md:grid-cols-2">
             <div>
               <div className="text-[11px] text-white/60 mb-1">
@@ -730,7 +760,8 @@ export default function AutoDialerModal({ onClose, rows = [] }) {
                 className="w-full rounded-lg border border-white/10 bg-black/40 px-3 py-2 text-xs outline-none focus:ring-2 focus:ring-indigo-500/40"
               />
               <div className="mt-1 text-[10px] text-white/40">
-                Base idea: &quot;This is (assistant), (agent)&apos;s AI assistant calling in regards to the life insurance form you sent in. Press 1 to connect to (agent).&quot;
+                Default: &quot;Hi, this is (agent) calling from the VA benefits
+                office, please press 1 to connect.&quot;
               </div>
             </div>
 
@@ -745,7 +776,9 @@ export default function AutoDialerModal({ onClose, rows = [] }) {
                 className="w-full rounded-lg border border-white/10 bg-black/40 px-3 py-2 text-xs outline-none focus:ring-2 focus:ring-indigo-500/40"
               />
               <div className="mt-1 text-[10px] text-white/40">
-                Played when they don&apos;t press 1. Keep it short and friendly.
+                Default: &quot;Hi, this is (agent) calling from the VA benefits
+                office. Sorry we missed you. We&apos;ll send you a quick text so you
+                can pick a better time.&quot;
               </div>
             </div>
           </div>
@@ -757,12 +790,12 @@ export default function AutoDialerModal({ onClose, rows = [] }) {
             <div className="text-[11px] text-white/60">Caller ID</div>
             <select
               value={selectedFrom}
-              onChange={(e)=>setSelectedFrom(e.target.value)}
+              onChange={(e) => setSelectedFrom(e.target.value)}
               className="mt-1 w-full rounded-lg border border-white/10 bg-black/40 px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-indigo-500/40"
               title="Choose which number prospects will see"
             >
               <option value="">Use connection default</option>
-              {agentNums.map(n => (
+              {agentNums.map((n) => (
                 <option key={n.id} value={n.telnyx_number}>
                   {maskForList(n.telnyx_number)} {n.is_free ? "(free pool)" : ""}
                 </option>
@@ -771,11 +804,13 @@ export default function AutoDialerModal({ onClose, rows = [] }) {
           </div>
 
           <div className="rounded-xl border border-white/10 bg-white/[0.03] p-3">
-            <div className="text-[11px] text-white/60">Agent Phone (we connect you)</div>
+            <div className="text-[11px] text-white/60">
+              Agent Phone (we connect you)
+            </div>
             <div className="mt-1 flex items-center gap-2">
               <input
                 value={agentPhone}
-                onChange={(e)=>setAgentPhone(e.target.value)}
+                onChange={(e) => setAgentPhone(e.target.value)}
                 onBlur={saveAgentPhoneNormalized}
                 placeholder="+1XXXXXXXXXX"
                 className="flex-1 rounded-lg border border-white/10 bg-black/40 px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-indigo-500/40"
@@ -794,33 +829,37 @@ export default function AutoDialerModal({ onClose, rows = [] }) {
               </div>
             )}
             {saveAgentMsg && (
-              <div className="mt-1 text-[11px] text-white/60">{saveAgentMsg}</div>
+              <div className="mt-1 text-[11px] text-white/60">
+                {saveAgentMsg}
+              </div>
             )}
           </div>
         </div>
 
         <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
           <div className="col-span-1">
-            <label className="text-xs text-white/70">States (comma or space separated)</label>
+            <label className="text-xs text-white/70">
+              States (comma or space separated)
+            </label>
             <input
               value={stateFilter}
-              onChange={(e)=>setStateFilter(e.target.value)}
+              onChange={(e) => setStateFilter(e.target.value)}
               placeholder="TN, KY, FL"
               className="mt-1 w-full rounded-xl border border-white/10 bg-black/40 px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-indigo-500/40"
             />
           </div>
           <div className="col-span-2">
-            <label className="text-xs text-white/70">Stages (leave empty for ALL)</label>
-            <div className="mt-1 flex flex-wrap gap-2">
-              {stagePills}
-            </div>
+            <label className="text-xs text-white/70">
+              Stages (leave empty for ALL)
+            </label>
+            <div className="mt-1 flex flex-wrap gap-2">{stagePills}</div>
           </div>
 
           <div className="col-span-1">
             <label className="text-xs text-white/70">Re-dial attempts</label>
             <select
               value={maxAttempts}
-              onChange={(e)=>setMaxAttempts(Number(e.target.value))}
+              onChange={(e) => setMaxAttempts(Number(e.target.value))}
               className="mt-1 w-full rounded-xl border border-white/10 bg-black/40 px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-indigo-500/40"
             >
               <option value={1}>Single dial</option>
@@ -842,7 +881,9 @@ export default function AutoDialerModal({ onClose, rows = [] }) {
               onClick={startAutoDial}
               className="rounded-xl border border-emerald-500/50 bg-emerald-500/10 px-3 py-2 text-sm hover:bg-emerald-500/20 disabled:opacity-40"
               disabled={!canStartDialing}
-              title={!toE164(agentPhone) ? "Enter a valid agent phone first" : ""}
+              title={
+                !toE164(agentPhone) ? "Enter a valid agent phone first" : ""
+              }
             >
               Start calling
             </button>
@@ -855,8 +896,16 @@ export default function AutoDialerModal({ onClose, rows = [] }) {
             </button>
           )}
           <div className="text-xs text-white/60 ml-2">
-            {queue.length ? `Lead ${Math.min(currentIdx + 1, queue.length)} of ${queue.length}` : "No queue yet"}
-            {runId ? <span className="ml-3 text-white/40">Run: {runId.slice(0,8)}…</span> : null}
+            {queue.length
+              ? `Lead ${Math.min(currentIdx + 1, queue.length)} of ${
+                  queue.length
+                }`
+              : "No queue yet"}
+            {runId ? (
+              <span className="ml-3 text-white/40">
+                Run: {runId.slice(0, 8)}…
+              </span>
+            ) : null}
           </div>
         </div>
 
@@ -876,53 +925,77 @@ export default function AutoDialerModal({ onClose, rows = [] }) {
             <tbody>
               {queue.length === 0 ? (
                 <tr>
-                  <td colSpan={7} className="px-3 py-4 text-center text-white/60">
+                  <td
+                    colSpan={7}
+                    className="px-3 py-4 text-center text-white/60"
+                  >
                     Build a queue to preview calls.
                   </td>
                 </tr>
-              ) : queue.map((q, i) => {
-                const r = rowsLookup.get(q.id) || {};
-                const uiStatus = liveStatus[q.id] || q.status || "queued";
-                const isCurrent = i === currentIdx;
+              ) : (
+                queue.map((q, i) => {
+                  const r = rowsLookup.get(q.id) || {};
+                  const uiStatus = liveStatus[q.id] || q.status || "queued";
+                  const isCurrent = i === currentIdx;
 
-                // UI label:
-                // - bridged  -> "Pressed 1" (green)
-                // - failed   -> "Press 1" (red, means they didn't press 1)
-                // - completed-> "Completed"
-                // - others   -> default label
-                const statusLabel =
-                  uiStatus === "bridged"   ? "Pressed 1" :
-                  uiStatus === "failed"    ? "Press 1"   :
-                  uiStatus === "completed" ? "Completed" :
-                  cap(uiStatus);
+                  // UI label:
+                  // - bridged  -> "Pressed 1" (green)
+                  // - failed   -> "Press 1" (red, means they didn't press 1)
+                  // - completed-> "Completed"
+                  // - others   -> default label
+                  const statusLabel =
+                    uiStatus === "bridged"
+                      ? "Pressed 1"
+                      : uiStatus === "failed"
+                      ? "Press 1"
+                      : uiStatus === "completed"
+                      ? "Completed"
+                      : cap(uiStatus);
 
-                return (
-                  <tr key={q.id} className={`border-t border-white/10 ${isCurrent ? "bg-white/[0.03]" : ""}`}>
-                    <td className="px-3 py-2">{i + 1}</td>
-                    <td className="px-3 py-2">{r.name || r.email || r.phone || r.id}</td>
-                    <td className="px-3 py-2"><PhoneMono>{r.phone || "—"}</PhoneMono></td>
-                    <td className="px-3 py-2">{r.state || "—"}</td>
-                    <td className="px-3 py-2">{q.attempts || 0}/{maxAttempts}</td>
-                    <td className="px-3 py-2">
-                      <span className={`rounded-full px-2 py-0.5 text-xs ${badgeClass(uiStatus)}`}>{statusLabel}</span>
-                    </td>
-                    <td className="px-3 py-2">
-                      <button
-                        type="button"
-                        onClick={() => removeFromQueue(q.id)}
-                        disabled={isRunning && isCurrent}
-                        className="text-[11px] rounded-full border border-white/20 px-2 py-0.5 text-white/70 hover:bg-white/10 disabled:opacity-40"
-                      >
-                        Remove
-                      </button>
-                    </td>
-                  </tr>
-                );
-              })}
+                  return (
+                    <tr
+                      key={q.id}
+                      className={`border-t border-white/10 ${
+                        isCurrent ? "bg-white/[0.03]" : ""
+                      }`}
+                    >
+                      <td className="px-3 py-2">{i + 1}</td>
+                      <td className="px-3 py-2">
+                        {r.name || r.email || r.phone || r.id}
+                      </td>
+                      <td className="px-3 py-2">
+                        <PhoneMono>{r.phone || "—"}</PhoneMono>
+                      </td>
+                      <td className="px-3 py-2">{r.state || "—"}</td>
+                      <td className="px-3 py-2">
+                        {q.attempts || 0}/{maxAttempts}
+                      </td>
+                      <td className="px-3 py-2">
+                        <span
+                          className={`rounded-full px-2 py-0.5 text-xs ${badgeClass(
+                            uiStatus
+                          )}`}
+                        >
+                          {statusLabel}
+                        </span>
+                      </td>
+                      <td className="px-3 py-2">
+                        <button
+                          type="button"
+                          onClick={() => removeFromQueue(q.id)}
+                          disabled={isRunning && isCurrent}
+                          className="text-[11px] rounded-full border border-white/20 px-2 py-0.5 text-white/70 hover:bg-white/10 disabled:opacity-40"
+                        >
+                          Remove
+                        </button>
+                      </td>
+                    </tr>
+                  );
+                })
+              )}
             </tbody>
           </table>
         </div>
-
       </div>
     </div>
   );
